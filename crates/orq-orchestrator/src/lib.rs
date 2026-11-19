@@ -115,7 +115,9 @@ pub use resume::{
 };
 pub use retention_facts::{collect_run_facts, collect_run_facts_for, parse_rfc3339};
 pub use review_draft::{
-    draft_review_description, issue_number, link_issue, DraftSession, DraftSource, ReviewDraft,
+    draft_review_description, issue_number, link_issue, plan_agent_args, plan_marker, plan_prompt,
+    record_plan_event, run_plan, DraftSession, DraftSource, PlanIdea, PlanMarker, ReviewDraft,
+    DEFAULT_DRAFT_PROMPT, PLAN_ENDING, PLAN_MARKER, PLAN_STAGE, PLAN_TIMEOUT, PLAN_TOOLS,
 };
 pub use review_observe::{observe_review, Observed};
 pub use review_request::{

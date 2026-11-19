@@ -397,6 +397,53 @@ pub trait ProjectsProvider {
     fn server(&self) -> Option<&dyn ServerControl> {
         None
     }
+
+    /// Starts Draft with Claude in project `id`: a planning run that drafts `request`'s idea. A provider that
+    /// cannot does not know the project.
+    fn start_plan(&self, _id: &str, _request: &PlanRequest) -> Result<PlanStart, String> {
+        Ok(PlanStart::Unknown)
+    }
+
+    /// Planning run `run` of project `id` as the web shows it: `{state, source, feature, reason, proposal,
+    /// current, decision}`. `None` when there is no such planning run.
+    fn plan(&self, _id: &str, _run: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    /// The person's choice on planning run `run`'s improved draft: Replace (`replace`) or Discard.
+    fn decide_plan(&self, _id: &str, _run: &str, _replace: bool) -> Result<PlanDecision, String> {
+        Ok(PlanDecision::Unknown)
+    }
+}
+
+/// What Draft with Claude drafts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanIdea {
+    /// Todo item `id` as read at `version`, which becomes a draft feature and leaves the list.
+    Todo { id: i64, version: i64, name: String, text: String },
+    /// Draft feature `feature`, whose improved text waits for Replace or Discard.
+    Draft { feature: String },
+}
+
+/// A Draft with Claude request: the idea and the person's notes for Claude.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanRequest {
+    pub idea: PlanIdea,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanStart {
+    Started(String),
+    Refused(String),
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanDecision {
+    Done,
+    Refused(String),
+    Unknown,
 }
 
 /// The running server itself, as `orq serve` offers it to the web: its build, the installed orq's, and a
@@ -1469,6 +1516,160 @@ fn todo_fields(sent: &serde_json::Map<String, Value>, edit: bool) -> Option<(Str
     Some((name, description, version))
 }
 
+/// The last part of the paths that start Draft with Claude.
+const PLAN_LEAF: &str = "draft-with-claude";
+/// The most characters of notes for Claude a request takes.
+const MAX_PLAN_NOTES: usize = 8000;
+
+/// The Todo item of `/api/todo/{id}/draft-with-claude`, when the path has that shape.
+fn todo_plan_target(path: &str) -> Option<i64> {
+    let id = path.strip_prefix("/api/todo/")?.strip_suffix(PLAN_LEAF)?.strip_suffix('/')?;
+    id.parse::<i64>().ok().filter(|number| *number > 0 && number.to_string() == id)
+}
+
+/// The notes of a Draft with Claude body: a string of at most MAX_PLAN_NOTES characters, empty when not sent.
+fn plan_notes(sent: &serde_json::Map<String, Value>) -> Option<String> {
+    match sent.get("notes") {
+        None | Some(Value::Null) => Some(String::new()),
+        Some(Value::String(notes)) if notes.chars().count() <= MAX_PLAN_NOTES => Some(notes.clone()),
+        _ => None,
+    }
+}
+
+/// What a planning run's start answers: the run, or why it did not start, audited as plan.start.
+fn plan_started(audit: &dyn Fn(crate::remote_audit::Outcome, &str), label: &str, project: &str, started: Option<Result<PlanStart, String>>) -> Response {
+    use crate::remote_audit::Outcome;
+    match started {
+        Some(Ok(PlanStart::Started(run))) => {
+            audit(Outcome::Allowed, &format!("{label}: {run}"));
+            reply(200, json!({ "run": run, "project": project }))
+        }
+        Some(Ok(PlanStart::Refused(why))) => {
+            audit(Outcome::Refused, &format!("{label}: {why}"));
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, &format!("{label}: the planning run could not start"));
+            error(500, "the planning run could not start")
+        }
+        _ => {
+            audit(Outcome::Refused, &format!("{label}: no such project"));
+            error(404, "not found")
+        }
+    }
+}
+
+/// Draft with Claude on Todo item `id`, if actions are on: a planning run in the project the body names, from the
+/// item as read at the body's version. Audited as plan.start.
+fn plan_from_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: i64, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let sent = body_object(body, MAX_TODO_BODY);
+    let project = sent.as_ref().ok().and_then(|sent| sent.get("project")).and_then(Value::as_str).unwrap_or_default().to_string();
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "plan.start", project: &project, run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    let sent = match sent {
+        Ok(sent) => sent,
+        Err(refusal) => {
+            audit(Outcome::Refused, "bad request body");
+            return refusal;
+        }
+    };
+    const KEYS: [&str; 3] = ["project", "version", "notes"];
+    let (true, Some(read), Some(notes)) = (sent.keys().all(|key| KEYS.contains(&key.as_str())) && !project.is_empty(), sent.get("version").and_then(Value::as_i64), plan_notes(&sent)) else {
+        audit(Outcome::Refused, "bad request body");
+        return error(400, "the request body is not one this action takes");
+    };
+    let item = if roots.database().exists() { Store::open(&roots.database()).and_then(|store| store.todo(id)) } else { Ok(None) };
+    let item = match item {
+        Ok(Some(item)) => item,
+        Ok(None) => {
+            audit(Outcome::Refused, "no such item");
+            return error(404, "not found");
+        }
+        Err(_) => {
+            audit(Outcome::Refused, "the Todo list could not be read");
+            return error(500, "the Todo list could not be read");
+        }
+    };
+    if read != item.version {
+        audit(Outcome::Refused, &format!("{}: the item changed since it was read", item.name));
+        return error(409, "The item changed since you opened it; nothing was started");
+    }
+    let request = PlanRequest { idea: PlanIdea::Todo { id, version: item.version, name: item.name.clone(), text: item.description.clone() }, notes };
+    plan_started(&audit, &item.name, &project, provider.map(|provider| provider.start_plan(&project, &request)))
+}
+
+/// Draft with Claude on draft `feature` of project `id` ("Improve draft"), if actions are on. Audited as plan.start.
+fn plan_from_draft(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "plan.start", project: id, run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !plain_feature_name(feature) {
+        audit(Outcome::Refused, "not a feature name");
+        return error(404, "not found");
+    }
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, &format!("{feature}: remote actions are off"));
+        return error(404, "not found");
+    }
+    let notes = match body_object(body, MAX_TODO_BODY) {
+        Ok(sent) if sent.keys().all(|key| key == "notes") => plan_notes(&sent),
+        _ => None,
+    };
+    let Some(notes) = notes else {
+        audit(Outcome::Refused, &format!("{feature}: bad request body"));
+        return error(400, "the request body is not one this action takes");
+    };
+    let request = PlanRequest { idea: PlanIdea::Draft { feature: feature.to_string() }, notes };
+    plan_started(&audit, feature, id, provider.map(|provider| provider.start_plan(id, &request)))
+}
+
+/// Replace or Discard on planning run `run`'s improved draft, if actions are on; audited as plan.replace or
+/// plan.discard.
+fn decide_plan(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, replace: bool, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let action = if replace { "plan.replace" } else { "plan.discard" };
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action, project: id, run: Some(run), outcome, reason: Some(reason) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    if !matches!(body_object(body, MAX_TODO_BODY), Ok(sent) if sent.is_empty()) {
+        audit(Outcome::Refused, "bad request body");
+        return error(400, "the request body is not one this action takes");
+    }
+    match provider.map(|provider| provider.decide_plan(id, run, replace)) {
+        Some(Ok(PlanDecision::Done)) => {
+            audit(Outcome::Allowed, if replace { "replaced" } else { "discarded" });
+            reply(200, json!({ "run": run, "decision": if replace { "replaced" } else { "discarded" } }))
+        }
+        Some(Ok(PlanDecision::Refused(why))) => {
+            audit(Outcome::Refused, &why);
+            reply(409, json!({ "error": why }))
+        }
+        Some(Err(_)) => {
+            audit(Outcome::Refused, "the decision could not be saved");
+            error(500, "the decision could not be saved")
+        }
+        _ => {
+            audit(Outcome::Refused, "no such planning run");
+            error(404, "not found")
+        }
+    }
+}
+
 /// A request body as a JSON object of at most `max` bytes; an empty body is an empty object.
 fn body_object(body: &[u8], max: usize) -> Result<serde_json::Map<String, Value>, Response> {
     if body.len() > max {
@@ -2435,11 +2636,30 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some(id) = (request.method == "POST").then(|| project_target(path, "pull")).flatten() {
         return pull_project_target(roots, provider, id, body);
     }
+    if let Some(item) = (request.method == "POST").then(|| todo_plan_target(path)).flatten() {
+        return plan_from_todo(roots, provider, item, body);
+    }
+    if let Some((id, feature)) = (request.method == "POST").then(|| feature_target(path, PLAN_LEAF)).flatten() {
+        return plan_from_draft(roots, provider, id, feature, body);
+    }
+    if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "plan-replace")).flatten() {
+        return decide_plan(roots, provider, id, run, true, body);
+    }
+    if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "plan-discard")).flatten() {
+        return decide_plan(roots, provider, id, run, false, body);
+    }
     if let Some(target) = (request.method == "POST").then(|| todo_target(path)).flatten() {
         return change_todo(roots, provider, target, body);
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
+    }
+    if let Some((id, run)) = run_target(path, "plan") {
+        return match provider.map(|provider| provider.plan(id, run)) {
+            Some(Ok(Some(plan))) => reply(200, json!({ "plan": plan, "remote_actions": remote_actions_on(roots) })),
+            Some(Err(_)) => error(500, "the planning run could not be read"),
+            _ => error(404, "not found"),
+        };
     }
     if let Some((id, run)) = run_target(path, "resume-check") {
         return resume_check(roots, provider, id, run);

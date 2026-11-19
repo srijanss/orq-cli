@@ -910,7 +910,7 @@ function TodoFields({ name, description, onName, onDescription }) {
 
 // One Todo item: its name, two lines of its description and when it was added, with Move to project, Edit and
 // Delete while remote actions are on. Edit sends the version it read; Delete asks first.
-function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove }) {
+function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove, onDraft }) {
   const [mode, setMode] = useState("view");
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState(item.name);
@@ -950,6 +950,7 @@ function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove }) {
           {actions && mode === "view" ? (
             <div className="todo-item-actions">
               <button type="button" data-todo-move onClick={() => onMove(item)}><Icon name="chevronRight" size={16} />Move to project</button>
+              <button type="button" data-todo-draft onClick={() => onDraft(item)}><Icon name="doc" size={16} />Draft with Claude</button>
               <button type="button" data-todo-edit onClick={() => setMode("edit")}><Icon name="pencil" size={16} />Edit</button>
               <button type="button" data-todo-delete onClick={() => setMode("delete")}><Icon name="close" size={16} />Delete</button>
             </div>
@@ -965,7 +966,7 @@ function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove }) {
 }
 
 // The Todo list above the projects: always shown, newest first, TODO_SHOWN items until "Show all".
-function TodoList({ todo, token, onSignedOut, onChanged, onMove }) {
+function TodoList({ todo, token, onSignedOut, onChanged, onMove, onDraft }) {
   const [all, setAll] = useState(false);
   let body;
   if (todo === null) body = <p className="muted">Loading the Todo list…</p>;
@@ -976,7 +977,7 @@ function TodoList({ todo, token, onSignedOut, onChanged, onMove }) {
     body = (
       <>
         <ul className="todo-list">
-          {shown.map((item) => <TodoItem key={item.id + ":" + item.version} item={item} actions={todo.actions} token={token} onSignedOut={onSignedOut} onChanged={onChanged} onMove={onMove} />)}
+          {shown.map((item) => <TodoItem key={item.id + ":" + item.version} item={item} actions={todo.actions} token={token} onSignedOut={onSignedOut} onChanged={onChanged} onMove={onMove} onDraft={onDraft} />)}
         </ul>
         {todo.items.length > TODO_SHOWN ? <button type="button" className="todo-show-all" data-todo-show-all aria-expanded={all ? "true" : "false"} onClick={() => setAll(!all)}>{all ? "Show fewer" : "Show all (" + todo.items.length + ")"}</button> : null}
       </>
@@ -1108,6 +1109,88 @@ function AddFeatureDialog({ projects, item = null, todoActions, token, onSignedO
   );
 }
 
+// Draft with Claude, as a popup: a Todo item's idea (with a project to choose) or a draft feature to improve (its
+// project fixed), plus optional notes. Start begins a planning run and opens its page.
+function DraftWithClaudeDialog({ projects = [], item = null, draft = null, token, onSignedOut, onClose }) {
+  const improving = draft !== null;
+  const [target, setTarget] = useState(improving ? draft.project : "");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const choices = projects.filter((project) => project.available).sort((a, b) => a.name.localeCompare(b.name));
+  useEffect(() => {
+    if (busy) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [busy]);
+  const start = async () => {
+    setBusy(true);
+    setNote("");
+    const path = improving
+      ? API_PROJECTS + "/" + encodeURIComponent(draft.project) + "/features/" + encodeURIComponent(draft.name) + "/draft-with-claude"
+      : API_TODO + "/" + item.id + "/draft-with-claude";
+    const body = improving ? { notes } : { project: target, version: item.version, notes };
+    let why = "Claude could not be started.";
+    try {
+      const response = await actionRequest(path, token, body);
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      const reply = await jsonOrNull(response);
+      if (response.ok && reply !== null && typeof reply.run === "string") {
+        onClose();
+        navigate(runHref(target, reply.run));
+        return;
+      }
+      if (response.status === 403) why = "Not allowed.";
+      else if (reply !== null && typeof reply.error === "string") why = reply.error;
+    } catch (unreachable) {
+      why = "The server could not be reached.";
+    }
+    setBusy(false);
+    setNote(why);
+  };
+  const title = improving ? "Improve draft" : "Draft with Claude";
+  return (
+    <div className="feature-modal" data-feature-modal data-plan-dialog>
+      <div className="feature-modal-box" role="dialog" aria-modal="true" aria-labelledby="plan-title">
+        <div className="feature-modal-head">
+          <h2 id="plan-title">{title}</h2>
+          <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={busy} onClick={onClose}><Icon name="close" size={18} /></button>
+        </div>
+        {improving ? (
+          <p className="muted">{draft.project + " · " + draft.name}</p>
+        ) : (
+          <>
+            <label className="field">
+              <span className="field-label">Project</span>
+              <select data-plan-project value={target} disabled={busy} onChange={(event) => setTarget(event.target.value)}>
+                <option value="" disabled>Choose a project</option>
+                {choices.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+              </select>
+            </label>
+            <div className="plan-idea" data-plan-idea>
+              <strong>{item.name}</strong>
+              {item.description !== "" ? <p className="todo-item-description">{item.description}</p> : null}
+            </div>
+          </>
+        )}
+        <label className="field field-wide"><span className="field-label">Notes (optional)</span><textarea data-plan-notes rows={4} value={notes} disabled={busy} onChange={(event) => setNotes(event.target.value)} /></label>
+        <div className="feature-editor-actions">
+          <button type="button" className="primary-button" data-plan-start disabled={busy || target === ""} onClick={start}><Icon name="play" size={16} />Start</button>
+          <button type="button" data-cancel disabled={busy} onClick={onClose}>Cancel</button>
+        </div>
+        {busy ? <span role="status">Starting…</span> : null}
+        {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
+      </div>
+    </div>
+  );
+}
+
 // The Todo list as the Dashboard reads it: null while loading, what went wrong, or { items, actions }.
 function useTodo(token, onSignedOut, reads) {
   const [todo, setTodo] = useState(null);
@@ -1140,6 +1223,8 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
   const todo = useTodo(token, onSignedOut, reads);
   // The open popup: { item } (null for Add feature, a Todo item for its move), or null when none is.
   const [adding, setAdding] = useState(null);
+  // The Todo item whose Draft with Claude popup is open, or null.
+  const [drafting, setDrafting] = useState(null);
   const [notice, setNotice] = useState("");
   const reread = () => setReads((n) => n + 1);
   const finished = (text) => {
@@ -1172,8 +1257,9 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
       </div>
       {notice !== "" ? <p role="status" className="run-action-note" data-dashboard-notice>{notice}</p> : null}
       {machine === null ? null : <MachineRuns machine={machine} />}
-      <TodoList todo={todo} token={token} onSignedOut={onSignedOut} onChanged={reread} onMove={(item) => { setNotice(""); setAdding({ item }); }} />
+      <TodoList todo={todo} token={token} onSignedOut={onSignedOut} onChanged={reread} onMove={(item) => { setNotice(""); setAdding({ item }); }} onDraft={(item) => { setNotice(""); setDrafting(item); }} />
       {projects.length === 0 ? <p>No projects found.</p> : null}
+      {drafting !== null ? <DraftWithClaudeDialog projects={projects} item={drafting} token={token} onSignedOut={onSignedOut} onClose={() => setDrafting(null)} /> : null}
       {adding !== null ? <AddFeatureDialog projects={projects} item={adding.item} todoActions={todo !== null && typeof todo === "object" && todo.actions} token={token} onSignedOut={onSignedOut} onClose={() => setAdding(null)} onFinished={finished} /> : null}
       {pinned.length > 0 ? (
         <>
@@ -3815,6 +3901,8 @@ function QueueWish({ feature, control }) {
 
 function FeatureDetail({ feature, features, runs, projectId, control }) {
   const [tab, setTab] = useState("description");
+  // Whether the Improve draft popup is open.
+  const [improving, setImproving] = useState(false);
   const known = new Set(features.map((entry) => entry.name));
   const facts = featureFacts(feature, runs);
   const listPath = "/projects/" + encodeURIComponent(projectId) + "/features";
@@ -3837,8 +3925,10 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
             {feature.status === "pending" || feature.status === "draft" ? <FeatureAction key={feature.status} feature={feature} control={control} /> : null}
             {feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
             {feature.status === "pending" ? <QueueAction feature={feature} control={control} /> : null}
+            {feature.status === "draft" ? <button type="button" data-improve-draft onClick={() => setImproving(true)}><Icon name="doc" size={16} />Improve draft</button> : null}
           </div>
         ) : null}
+        {control !== null && improving ? <DraftWithClaudeDialog draft={{ project: projectId, name: feature.name }} token={control.token} onSignedOut={control.onSignedOut} onClose={() => setImproving(false)} /> : null}
         {control !== null && feature.status === "draft" ? <QueueWish key={feature.name} feature={feature} control={control} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
@@ -4144,6 +4234,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                     <RunState state={run.state} />
                     {endingOf(run) === null ? null : <div className="run-ending muted" data-run-ending>{endingOf(run)}</div>}
                     {run.unattended === true ? <div className="run-ending muted" data-run-unattended>Unattended (queue)</div> : null}
+                    {run.kind === "plan" ? <div className="run-ending feature-state state-draft" data-run-plan>Draft with Claude</div> : null}
                     <DirtyCheckout run={run} />
                   </td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
@@ -4311,7 +4402,9 @@ function RowActions({ run, control, menu = false }) {
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" icon="pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
   const runPath = (tail) => controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/" + tail);
   const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" answers={run.state !== "needs_review"} label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
-  const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "? Its process ends and it can be resumed later."} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
+  const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "?" + (run.kind === "plan" ? " Claude stops drafting." : " Its process ends and it can be resumed later.")} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
+  // A Draft with Claude run has no worktree or branch to pause, resume, accept or discard: it can only be stopped.
+  if (run.kind === "plan") return stop === null ? null : <span className="run-actions">{stop}</span>;
   const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" tone="danger" icon="trash" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
   // A merge-local run that passes its accept is merged into its target; any other is marked review ready.
   const target = typeof run.target_branch === "string" && run.target_branch !== "" ? run.target_branch : "main";
@@ -4994,7 +5087,92 @@ const RUN_TABS = [["timeline", "Timeline"], ["logs", "Logs"], ["events", "Events
 // One run: its header, then three tabs that switch in place: its steps, its logs, and every event.
 // The events are fetched a page at a time; the next page is its own address, so every request stays
 // one plain GET. The logs are fetched the first time their tab opens, and kept while it is hidden.
-function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null, startTab = "timeline" }) {
+// A draft's fields as Draft with Claude shows them, one block per field.
+function PlanFields({ fields, ...marks }) {
+  const list = (value) => (Array.isArray(value) && value.length > 0 ? value.join(", ") : "None");
+  return (
+    <div className="plan-fields" {...marks}>
+      <p><strong>{fields.name}</strong></p>
+      <p className="plan-description">{fields.description}</p>
+      <p className="muted">{"Test file: " + (fields.test_file || "None")}</p>
+      <p className="muted">{"Target files: " + list(fields.target_files)}</p>
+      <p className="muted">{"Depends on: " + list(fields.depends_on)}</p>
+    </div>
+  );
+}
+
+const PLAN_DECISIONS = { replaced: "Replaced: the draft now has Claude's text.", discarded: "Discarded: the draft was left as it was." };
+
+// What a Draft with Claude run came to: still drafting, why it failed, the draft a Todo idea became, or an
+// improvement shown beside the current draft (side by side where there is room, stacked on a phone) with
+// Replace and Discard until one is chosen. Nothing changes the draft before Replace.
+function PlanProposal({ plan, projectId, apiRun, control }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  if (plan === null || typeof plan !== "object") return null;
+  if (plan.state === "running") return <p className="plan-status" data-plan-status role="status">Claude is drafting…</p>;
+  if (plan.state === "failed") return <p className="plan-status error-text" data-plan-status>{typeof plan.reason === "string" && plan.reason !== "" ? plan.reason : "Claude could not draft this."}</p>;
+  if (plan.state !== "completed" || plan.proposal === null || typeof plan.proposal !== "object") return null;
+  if (plan.source === "todo") {
+    const href = projectId === null ? null : featureHref(projectId, plan.feature);
+    const text = "Saved as the draft feature " + plan.feature;
+    return (
+      <p className="plan-status" data-plan-status>
+        {href === null ? text : <a href={href} data-plan-feature onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>{text}</a>}
+      </p>
+    );
+  }
+  const decide = async (leaf) => {
+    setBusy(true);
+    setNote("");
+    let why = "The draft could not be changed.";
+    try {
+      const response = await actionRequest(apiRun + "/" + leaf, control.token, {});
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const reply = await jsonOrNull(response);
+      if (response.ok) {
+        setBusy(false);
+        control.onDone();
+        return;
+      }
+      if (response.status === 403) why = "Not allowed.";
+      else if (reply !== null && typeof reply.error === "string") why = reply.error;
+    } catch (unreachable) {
+      why = "The server could not be reached.";
+    }
+    setBusy(false);
+    setNote(why);
+  };
+  const decided = typeof plan.decision === "string" ? PLAN_DECISIONS[plan.decision] || plan.decision : null;
+  return (
+    <div className="plan-proposal" data-plan-proposal>
+      <div className="plan-diff" data-plan-diff style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(16rem, 1fr))", gap: "1rem" }}>
+        <section>
+          <h3>Current</h3>
+          {plan.current !== null && typeof plan.current === "object" ? <PlanFields fields={plan.current} data-plan-current /> : <p className="muted" data-plan-current>No current draft.</p>}
+        </section>
+        <section>
+          <h3>Proposed</h3>
+          <PlanFields fields={plan.proposal} data-plan-proposed />
+        </section>
+      </div>
+      {decided !== null ? (
+        <p className="plan-status" data-plan-decision>{decided}</p>
+      ) : control !== null && apiRun !== null ? (
+        <div className="feature-editor-actions">
+          <button type="button" className="primary-button" data-plan-replace disabled={busy} onClick={() => decide("plan-replace")}><Icon name="check" size={16} />Replace</button>
+          <button type="button" data-plan-discard disabled={busy} onClick={() => decide("plan-discard")}><Icon name="close" size={16} />Discard</button>
+        </div>
+      ) : null}
+      {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
+    </div>
+  );
+}
+
+function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null, startTab = "timeline", projectId = null }) {
   const { run, events, next_cursor: next } = timeline;
   const delivery = deliveryOf(run);
   const [tab, setTab] = useState(startTab);
@@ -5040,6 +5218,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           <MissingReport run={run} control={control} />
           <RowActions run={run} control={control} />
           <ResumeLinks run={run} listPath={listPath} />
+          {run.kind === "plan" ? <PlanProposal plan={run.plan === undefined ? null : run.plan} projectId={projectId} apiRun={follow === null ? null : follow.base} control={control} /> : null}
           {validTime(run.started_at) === null && delivery === null ? null : (
             <p className="feature-detail-sub run-detail-sub">
               {validTime(run.started_at) === null ? null : <span>Started <Moment at={run.started_at} /></span>}
@@ -5773,7 +5952,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
             <PageHeader title="Run" subtitle={run} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
           </>
-        )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline key={address} timeline={data} listPath={listPath} runPath={runPath} startTab={logs !== null ? "logs" : "timeline"} logs={logsAt} follow={{ token, onSignedOut, cursor, base: apiRun }} control={data.remote_actions === true ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
+        )} token={token} path={timelinePath} loading="Loading the run…" parse={parseTimeline} draw={(data) => <RunTimeline key={address} timeline={data} listPath={listPath} runPath={runPath} startTab={logs !== null ? "logs" : "timeline"} projectId={projectId} logs={logsAt} follow={{ token, onSignedOut, cursor, base: apiRun }} control={data.remote_actions === true ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
       </>
     );
   }

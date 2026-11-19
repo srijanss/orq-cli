@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use orq_core::retention::PrunePlan;
 
+mod plan;
 mod queue;
 pub use queue::{action_label, change_queue, project_queue_json, queue_json, start_queue_rounds, QueueRound, QueueRounds, QUEUE_ROUND_EVERY};
 
@@ -46,6 +47,8 @@ struct LogSummary {
     dirty_files: Option<Vec<String>>,
     /// Whether the queue started the run unattended.
     unattended: bool,
+    /// Whether the run is a planning run (Draft with Claude) rather than a feature run.
+    plan: bool,
     stage: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -83,6 +86,7 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             resumed_from: resumed_from(&events),
             dirty_files: dirty_files(&events, summary.phase),
             unattended: orq_orchestrator::was_unattended(&events),
+            plan: plan::is_plan(&events),
             stage: summary.stage,
             started: events.first().map(|event| event.occurred_at.clone()),
             updated: events.last().map(|event| event.occurred_at.clone()),
@@ -275,6 +279,10 @@ fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     // Said only of a run the queue started unattended; any other run is attended.
     if log.unattended {
         row["unattended"] = true.into();
+    }
+    // Said only of a planning run (Draft with Claude); any other run is a feature run.
+    if log.plan {
+        row["kind"] = "plan".into();
     }
     (sort_key, record.run_id.clone(), row, record)
 }
@@ -481,6 +489,8 @@ pub struct StoreProjects {
     backfilled: std::sync::Once,
     report_builder: Option<ReportBuilder>,
     server: Option<std::sync::Arc<dyn orq_core::remote_inbox::ServerControl>>,
+    /// The program planning runs start as their agent; `claude` when unset.
+    plan_agent: Option<PathBuf>,
 }
 
 /// A report serve builds for a run whose own build of it failed: the run, its head, and the evidence its events hold.
@@ -573,6 +583,7 @@ impl StoreProjects {
             backfilled: std::sync::Once::new(),
             report_builder: None,
             server: None,
+            plan_agent: None,
         }
     }
 
@@ -1212,6 +1223,18 @@ fn start_blocked(git: &orq_git::Project, settings: &orq_core::project_settings::
 impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     fn server(&self) -> Option<&dyn orq_core::remote_inbox::ServerControl> {
         self.server.as_deref()
+    }
+
+    fn start_plan(&self, id: &str, request: &orq_core::remote_inbox::PlanRequest) -> Result<orq_core::remote_inbox::PlanStart, String> {
+        self.start_plan_run(id, request)
+    }
+
+    fn plan(&self, id: &str, run: &str) -> Result<Option<serde_json::Value>, String> {
+        self.plan_of(id, run)
+    }
+
+    fn decide_plan(&self, id: &str, run: &str, replace: bool) -> Result<orq_core::remote_inbox::PlanDecision, String> {
+        self.decide_plan_run(id, run, replace)
     }
 
     fn review_scope(&self, id: &str) -> Result<Option<orq_core::remote_inbox::ReviewScope>, String> {
@@ -1894,8 +1917,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             shown["merge_pending"] = serde_json::json!(true);
         }
         add_missing_report(&mut shown, &self.roots, run);
+        let planning = plan::is_plan(&events);
+        if planning {
+            shown["kind"] = serde_json::json!("plan");
+            shown["plan"] = self.plan_of(id, run)?.unwrap_or(serde_json::Value::Null);
+        }
         // A failed run with commits its last review never saw may be reviewed again (the page's Review again).
-        let reviewable_again = summary.phase == orq_orchestrator::RunPhase::Failed
+        let reviewable_again = !planning
+            && summary.phase == orq_orchestrator::RunPhase::Failed
             && orq_orchestrator::last_review(&record.worktree, &record.base_sha).ok().flatten().is_some_and(|review| !review.unreviewed_commits.is_empty());
         if reviewable_again {
             shown["reviewable_again"] = serde_json::json!(true);
