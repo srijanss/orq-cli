@@ -453,6 +453,30 @@ fn a_merge_that_cannot_be_pulled_warns_on_the_card_and_page_until_a_retry_pulls_
     assert_eq!(audit[0]["identity"], "web");
 }
 
+/// A merge that could not be pulled, mended by hand and then pulled by the queue before its next
+/// start, no longer warns that the target was not updated.
+#[test]
+fn a_queue_pull_that_brings_the_target_level_clears_the_merge_warning() {
+    let s = setup("pull-queue-clears", Delivery::Review, |_| {});
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"]);
+    std::fs::write(s.repo.join("local.txt"), "local\n").unwrap();
+    git(&s.repo, &["add", "local.txt"]);
+    git(&s.repo, &["commit", "-q", "-m", "local only"]);
+    let merged = merge_on_origin(&s, "merged-mr");
+    event(&RunStore::new(&s.roots.state), "run-1-COM-01", "run.completed", json!({"ending": "review_ready"}));
+    mr(&s, "run-1-COM-01", ProviderState::Merged);
+    provider(&s).review_looked_at("run-1-COM-01");
+    assert!(card(&s)["queue"]["target_pull_warning"].is_string(), "{}", card(&s));
+
+    git(&s.repo, &["reset", "-q", "--hard", "HEAD~1"]);
+    round(&s);
+    assert_eq!(started(&s), ["COM-01", "COM-02"]);
+    assert_eq!(base_sha(&s, "run-2-COM-02"), merged);
+    assert!(card(&s)["queue"].get("target_pull_warning").is_none(), "{}", card(&s));
+    assert!(queue(&s).get("target_pull_warning").is_none());
+}
+
 #[test]
 fn a_retry_needs_remote_actions_and_a_known_project() {
     let s = setup("pull-retry-off", Delivery::Review, |_| {});

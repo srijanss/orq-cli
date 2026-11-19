@@ -311,6 +311,8 @@ impl StoreProjects {
                         if !outcome.may_start() {
                             break 'start Some(format!("{}: {}: pull by hand, then resume", git.name, outcome.describe(PULL_REMOTE, &target)));
                         }
+                        // The target is level with origin now, so a merge's warning no longer holds.
+                        PullWarning::of(&self.roots, git).clear();
                     }
                     let profiles = entry.profiles.as_ref().map(|p| LaunchProfiles { implementer: p.implementer.clone(), reviewer: p.reviewer.clone() });
                     match self.launch(id, Launch::Queued(&entry.feature), profiles.as_ref()) {
