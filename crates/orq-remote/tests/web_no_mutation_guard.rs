@@ -1,4 +1,4 @@
-//! The page offers exactly sixteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
+//! The page offers exactly sixteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, clean up a merged run, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and the Settings server card's restart when idle and its cancel, the Todo list's add, edit, delete and move,
 //! and a draft's queue wish, and no other merge, nor any approve,
 //! restart or edit control or request.
@@ -16,7 +16,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
         Some(kind) => kind.split('"').next().unwrap(),
         None => call.split("kind={").nth(1).unwrap().split('}').next().unwrap(),
     }).collect();
-    assert_eq!(kinds, ["start", "promote", "build-report", "pause", "resume", "stop", "discard", "accept", "merge-accepted", "review-again", "kind", "merge-set-aside"]);
+    assert_eq!(kinds, ["start", "promote", "build-report", "pause", "resume", "stop", "discard", "accept", "merge-accepted", "review-again", "kind", "merge-set-aside", "run-cleanup"]);
     let tail = |call: &str| call.split("controlPath(control, ").nth(1).unwrap().to_string();
     assert!(tail(calls[0]).starts_with("\"features/\"") && tail(calls[0]).contains("+ \"/runs\")"), "{}", tail(calls[0]));
     assert!(tail(calls[1]).starts_with("\"features/\"") && tail(calls[1]).contains("+ \"/promote\")"), "{}", tail(calls[1]));
@@ -53,6 +53,11 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     const SET_ASIDE: &str = "\"runs/\" + encodeURIComponent(run.run_id) + \"/merge-set-aside\")";
     assert!(tail(calls[9]).starts_with(SET_ASIDE), "{}", tail(calls[9]));
     assert!(!calls[9].contains("check="), "the set-aside merge asks nothing of the server first");
+    // A merged run's Clean up posts to the run's cleanup route, built once in its card; nothing else.
+    assert!(calls[10].contains("path={path}") && !calls[10].contains("check="), "{}", calls[10]);
+    let cleanup_body = code.split("function CleanupCard(").nth(1).expect("CleanupCard").split("\nfunction ").next().unwrap();
+    let cleanup: Vec<&str> = cleanup_body.split("controlPath(control, ").skip(1).map(|tail| tail.split(';').next().unwrap()).collect();
+    assert_eq!(cleanup, ["\"runs/\" + encodeURIComponent(run.run_id) + \"/cleanup\")"]);
     // The model switch and the launch picker read the launch profiles through one reader; nothing else.
     let paths = |name: &str| -> Vec<String> {
         let body = code.split(&format!("function {name}(")).nth(1).unwrap_or_else(|| panic!("{name}")).split("\nfunction ").next().unwrap();
@@ -122,7 +127,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
     let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
     assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 23, "the definition, the seven run actions with their own path, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 24, "the definition, the seven run actions with their own path, a merged run's clean up, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

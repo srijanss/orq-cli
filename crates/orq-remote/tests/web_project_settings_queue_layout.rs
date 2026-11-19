@@ -78,20 +78,20 @@ fn assert_viewing(chromium: &Path, width: u32, hours: Value, stop: bool, shown: 
     let result = load(chromium, width, &replies(hours, stop), vec![json!({"wait": "[data-project-queue-stop]"})], &[CARD, ROWS, LABELS, VALUES]);
     let card = rects(&result, CARD)[0];
     let (rows, labels, values) = (rects(&result, ROWS), rects(&result, LABELS), rects(&result, VALUES));
-    assert_eq!((rows.len(), labels.len(), values.len()), (4, 4, 4), "{width} px: four rows, each with a label and a value: {result}");
-    for at in 0..4 {
+    assert_eq!((rows.len(), labels.len(), values.len()), (5, 5, 5), "{width} px: five rows, each with a label and a value: {result}");
+    for at in 0..5 {
         assert!(!overlap(labels[at], values[at]), "{width} px: row {at}'s label {:?} and value {:?} overlap", labels[at], values[at]);
         for each in [rows[at], labels[at], values[at]] {
             assert!(inside(each, card, 0), "{width} px: {each:?} is outside the card {card:?}");
         }
         assert!(inside(labels[at], card, 12) && inside(values[at], card, 12), "{width} px: row {at}'s text is inside the card's padding: {:?} {:?} in {card:?}", labels[at], values[at]);
     }
-    for at in 1..4 {
+    for at in 1..5 {
         assert!(rows[at].top >= rows[at - 1].bottom, "{width} px: row {at} {:?} starts below the one before {:?}", rows[at], rows[at - 1]);
         assert!(labels[at].top >= labels[at - 1].bottom && labels[at].top >= values[at - 1].bottom, "{width} px: row {at}'s label {:?} is below the row before {:?} {:?}", labels[at], labels[at - 1], values[at - 1]);
     }
     let text = result["text"].as_str().unwrap();
-    for expected in shown.iter().chain(["Hours the queue starts runs", "When a run fails", "Wait for each run's review (and MR) before the next", "Pull the target after an MR merges and before each run"].iter()) {
+    for expected in shown.iter().chain(["Hours the queue starts runs", "When a run fails", "Wait for each run's review (and MR) before the next", "Pull the target after an MR merges and before each run", "After an MR merges"].iter()) {
         assert!(text.contains(expected), "{width} px: {expected} is shown: {text}");
     }
 }
