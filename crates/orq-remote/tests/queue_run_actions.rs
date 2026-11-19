@@ -495,19 +495,59 @@ type EndInRound = Arc<Mutex<Option<String>>>;
 /// A provider change that has queue rounds end the accept [`EndInRound`] names with "3 tests failed"
 /// partway through, and wait until it has let go of its run.
 fn ending_accepts_mid_round(end_in_round: &EndInRound) -> impl FnOnce(StoreProjects, AcceptOutcomes) -> StoreProjects {
+    ending_accepts_mid_round_with(end_in_round, Err("3 tests failed".to_string()))
+}
+
+/// [`ending_accepts_mid_round`], the accept's tests ending with `outcome`.
+fn ending_accepts_mid_round_with(end_in_round: &EndInRound, outcome: Result<(), String>) -> impl FnOnce(StoreProjects, AcceptOutcomes) -> StoreProjects {
     let end = end_in_round.clone();
     move |projects, outcomes| {
         projects.with_before_queue_slot_count(Arc::new(move |projects: &StoreProjects| {
             let mut end = end.lock().unwrap();
             let Some(run) = end.clone().filter(|run| projects.is_being_accepted(run)) else { return };
             *end = None;
-            outcomes.lock().unwrap().push(Err("3 tests failed".to_string()));
+            outcomes.lock().unwrap().push(outcome.clone());
             let until = Instant::now() + Duration::from_secs(5);
             while projects.is_being_accepted(&run) {
                 assert!(Instant::now() < until, "the accept of {run} did not end");
                 std::thread::sleep(Duration::from_millis(5));
             }
         }))
+    }
+}
+
+#[test]
+fn under_a_machine_run_limit_an_accept_read_as_going_keeps_the_machine_slot_for_the_whole_round_however_it_ends() {
+    for passes in [false, true] {
+        let end_in_round = EndInRound::default();
+        let outcome = if passes { Ok(()) } else { Err("3 tests failed".to_string()) };
+        let label = if passes { "qra-accept-machine-pass" } else { "qra-accept-machine-fail" };
+        // No project limit: only the machine's one slot holds COM-01 back.
+        let s = setup_with(label, |settings| {
+                settings.max_active_runs = None;
+                settings.queue_stop_on_failure = true;
+            },
+            ending_accepts_mid_round_with(&end_in_round, outcome));
+        std::fs::write(s.roots.config_file(), "remote_actions = true\n[runs]\nmax_active = 1\n").unwrap();
+        worktree_run(&s, "run-nr", "COM-00", "needs_review");
+        add(&s, json!({"action": "accept", "run": "run-nr"}));
+        add(&s, json!({"features": ["COM-01"]}));
+        round(&s);
+        assert_eq!(started(&s), Vec::<String>::new(), "passes {passes}: the accept's tests take the machine's one slot");
+
+        *end_in_round.lock().unwrap() = Some("run-nr".to_string());
+        round(&s);
+        assert_eq!(*end_in_round.lock().unwrap(), None, "passes {passes}: the accept ended partway through the round");
+        assert_eq!(started(&s), Vec::<String>::new(), "passes {passes}: the accept read as going holds the machine slot for that whole round");
+
+        round(&s);
+        if passes {
+            assert_eq!(states(&s), triples(&[("start", "COM-01", "running")]), "the accepted run is done and COM-01 starts next round");
+        } else {
+            assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "next")]));
+            assert!(queue(&s)["paused"].as_str().is_some_and(|why| why.contains("3 tests failed")), "{}", queue(&s)["paused"]);
+        }
+        assert_eq!(started(&s), if passes { vec!["COM-01".to_string()] } else { Vec::new() }, "passes {passes}");
     }
 }
 
