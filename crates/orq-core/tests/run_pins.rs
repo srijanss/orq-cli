@@ -26,6 +26,7 @@ fn back_to_version_six(db: &std::path::Path, pins: &[&str]) {
          ALTER TABLE project_settings DROP COLUMN max_active_runs; ALTER TABLE project_settings DROP COLUMN min_free_disk_gb; \
          ALTER TABLE project_settings DROP COLUMN queue_hours; ALTER TABLE project_settings DROP COLUMN queue_stop_on_failure; ALTER TABLE project_settings DROP COLUMN queue_wait_for_review; \
          ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; \
+         ALTER TABLE todos RENAME TO todos_old; ALTER TABLE queue_wishes RENAME TO queue_wishes_old; \
          PRAGMA user_version = 6;").unwrap();
     for pin in pins {
         conn.execute("INSERT INTO run_pins (run_id, pinned_at) VALUES (?1, 1)", [pin]).unwrap();
@@ -88,7 +89,7 @@ fn a_version_two_database_is_upgraded_keeping_its_reviews_and_no_pins_table() {
     store.save_review(&roots.data, "run-1", "p-0a1b2c3d", "F", &"a".repeat(40), br#"{"status":"current","risks":[]}"#).unwrap();
     drop(store);
     let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old; ALTER TABLE prune_journal RENAME TO prune_journal_old; ALTER TABLE review_lifecycles DROP COLUMN observed; ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old;").unwrap();
+    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old; ALTER TABLE prune_journal RENAME TO prune_journal_old; ALTER TABLE review_lifecycles DROP COLUMN observed; ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; ALTER TABLE todos RENAME TO todos_old; ALTER TABLE queue_wishes RENAME TO queue_wishes_old;").unwrap();
     conn.pragma_update(None, "user_version", 2).unwrap();
     drop(conn);
     let store = Store::open(&db).unwrap();
