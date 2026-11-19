@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 9] = [
+const SELECTORS: [&str; 11] = [
     ".stats > [data-dashboard-add]",
     ".feature-modal [data-add-target]",
     ".todo-item",
@@ -20,6 +20,8 @@ const SELECTORS: [&str; 9] = [
     "[data-todo-show-all]",
     "[data-queue-wish-cancel]",
     "[data-field-name]",
+    ".feature-modal [data-add-target]:disabled",
+    "[data-modal-close]:disabled",
 ];
 
 fn projects() -> Value {
@@ -134,6 +136,25 @@ fn adding_to_a_project_saves_a_draft_through_the_feature_editor_with_hyphens_for
     assert_eq!(sent[0].1["fields"]["name"], "my-new-idea", "{out}");
     assert!(has(last(&out), "Added to alpha as a draft"), "{out}");
     assert_eq!(count(last(&out), SELECTORS[5]), 0, "{out}");
+}
+
+#[test]
+fn while_a_project_save_is_in_flight_the_project_cannot_be_changed_nor_the_popup_closed() {
+    let steps = vec![
+        json!({"click": "[data-dashboard-add]"}),
+        json!({"set": "[data-add-target]", "value": "alpha"}),
+        json!({"set": "[data-field-name]", "value": "idea"}),
+        json!({"click": "[data-feature-save]"}),
+        json!({"click": "[data-confirm]"}),
+        json!({"keydown": "Escape"}),
+    ];
+    let held = json!({"status": 200, "json": {"feature": "idea"}, "hold": "fetch"});
+    let Some(out) = run("/dashboard", vec![projects(), ledger(true), held], vec![todos(vec![], true)], steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[3], SELECTORS[9]), 0, "the choice is open before the save: {out}");
+    assert_eq!(count(&frames[6], SELECTORS[9]), 1, "{out}");
+    assert_eq!(count(&frames[6], SELECTORS[10]), 1, "{out}");
+    assert_eq!(count(last(&out), SELECTORS[5]), 1, "Escape does not close it mid-save: {out}");
 }
 
 #[test]

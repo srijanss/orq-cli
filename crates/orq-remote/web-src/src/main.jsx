@@ -1064,7 +1064,7 @@ function AddFeatureDialog({ projects, item = null, todoActions, token, onSignedO
   } else if (project !== null) {
     const control = { token, projectId: project.id, onSignedOut, onDone: () => {} };
     const queueBox = moving ? (
-      <label className="depends-option" data-queue-option><input type="checkbox" data-queue-when-approved checked={queue} onChange={(event) => setQueue(event.target.checked)} />Queue once approved</label>
+      <label className="depends-option" data-queue-option><input type="checkbox" data-queue-when-approved checked={queue} disabled={busy} onChange={(event) => setQueue(event.target.checked)} />Queue once approved</label>
     ) : null;
     form = (
       <FeatureEditor
@@ -1077,6 +1077,7 @@ function AddFeatureDialog({ projects, item = null, todoActions, token, onSignedO
         doneText={(moving ? "Moved to " : "Added to ") + project.name + " as a draft"}
         onFinished={onFinished}
         onClose={onClose}
+        onSending={setBusy}
         blocked={ledger.actions ? null : ACTIONS_OFF}
         extra={queueBox}
       />
@@ -3302,7 +3303,7 @@ function DependsPicker({ others, chosen, onToggle }) {
 // popup to its host: Cancel calls onClose, a save calls onFinished(doneText), and `target` (a path and the body
 // for the fields) sends it somewhere other than the ledger, such as a Todo item's move. `blocked` holds Save back
 // with its reason; `extra` sits above the buttons.
-function FeatureEditor({ name = null, features, control, embedded = false, initial = null, target = null, doneText = null, onFinished = null, onClose = null, blocked = null, extra = null }) {
+function FeatureEditor({ name = null, features, control, embedded = false, initial = null, target = null, doneText = null, onFinished = null, onClose = null, onSending = null, blocked = null, extra = null }) {
   const adding = name === null;
   const [phase, setPhase] = useState(embedded ? "editing" : "idle");
   const [draft, setDraft] = useState(embedded ? featureDraft(initial === null ? {} : initial) : null);
@@ -3328,6 +3329,10 @@ function FeatureEditor({ name = null, features, control, embedded = false, initi
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [popup, phase]);
+  // An embedded editor tells its popup while a save is out, so the popup holds still until it settles.
+  useEffect(() => {
+    if (onSending !== null) onSending(phase === "sending");
+  }, [phase]);
   const open = async () => {
     setNote("");
     setConflict(false);
