@@ -446,6 +446,11 @@ const LEAVE_FULL_SUITE_TO_GATE: &str = "Testing: run only the tests for what you
 /// The refusal rule; `{report}` is where the session names a file it changed outside the features.
 const REFUSAL_RULE: &str = "Files: when write_code refuses a file because it is outside the feature's files, drill_down into it if the change is behaviour that needs its own test; otherwise make the change with Edit and name the file and why in {report}. Never edit around a refusal silently.";
 
+/// The paragraph right after the refusal rule: a refused edit or command is never got around by
+/// changing the TDD ledger's state, and the run's feature is never completed with work left to do.
+/// `{report}` is the same place the refusal rule names.
+const NO_LEDGER_WORKAROUND: &str = "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature. Never mark the run's feature complete while any of its behaviour is left to do. Commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left.";
+
 /// Where a session with a finish marker names the files it changed outside its features.
 const REPORT_IN_MARKER: &str = "implement.done";
 
@@ -462,7 +467,11 @@ fn files_wording(declared: &[String], undeclared: &[String], report: &str) -> Re
             return Err(AdapterError::InvalidValue { field: "file", value: file.clone() });
         }
     }
-    let mut wording = format!("\n\n{}", REFUSAL_RULE.replace("{report}", report));
+    let mut wording = format!(
+        "\n\n{}\n\n{}",
+        REFUSAL_RULE.replace("{report}", report),
+        NO_LEDGER_WORKAROUND.replace("{report}", report)
+    );
     // With none declared every committed file is outside them, so the check before review still applies.
     if declared.is_empty() {
         wording.push_str(" The features declare no files, so every committed file is outside them.");

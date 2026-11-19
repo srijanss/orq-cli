@@ -117,6 +117,43 @@ fn each_listed_name_reads_back_as_the_exact_file_name() {
     }
 }
 
+/// The paragraph that comes right after the refusal rule; `{report}` is where the session says PROBLEM.
+fn no_ledger_workaround(report: &str) -> String {
+    format!(
+        "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature. Never mark the run's feature complete while any of its behaviour is left to do. Commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left."
+    )
+}
+
+/// A refused edit or command is never got around by completing, abandoning, resetting or starting a
+/// feature: whatever files are declared, and whether the session is attended or not.
+#[test]
+fn a_refusal_is_never_got_around_by_changing_the_tdd_ledger() {
+    let declared = vec!["src/feature.rs".to_string()];
+    let undeclared = vec!["src/other.rs".to_string()];
+    let after_rule = format!("{REFUSAL_RULE}\n\n{}", no_ledger_workaround("implement.done"));
+    let cases: [(&[String], &[String]); 3] = [(&declared, &[]), (&[], &[]), (&declared, &undeclared)];
+    for harness in ["claude", "pi"] {
+        for (declared, undeclared) in cases {
+            for (attended, unattended) in [(false, true), (true, false), (false, false)] {
+                let request = ImplementRequest { attended, unattended, ..request(harness, declared, undeclared) };
+                let prompt = prompt(&request);
+                assert!(prompt.contains(&after_rule), "{harness} {declared:?} {undeclared:?} attended={attended}: {prompt}");
+            }
+        }
+    }
+}
+
+/// Without a finish marker the session says PROBLEM in its final message, as the refusal rule names.
+#[test]
+fn without_a_finish_marker_a_refusal_is_reported_in_the_final_message() {
+    for harness in ["claude", "pi"] {
+        let unmarked = ImplementRequest { exit_marker: None, ..request(harness, &[], &[]) };
+        let prompt = prompt(&unmarked);
+        let rule = REFUSAL_RULE.replace("implement.done", "your final message");
+        assert!(prompt.contains(&format!("{rule}\n\n{}", no_ledger_workaround("your final message"))), "{harness}: {prompt}");
+    }
+}
+
 /// Without a finish marker (auto_exit off) there is no implement.done to write, so the session names
 /// the files in its final message instead.
 #[test]
