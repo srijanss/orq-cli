@@ -445,12 +445,13 @@ impl StoreProjects {
     pub fn review_looked_at(&self, run_id: &str) {
         let runs = RunStore::new(&self.roots.state);
         let Ok(record) = runs.load(run_id) else { return };
-        if runs.events(run_id).map_or(true, |events| events.iter().any(|event| event.kind == TARGET_PULLED_EVENT)) {
-            return;
-        }
         let Ok(store) = Store::open_read_only(&self.roots.database()) else { return };
         let latest = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().filter(|l| l.provider != orq_core::review_lifecycle::LOCAL_PROVIDER).last());
         let Some(review) = latest.filter(|review| review.state == orq_core::review_lifecycle::ProviderState::Merged) else { return };
+        // Only a merged review reads the run's events, to pull its merge once.
+        if runs.events(run_id).map_or(true, |events| events.iter().any(|event| event.kind == TARGET_PULLED_EVENT)) {
+            return;
+        }
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| {
             orq_git::resolve_project(&project.path).is_ok_and(|git| orq_git::project_id(&git) == record.project_id)
         }) else {
