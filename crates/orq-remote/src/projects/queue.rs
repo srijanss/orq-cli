@@ -3,8 +3,9 @@
 //! first entries whose dependencies are completed, through the same launch as the web's Start, while
 //! the queue is not paused, the time is inside its hours, no restart is pending and both the project
 //! and the machine have a free run slot. Under a machine run limit each start goes to the project
-//! whose waiting entry was added first. A full disk or a start that fails pauses the queue with the reason, and nothing is
-//! retried until someone resumes it.
+//! whose waiting entry was added first. A run limit is waited out, even when the start itself fails on
+//! it because another run took the slot meanwhile. A full disk or a start that fails otherwise pauses
+//! the queue with the reason, and nothing is retried until someone resumes it.
 
 use std::path::Path;
 
@@ -255,7 +256,8 @@ impl StoreProjects {
                 return Ok(started);
             }
             let machine = super::MachineRuns { limits: machine.limits, active: machine_active, malformed: machine.malformed.clone() };
-            // A run limit is waited out; anything else that refuses the start pauses the queue.
+            // A run limit is waited out, even when the launch itself finds it reached by a run started
+            // meanwhile and fails with it; anything else that refuses or fails the start pauses the queue.
             let refused = match start_blocked(git, &settings, &active, &machine)? {
                 Some(why) => Some(why),
                 None if entry.action.is_some() => {
@@ -272,6 +274,7 @@ impl StoreProjects {
                         Ok(RunControlOutcome::Refused(_)) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
                         Ok(RunControlOutcome::Refused(why)) => Some(format!("{what} could not start: {why}")),
                         Ok(RunControlOutcome::Unknown) => Some(format!("{what}: {} is not one of the project's runs", action.run)),
+                        Err(_) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
                         Err(why) => {
                             eprintln!("{}", launch_error_line(&what, &why));
                             Some(format!("{what} could not start; see the server's log"))
@@ -291,6 +294,7 @@ impl StoreProjects {
                         Ok(RunStart::Refused(_)) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
                         Ok(RunStart::Refused(why)) => Some(format!("{} could not start: {why}", entry.feature)),
                         Ok(RunStart::Unknown) => Some(format!("{} is not in the project's features", entry.feature)),
+                        Err(_) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
                         Err(why) => {
                             eprintln!("{}", launch_error_line(&entry.feature, &why.to_string()));
                             Some(format!("{} could not start; see the server's log", entry.feature))
