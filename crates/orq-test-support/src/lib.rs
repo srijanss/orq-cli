@@ -132,6 +132,32 @@ pub fn orq_command(home: &TempHome) -> Command {
     command
 }
 
+/// Set in the child `in_own_process_with_env` starts, to the name of the test it runs.
+const OWN_PROCESS: &str = "ORQ_TEST_OWN_PROCESS";
+
+/// For a test that needs variables in its own process environment, what the programs it starts
+/// inherit, without setting them for the tests running beside it: runs the test `name` of this test
+/// binary again, alone, in a child process with `env` added, and asserts it passed. Returns `false`
+/// in that child, so the test goes on to do its work there, and `true` in the caller once the child
+/// passed.
+pub fn in_own_process_with_env(name: &str, env: &[(&str, &std::ffi::OsStr)]) -> bool {
+    if std::env::var_os(OWN_PROCESS).is_some_and(|running| running == name) {
+        return false;
+    }
+    let binary = std::env::current_exe().expect("the test binary's path");
+    let output = Command::new(binary)
+        .args([name, "--exact", "--test-threads=1", "--nocapture"])
+        .env(OWN_PROCESS, name)
+        .envs(env.iter().copied())
+        .output()
+        .expect("run the test in its own process");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{name} failed in its own process:\n{stdout}\n{stderr}");
+    assert!(stdout.contains("1 passed"), "{name} did not run in its own process:\n{stdout}\n{stderr}");
+    true
+}
+
 /// A `Command` for `program` (usually the orq binary) whose orq data, state, config and cache
 /// folders are this test process's own, under `process_temp_dir()`, with `ORQ_TEST_SANDBOX=1`.
 /// HOME is left alone so git keeps the person's identity; a test that sets an `XDG_*` folder

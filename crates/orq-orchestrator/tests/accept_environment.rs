@@ -17,12 +17,17 @@ fn sh(script: &str) -> Vec<String> {
     vec!["sh".to_string(), "-c".to_string(), script.to_string()]
 }
 
-/// What the server started in a Herdr pane carries, and a variable of its own.
-fn set_the_servers_environment() {
-    std::env::set_var("HERDR_SOCKET_PATH", "/run/user/1000/herdr.sock");
-    std::env::set_var("HERDR_BIN_PATH", "/usr/local/bin/herdr");
-    std::env::set_var("HERDR_ENV", "1");
-    std::env::set_var("ORQ_SECRET_TEST", "must-not-leak");
+/// Runs the test `name` again in its own process carrying what a server started in a Herdr pane
+/// carries, and a variable of its own; `true` in the caller, once that passed.
+fn in_the_servers_environment(name: &str) -> bool {
+    let env = [
+        ("HERDR_SOCKET_PATH", "/run/user/1000/herdr.sock"),
+        ("HERDR_BIN_PATH", "/usr/local/bin/herdr"),
+        ("HERDR_ENV", "1"),
+        ("ORQ_SECRET_TEST", "must-not-leak"),
+    ];
+    let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, std::ffi::OsStr::new(*value))).collect();
+    orq_test_support::in_own_process_with_env(name, &env)
 }
 
 /// The variables a step saw, from the `env` it wrote to `seen.txt` in `worktree`.
@@ -37,9 +42,11 @@ fn seen(worktree: &Path) -> BTreeMap<String, String> {
 
 #[test]
 fn an_accepts_test_step_sees_none_of_the_servers_herdr_or_own_variables_but_still_path_and_home() {
+    if in_the_servers_environment("an_accepts_test_step_sees_none_of_the_servers_herdr_or_own_variables_but_still_path_and_home") {
+        return;
+    }
     let root = dir("clean");
     let worktree = root.join("worktree");
-    set_the_servers_environment();
 
     orq_orchestrator::run_steps(&worktree, &[sh("env > seen.txt")]).unwrap();
 
@@ -53,9 +60,11 @@ fn an_accepts_test_step_sees_none_of_the_servers_herdr_or_own_variables_but_stil
 
 #[test]
 fn an_accepts_test_step_sees_exactly_what_the_verify_gates_step_sees_for_the_same_gate_env() {
+    if in_the_servers_environment("an_accepts_test_step_sees_exactly_what_the_verify_gates_step_sees_for_the_same_gate_env") {
+        return;
+    }
     let root = dir("same-as-gate");
     let worktree = root.join("worktree");
-    set_the_servers_environment();
     let env = vec![("DB_NAME".to_string(), "shop_fix_com_01".to_string()), ("GATE_BASE".to_string(), "0".repeat(40))];
     let store = orq_orchestrator::RunStore::new(&root.join("state"));
     store

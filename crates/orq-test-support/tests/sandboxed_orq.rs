@@ -143,8 +143,9 @@ fn a_sandboxed_command_started_from_a_herdr_pane_gets_no_herdr_variable() {
         "HERDR_TAB_ID",
         "HERDR_WORKSPACE_ID",
     ];
-    for name in names {
-        std::env::set_var(name, "from-the-real-herdr");
+    let herdr: Vec<(&str, &std::ffi::OsStr)> = names.iter().map(|name| (*name, std::ffi::OsStr::new("from-the-real-herdr"))).collect();
+    if orq_test_support::in_own_process_with_env("a_sandboxed_command_started_from_a_herdr_pane_gets_no_herdr_variable", &herdr) {
+        return;
     }
     let mut command = orq_test_support::sandboxed_command("sh");
     command.args(["-c", "env"]);

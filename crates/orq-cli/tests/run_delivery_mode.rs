@@ -694,24 +694,30 @@ fn merging_with_set_aside_detached_in_herdr_names_the_run_that_carries_on_and_it
 /// the test starts must not open a pane in that Herdr: it runs detached in the test's sandbox and merges.
 #[test]
 fn merging_detached_in_herdr_from_inside_a_herdr_pane_never_reaches_that_herdr_and_still_merges() {
-    let (w, blocked) = blocked_on_a_dirty_checkout("merge-set-aside-detached-in-pane");
-    let called = w.home.join("real-herdr-called");
-    let herdr = w.home.join("real-herdr");
+    // The person's Herdr, set up by the caller: it notes being asked anything, next to itself.
+    let dir = orq_test_support::process_temp_dir().join("orq-real-herdr");
+    let herdr = dir.join("herdr");
+    let called = dir.join("herdr-called");
+    let socket = dir.join("herdr.sock");
+    let pane: [(&str, &std::ffi::OsStr); 6] = [
+        ("HERDR_ENV", "1".as_ref()),
+        ("HERDR_SOCKET_PATH", socket.as_os_str()),
+        ("HERDR_BIN_PATH", herdr.as_os_str()),
+        ("HERDR_PANE_ID", "w1:p1".as_ref()),
+        ("HERDR_TAB_ID", "w1:t1".as_ref()),
+        ("HERDR_WORKSPACE_ID", "w1".as_ref()),
+    ];
+    let name = "merging_detached_in_herdr_from_inside_a_herdr_pane_never_reaches_that_herdr_and_still_merges";
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
     executable(&herdr, &format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 1\n", called.display()));
-    for (name, value) in [
-        ("HERDR_ENV", "1"),
-        ("HERDR_SOCKET_PATH", w.home.join("real-herdr.sock").to_str().unwrap()),
-        ("HERDR_BIN_PATH", herdr.to_str().unwrap()),
-        ("HERDR_PANE_ID", "w1:p1"),
-        ("HERDR_TAB_ID", "w1:t1"),
-        ("HERDR_WORKSPACE_ID", "w1"),
-    ] {
-        std::env::set_var(name, value);
+    if orq_test_support::in_own_process_with_env(name, &pane) {
+        assert!(!called.exists(), "the person's Herdr was asked: {}", std::fs::read_to_string(&called).unwrap_or_default());
+        return;
     }
-
+    // In the test's own process, which carries the pane's variables.
+    let (w, blocked) = blocked_on_a_dirty_checkout("merge-set-aside-detached-in-pane");
     merges_detached_in_herdr(&w, &blocked);
-
-    assert!(!called.exists(), "the person's Herdr was asked: {}", std::fs::read_to_string(&called).unwrap_or_default());
 }
 
 fn merges_detached_in_herdr(w: &World, blocked: &str) {
