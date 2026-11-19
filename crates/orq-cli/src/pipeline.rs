@@ -503,6 +503,9 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         Some(r) => orq_orchestrator::resume_takes_a_slot(&store, &r.from.run_id).map_err(other)?,
         None => true,
     };
+    // A person's fresh start of a review project pulls its target first; one that cannot be pulled
+    // still starts, from the local target, and the run records why.
+    let not_pulled = pull_before_start(options, resumed.is_none());
     // A run starts from the local target branch in the project root, with whatever it has that its
     // remote does not: the project as it is here, not as last pushed.
     let base_sha = local_target_base(repo, options.target).map_err(|e| other(e.to_string()))?;
@@ -576,6 +579,11 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     };
     if let Err(err) = recorded {
         eprintln!("orq: cannot record the launch of {run_id}: {err}");
+    }
+    if let Some(outcome) = &not_pulled {
+        if let Some(note) = record_pull_warning(&store, &record, outcome) {
+            eprintln!("orq: {note}");
+        }
     }
     let finish = |store: &RunStore| store.finish_group_run(&record.project_id, &members, &record.run_id);
     // A resume that skips the rebase still sits on the commit the paused run rebased onto, and a gate
@@ -779,6 +787,48 @@ fn escalation_reason(review: &orq_orchestrator::EscalatedReview) -> String {
     let rounds = if review.rounds == 1 { "round" } else { "rounds" };
     let findings = if open == 1 { "finding" } else { "findings" };
     format!("the review escalated after {} {rounds} with {open} {findings} open", review.rounds)
+}
+
+/// The event a run records when its start could not pull its target and went ahead from the local one.
+pub const TARGET_PULL_WARNING_EVENT: &str = "target.pull_warning";
+
+/// Pulls the target of a review project before a person's fresh start, when its
+/// `pull_target_before_runs` setting says to; what came of a pull that may not start a queued run,
+/// which a person's start goes ahead without. The queue pulls before its own starts.
+fn pull_before_start(options: &Options<'_>, fresh: bool) -> Option<orq_git::PullOutcome> {
+    let review = options.delivery == orq_core::project_settings::Delivery::Review;
+    if !fresh || options.publish || options.unattended || !review {
+        return None;
+    }
+    if !crate::project_settings(options.project).ok()?.pull_target_before_runs {
+        return None;
+    }
+    let outcome = orq_git::pull_target(&options.project.root, options.remote, options.target);
+    (!outcome.may_start()).then_some(outcome)
+}
+
+/// Records on the run why its target was not pulled before it started, so its page can say so; a
+/// note saying what was not pulled, and the event too when it cannot be written.
+fn record_pull_warning(store: &RunStore, record: &RunRecord, outcome: &orq_git::PullOutcome) -> Option<String> {
+    let target = &record.target_branch;
+    let message = orq_core::redact::redact(&outcome.describe(&record.remote, target));
+    let event = orq_orchestrator::Event {
+        schema_version: 1,
+        event_id: format!("{}-target-pull", record.run_id),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: TARGET_PULL_WARNING_EVENT.to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: crate::review::utc_now(),
+        payload: serde_json::json!({ "outcome": outcome.kind(), "target": target, "message": message }),
+    };
+    let note = format!("{target} was not pulled before the run: {message}; the run starts from the local {target}");
+    Some(match store.append_event(&event) {
+        Ok(()) => note,
+        Err(err) => format!("{note}; the run's events do not record it: {err:?}"),
+    })
 }
 
 /// Records on the run that it runs unattended, so its record and the runs lists say so; a note

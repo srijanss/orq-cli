@@ -567,6 +567,81 @@ fn a_run_starts_from_the_local_target_branch_with_commits_its_remote_lacks() {
     assert_eq!(git(&w.remote, &["rev-parse", "fix--COM-01^"]).trim(), local, "the branch is built on the local commit");
 }
 
+/// Puts a commit on the remote's `main` that the project's local `main` does not have; its sha.
+fn merged_upstream(w: &World) -> String {
+    let root = w.repo.root();
+    git(root, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "merged upstream"]);
+    let upstream = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+    git(root, &["push", "--quiet", w.remote.to_str().unwrap(), "HEAD:main"]);
+    git(root, &["reset", "--quiet", "--hard", "HEAD~1"]);
+    upstream
+}
+
+/// The events run `run_id` recorded of `kind`.
+fn events_of_kind(w: &World, run_id: &str, kind: &str) -> Vec<serde_json::Value> {
+    let text = std::fs::read_to_string(w.env.state.join("orq/runs").join(run_id).join("events.jsonl")).unwrap_or_default();
+    text.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).filter(|event| event["type"] == kind).collect()
+}
+
+/// A review project's manual start pulls its target first: what was merged upstream is in the run.
+#[test]
+fn manual_start_pull_fast_forwards_the_target_and_the_run_starts_from_it() {
+    let w = world("pullff");
+    let upstream = merged_upstream(&w);
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let run_id = printed_run_id(&output);
+    assert_eq!(git(w.repo.root(), &["rev-parse", "main"]).trim(), upstream, "the local target was fast-forwarded");
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(w.env.state.join("orq/runs").join(&run_id).join("run.json")).unwrap()).unwrap();
+    assert_eq!(record["base_sha"], upstream.as_str(), "{}", stderr(&output));
+    assert!(events_of_kind(&w, &run_id, "target.pull_warning").is_empty());
+}
+
+/// A target that cannot be fast-forwarded does not stop a manual start: the run starts from the
+/// local target and records why it was not pulled, for its page to show.
+#[test]
+fn manual_start_pull_that_cannot_fast_forward_starts_from_the_local_target_with_a_warning() {
+    let w = world("pulldiverged");
+    merged_upstream(&w);
+    git(w.repo.root(), &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "local only"]);
+    let local = git(w.repo.root(), &["rev-parse", "main"]).trim().to_string();
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    let run_id = printed_run_id(&output);
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(w.env.state.join("orq/runs").join(&run_id).join("run.json")).unwrap()).unwrap();
+    assert_eq!(record["base_sha"], local.as_str(), "{}", stderr(&output));
+    let warnings = events_of_kind(&w, &run_id, "target.pull_warning");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["payload"]["outcome"], "diverged", "{warnings:?}");
+    let message = warnings[0]["payload"]["message"].as_str().unwrap();
+    assert!(message.contains("1 commit"), "{message}");
+}
+
+/// A merge-local project's work lands on the local target, so its start pulls nothing.
+#[test]
+fn manual_start_pull_is_left_out_of_a_merge_local_run() {
+    let w = world("pullmergelocal");
+    let upstream = merged_upstream(&w);
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check", "--delivery", "merge-local"]);
+
+    let run_id = printed_run_id(&output);
+    let pulled = Command::new("git")
+        .arg("-C")
+        .arg(w.repo.root())
+        .args(["merge-base", "--is-ancestor", &upstream, "main"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status()
+        .unwrap();
+    assert!(!pulled.success(), "the merged-upstream commit was pulled into main: {}", stderr(&output));
+    assert!(events_of_kind(&w, &run_id, "target.pull_warning").is_empty());
+}
+
 /// A target with no local branch in the project root has nothing to start from: the run is refused,
 /// naming it, before anything is recorded.
 #[test]
