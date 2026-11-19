@@ -711,8 +711,8 @@ fn install_command(args: &[OsString]) -> ExitCode {
     }
     let (service_path, dropped) = service_path(&std::env::var("PATH").unwrap_or_default());
     println!("orq serve: the service's PATH: {service_path}");
-    for entry in &dropped {
-        println!("orq serve: left out of the service's PATH (gone after a reboot): {entry}");
+    for (why, entry) in &dropped {
+        println!("orq serve: left out of the service's PATH ({why}): {entry}");
     }
     for warning in harness_warnings(&repo, &service_path) {
         println!("orq serve: {warning}");
@@ -1020,8 +1020,10 @@ fn unit_quote(word: &str) -> String {
 
 /// The PATH the unit gives the service, made from the install shell's `shell_path`, and the entries left out.
 /// Folders under `$XDG_RUNTIME_DIR` are gone after a reboot: the first fnm shell folder there becomes fnm's
-/// default alias when that exists, and the rest are dropped. Each folder is kept once, at its first place.
-fn service_path(shell_path: &str) -> (String, Vec<String>) {
+/// default alias when that exists, and the rest are dropped. A relative folder is dropped too: in the service
+/// it would name a folder under whatever directory a run is in, not the shell's. Each folder is kept once, at
+/// its first place. Each entry left out comes with why.
+fn service_path(shell_path: &str) -> (String, Vec<(&'static str, String)>) {
     let runtime = std::env::var("XDG_RUNTIME_DIR").ok().filter(|dir| !dir.is_empty()).map(PathBuf::from);
     let fnm_default = std::env::var_os("FNM_DIR")
         .filter(|dir| !dir.is_empty())
@@ -1034,6 +1036,10 @@ fn service_path(shell_path: &str) -> (String, Vec<String>) {
     let mut dropped = Vec::new();
     for entry in shell_path.split(':').filter(|entry| !entry.is_empty()) {
         let mut entry = entry.to_string();
+        if !Path::new(&entry).is_absolute() {
+            dropped.push(("relative", entry));
+            continue;
+        }
         if let Some(runtime) = runtime.as_deref().filter(|runtime| Path::new(&entry).starts_with(runtime)) {
             let fnm_shell = Path::new(&entry).strip_prefix(runtime).is_ok_and(|rest| rest.starts_with("fnm_multishells"));
             match fnm_default.as_ref().filter(|_| fnm_shell && !swapped) {
@@ -1042,7 +1048,7 @@ fn service_path(shell_path: &str) -> (String, Vec<String>) {
                     entry = default.display().to_string();
                 }
                 None => {
-                    dropped.push(entry);
+                    dropped.push(("gone after a reboot", entry));
                     continue;
                 }
             }

@@ -197,6 +197,16 @@ fn a_folder_named_twice_is_kept_once_and_percent_signs_in_the_path_are_escaped()
 }
 
 #[test]
+fn relative_path_entries_are_left_out_since_they_would_mean_the_services_folder_not_the_shells() {
+    let world = World::new("relative");
+    let out = ok(&world.install_with_path(&[".", "node_modules/.bin", "/home/me/.local/bin"], &[]));
+    let expected = world.shell_path(&["/home/me/.local/bin"]);
+    assert_eq!(world.unit_path_line().as_deref(), Some(expected.as_str()), "{}", world.unit());
+    assert!(out.contains("left out of the service's PATH (relative): node_modules/.bin"), "{out}");
+    assert!(out.contains("left out of the service's PATH (relative): .\n"), "{out}");
+}
+
+#[test]
 fn without_an_fnm_default_alias_the_shell_folder_is_dropped_too() {
     let world = World::new("nofnm");
     let run = world.root.join("run");
