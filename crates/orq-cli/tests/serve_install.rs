@@ -207,6 +207,19 @@ fn relative_path_entries_are_left_out_since_they_would_mean_the_services_folder_
 }
 
 #[test]
+fn a_relative_fnm_dir_never_puts_a_relative_folder_on_the_services_path() {
+    let world = World::new("relfnm");
+    fs::create_dir_all(world.root.join("fnm/aliases/default/bin")).unwrap();
+    let run = world.root.join("run");
+    let shell = run.join("fnm_multishells/123_456/bin").display().to_string();
+    let repo = world.repo.display().to_string();
+    let mut command = world.command();
+    command.current_dir(&world.root).env("PATH", world.shell_path(&[&shell])).env("XDG_RUNTIME_DIR", &run).env("FNM_DIR", "fnm");
+    ok(&command.args(["serve", "install", "--repo", &repo, "--listen", "127.0.0.1:7999"]).output().unwrap());
+    assert_eq!(world.unit_path_line().as_deref(), Some(world.shell_path(&[]).as_str()), "{}", world.unit());
+}
+
+#[test]
 fn without_an_fnm_default_alias_the_shell_folder_is_dropped_too() {
     let world = World::new("nofnm");
     let run = world.root.join("run");

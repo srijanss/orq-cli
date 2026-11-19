@@ -1073,7 +1073,8 @@ fn service_path(shell_path: &str) -> (String, Vec<(&'static str, String)>) {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share/fnm")))
         .map(|dir| dir.join("aliases/default/bin"))
-        .filter(|bin| bin.is_dir());
+        // A relative one would be read from whatever directory a run is in, so it is no default at all.
+        .filter(|bin| bin.is_absolute() && bin.is_dir());
     let mut swapped = false;
     let mut kept: Vec<String> = Vec::new();
     let mut dropped = Vec::new();
