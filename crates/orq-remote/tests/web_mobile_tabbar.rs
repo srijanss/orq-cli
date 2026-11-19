@@ -1,6 +1,7 @@
 //! On a phone the page is framed like a mobile app and there is no sidebar: a fixed top bar with the
 //! theme switch, the centred brand and the page's Refresh (signing out is on Settings), and a fixed bottom tab bar holding the destinations,
-//! coloured like the reference sidebar with the current tab as the same light pill.
+//! coloured like the reference sidebar with the current tab as the same light pill. Past five destinations the bar keeps
+//! five tabs and a grab handle on its top edge: dragging it (or tapping it) pulls the bar up to show every section as tiles.
 
 mod web_deps;
 
@@ -30,101 +31,209 @@ fn shell(scenario: Value) -> Option<Value> {
     })
 }
 
-const BAR: &str = "nav.tabbar > *";
+const TABS: &str = "nav.tabbar > a";
+const HANDLE: &str = "[data-tab-handle]";
+const DRAWER: &str = "[data-tab-drawer]";
+const TILES: &str = "[data-tab-drawer] a";
+const BACKDROP: &str = "[data-tab-backdrop]";
+/// The `dots` icon's path, which the old More tab showed.
+const DOTS: &str = "M5 12h.010M12 12h.010M19 12h.010";
 
 fn probed<'a>(frame: &'a Value, selector: &str) -> &'a Vec<Value> {
     frame["probes"][selector].as_array().unwrap_or_else(|| panic!("no probe for {selector}: {frame}"))
 }
 
-#[test]
-fn with_a_project_the_bar_has_four_links_and_a_more_button() {
-    let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [BAR]})) else { return };
-    let items = probed(&out["frames"][0], BAR);
-    let shape: Vec<(&str, &str)> = items.iter().map(|item| (item["tag"].as_str().unwrap(), item["text"].as_str().unwrap())).collect();
-    assert_eq!(shape, [("a", "Dashboard"), ("a", "Features"), ("a", "Orchestrations"), ("a", "Queue"), ("button", "More")], "{out}");
-    let more = &items[4];
-    assert_eq!((more["popup"].as_str(), more["expanded"].as_str()), (Some("dialog"), Some("false")), "{out}");
-    assert_eq!(more["iconSize"], "28", "{out}");
-    assert_eq!(items[1]["current"], "page", "Features is the current tab: {out}");
-    assert!(items.iter().all(|item| item["icon"].is_string()), "every tab has its icon: {out}");
+fn texts(frame: &Value, selector: &str) -> Vec<String> {
+    probed(frame, selector).iter().map(|item| item["text"].as_str().unwrap().to_string()).collect()
 }
 
-const SHEET: &str = "[data-more-sheet]";
-const SHEET_LINKS: &str = "[data-more-sheet] a";
+/// `count` sections s0, s1, ... for a tab bar on its own.
+fn sections(count: usize) -> Value {
+    (0..count).map(|at| json!({"label": format!("s{at}"), "icon": "home", "href": format!("/s{at}")})).collect()
+}
+
+fn drawer_open(frame: &Value) -> bool {
+    let drawer = probed(frame, DRAWER);
+    assert_eq!(drawer.len(), 1, "one drawer: {frame}");
+    drawer[0]["hidden"].is_null()
+}
+
+fn handle(frame: &Value) -> &Value {
+    let handle = probed(frame, HANDLE);
+    assert_eq!(handle.len(), 1, "one handle: {frame}");
+    &handle[0]
+}
+
+/// A seven-section bar on /s2 with every probe, playing `steps`.
+fn seven(steps: Value, reduced: bool) -> Option<Value> {
+    shell(json!({"tabbar": sections(7), "path": "/s2", "reducedMotion": reduced, "probe": [TABS, HANDLE, DRAWER, TILES, BACKDROP], "steps": steps}))
+}
+
+/// A finger pressing the handle at 600 and moving to `to`, then resting before it lifts so it is no flick.
+fn slow_drag(from: i64, to: i64) -> Value {
+    json!([{"pointer": "down", "at": HANDLE, "y": from}, {"pointer": "move", "at": HANDLE, "y": to}, {"wait": 150}, {"pointer": "up", "at": HANDLE, "y": to}])
+}
 
 #[test]
-fn more_opens_a_sheet_with_the_other_destinations_and_focuses_its_first() {
-    let scenario = json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [BAR, SHEET, SHEET_LINKS], "steps": [{"click": "[data-tab-more]"}]});
+fn past_five_sections_the_bar_shows_five_tabs_and_a_handle_and_no_more_tab() {
+    let scenario = json!({"tabbar": sections(7), "path": "/s2", "probe": [TABS, HANDLE, DRAWER], "selectors": ["[data-tab-more]", ".more-sheet", "[data-more-sheet]"]});
     let Some(out) = shell(scenario) else { return };
-    assert!(probed(&out["frames"][0], SHEET).is_empty(), "the sheet starts closed: {out}");
+    let frame = &out["frames"][0];
+    assert_eq!(texts(frame, TABS), ["s0", "s1", "s2", "s3", "s4"], "{out}");
+    assert_eq!(probed(frame, TABS)[2]["current"], "page", "{out}");
+    let grip = handle(frame);
+    assert_eq!((grip["tag"].as_str(), grip["label"].as_str(), grip["expanded"].as_str()), (Some("button"), Some("Show all sections"), Some("false")), "{out}");
+    for gone in ["[data-tab-more]", ".more-sheet", "[data-more-sheet]"] {
+        assert_eq!(frame["matches"][gone], 0, "{gone}: {out}");
+    }
+    assert!(probed(frame, TABS).iter().chain([grip]).all(|item| item["icon"] != DOTS), "no dots icon: {out}");
+    assert!(!drawer_open(frame), "the drawer starts closed: {out}");
+    assert_eq!(probed(frame, DRAWER)[0]["height"], "0px", "{out}");
+}
+
+#[test]
+fn with_a_project_the_bar_has_five_tabs_and_settings_is_behind_the_handle() {
+    let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [TABS, HANDLE, TILES]})) else { return };
+    let frame = &out["frames"][0];
+    assert_eq!(texts(frame, TABS), ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews"], "{out}");
+    assert_eq!(probed(frame, TABS)[1]["current"], "page", "Features is the current tab: {out}");
+    assert!(probed(frame, TABS).iter().all(|item| item["icon"].is_string() && item["iconSize"] == "28"), "every tab has its icon: {out}");
+    assert_eq!(texts(frame, TILES), ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
+    assert_eq!(handle(frame)["label"], "Show all sections", "{out}");
+}
+
+#[test]
+fn a_tap_on_the_handle_opens_every_section_as_tiles_and_a_second_tap_closes_it() {
+    let Some(out) = seven(json!([{"click": HANDLE}, {"click": HANDLE}]), false) else { return };
     let open = &out["frames"][1];
-    let sheet = probed(open, SHEET);
-    assert_eq!((sheet.len(), sheet[0]["label"].as_str()), (1, Some("More")), "{out}");
-    let links: Vec<(&str, &str)> = probed(open, SHEET_LINKS).iter().map(|link| (link["text"].as_str().unwrap(), link["href"].as_str().unwrap())).collect();
-    assert_eq!(links, [("Reviews", "/projects/demo/reviews"), ("Settings", "/settings")], "{out}");
-    assert!(probed(open, SHEET_LINKS).iter().all(|link| link["icon"].is_string()), "each has its icon: {out}");
-    assert_eq!(probed(open, BAR)[4]["expanded"], "true", "{out}");
-    assert_eq!(open["active"], json!({"text": "Reviews", "more": false, "inSheet": true}), "{out}");
-}
-
-#[test]
-fn escape_closes_the_sheet_and_returns_focus_to_more() {
-    let scenario = json!({"path": "/dashboard", "phone": true, "probe": [BAR, SHEET], "steps": [{"click": "[data-tab-more]"}, {"press": "Escape"}]});
-    let Some(out) = shell(scenario) else { return };
+    assert!(drawer_open(open), "{out}");
+    assert_eq!(texts(open, TILES), ["s0", "s1", "s2", "s3", "s4", "s5", "s6"], "{out}");
+    let marked: Vec<Value> = probed(open, TILES).iter().map(|tile| tile["current"].clone()).collect();
+    assert_eq!(marked[2], "page", "the current section is marked: {out}");
+    assert_eq!(marked.iter().filter(|mark| !mark.is_null()).count(), 1, "{out}");
+    assert!(probed(open, TILES).iter().all(|tile| tile["iconSize"] == "28"), "the tiles are the bar's: {out}");
+    assert_eq!(handle(open)["expanded"], "true", "{out}");
+    assert_eq!(probed(open, DRAWER)[0]["height"], "300px", "{out}");
+    assert_eq!(probed(open, BACKDROP).len(), 1, "a backdrop dims the page: {out}");
+    assert_eq!(open["active"], json!({"text": "s2", "handle": false, "inDrawer": true}), "focus moves into the grid: {out}");
     let closed = &out["frames"][2];
-    assert!(probed(closed, SHEET).is_empty(), "{out}");
-    assert_eq!(probed(closed, BAR)[4]["expanded"], "false", "{out}");
-    assert_eq!(closed["active"], json!({"text": "More", "more": true, "inSheet": false}), "{out}");
+    assert!(!drawer_open(closed), "{out}");
+    assert_eq!(handle(closed)["expanded"], "false", "{out}");
+    assert!(probed(closed, BACKDROP).is_empty(), "{out}");
+    assert_eq!(closed["active"]["handle"], true, "{out}");
 }
 
 #[test]
-fn a_press_outside_the_sheet_closes_it_and_more_toggles_it() {
-    let steps = [json!({"click": "[data-tab-more]"}), json!({"click": "#content"}), json!({"click": "[data-tab-more]"}), json!({"click": "[data-tab-more]"})];
-    let Some(out) = shell(json!({"path": "/dashboard", "phone": true, "probe": [SHEET], "steps": steps})) else { return };
-    let open: Vec<bool> = out["frames"].as_array().unwrap().iter().map(|frame| !probed(frame, SHEET).is_empty()).collect();
-    assert_eq!(open, [false, true, false, true, false], "{out}");
+fn the_bar_follows_a_drag_and_opens_when_let_go_past_a_third() {
+    let Some(out) = seven(slow_drag(600, 480), false) else { return };
+    let moving = &probed(&out["frames"][2], DRAWER)[0];
+    assert_eq!((moving["height"].as_str(), moving["transition"].as_str()), (Some("120px"), Some("none")), "it follows the finger: {out}");
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(drawer_open(last), "40% of the open height opens it: {out}");
+    let settled = &probed(last, DRAWER)[0];
+    assert_eq!((settled["height"].as_str(), settled["transition"].as_str()), (Some("300px"), Some("height 200ms ease-out")), "{out}");
 }
 
 #[test]
-fn moving_through_history_closes_the_sheet() {
-    let steps = [json!({"click": "[data-tab-more]"}), json!({"go": "/projects/demo/reviews"})];
-    let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [SHEET], "steps": steps})) else { return };
-    assert_eq!(probed(&out["frames"][1], SHEET).len(), 1, "{out}");
-    let moved = &out["frames"][2];
-    assert_eq!(moved["path"], "/projects/demo/reviews", "{out}");
-    assert!(probed(moved, SHEET).is_empty(), "Back or Forward leaves no sheet over the new page: {out}");
+fn a_short_slow_drag_falls_back_closed() {
+    let Some(out) = seven(slow_drag(600, 540), false) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(!drawer_open(last), "20% falls back: {out}");
+    assert_eq!(probed(last, DRAWER)[0]["height"], "0px", "{out}");
 }
 
 #[test]
-fn coming_back_to_the_page_the_sheet_opened_on_leaves_it_closed() {
-    let steps = [json!({"click": "[data-tab-more]"}), json!({"go": "/projects/demo/reviews"}), json!({"go": "/projects/demo/features"})];
-    let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [SHEET], "steps": steps})) else { return };
-    let open: Vec<bool> = out["frames"].as_array().unwrap().iter().map(|frame| !probed(frame, SHEET).is_empty()).collect();
-    assert_eq!(open, [false, true, false, false], "{out}");
+fn a_fast_short_flick_opens_it() {
+    let steps = json!([{"pointer": "down", "at": HANDLE, "y": 600}, {"pointer": "move", "at": HANDLE, "y": 560}, {"pointer": "up", "at": HANDLE, "y": 560}]);
+    let Some(out) = seven(steps, false) else { return };
+    assert!(drawer_open(out["frames"].as_array().unwrap().last().unwrap()), "{out}");
 }
 
 #[test]
-fn picking_a_sheet_destination_goes_there_closes_the_sheet_and_marks_more_current() {
-    let scenario = json!({"path": "/dashboard", "phone": true, "probe": [BAR, SHEET, SHEET_LINKS], "steps": [{"click": "[data-tab-more]"}, {"click": "[data-more-sheet] a[href=\"/settings\"]"}, {"click": "[data-tab-more]"}]});
-    let Some(out) = shell(scenario) else { return };
-    assert_eq!(probed(&out["frames"][0], BAR)[4]["current"], Value::Null, "More is not current on the Dashboard: {out}");
-    let gone = &out["frames"][2];
-    assert_eq!(gone["path"], "/settings", "{out}");
-    assert!(probed(gone, SHEET).is_empty(), "{out}");
-    let bar = probed(gone, BAR);
-    assert_eq!((bar[0]["current"].clone(), bar[4]["current"].clone()), (Value::Null, json!("page")), "More stands for the page it holds: {out}");
-    let reopened: Vec<Value> = probed(&out["frames"][3], SHEET_LINKS).iter().map(|link| link["current"].clone()).collect();
-    assert_eq!(reopened, [Value::Null, json!("page")], "Settings is marked inside the sheet: {out}");
+fn dragging_the_open_bar_down_closes_it() {
+    let mut steps = vec![json!({"click": HANDLE})];
+    steps.extend(slow_drag(300, 420).as_array().unwrap().iter().cloned());
+    let Some(out) = seven(Value::Array(steps), false) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(!drawer_open(last), "{out}");
+    assert_eq!(last["active"]["handle"], true, "{out}");
 }
 
 #[test]
-fn five_destinations_fit_the_bar_and_need_no_more_tab() {
-    let entries: Vec<Value> = ["a", "b", "c", "d", "e"].iter().map(|name| json!({"label": name, "icon": "home", "href": format!("/{name}")})).collect();
-    let Some(out) = shell(json!({"tabbar": entries, "path": "/e", "probe": [BAR]})) else { return };
-    let items = probed(&out["frames"][0], BAR);
-    let shape: Vec<(&str, &str)> = items.iter().map(|item| (item["tag"].as_str().unwrap(), item["text"].as_str().unwrap())).collect();
-    assert_eq!(shape, [("a", "a"), ("a", "b"), ("a", "c"), ("a", "d"), ("a", "e")], "{out}");
-    assert_eq!(items[4]["current"], "page", "{out}");
+fn reduced_motion_neither_follows_the_finger_nor_animates() {
+    let Some(out) = seven(slow_drag(600, 480), true) else { return };
+    let moving = &probed(&out["frames"][2], DRAWER)[0];
+    assert_eq!(moving["height"], "0px", "{out}");
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(drawer_open(last), "{out}");
+    assert_eq!(probed(last, DRAWER)[0]["transition"], "none", "{out}");
+}
+
+fn phone_shell(steps: Value) -> Option<Value> {
+    shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [HANDLE, DRAWER, TILES, BACKDROP], "steps": steps}))
+}
+
+fn closed_with_focus_on_the_handle(out: &Value) {
+    let frames = out["frames"].as_array().unwrap();
+    assert!(drawer_open(&frames[1]), "{out}");
+    let last = frames.last().unwrap();
+    assert!(!drawer_open(last), "{out}");
+    assert!(probed(last, BACKDROP).is_empty(), "{out}");
+    assert_eq!(last["active"]["handle"], true, "{out}");
+}
+
+#[test]
+fn escape_closes_it_and_returns_focus_to_the_handle() {
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"press": "Escape"}])) else { return };
+    closed_with_focus_on_the_handle(&out);
+}
+
+#[test]
+fn a_tap_on_the_backdrop_closes_it() {
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"click": BACKDROP}])) else { return };
+    closed_with_focus_on_the_handle(&out);
+}
+
+#[test]
+fn back_closes_it() {
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"go": "/projects/demo/reviews"}])) else { return };
+    closed_with_focus_on_the_handle(&out);
+    assert_eq!(out["frames"][2]["path"], "/projects/demo/reviews", "{out}");
+}
+
+#[test]
+fn choosing_a_section_goes_there_and_closes_it() {
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"click": "[data-tab-drawer] a[href=\"/settings\"]"}])) else { return };
+    closed_with_focus_on_the_handle(&out);
+    assert_eq!(out["frames"][2]["path"], "/settings", "{out}");
+}
+
+#[test]
+fn choosing_the_current_section_closes_it_too() {
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"click": "[data-tab-drawer] a[href=\"/projects/demo/features\"]"}])) else { return };
+    closed_with_focus_on_the_handle(&out);
+}
+
+#[test]
+fn tab_stays_within_the_bar_while_open() {
+    // Open on Features: focus is on its tile, the second, after the handle; past the handle Shift+Tab wraps to the bar's last tab.
+    let back = json!({"press": "Tab", "shift": true});
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, back, back, back, {"press": "Tab"}])) else { return };
+    let focus: Vec<Value> = out["frames"].as_array().unwrap()[1..].iter().map(|frame| frame["active"].clone()).collect();
+    assert_eq!(focus[0], json!({"text": "Features", "handle": false, "inDrawer": true}), "{out}");
+    assert_eq!(focus[1], json!({"text": "Dashboard", "handle": false, "inDrawer": true}), "{out}");
+    assert_eq!(focus[2], json!({"text": "", "handle": true, "inDrawer": false}), "{out}");
+    assert_eq!(focus[3], json!({"text": "Reviews", "handle": false, "inDrawer": false}), "wraps to the bar's last tab: {out}");
+    assert_eq!(focus[4]["handle"], true, "and Tab wraps back: {out}");
+}
+
+#[test]
+fn five_destinations_fit_the_bar_and_need_no_handle() {
+    let Some(out) = shell(json!({"tabbar": sections(5), "path": "/s4", "probe": [TABS, HANDLE, DRAWER]})) else { return };
+    let frame = &out["frames"][0];
+    assert_eq!(texts(frame, TABS), ["s0", "s1", "s2", "s3", "s4"], "{out}");
+    assert_eq!(probed(frame, TABS)[4]["current"], "page", "{out}");
+    assert!(probed(frame, HANDLE).is_empty() && probed(frame, DRAWER).is_empty(), "the bar as it was: {out}");
 }
 
 #[test]
@@ -186,23 +295,30 @@ fn the_bars_use_the_sidebar_colours_and_the_current_tab_is_the_light_pill() {
 }
 
 #[test]
-fn more_looks_like_a_tab_and_the_sheet_rises_above_the_bar_in_its_colours() {
+fn the_handle_is_a_short_grip_in_a_44px_strip_and_the_grid_has_four_or_five_columns() {
     let css = css();
     let phone = phone(&css);
-    let more = rule(phone, ".tabbar [data-tab-more] {");
-    for part in ["flex: 1", "flex-direction: column", "min-height: 48px", "border-radius: 0.75rem", "border: 0", "background: none", "color: var(--sidebar-muted)"] {
-        assert!(more.contains(part), "{part}: {more}");
+    let strip = rule(phone, ".tabbar-handle {");
+    for part in ["position: absolute", "height: 2.75rem", "touch-action: none", "border: 0", "background: none"] {
+        assert!(strip.contains(part), "{part}: {strip}");
     }
-    let current = rule(phone, ".tabbar [data-tab-more][aria-current=\"page\"] {");
-    assert!(current.contains("background: var(--sidebar-active-bg)") && current.contains("color: var(--sidebar-active-text)"), "{current}");
-    let sheet = rule(phone, ".more-sheet {");
-    for part in ["position: fixed", "left: 0", "right: 0", "bottom: calc(", "env(safe-area-inset-bottom)", "background: var(--sidebar)", "color: var(--sidebar-text)", "flex-direction: column"] {
-        assert!(sheet.contains(part), "{part}: {sheet}");
+    let grip = rule(phone, ".tabbar-handle::before {");
+    for part in ["width: 36px", "height: 4px", "border-radius: 2px", "background: var(--sidebar-muted)"] {
+        assert!(grip.contains(part), "{part}: {grip}");
     }
-    let item = rule(phone, ".more-sheet a {");
-    assert!(item.contains("min-height: 48px") && item.contains("color: var(--sidebar-text)"), "{item}");
-    let marked = rule(phone, ".more-sheet a[aria-current=\"page\"] {");
-    assert!(marked.contains("background: var(--sidebar-active-bg)") && marked.contains("color: var(--sidebar-active-text)"), "{marked}");
+    assert!(!rule(phone, ".tabbar a {").contains("touch-action"), "the tabs still take taps normally");
+    assert!(rule(phone, ".tabbar-grid {").contains("grid-template-columns: repeat(4, 1fr)"), "four a row on a phone");
+    let wide = &css[css.find("@media (min-width: 600px) and (max-width: 700px) {").expect("a 600px and up block")..];
+    assert!(rule(wide, ".tabbar-grid {").contains("grid-template-columns: repeat(5, 1fr)"), "five a row at 600px and up");
+    let all = rule(phone, ".tabbar-all {");
+    assert!(all.contains("overflow: hidden") && all.contains("flex: 0 0 100%"), "the drawer grows inside the bar: {all}");
+    let backdrop = rule(phone, ".tabbar-backdrop {");
+    assert!(backdrop.contains("position: fixed") && backdrop.contains("inset: 0"), "{backdrop}");
+    for dead in [".more-sheet", "data-tab-more"] {
+        assert!(!css.contains(dead), "{dead} is no longer used");
+    }
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/shell.jsx")).unwrap();
+    assert!(!source.contains("name=\"dots\""), "no dots icon on the bar");
 }
 
 #[test]

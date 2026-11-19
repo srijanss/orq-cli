@@ -1,6 +1,7 @@
 // Mounts the app shell in jsdom and plays steps against it, printing a snapshot after each.
 // Usage: node web_shell_run.mjs '<{projectId, hash, steps}>'
 // steps: {click: selector} | {press: "Escape"|"Tab", shift?: bool} | {go: "/path"}
+//      | {pointer: "down"|"move"|"up", at: selector, y: number} | {wait: ms}
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,14 +20,21 @@ for (const name of ["window", "document", "navigator", "HTMLElement", "Node", "E
   Object.defineProperty(globalThis, name, { value: name === "window" ? window : window[name], configurable: true });
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = false;
-// A phone-width query that a step can flip, since jsdom has no layout.
+// A phone-width query that a step can flip, since jsdom has no layout; `reducedMotion` answers the
+// prefers-reduced-motion query.
 let phone = scenario.phone === true;
 const phoneListeners = new Set();
 window.matchMedia = (query) => ({
   media: query,
-  get matches() { return phone; },
+  get matches() { return query.includes("prefers-reduced-motion") ? scenario.reducedMotion === true : phone; },
   addEventListener: (_, listener) => phoneListeners.add(listener),
   removeEventListener: (_, listener) => phoneListeners.delete(listener),
+});
+// jsdom has no layout: the tab bar's drawer of all sections measures `drawerHeight` (300) when open.
+const drawerHeight = scenario.drawerHeight ?? 300;
+Object.defineProperty(window.HTMLElement.prototype, "scrollHeight", {
+  configurable: true,
+  get() { return this.hasAttribute("data-tab-drawer") ? drawerHeight : 0; },
 });
 
 const dir = mkdtempSync(join(tmpdir(), "orq-shell-"));
@@ -69,8 +77,11 @@ try {
         popup: el.getAttribute("aria-haspopup"),
         icon: el.querySelector("svg path")?.getAttribute("d") ?? null,
         iconSize: el.querySelector("svg")?.getAttribute("width") ?? null,
+        hidden: el.getAttribute("aria-hidden"),
+        height: el.style.height || null,
+        transition: el.style.transition || null,
       }))])),
-      active: active && active !== doc.body ? { text: active.textContent.trim(), more: active.hasAttribute("data-tab-more"), inSheet: !!active.closest("[data-more-sheet]") } : null,
+      active: active && active !== doc.body ? { text: active.textContent.trim(), handle: active.hasAttribute("data-tab-handle"), inDrawer: !!active.closest("[data-tab-drawer]") } : null,
       path: window.location.pathname + window.location.search,
     };
   };
@@ -80,6 +91,13 @@ try {
   for (const step of scenario.steps || []) {
     if (step.click) {
       window.document.querySelector(step.click).dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    } else if (step.pointer) {
+      // A finger going down, moving or lifting at height `y` over the element `at`.
+      const Pointer = window.PointerEvent || window.MouseEvent;
+      const event = new Pointer("pointer" + step.pointer, { bubbles: true, cancelable: true, clientX: 100, clientY: step.y, pointerId: 1 });
+      window.document.querySelector(step.at).dispatchEvent(event);
+    } else if (step.wait !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, step.wait));
     } else if (step.press) {
       const target = window.document.activeElement || window.document.body;
       const event = new window.KeyboardEvent("keydown", { key: step.press, shiftKey: !!step.shift, bubbles: true, cancelable: true });

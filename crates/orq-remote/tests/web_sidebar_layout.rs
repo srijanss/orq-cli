@@ -106,12 +106,12 @@ fn the_phone_tab_bar_with_queue_fits_360_pixels_without_scrolling_sideways() {
     let Some(chromium) = web_chromium::binary() else { return };
     let project = json!({"id": "alpha", "name": "alpha", "available": true, "features": 1, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
     let replies = [web_chromium::get("/api/projects", json!({"projects": [project]}))];
-    let out = web_chromium::measure(&chromium, 360, "/dashboard", &replies, json!([{"wait": "nav.tabbar a"}, {"boxes": "nav.tabbar > *"}]));
+    let out = web_chromium::measure(&chromium, 360, "/dashboard", &replies, json!([{"wait": "nav.tabbar a"}, {"boxes": "nav.tabbar > a"}]));
     let result = out.result;
     assert!(result.get("error").is_none(), "{result}");
     assert!(result["scrollWidth"].as_u64() <= result["clientWidth"].as_u64(), "the page scrolls sideways: {result}");
-    // Four tabs and More.
-    let tabs = result["boxes"]["nav.tabbar > *"].as_array().unwrap();
+    // Five tabs; the rest are behind the handle on the bar's top edge.
+    let tabs = result["boxes"]["nav.tabbar > a"].as_array().unwrap();
     assert_eq!(tabs.len(), 5, "{result}");
     for tab in tabs {
         assert!(tab["left"].as_i64().unwrap() >= 0 && tab["right"].as_i64().unwrap() <= 360, "{tab} is inside the screen");

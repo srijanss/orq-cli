@@ -1,7 +1,7 @@
 // The page frame. On a desktop: a sidebar with the Dashboard, the chosen project's sections and
 // Settings, which collapses to an icon rail. On a phone there is no sidebar: a top bar (theme,
 // brand, the page's Refresh) and a fixed bottom tab bar hold the same destinations; past five, the bar
-// keeps four and a More tab opens a sheet with the rest. The place lives in the
+// keeps five and a grab handle on its top edge pulls the bar up to show them all. The place lives in the
 // address path, so Back and Forward move it.
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./icons.jsx";
@@ -143,70 +143,156 @@ function PhoneShell({ projectId = null, children }) {
   );
 }
 
-// The bar holds four tabs; the rest sit behind a More tab.
-const BAR_TABS = 4;
+// The bar holds five tabs; past five, a grab handle on its top edge pulls the bar up to show every section.
+const BAR_TABS = 5;
+// A finger has to move this far before a press on the handle is a drag rather than a tap.
+const DRAG_SLOP = 6;
+// Letting go faster than this (px per ms, over the last 100ms) flicks the bar open or closed.
+const FLICK_SPEED = 0.5;
+const FLICK_WINDOW = 100;
+// A click within this long of a drag's end is the drag's own, not a tap.
+const DRAG_CLICK_MS = 300;
+const SETTLE = "height 200ms ease-out";
+
+function prefersReducedMotion() {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+const now = () => performance.now();
 
 export function TabBar({ entries, path }) {
-  // The sheet is open on the page it was opened on, so any move, Back and Forward included,
-  // leaves no sheet over the new page; the move also forgets it, so coming back doesn't reopen it.
+  // The drawer is open on the page it was opened on, so any move, Back and Forward included,
+  // closes it; the move also forgets it, so coming back doesn't reopen it.
   const [openOn, setOpenOn] = useState(null);
   if (openOn !== null && openOn !== path) setOpenOn(null);
   const open = openOn === path;
-  const setOpen = (value) => setOpenOn(value ? path : null);
-  // Five fit the bar as they are; a sixth turns the fifth place into More.
-  const overflows = entries.length > BAR_TABS + 1;
-  const shown = overflows ? entries.slice(0, BAR_TABS) : entries;
-  const rest = overflows ? entries.slice(BAR_TABS) : [];
-  const sheet = useRef(null);
-  const more = useRef(null);
+  // The drawer's open height, measured when it opens, and how much of it shows while a finger drags.
+  const [full, setFull] = useState(0);
+  const [pull, setPull] = useState(null);
+  const overflows = entries.length > BAR_TABS;
+  const shown = entries.slice(0, BAR_TABS);
+  const reduced = prefersReducedMotion();
+  const bar = useRef(null);
+  const handle = useRef(null);
+  const drawer = useRef(null);
+  const drag = useRef(null);
+  const dragEndedAt = useRef(-Infinity);
+  const wasOpen = useRef(false);
+
+  const measure = () => drawer.current?.scrollHeight ?? 0;
+  const setOpen = (value) => {
+    if (value) setFull(measure());
+    setOpenOn(value ? path : null);
+  };
+
   useEffect(() => {
-    if (!open) return undefined;
-    sheet.current?.querySelector("a")?.focus();
+    if (!open) {
+      // Focus goes back to the handle however the drawer closed.
+      if (wasOpen.current) handle.current?.focus();
+      wasOpen.current = false;
+      return undefined;
+    }
+    wasOpen.current = true;
+    const tiles = [...(drawer.current?.querySelectorAll("a") ?? [])];
+    (tiles.find((tile) => tile.getAttribute("aria-current") === "page") ?? tiles[0])?.focus();
     const onKeyDown = (event) => {
-      if (event.key !== "Escape") return;
-      setOpen(false);
-      more.current?.focus();
-    };
-    // A press anywhere but the sheet or More (which toggles it itself) closes it.
-    const onPress = (event) => {
-      if (!sheet.current?.contains(event.target) && !more.current?.contains(event.target)) setOpen(false);
+      if (event.key === "Escape") {
+        setOpenOn(null);
+        return;
+      }
+      if (event.key !== "Tab" || !bar.current) return;
+      // Tab and Shift+Tab go round the handle, the tiles and the tabs while the drawer is open.
+      const stops = [...bar.current.querySelectorAll("a[href], button")].filter((stop) => stop.tabIndex >= 0);
+      if (stops.length === 0) return;
+      event.preventDefault();
+      const at = stops.indexOf(document.activeElement);
+      const next = event.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at === -1 || at === stops.length - 1 ? 0 : at + 1);
+      stops[next].focus();
     };
     document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("click", onPress);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("click", onPress);
-    };
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [open]);
+
+  // How much of the drawer shows with the finger at `y`.
+  const showing = (current, y) => Math.min(current.height, Math.max(0, current.from + current.startY - y));
+
+  const onPointerDown = (event) => {
+    if (!overflows) return;
+    // The handle, or the bar's own empty strip; a press on a tab or tile stays a tap.
+    if (!handle.current?.contains(event.target) && event.target !== bar.current) return;
+    const height = open ? full : measure();
+    drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false, samples: [{ y: event.clientY, t: now() }] };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const onPointerMove = (event) => {
+    const current = drag.current;
+    if (!current) return;
+    if (!current.moved && Math.abs(event.clientY - current.startY) < DRAG_SLOP) return;
+    current.moved = true;
+    const t = now();
+    current.samples = current.samples.filter((sample) => sample.t >= t - FLICK_WINDOW).concat({ y: event.clientY, t });
+    if (!reduced) setPull(showing(current, event.clientY));
+  };
+
+  const onPointerUp = (event) => {
+    const current = drag.current;
+    drag.current = null;
+    if (!current || !current.moved) return;
+    dragEndedAt.current = now();
+    setPull(null);
+    // Upward speed over the last moments of the drag; 0 when the finger rested before lifting.
+    const t = now();
+    const recent = current.samples.find((sample) => sample.t >= t - FLICK_WINDOW);
+    const speed = recent ? (recent.y - event.clientY) / Math.max(1, t - recent.t) : 0;
+    const visible = showing(current, event.clientY);
+    const opens = current.from === 0
+      ? visible > current.height / 3 || speed > FLICK_SPEED
+      : !(current.height - visible > current.height / 3 || -speed > FLICK_SPEED);
+    if (opens) setFull(current.height);
+    setOpenOn(opens ? path : null);
+  };
+
+  const onPointerCancel = () => {
+    drag.current = null;
+    setPull(null);
+  };
+
+  const height = pull !== null ? pull : open ? full : 0;
+  const transition = pull !== null || reduced ? "none" : SETTLE;
+
   return (
     <>
-      <nav className="tabbar" aria-label="Sections">
+      {open ? <div className="tabbar-backdrop" data-tab-backdrop aria-hidden="true" onClick={() => setOpenOn(null)} /> : null}
+      <nav className="tabbar" aria-label="Sections" ref={bar} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel}>
+        {overflows ? (
+          <>
+            <button type="button" ref={handle} className="tabbar-handle" data-tab-handle aria-label="Show all sections" aria-expanded={open ? "true" : "false"} aria-controls="tabbar-all" onClick={() => {
+                if (now() - dragEndedAt.current < DRAG_CLICK_MS) return;
+                setOpen(!open);
+              }} />
+            <div id="tabbar-all" className="tabbar-all" data-tab-drawer ref={drawer} aria-hidden={open ? undefined : "true"} style={{ height: `${height}px`, transition }}>
+              <div className="tabbar-grid">
+                {entries.map((entry) => (
+                  <a key={entry.href} href={entry.href} tabIndex={open ? undefined : -1} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
+                      setOpenOn(null);
+                      goTo(entry, event);
+                    }}>
+                    <Icon name={entry.icon} size={28} />
+                    <span className="tile-label">{entry.label}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : null}
         {shown.map((entry) => (
           <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
             <Icon name={entry.icon} size={28} />
             <span className="tab-label">{entry.label}</span>
           </a>
         ))}
-        {overflows ? (
-          <button type="button" ref={more} data-tab-more aria-haspopup="dialog" aria-expanded={open ? "true" : "false"} aria-current={rest.some((entry) => within(path, entry.href)) ? "page" : undefined} onClick={() => setOpen(!open)}>
-            <Icon name="dots" size={28} />
-            <span className="tab-label">More</span>
-          </button>
-        ) : null}
       </nav>
-      {open ? (
-        <div className="more-sheet" role="dialog" aria-label="More" data-more-sheet ref={sheet}>
-          {rest.map((entry) => (
-            <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
-                setOpen(false);
-                goTo(entry, event);
-              }}>
-              <Icon name={entry.icon} />
-              <span>{entry.label}</span>
-            </a>
-          ))}
-        </div>
-      ) : null}
     </>
   );
 }
