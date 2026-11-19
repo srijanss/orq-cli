@@ -3817,7 +3817,7 @@ function DirtyCheckout({ run }) {
 // What the run's accepts say: while its tests run, that and since when; after the latest failed, why with the end
 // of the output, so it can be fixed or discarded; after one passed, what is next by how the run delivers. Accept
 // never merges by itself.
-function AcceptNotes({ run }) {
+function AcceptNotes({ run, runPath }) {
   if (run.state === "accepting") {
     return (
       <p className="accept-progress" role="status" data-accepting>
@@ -3827,12 +3827,27 @@ function AcceptNotes({ run }) {
   }
   const failure = run.accept_failure;
   if (ACCEPTABLE.includes(run.state) && failure !== null && typeof failure === "object" && typeof failure.reason === "string") {
+    const { tests, more } = failedTestsOf(failure);
+    const output = typeof failure.output === "string" ? failure.output : "";
+    const log = typeof failure.log === "string" && LOG_FILE.test(failure.log) && typeof runPath === "string" ? failureLogAddress(runPath, { file: failure.log, line: null }) : null;
     return (
       <div className="banner error-banner accept-failure" role="alert" data-accept-failure>
         <Icon name="alert" size={18} />
-        <div>
+        <div className="accept-failure-body">
           <strong>{"Accept failed: " + failure.reason}</strong>
-          {typeof failure.output === "string" && failure.output !== "" ? <pre className="accept-output" data-accept-output>{failure.output}</pre> : null}
+          <FailedTests tests={tests} more={more} />
+          {log === null ? null : (
+            <p className="accept-log">
+              <a href={log} data-accept-log onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(log); } }}>Open the full log</a>
+            </p>
+          )}
+          {output === "" ? null : (
+            // The end of the output says it all when no test is named (a build error); otherwise it is there if wanted.
+            <details className="accept-output-tail" data-accept-tail open={tests.length === 0}>
+              <summary>The end of the output</summary>
+              <pre className="accept-output" data-accept-output tabIndex={0}>{output}</pre>
+            </details>
+          )}
         </div>
       </div>
     );
@@ -3843,6 +3858,35 @@ function AcceptNotes({ run }) {
     return <p className="accept-passed" role="status" data-accepted>{next}</p>;
   }
   return null;
+}
+
+// The tests a failure names (each `{name, output}`) and how many more failed than are named; data of another
+// shape is left out.
+function failedTestsOf(failure) {
+  const list = failure !== null && typeof failure === "object" && Array.isArray(failure.failed_tests) ? failure.failed_tests : [];
+  const tests = list
+    .filter((test) => test !== null && typeof test === "object" && typeof test.name === "string" && test.name !== "")
+    .map((test) => ({ name: test.name, output: typeof test.output === "string" ? test.output : "" }));
+  const more = failure !== null && typeof failure === "object" && Number.isInteger(failure.failed_tests_more) && failure.failed_tests_more > 0 ? failure.failed_tests_more : 0;
+  return { tests, more };
+}
+
+// The failed tests as a list: each name opens its own output, the first one open, the rest closed.
+function FailedTests({ tests, more }) {
+  if (tests.length === 0) return null;
+  return (
+    <ul className="failed-tests" data-failed-tests>
+      {tests.map((test, at) => (
+        <li key={at}>
+          <details className="failed-test" data-failed-test open={at === 0}>
+            <summary><code className="failed-test-name">{test.name}</code></summary>
+            {test.output === "" ? <p className="field-hint muted">No output was kept.</p> : <pre className="failed-test-output" data-failed-test-output tabIndex={0}>{test.output}</pre>}
+          </details>
+        </li>
+      ))}
+      {more > 0 ? <li className="field-hint muted" data-failed-tests-more>{"and " + more + " more"}</li> : null}
+    </ul>
+  );
 }
 
 // A run that ended without its review report, because building it failed: why, and Build it now when the server
@@ -4183,7 +4227,7 @@ function failureOf(event) {
   const usable = log !== null && typeof log === "object" && typeof log.file === "string" && LOG_FILE.test(log.file)
     && (log.line === undefined || log.line === null || (Number.isInteger(log.line) && log.line >= 1))
     && (log.excerpt === undefined || typeof log.excerpt === "string");
-  return { reason, log: usable ? { file: log.file, line: Number.isInteger(log.line) ? log.line : null, excerpt: typeof log.excerpt === "string" ? log.excerpt : "" } : null };
+  return { reason, log: usable ? { file: log.file, line: Number.isInteger(log.line) ? log.line : null, excerpt: typeof log.excerpt === "string" ? log.excerpt : "" } : null, failed: failedTestsOf(failure) };
 }
 
 // The latest failure among some events that the server gave anything for, or, with `withLog`, that names a log.
@@ -4464,6 +4508,7 @@ function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
                 {onLogs ? <button type="button" className="link-button" data-step-logs onClick={() => onLogs(failedLog)}>See the logs</button> : null}
               </p>
             ) : null}
+            {failure === null ? null : <FailedTests tests={failure.failed.tests} more={failure.failed.more} />}
             {failedLog !== null && failedLog.excerpt !== "" ? (
               <div className="run-step-excerpt">
                 <pre data-step-excerpt tabIndex={0} aria-label="Log lines at the error">{failedLog.excerpt}</pre>
@@ -4522,7 +4567,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
             <RunState state={run.state} />
           </div>
           <DirtyCheckout run={run} />
-          <AcceptNotes run={run} />
+          <AcceptNotes run={run} runPath={runPath} />
           <MissingReport run={run} control={control} />
           <RowActions run={run} control={control} />
           <ResumeLinks run={run} listPath={listPath} />

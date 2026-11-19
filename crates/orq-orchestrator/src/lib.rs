@@ -50,6 +50,7 @@ mod setup;
 mod kept_worktrees;
 mod store;
 mod terminal_session;
+mod test_failures;
 mod worktree_databases;
 
 pub use checkpoint::{
@@ -92,6 +93,7 @@ pub use notify::{
 };
 pub use orq_written::record_orq_written;
 pub use terminal_session::run_in_terminal;
+pub use test_failures::{find_test_failures, FailedTest, TestFailures};
 pub use outcome::{check_implement_outcome, record_implement_unfinished, ImplementCheck};
 pub use pane::{record_pane, run_pane, PaneRef};
 pub use push_stage::{push_run_branch, push_run_branch_with, PushOutcome, RetryPolicy};

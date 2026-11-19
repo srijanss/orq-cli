@@ -172,20 +172,54 @@ fn add_dirty_files(row: &mut serde_json::Value, files: Option<&[String]>) {
 }
 
 /// Adds what the run's accepts say to a run's JSON: `accepting_since` while its tests run, `accept_failure`
-/// (reason, output tail, when) after the latest one failed, and `accepted` once a passing accept ended it.
-fn add_accept(row: &mut serde_json::Value, events: &[orq_orchestrator::Event], summary: &orq_orchestrator::RunSummary) {
+/// (reason, output tail, when, the name of its own log in `logs_dir` and the tests it failed) after the latest one
+/// failed, and `accepted` once a passing accept ended it.
+fn add_accept(row: &mut serde_json::Value, events: &[orq_orchestrator::Event], summary: &orq_orchestrator::RunSummary, logs_dir: &std::path::Path) {
     use orq_core::redact::redact;
     if summary.phase == orq_orchestrator::RunPhase::Accepting {
         row["accepting_since"] = serde_json::json!(summary.phase_at);
     }
     if let Some(failure) = &summary.accept_failure {
-        row["accept_failure"] = serde_json::json!({"reason": redact(&failure.reason), "output": redact(&failure.output), "at": failure.at});
+        let mut shown = serde_json::json!({"reason": redact(&failure.reason), "output": redact(&failure.output), "at": failure.at});
+        if let Some(failed) = events.iter().rev().find(|event| event.kind == "run.accept_failed") {
+            let log = failed.payload.get("log").and_then(|v| v.as_str());
+            if let Some(name) = log.and_then(|log| run_log_name(std::path::Path::new(log), logs_dir)) {
+                shown["log"] = serde_json::json!(name);
+            }
+            add_failed_tests(&mut shown, &failed.payload);
+        }
+        row["accept_failure"] = shown;
     }
     let accepted = summary.phase == orq_orchestrator::RunPhase::Completed
         && events.iter().rev().find(|event| event.kind == "run.completed").and_then(|event| event.payload.get("note")).and_then(|note| note.as_str()) == Some("accepted: tests passed");
     if accepted {
         row["accepted"] = serde_json::json!(true);
     }
+}
+
+/// The most failed tests shown of one failure, as the orchestrator keeps them.
+const FAILED_TESTS_SHOWN: usize = 50;
+/// The most of one failed test's output shown, in characters.
+const FAILED_TEST_OUTPUT_SHOWN: usize = 4000;
+
+/// Adds a failure's `failed_tests` (each `{name, output}`, redacted) and `failed_tests_more` to `shown`; an
+/// empty list when its event named none.
+fn add_failed_tests(shown: &mut serde_json::Value, payload: &serde_json::Value) {
+    use orq_core::redact::redact;
+    let text = |test: &serde_json::Value, key: &str| test.get(key).and_then(|v| v.as_str()).map(redact);
+    let listed = payload.get("failed_tests").and_then(|v| v.as_array()).map(Vec::as_slice).unwrap_or_default();
+    let tests: Vec<_> = listed
+        .iter()
+        .filter_map(|test| {
+            let name = text(test, "name")?;
+            let output: String = text(test, "output").unwrap_or_default().chars().take(FAILED_TEST_OUTPUT_SHOWN).collect();
+            Some(serde_json::json!({"name": name, "output": output}))
+        })
+        .take(FAILED_TESTS_SHOWN)
+        .collect();
+    let more = payload.get("failed_tests_more").and_then(|v| v.as_u64()).unwrap_or(0) + listed.len().saturating_sub(FAILED_TESTS_SHOWN) as u64;
+    shown["failed_tests"] = serde_json::json!(tests);
+    shown["failed_tests_more"] = serde_json::json!(more);
 }
 
 /// Adds `missing_report` (why it could not be built) to a run's JSON when the run ended without its report.
@@ -1804,7 +1838,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let mut shown = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, listed_state(&summary)), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)});
         add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
         add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
-        add_accept(&mut shown, &events, &summary);
+        add_accept(&mut shown, &events, &summary, &logs_dir);
         add_missing_report(&mut shown, &self.roots, run);
         // A failed run with commits its last review never saw may be reviewed again (the page's Review again).
         let reviewable_again = summary.phase == orq_orchestrator::RunPhase::Failed
@@ -2152,6 +2186,9 @@ fn failure_shown(events: &[orq_orchestrator::Event], at: usize, logs_dir: &std::
     let log = event.payload.get("log").and_then(|v| v.as_str());
     // A failure before any log was written still says why.
     let mut failure = serde_json::json!({"reason": redact(reason.unwrap_or(""))});
+    if event.payload.get("failed_tests").is_some() {
+        add_failed_tests(&mut failure, &event.payload);
+    }
     let Some(log) = log else { return reason.map(|_| failure) };
     let path = std::path::Path::new(log);
     let Some((file, opened)) = open_run_log_with(path, logs_dir, || {}) else { return Some(failure) };

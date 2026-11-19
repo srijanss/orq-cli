@@ -1,6 +1,7 @@
 //! Accepting a failed run, or one whose review escalated: the work it left committed is taken as the run's result when the
 //! tests pass in its worktree, so the run ends review ready like any other.
 
+use std::io::Write;
 use std::path::Path;
 
 use crate::gate::{choose_gate, Gate};
@@ -91,13 +92,21 @@ pub fn accept_run_by(store: &RunStore, run_id: &str, by: &str, tests: &dyn Fn(&P
     let record = check(store, run_id)?;
     let head_before = git(&record.worktree, &["rev-parse", "HEAD"])?;
     append(store, &record, "run.accept_started", serde_json::json!({ "by": by, "head": head_before.trim() }))?;
-    let outcome = test_and_confirm(run_id, &record, &head_before, tests);
+    let log = open_accept_log(store, run_id);
+    let outcome = {
+        let _teeing = log.as_ref().map(|(_, file)| StepLog::tee_into(file));
+        test_and_confirm(run_id, &record, &head_before, tests)
+    };
+    let log = log.map(|(path, _)| path);
     if let Err(why) = &outcome {
-        record_accept_failed(store, &record, why)?;
+        record_accept_failed(store, &record, why, log.as_deref())?;
     }
     outcome?;
     let mut completed = serde_json::json!({ "ending": "review_ready", "note": "accepted: tests passed" });
     completed["by"] = serde_json::Value::String(by.to_string());
+    if let Some(log) = &log {
+        completed["log"] = log.to_string_lossy().into_owned().into();
+    }
     append(store, &record, "run.completed", completed)?;
     Ok(format!("Accepted {run_id}: its tests pass and it is review ready"))
 }
@@ -162,14 +171,78 @@ fn record_interrupted(store: &RunStore, run_id: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Record why the accept failed: the first line of `why` as the reason, and the end of all of it as the output.
-/// All of it is redacted before either is cut, so a cut never leaves part of a secret too short to recognise.
-fn record_accept_failed(store: &RunStore, record: &crate::store::RunRecord, why: &str) -> Result<(), String> {
+/// Record why the accept failed: the tests that failed, found in the accept's `log` (or in `why` when the log holds
+/// nothing), with a reason naming them, or the first line of `why` when none was named; the end of `why` as the
+/// output; and the log. All of it is redacted before anything is cut, so a cut never leaves part of a secret too
+/// short to recognise.
+fn record_accept_failed(store: &RunStore, record: &crate::store::RunRecord, why: &str, log: Option<&Path>) -> Result<(), String> {
     let why = orq_core::redact::redact(why);
-    let first = why.lines().next().unwrap_or_default();
-    let reason: String = first.chars().take(300).collect();
-    let payload = serde_json::json!({ "reason": reason, "output": tail(&why) });
+    let logged = log.and_then(read_log).filter(|text| !text.trim().is_empty());
+    if let (None, Some(path)) = (&logged, log) {
+        // Tests that ran no step still leave their failure in the log.
+        let _ = std::fs::write(path, format!("{why}\n"));
+    }
+    let failures = crate::test_failures::find_test_failures(logged.as_deref().unwrap_or(&why));
+    let reason = failures.headline().unwrap_or_else(|| why.lines().next().unwrap_or_default().to_string());
+    let reason: String = reason.chars().take(300).collect();
+    let mut payload = serde_json::json!({ "reason": reason, "output": tail(&why) });
+    if let Some(log) = log {
+        payload["log"] = log.to_string_lossy().into_owned().into();
+    }
+    failures.add_to(&mut payload);
     append(store, record, "run.accept_failed", payload)
+}
+
+/// The most of an accept log read back to find the failed tests in.
+const LOG_READ: u64 = 64 * 1024 * 1024;
+
+fn read_log(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(LOG_READ).read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A new `accept-<n>.log` in the run's log folder, `n` one past the last, for what this accept's test steps print.
+/// `None` when it cannot be made: the accept still runs, without a log.
+fn open_accept_log(store: &RunStore, run_id: &str) -> Option<(std::path::PathBuf, std::fs::File)> {
+    let dir = store.log_dir(run_id).ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    for n in 1..=10_000 {
+        let path = dir.join(format!("accept-{n}.log"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Some((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+std::thread_local! {
+    /// Where the test steps run on this thread also write all they print, redacted: the accept log of the accept
+    /// running them, while it does.
+    static STEP_LOG: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) };
+}
+
+/// While held, [`run_steps_with_env`] on this thread writes what each step prints to a log too.
+struct StepLog;
+
+impl StepLog {
+    fn tee_into(file: &std::fs::File) -> StepLog {
+        STEP_LOG.with(|slot| *slot.borrow_mut() = file.try_clone().ok());
+        StepLog
+    }
+
+    fn current() -> Option<std::fs::File> {
+        STEP_LOG.with(|slot| slot.borrow().as_ref().and_then(|file| file.try_clone().ok()))
+    }
+}
+
+impl Drop for StepLog {
+    fn drop(&mut self) {
+        STEP_LOG.with(|slot| *slot.borrow_mut() = None);
+    }
 }
 
 fn append(store: &RunStore, record: &crate::store::RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), String> {
@@ -229,6 +302,8 @@ pub fn run_worktree_tests(worktree: &Path, configured: Option<&[String]>) -> Res
 
 /// Run each of `steps` in `worktree`, in order; the first to fail ends the run and the rest do not run.
 /// Each step sees what a verify gate step sees: `PATH`, `HOME` and `TERM`, and nothing else of this process.
+/// A failing step returns "`<step>` failed: exited with status N" on its first line, then the end of what it
+/// printed. Run by an accept, all each step prints also goes, redacted, to the accept's log.
 pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
     run_steps_with_env(worktree, steps, &[])
 }
@@ -238,6 +313,10 @@ pub fn run_steps_with_env(worktree: &Path, steps: &[Vec<String>], env: &[(String
     for argv in steps {
         let Some((program, args)) = argv.split_first() else { continue };
         let cannot_run = |e: std::io::Error| format!("could not run `{}`: {e}", argv.join(" "));
+        let mut log = StepLog::current();
+        if let Some(log) = &mut log {
+            let _ = writeln!(log, "$ {}", orq_core::redact::redact(&argv.join(" ")));
+        }
         let (mut reader, writer) = std::io::pipe().map_err(cannot_run)?;
         let mut command = crate::gate_stage::step_command(program, worktree, env);
         command
@@ -247,21 +326,26 @@ pub fn run_steps_with_env(worktree: &Path, steps: &[Vec<String>], env: &[(String
             .stderr(writer);
         let mut child = command.spawn().map_err(cannot_run)?;
         drop(command);
-        let printed = read_tail(&mut reader);
+        let printed = read_tail(&mut reader, log.as_ref());
         drop(reader); // a child still writing after a failed read gets a broken pipe, not a full one
         let status = child.wait().map_err(cannot_run)?;
         if !status.success() {
             let printed = orq_core::redact::redact(&printed);
-            return Err(format!("`{}` failed: {}", argv.join(" "), tail(&printed)));
+            let ended = match status.code() {
+                Some(code) => format!("exited with status {code}"),
+                None => "was stopped by a signal".to_string(),
+            };
+            return Err(format!("`{}` failed: {ended}\n{}", argv.join(" "), tail(&printed)));
         }
     }
     Ok(())
 }
 
 /// Read `source` to its end, keeping only the end of it, redacted, so a noisy command costs bounded memory.
-/// Each line is redacted whole before anything older is let go, so no cut ever splits a secret.
-fn read_tail(source: &mut impl std::io::Read) -> String {
-    let mut shown = ShownOutput::default();
+/// Each line is redacted whole before anything older is let go, so no cut ever splits a secret. Every line kept
+/// is also written to `log`, when given.
+fn read_tail(source: &mut impl std::io::Read, log: Option<&std::fs::File>) -> String {
+    let mut shown = ShownOutput { log, ..ShownOutput::default() };
     let mut chunk = [0u8; 8192];
     loop {
         let n = match source.read(&mut chunk) {
@@ -285,7 +369,9 @@ const LEFT_OUT_KEY: &str = "[REDACTED private key]";
 
 /// Output read so far, line by line: redacted lines, the last ones kept, and the line still being read.
 #[derive(Default)]
-struct ShownOutput {
+struct ShownOutput<'a> {
+    /// Where each line, once redacted, is written too.
+    log: Option<&'a std::fs::File>,
     kept: String,
     line: Vec<u8>,
     too_long: bool,
@@ -318,7 +404,7 @@ fn key_markers(text: &[u8]) -> (bool, Option<bool>) {
     (opens, last)
 }
 
-impl ShownOutput {
+impl ShownOutput<'_> {
     fn push(&mut self, mut bytes: &[u8]) {
         while let Some(at) = bytes.iter().position(|&b| b == b'\n') {
             self.add(&bytes[..at]);
@@ -366,6 +452,9 @@ impl ShownOutput {
     }
 
     fn keep(&mut self, line: &str) {
+        if let Some(mut log) = self.log {
+            let _ = writeln!(log, "{line}");
+        }
         if !self.kept.is_empty() {
             self.kept.push('\n');
         }
@@ -413,14 +502,14 @@ mod tests {
     #[test]
     fn an_interrupted_read_is_retried_not_taken_for_the_end_of_the_output() {
         let mut source = Interrupted(&[b"first ", b"last"], false);
-        assert_eq!(read_tail(&mut source), "first last");
+        assert_eq!(read_tail(&mut source, None), "first last");
     }
 
     #[test]
     fn a_private_key_marker_split_across_reads_of_a_long_line_still_opens_the_key() {
         let spaces = vec![b' '; 3000];
         let chunks: [&[u8]; 5] = [b"FAILED\n-----BEGIN OPENSSH PRIV", b"ATE KEY-----", &spaces, &spaces, b"\nMIIkeybody\nMIIkeybody\n"];
-        let shown = read_tail(&mut Interrupted(&chunks, false));
+        let shown = read_tail(&mut Interrupted(&chunks, false), None);
         assert!(shown.contains("FAILED"), "{shown}");
         assert!(!shown.contains("MIIkeybody"), "{shown}");
     }

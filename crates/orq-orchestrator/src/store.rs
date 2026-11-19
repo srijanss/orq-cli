@@ -168,6 +168,12 @@ impl RunStore {
         Ok(self.root.join("runs").join(run_id))
     }
 
+    /// The folder of a run's logs (`logs/<run_id>`), where its gate and accept logs are written.
+    pub(crate) fn log_dir(&self, run_id: &str) -> Result<PathBuf, StoreError> {
+        self.run_dir(run_id)?;
+        Ok(self.root.join("logs").join(run_id))
+    }
+
     /// The ids of the directories under `runs/`, sorted; none when the store has no runs yet.
     pub fn run_ids(&self) -> Result<Vec<String>, StoreError> {
         let entries = match fs::read_dir(self.root.join("runs")) {

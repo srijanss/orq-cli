@@ -160,13 +160,9 @@ fn run_gate_attempt_limited(
                 index + 1,
                 argv.first().map_or("", String::as_str)
             );
-            record_event(
-                store,
-                &record,
-                "stage.failed",
-                attempt,
-                serde_json::json!({ "exit_code": exit_code, "reason": reason, "log": log_name, "head_sha": head_sha }),
-            )?;
+            let mut payload = serde_json::json!({ "exit_code": exit_code, "reason": reason, "log": log_name, "head_sha": head_sha });
+            crate::find_test_failures(&step_output(log_path, step_start)).add_to(&mut payload);
+            record_event(store, &record, "stage.failed", attempt, payload)?;
             return Ok(GateOutcome::Failed {
                 step: index,
                 exit_code,
@@ -182,6 +178,24 @@ fn run_gate_attempt_limited(
         serde_json::json!({ "exit_code": 0, "log": log_name, "commands": steps, "head_sha": head_sha }),
     )?;
     Ok(GateOutcome::Passed)
+}
+
+/// The most of a failed step's output read back to find its failed tests; a longer one is read from its end.
+const STEP_OUTPUT_READ: u64 = 64 * 1024 * 1024;
+
+/// What one step wrote to the log from `start`, its colour codes taken out; empty when it cannot be read.
+fn step_output(log_path: &Path, start: u64) -> String {
+    let Ok(mut file) = fs::File::open(log_path) else {
+        return String::new();
+    };
+    let end = file.metadata().map_or(start, |meta| meta.len());
+    let from = start.max(end.saturating_sub(STEP_OUTPUT_READ));
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(from)).is_err() || file.take(end - from).read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    // Line by line: `printable` takes out newlines too.
+    String::from_utf8_lossy(&bytes).lines().map(|line| printable(line) + "\n").collect()
 }
 
 /// The commit checked out in `worktree`; `None` when git cannot say.
