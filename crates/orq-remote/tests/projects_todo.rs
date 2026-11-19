@@ -158,20 +158,44 @@ fn a_move_saves_a_draft_through_the_editors_path_and_only_then_removes_the_item(
     let id = item["id"].as_i64().unwrap();
     let path = format!("/api/todo/{id}/move");
 
-    let spaced = json!({"project": "alpha", "fields": {"name": "dark mode", "description": "Make it dark"}});
+    let version = item["version"].clone();
+    let spaced = json!({"project": "alpha", "fields": {"name": "dark mode", "description": "Make it dark"}, "version": version});
     let rule = "is not allowed in a feature name; use letters, digits, '-', '_' or '.'";
     assert_eq!(post(&s, &path, spaced), (422, json!({"error": format!("a space at position 5 {rule} (use '-' between words)")})));
     assert_eq!(names(&s), ["dark mode"], "a refused save leaves the item");
-    assert_eq!(post(&s, &path, json!({"project": "gamma", "fields": {"name": "dark-mode"}})).0, 404);
+    assert_eq!(post(&s, &path, json!({"project": "gamma", "fields": {"name": "dark-mode"}, "version": version})).0, 404);
     assert_eq!(names(&s), ["dark mode"]);
 
-    let moved = json!({"project": "alpha", "fields": {"name": "dark-mode", "description": "Make it dark", "depends_on": []}});
+    let moved = json!({"project": "alpha", "fields": {"name": "dark-mode", "description": "Make it dark", "depends_on": []}, "version": version});
     assert_eq!(post(&s, &path, moved), (200, json!({"feature": "dark-mode", "project": "alpha"})));
     assert_eq!(list(&s), Vec::<Value>::new());
     let entries: Value = serde_json::from_slice(&std::fs::read(alpha.join(".tdd-features.json")).unwrap()).unwrap();
     assert_eq!(entries[0], json!({"featureName": "dark-mode", "description": "Make it dark", "status": "draft"}));
     assert_eq!(audited(&s)[0], ("todo.move".into(), "alpha".into(), "allowed".into(), "dark mode: dark-mode".into()));
-    assert_eq!(post(&s, &path, json!({"project": "alpha", "fields": {"name": "again"}})).0, 404, "the item is gone");
+    assert_eq!(post(&s, &path, json!({"project": "alpha", "fields": {"name": "again"}, "version": version})).0, 404, "the item is gone");
+}
+
+#[test]
+fn a_move_carries_the_items_version_as_read_and_a_stale_one_moves_nothing() {
+    let s = setup("todo-move-version");
+    let alpha = git_repo(&s.scan, "alpha");
+    let item = add(&s, "one", "");
+    let id = item["id"].as_i64().unwrap();
+    let read = item["version"].clone();
+    let edited = post(&s, &format!("/api/todo/{id}"), json!({"name": "one better", "description": "", "version": read}));
+    assert_eq!(edited.0, 200, "{edited:?}");
+    let path = format!("/api/todo/{id}/move");
+    let stale = json!({"project": "alpha", "fields": {"name": "one"}, "version": read});
+    assert_eq!(post(&s, &path, stale), (409, json!({"error": "The item changed since you opened it; nothing was written"})));
+    assert_eq!(post(&s, &path, json!({"project": "alpha", "fields": {"name": "one"}})).0, 400, "a move says which version it read");
+    assert_eq!(post(&s, &path, json!({"project": "alpha", "fields": {"name": "one"}, "version": "2"})).0, 400);
+    assert_eq!(names(&s), ["one better"]);
+    assert!(!alpha.join(".tdd-features.json").exists(), "no draft was saved");
+    assert_eq!(audited(&s)[2], ("todo.move".into(), "alpha".into(), "refused".into(), "one better: the item changed since it was read".into()));
+    let current = edited.1["todo"]["version"].clone();
+    let moved = json!({"project": "alpha", "fields": {"name": "one-better"}, "version": current});
+    assert_eq!(post(&s, &path, moved), (200, json!({"feature": "one-better", "project": "alpha"})));
+    assert_eq!(list(&s), Vec::<Value>::new());
 }
 
 fn wish(s: &Setup, feature: &str) -> Value {
@@ -181,8 +205,9 @@ fn wish(s: &Setup, feature: &str) -> Value {
 }
 
 fn move_wishing(s: &Setup, name: &str) {
-    let id = add(s, name, "")["id"].as_i64().unwrap();
-    let body = json!({"project": "alpha", "fields": {"name": name}, "queue_when_approved": true});
+    let item = add(s, name, "");
+    let id = item["id"].as_i64().unwrap();
+    let body = json!({"project": "alpha", "fields": {"name": name}, "version": item["version"], "queue_when_approved": true});
     assert_eq!(post(s, &format!("/api/todo/{id}/move"), body).0, 200);
 }
 

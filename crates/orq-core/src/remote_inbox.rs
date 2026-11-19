@@ -1373,10 +1373,18 @@ fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, ta
                 Some(Value::Bool(wanted)) => Some(*wanted),
                 _ => None,
             };
-            let (true, Some(queue_when_approved)) = (sent.keys().all(|key| KEYS.contains(&key.as_str())) && !project.is_empty(), queue_when_approved) else {
+            // The version is the Todo item's as read, not the ledger's: a move adds a feature, which needs none.
+            let read = sent.get("version").and_then(Value::as_i64);
+            let (true, Some(queue_when_approved), Some(read)) = (sent.keys().all(|key| KEYS.contains(&key.as_str())) && !project.is_empty(), queue_when_approved, read) else {
                 return bad("bad request body");
             };
-            let (input, version) = match feature_save_fields(&sent, None) {
+            if read != item.version {
+                audit(Outcome::Refused, &named("the item changed since it was read"));
+                return error(409, "The item changed since you opened it; nothing was written");
+            }
+            let mut fields = sent.clone();
+            fields.remove("version");
+            let (input, version) = match feature_save_fields(&fields, None) {
                 Ok(parsed) => parsed,
                 Err(refusal) => {
                     audit(Outcome::Refused, &named("bad request body"));
