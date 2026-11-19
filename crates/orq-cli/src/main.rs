@@ -2454,6 +2454,18 @@ fn run_row(run: &orq_orchestrator::RunListing) -> orq_tui::RunRow {
     }
 }
 
+/// Accept the run `run_id` from the browser, with `tests` run in its worktree. A merge-local run the accept
+/// merges has its features completed in the ledger at `ledger`.
+fn accept_completing_ledger(
+    store: &orq_orchestrator::RunStore,
+    run_id: &str,
+    ledger: &Path,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<String, String> {
+    let complete = |_: &str, features: &[String], at: &str| orq_features::complete_run_features(ledger, features, at);
+    orq_orchestrator::accept_run_delivering(store, run_id, "cli", tests, &complete)
+}
+
 impl orq_tui::BrowserBackend for LedgerBackend {
     fn mcp_catalog(&mut self) -> Result<Vec<String>, String> {
         mcpctl_catalog()
@@ -2586,7 +2598,7 @@ impl orq_tui::BrowserBackend for LedgerBackend {
     fn accept_run(&mut self, run_id: &str) -> Result<String, String> {
         let root = self.state_root_override.clone().or_else(pipeline::state_root).ok_or("cannot locate the Orq state directory")?;
         let store = orq_orchestrator::RunStore::new(&root);
-        orq_orchestrator::accept_run(&store, run_id, &|worktree| orq_orchestrator::run_worktree_tests(worktree, None))
+        accept_completing_ledger(&store, run_id, &self.path, &|worktree| orq_orchestrator::run_worktree_tests(worktree, None))
             .map_err(|message| printable(&message))
     }
 
@@ -3654,6 +3666,73 @@ mod ledger_backend_tests {
         assert!(err.contains("only a failed run can be accepted"), "{err}");
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn accepting_a_merge_local_run_from_the_browser_completes_its_feature_in_the_ledger() {
+        let root = orq_test_support::process_temp_dir().join(format!("orq-backend-accept-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-C"])
+                .arg(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "base"]);
+        let base = git(&repo, &["rev-parse", "HEAD"]);
+        let worktree = root.join("worktree");
+        git(&repo, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
+        std::fs::write(worktree.join("mine.txt"), "mine\n").unwrap();
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-q", "-m", "mine"]);
+        let store = orq_orchestrator::RunStore::new(&root.join("state"));
+        let record = orq_orchestrator::RunRecord {
+            delivery: orq_core::project_settings::Delivery::MergeLocal,
+            run_id: "run-1".into(),
+            project_id: "p".into(),
+            feature_id: "COM-02".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: base,
+            branch: "fix--COM-02".into(),
+            worktree: worktree.clone(),
+            repository: String::new(),
+            profiles: std::collections::BTreeMap::new(),
+        };
+        store.start_run(&record).unwrap();
+        store
+            .append_event(&orq_orchestrator::Event {
+                schema_version: 1,
+                event_id: "e-completed".into(),
+                run_id: "run-1".into(),
+                project_id: "p".into(),
+                feature_id: "COM-02".into(),
+                kind: "run.completed".into(),
+                stage: None,
+                attempt: 1,
+                occurred_at: "2026-11-19T10:00:00Z".into(),
+                payload: serde_json::json!({ "ending": "needs_review", "reason": "the review escalated" }),
+            })
+            .unwrap();
+        let ledger = root.join(".tdd-features.json");
+        std::fs::write(&ledger, r#"[{"featureName":"COM-02","status":"in_progress"}]"#).unwrap();
+
+        let said = crate::accept_completing_ledger(&store, "run-1", &ledger, &|_| Ok(())).unwrap();
+
+        assert!(said.contains("merged into main"), "{said}");
+        let entries: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ledger).unwrap()).unwrap();
+        assert_eq!(entries[0]["status"], "completed", "{entries}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
