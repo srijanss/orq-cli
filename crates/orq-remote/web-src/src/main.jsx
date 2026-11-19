@@ -2736,16 +2736,18 @@ function QueueReviewWait({ queue }) {
   return <p className="queue-waiting" data-queue-waiting-review><Icon name="clock" size={16} />{"Waiting for " + (typeof wait.label === "string" && !wait.label.startsWith("Start ") ? wait.label : wait.feature) + (typeof wait.mr_url === "string" ? "'s MR to merge" : "'s review")}</p>;
 }
 
-// What one queue entry's row holds, on a project's queue and on the all-projects one: its position, its
-// name with its state badge, its MR and run links, its reason under the name, and, when given, the
-// controls that reorder and remove it.
-function QueueEntryRow({ entry, position, projectId, controls }) {
+// What one queue entry's row holds, on a project's queue and on the all-projects one: its marker on the
+// timeline with its position, toned by its state; then its name, on the next line its state badge with
+// its MR and run links, and its reason under them; and, when given, the controls that reorder and remove it.
+// `rail` is the part of the rail down to the next entry (see queueRails), or null for the last entry.
+function QueueEntryRow({ entry, position, projectId, controls, rail }) {
   return (
     <>
-      <span className="queue-position" aria-hidden="true">{position}</span>
+      <span className="queue-marker" data-queue-marker={entry.state} aria-hidden="true">{position}</span>
+      {rail !== null ? <span className="queue-rail" data-queue-rail={rail} aria-hidden="true" /> : null}
       <div className="queue-entry-text">
-        <div className="queue-entry-line">
-          <span className="queue-feature">{queueName(entry)}</span>
+        <span className="queue-feature">{queueName(entry)}</span>
+        <div className="queue-entry-meta">
           <QueueStateBadge state={entry.state} />
           <QueueMr entry={entry} />
           {typeof entry.run === "string" ? <OpenRun projectId={projectId} run={entry.run} /> : null}
@@ -2755,6 +2757,13 @@ function QueueEntryRow({ entry, position, projectId, controls }) {
       {controls}
     </>
   );
+}
+
+// The rail part below each entry, in order: "passed" from the top down to the last running entry, so the
+// rail shows where the queue is, "ahead" after it, and null below the last entry, where the rail stops.
+function queueRails(entries) {
+  const running = entries.map((entry) => entry.state).lastIndexOf("running");
+  return entries.map((entry, index) => (index === entries.length - 1 ? null : index < running ? "passed" : "ahead"));
 }
 
 // A paused queue's banner at the top of its card, in the waiting colours: the pause icon, "Paused" and
@@ -2830,6 +2839,7 @@ function QueueView({ data, control, projectId }) {
     setPhase("idle");
   };
   const names = queue.entries.map((entry) => entry.feature);
+  const rails = queueRails(queue.entries);
   const reorder = (from, to) => {
     if (to < 0 || to >= names.length || to === from) return;
     change("reorder", { order: moved(names, from, to) });
@@ -2848,21 +2858,26 @@ function QueueView({ data, control, projectId }) {
       )}
       {queue.entries.length > 0 ? (
         <ol className="queue-list">
-          {queue.entries.map((entry, index) => (
-            <li key={entry.feature} className={"queue-entry" + (dragged === index ? " dragging" : "") + (dragged !== null && over === index && over !== dragged ? " drop-target" : "")} data-queue-entry={entry.feature} draggable={control !== null && !busy}
-              onDragStart={(event) => { setDragged(index); if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"; }}
-              onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); if (over !== index) setOver(index); } }}
-              onDrop={(event) => { event.preventDefault(); if (dragged !== null) reorder(dragged, index); endDrag(); }}
-              onDragEnd={endDrag}>
-              <QueueEntryRow entry={entry} position={index + 1} projectId={projectId} controls={control !== null ? (
-                <span className="queue-controls">
-                  <button type="button" className="icon-button" data-queue-up aria-label={"Move " + queueName(entry) + " up"} disabled={busy || index === 0} onClick={() => reorder(index, index - 1)}><Icon name="arrowUp" size={16} /></button>
-                  <button type="button" className="icon-button" data-queue-down aria-label={"Move " + queueName(entry) + " down"} disabled={busy || index === names.length - 1} onClick={() => reorder(index, index + 1)}><Icon name="chevronDown" size={16} /></button>
-                  <button type="button" className="icon-button" data-queue-remove aria-label={"Remove " + queueName(entry)} disabled={busy} onClick={() => { setNote(""); setRemoving(entry); }}><Icon name="trash" size={16} /></button>
-                </span>
-              ) : null} />
-            </li>
-          ))}
+          {queue.entries.map((entry, index) => {
+            const dropping = dragged !== null && over === index && over !== dragged;
+            return (
+              <li key={entry.feature} className={"queue-entry" + (dragged === index ? " dragging" : "") + (dropping ? " drop-target" : "")} data-queue-entry={entry.feature} draggable={control !== null && !busy}
+                onDragStart={(event) => { setDragged(index); if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"; }}
+                onDragOver={(event) => { if (dragged !== null) { event.preventDefault(); if (over !== index) setOver(index); } }}
+                onDrop={(event) => { event.preventDefault(); if (dragged !== null) reorder(dragged, index); endDrag(); }}
+                onDragEnd={endDrag}>
+                <QueueEntryRow entry={entry} position={index + 1} projectId={projectId} rail={rails[index]} controls={control !== null ? (
+                  <span className="queue-controls">
+                    <button type="button" className="icon-button" data-queue-up aria-label={"Move " + queueName(entry) + " up"} disabled={busy || index === 0} onClick={() => reorder(index, index - 1)}><Icon name="arrowUp" size={16} /></button>
+                    <button type="button" className="icon-button" data-queue-down aria-label={"Move " + queueName(entry) + " down"} disabled={busy || index === names.length - 1} onClick={() => reorder(index, index + 1)}><Icon name="chevronDown" size={16} /></button>
+                    <button type="button" className="icon-button" data-queue-remove aria-label={"Remove " + queueName(entry)} disabled={busy} onClick={() => { setNote(""); setRemoving(entry); }}><Icon name="trash" size={16} /></button>
+                  </span>
+                ) : null} />
+                {/* Dragged down, the entry lands after the one it is over; dragged up, before it. */}
+                {dropping ? <span className="queue-drop" data-queue-drop={index < dragged ? "before" : "after"} aria-hidden="true" /> : null}
+              </li>
+            );
+          })}
         </ol>
       ) : null}
       {removing !== null ? (
@@ -4169,17 +4184,21 @@ function QueueGroup({ project, queue }) {
   return (
     <section className="card queue-section queue-group" data-queue-group={project.id}>
       <div className="queue-group-head">
-        <a className="queue-group-name" href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>{project.name}</a>
-        {queue !== null ? <span className="muted">{queue.entries.length + " queued"}</span> : null}
+        <a className="queue-group-name" href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>
+          <Icon name="folder" />
+          <span className="queue-group-title">{project.name}</span>
+          <Icon name="chevronRight" />
+        </a>
+        {queue !== null ? <span className="muted queue-group-count">{queue.entries.length + " queued"}</span> : null}
       </div>
       {queue === null ? <p className="error-text" data-queue-group-error>The queue could not be read.</p> : null}
       {queue !== null && queue.paused !== null ? <QueuePausedBanner reason={queue.paused} /> : null}
       {queue !== null && queue.paused === null ? <QueueReviewWait queue={queue} /> : null}
       {queue !== null && queue.entries.length > 0 ? (
         <ol className="queue-list">
-          {queue.entries.map((entry, index) => (
-            <li key={entry.feature} className="queue-entry" data-queue-entry={entry.feature}>
-              <QueueEntryRow entry={entry} position={index + 1} projectId={project.id} controls={null} />
+          {queueRails(queue.entries).map((rail, index) => (
+            <li key={queue.entries[index].feature} className="queue-entry" data-queue-entry={queue.entries[index].feature}>
+              <QueueEntryRow entry={queue.entries[index]} position={index + 1} projectId={project.id} rail={rail} controls={null} />
             </li>
           ))}
         </ol>

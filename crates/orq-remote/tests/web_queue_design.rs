@@ -103,6 +103,73 @@ fn each_state_is_a_badge_with_its_text_on_a_project_s_queue_and_on_the_all_proje
     assert_badges(&out, scope);
 }
 
+fn links(out: &Value) -> Vec<Value> {
+    settled(out)["links"].as_array().unwrap().clone()
+}
+
+const HEAD: &str = "[data-queue-group=\"alpha\"] > .queue-group-head";
+const HEAD_LINK: &str = "[data-queue-group=\"alpha\"] > .queue-group-head > a[href=\"/projects/alpha/queue\"]";
+const HEAD_SELECTORS: [&str; 6] = [
+    "[data-queue-group=\"alpha\"] > .queue-group-head > a",
+    HEAD_LINK,
+    "[data-queue-group=\"alpha\"] > .queue-group-head > a[href=\"/projects/alpha/queue\"] > svg.icon[aria-hidden=\"true\"]",
+    "[data-queue-group=\"alpha\"] > .queue-group-head > a[href=\"/projects/alpha/queue\"] > svg.icon:first-child > path[d^=\"M3 6a2\"]",
+    "[data-queue-group=\"alpha\"] > .queue-group-head > a[href=\"/projects/alpha/queue\"] > svg.icon:last-child > path[d=\"m9 6 6 6-6 6\"]",
+    "[data-queue-group=\"alpha\"] > .queue-group-head > .queue-group-count",
+];
+
+#[test]
+fn the_all_projects_group_head_is_one_link_with_the_folder_icon_the_name_and_a_chevron() {
+    let listing = json!({"status": 200, "json": {"projects": [project_json("alpha")]}});
+    let Some(out) = jsdom("/queue", vec![listing, json!({"status": 200, "json": {"queue": every_state(), "remote_actions": true}})], &HEAD_SELECTORS) else { return };
+    let counts: Vec<u64> = HEAD_SELECTORS.iter().map(|selector| count(&out, selector)).collect();
+    assert_eq!(counts, vec![1, 1, 2, 1, 1, 1], "{HEAD} holds one link to the project's queue with the folder icon first and a chevron last, both hidden from screen readers: {out}");
+    let named: Vec<String> = links(&out).iter().filter(|link| link["href"] == "/projects/alpha/queue").map(|link| link["text"].as_str().unwrap().to_string()).collect();
+    assert!(named.iter().any(|text| text == "alpha"), "the link is named by the project, {HEAD_LINK}: {named:?}");
+    assert!(texts(&out).iter().any(|t| t == "6 queued"), "the count stays: {:?}", texts(&out));
+}
+
+/// Each entry of `every_state` with its position, its marker's state, its badge's words and its reason.
+const TIMELINE: [(&str, &str, &str, Option<&str>); 6] =
+    [("COM-01", "running", "Running", None), ("COM-02", "failed", "Failed", None), ("COM-03", "waiting", "Waiting", Some("waiting for COM-01")), ("COM-04", "next", "Next", None), ("COM-05", "queued", "Queued", None), ("COM-06", "parked", "parked", None)];
+
+fn timeline_selectors(scope: &str) -> Vec<String> {
+    let mut all: Vec<String> = TIMELINE.iter().map(|(feature, state, _, _)| format!("{scope} [data-queue-entry=\"{feature}\"] > .queue-marker[data-queue-marker=\"{state}\"]:first-child")).collect();
+    all.push(format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-feature:first-child + .queue-entry-meta > .badge[data-queue-state]:first-child"));
+    all.push(format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-entry-meta + .queue-reason"));
+    all
+}
+
+fn assert_timeline(out: &Value, scope: &str) {
+    for (feature, state, _, _) in TIMELINE {
+        assert_eq!(count(out, &format!("{scope} [data-queue-entry=\"{feature}\"] > .queue-marker[data-queue-marker=\"{state}\"]:first-child")), 1, "{feature} starts with a marker of its state {state}: {out}");
+    }
+    assert_eq!(count(out, &format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-feature:first-child + .queue-entry-meta > .badge[data-queue-state]:first-child")), 6, "each badge starts the line after the name: {out}");
+    assert_eq!(count(out, &format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-entry-meta + .queue-reason")), 1, "the reason follows the badge's line: {out}");
+    let texts = texts(out);
+    for (at, (feature, _, label, reason)) in TIMELINE.iter().enumerate() {
+        let mut expected = vec![(at + 1).to_string(), feature.to_string(), label.to_string()];
+        expected.extend(reason.map(String::from));
+        assert!(texts.windows(expected.len()).any(|window| window == expected.as_slice()), "the marker's position, then the name, the badge and the reason, in order: {expected:?} in {texts:?}");
+    }
+}
+
+#[test]
+fn each_entry_is_a_marker_with_its_position_then_its_name_its_badge_s_line_and_its_reason() {
+    let scope = "[data-queue-section]";
+    let selectors = timeline_selectors(scope);
+    let selectors: Vec<&str> = selectors.iter().map(String::as_str).collect();
+    let listing = json!({"status": 200, "json": {"projects": [project_json("alpha")]}});
+    let Some(out) = jsdom("/projects/alpha/queue", vec![json!({"status": 200, "json": {"queue": every_state(), "remote_actions": true}}), listing.clone()], &selectors) else { return };
+    assert_timeline(&out, scope);
+
+    let scope = "[data-queue-group=\"alpha\"]";
+    let selectors = timeline_selectors(scope);
+    let selectors: Vec<&str> = selectors.iter().map(String::as_str).collect();
+    let Some(out) = jsdom("/queue", vec![listing, json!({"status": 200, "json": {"queue": every_state(), "remote_actions": true}})], &selectors) else { return };
+    assert_timeline(&out, scope);
+}
+
 const BANNER: [&str; 6] = [
     "[data-queue-section] > [data-queue-paused].banner.waiting-banner",
     "[data-queue-section] [data-queue-paused] > svg.icon",
@@ -135,6 +202,7 @@ const NAMES: &str = "[data-queue-entry] .queue-feature";
 const STATES: &str = "[data-queue-entry] [data-queue-state]";
 const REASONS: &str = "[data-queue-entry] .queue-reason";
 const CONTROLS: &str = "[data-queue-entry] .queue-controls";
+const MARKERS: &str = "[data-queue-entry] > [data-queue-marker]";
 
 #[derive(Clone, Copy, Debug)]
 struct Rect {
@@ -203,9 +271,9 @@ fn each_entry_of_a_project_s_queue_is_a_row_with_its_controls_in_one_place_at_ev
     let Some(chromium) = web_chromium::binary() else { return };
     for width in [1280, 390, 360] {
         let desktop = width > 700;
-        let result = chromium_load(&chromium, width, "/projects/demo/queue", &project_replies(Value::Null), "[data-queue-up]", &[CARD, ROWS, NAMES, STATES, REASONS, CONTROLS], "");
+        let result = chromium_load(&chromium, width, "/projects/demo/queue", &project_replies(Value::Null), "[data-queue-up]", &[CARD, ROWS, NAMES, STATES, REASONS, CONTROLS, MARKERS], "");
         let card = rects(&result, CARD)[0];
-        let (rows, names, states, reasons, controls) = (rects(&result, ROWS), rects(&result, NAMES), rects(&result, STATES), rects(&result, REASONS), rects(&result, CONTROLS));
+        let (rows, names, states, reasons, controls, markers) = (rects(&result, ROWS), rects(&result, NAMES), rects(&result, STATES), rects(&result, REASONS), rects(&result, CONTROLS), rects(&result, MARKERS));
         assert_eq!((rows.len(), names.len(), states.len(), reasons.len(), controls.len()), (3, 3, 3, 1, 3), "{width} px: {result}");
         for at in 0..3 {
             let texts = if at == 0 { vec![names[at], states[at], reasons[0]] } else { vec![names[at], states[at]] };
@@ -225,7 +293,7 @@ fn each_entry_of_a_project_s_queue_is_a_row_with_its_controls_in_one_place_at_ev
                 }
             }
             if desktop {
-                assert!((controls[at].middle() - rows[at].middle()).abs() <= 2, "{width} px: row {at}'s controls {:?} are centred in the row {:?}", controls[at], rows[at]);
+                assert!((controls[at].middle() - markers[at].middle()).abs() <= 2, "{width} px: row {at}'s controls {:?} sit on the name's line, centred with its marker {:?}", controls[at], markers[at]);
             } else {
                 assert!((controls[at].left - names[at].left).abs() <= 1, "{width} px: row {at}'s controls {:?} start where its name {:?} does", controls[at], names[at]);
             }
@@ -303,44 +371,147 @@ fn the_all_projects_queue_shows_the_same_rows_with_badges_inside_each_card() {
     }
 }
 
-/// Starts dragging the first row and drags it over the third, as a person's drag does.
-const DRAG: &str = r#"(function () {
-  function go() {
+const SIXTY: &str = "queue-entry-with-a-sixty-character-name-that-wraps-in-column";
+
+/// Four entries: a failed one with its reason, the running one, the next, and a queued one with a long name
+/// and an MR, so the rail has a part above the running entry and a part below it.
+fn timeline_queue() -> Value {
+    let mut long = entry(SIXTY, "queued", Value::Null);
+    long["mr_url"] = json!("https://example.com/mr/1");
+    queue(vec![entry("COM-01", "failed", json!("the review found blocking issues")), entry("COM-02", "running", Value::Null), entry("COM-03", "next", Value::Null), long], Value::Null)
+}
+
+#[test]
+fn the_rail_above_the_running_entry_is_marked_passed_and_the_last_entry_has_no_rail() {
+    let selectors = [
+        "[data-queue-entry=\"COM-01\"] > .queue-rail[data-queue-rail=\"passed\"]",
+        "[data-queue-entry=\"COM-02\"] > .queue-rail[data-queue-rail=\"ahead\"]",
+        "[data-queue-entry=\"COM-03\"] > .queue-rail[data-queue-rail=\"ahead\"]",
+        "[data-queue-entry] > .queue-rail[aria-hidden=\"true\"]",
+    ];
+    let listing = json!({"status": 200, "json": {"projects": [project_json("alpha")]}});
+    let reply = json!({"status": 200, "json": {"queue": timeline_queue(), "remote_actions": true}});
+    let Some(out) = jsdom("/projects/alpha/queue", vec![reply.clone(), listing.clone()], &selectors) else { return };
+    let counts: Vec<u64> = selectors.iter().map(|selector| count(&out, selector)).collect();
+    assert_eq!(counts, vec![1, 1, 1, 3], "one hidden rail part from each entry to the next, passed above the running one: {out}");
+    let Some(out) = jsdom("/queue", vec![listing, reply], &selectors) else { return };
+    let counts: Vec<u64> = selectors.iter().map(|selector| count(&out, selector)).collect();
+    assert_eq!(counts, vec![1, 1, 1, 3], "the all-projects queue has the same rail: {out}");
+}
+
+const RAILS: &str = "[data-queue-entry] > .queue-rail";
+const BADGE_LINES: &str = "[data-queue-entry] .queue-entry-meta > .badge";
+const TEXT_COLUMNS: &str = "[data-queue-entry] > .queue-entry-text";
+
+fn centre_x(rect: Rect) -> i64 {
+    (rect.left + rect.right) / 2
+}
+
+#[test]
+fn the_entries_form_a_timeline_with_the_rail_through_each_marker_at_every_width_in_both_themes() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    assert_eq!(SIXTY.len(), 60);
+    let project = json!({"id": "demo", "name": "demo", "available": true, "features": 4, "active_runs": 1, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
+    let replies = vec![web_chromium::get("/api/projects", json!({"projects": [project]})), web_chromium::get("/api/projects/demo/queue", json!({"queue": timeline_queue(), "remote_actions": true}))];
+    for theme in ["light", "dark"] {
+        for width in [1280, 390] {
+            let mut steps = vec![json!({"wait": "[data-queue-marker=\"running\"]"})];
+            for selector in [ROWS, MARKERS, NAMES, BADGE_LINES, RAILS, TEXT_COLUMNS] {
+                steps.push(json!({"boxes": selector}));
+            }
+            steps.push(json!({"styles": "[data-queue-marker=\"running\"]", "props": ["background-color"]}));
+            steps.push(json!({"styles": RAILS, "props": ["background-color"]}));
+            steps.push(json!({"tokens": ["--accent", "--border"]}));
+            steps.push(json!({"lines": ".queue-feature", "text": SIXTY}));
+            let init = format!("try {{ localStorage.setItem(\"orq.theme\", \"{theme}\"); }} catch (e) {{}}");
+            let result = chromium_run(&chromium, width, "/projects/demo/queue", &replies, steps, &init);
+            let at = format!("{theme} {width} px");
+            let (rows, markers, names, badges, rails, columns) = (rects(&result, ROWS), rects(&result, MARKERS), rects(&result, NAMES), rects(&result, BADGE_LINES), rects(&result, RAILS), rects(&result, TEXT_COLUMNS));
+            assert_eq!((rows.len(), markers.len(), names.len(), badges.len(), rails.len()), (4, 4, 4, 4, 3), "{at}: {result}");
+            for each in 0..4 {
+                assert!((badges[each].left - names[each].left).abs() <= 1, "{at}: entry {each}'s badge {:?} starts at its name's x {:?}", badges[each], names[each]);
+                assert!(badges[each].top >= names[each].bottom, "{at}: entry {each}'s badge {:?} is on the line under its name {:?}", badges[each], names[each]);
+                assert!(markers[each].right <= names[each].left, "{at}: entry {each}'s text {:?} is right of its marker {:?}", names[each], markers[each]);
+                assert!(names[each].right <= columns[each].right && columns[each].right <= rows[each].right, "{at}: entry {each}'s name {:?} wraps inside its column {:?}", names[each], columns[each]);
+                assert!(markers[each].right - markers[each].left >= 24, "{at}: entry {each}'s marker {:?} fits two digits", markers[each]);
+                if each < 3 {
+                    assert!((names[each].middle() - markers[each].middle()).abs() <= 2, "{at}: entry {each}'s one-line name {:?} is centred on its marker {:?}", names[each], markers[each]);
+                }
+            }
+            for (each, rail) in rails.iter().enumerate() {
+                assert!((centre_x(*rail) - centre_x(markers[each])).abs() <= 1, "{at}: rail part {each} {rail:?} runs through the marker's centre {:?}", markers[each]);
+                assert!((rail.top - markers[each].middle()).abs() <= 2 && (rail.bottom - markers[each + 1].middle()).abs() <= 2, "{at}: rail part {each} {rail:?} joins marker {:?} to the next {:?}", markers[each], markers[each + 1]);
+            }
+            let (accent, border) = (result["tokens"]["--accent"].as_str().unwrap(), result["tokens"]["--border"].as_str().unwrap());
+            assert_eq!(result["styles"]["[data-queue-marker=\"running\"]"][0]["background-color"], accent, "{at}: the running marker is filled with the accent: {result}");
+            let colours: Vec<&str> = result["styles"][RAILS].as_array().unwrap().iter().map(|style| style["background-color"].as_str().unwrap()).collect();
+            assert_eq!(colours, vec![accent, border, border], "{at}: the rail is the accent above the running entry and the border below it");
+            let lines = result["lines"][".queue-feature"].as_i64().unwrap();
+            if width < 700 {
+                assert!(lines >= 2, "{at}: the 60-character name wraps: {result}");
+            }
+        }
+    }
+}
+
+/// Starts dragging row `from` and drags it over row `to`, as a person's drag does.
+fn drag(from: usize, to: usize) -> String {
+    format!(
+        r#"(function () {{
+  function go() {{
     var rows = document.querySelectorAll("[data-queue-entry]");
     if (rows.length < 3) return setTimeout(go, 50);
     var data = new DataTransfer();
-    rows[0].dispatchEvent(new DragEvent("dragstart", {bubbles: true, cancelable: true, dataTransfer: data}));
-    setTimeout(function () {
-      rows[2].dispatchEvent(new DragEvent("dragenter", {bubbles: true, cancelable: true, dataTransfer: data}));
-      rows[2].dispatchEvent(new DragEvent("dragover", {bubbles: true, cancelable: true, dataTransfer: data}));
-    }, 100);
-  }
+    rows[{from}].dispatchEvent(new DragEvent("dragstart", {{bubbles: true, cancelable: true, dataTransfer: data}}));
+    setTimeout(function () {{
+      rows[{to}].dispatchEvent(new DragEvent("dragenter", {{bubbles: true, cancelable: true, dataTransfer: data}}));
+      rows[{to}].dispatchEvent(new DragEvent("dragover", {{bubbles: true, cancelable: true, dataTransfer: data}}));
+    }}, 100);
+  }}
   setTimeout(go, 50);
-})();"#;
+}})();"#
+    )
+}
 
 #[test]
-fn the_dragged_row_shows_as_dragged_and_the_row_it_would_drop_on_is_marked() {
+fn the_dragged_row_shows_as_dragged_and_where_it_would_drop_is_an_accent_bar_across_the_text_column() {
     let Some(chromium) = web_chromium::binary() else { return };
     let dragging = "[data-queue-entry].dragging";
     let target = "[data-queue-entry].drop-target";
-    let steps = vec![
-        json!({"wait": dragging}),
-        json!({"wait": target}),
-        json!({"styles": dragging, "props": ["opacity", "outline-style", "outline-color"]}),
-        json!({"styles": target, "props": ["box-shadow"]}),
-        json!({"styles": "[data-queue-entry]:not(.dragging):not(.drop-target)", "props": ["opacity", "outline-style", "box-shadow"]}),
-        json!({"styles": "[data-queue-entry]", "props": ["opacity"]}),
-        json!({"tokens": ["--accent"]}),
-    ];
-    let result = chromium_run(&chromium, 1280, "/projects/demo/queue", &project_replies(Value::Null), steps, DRAG);
-    let styles = |selector: &str| result["styles"][selector].as_array().unwrap_or_else(|| panic!("no styles for {selector}: {result}")).clone();
-    let accent = result["tokens"]["--accent"].as_str().unwrap().to_string();
-    let (dragged, marked, rest) = (styles(dragging), styles(target), styles("[data-queue-entry]:not(.dragging):not(.drop-target)"));
-    assert_eq!((dragged.len(), marked.len(), rest.len()), (1, 1, 1), "one row dragged, one marked, one plain: {result}");
-    assert!(dragged[0]["opacity"].as_str().unwrap().parse::<f64>().unwrap() < 1.0, "the dragged row is faded: {result}");
-    assert_eq!((dragged[0]["outline-style"].as_str().unwrap(), dragged[0]["outline-color"].as_str().unwrap()), ("dashed", accent.as_str()), "the dragged row has a dashed accent outline: {result}");
-    assert!(marked[0]["box-shadow"].as_str().unwrap().contains(&accent), "the row it would drop on is marked in the accent colour: {result}");
-    assert_eq!((rest[0]["opacity"].as_str().unwrap(), rest[0]["outline-style"].as_str().unwrap(), rest[0]["box-shadow"].as_str().unwrap()), ("1", "none", "none"), "the other row is plain: {result}");
+    let bar = "[data-queue-entry].drop-target > [data-queue-drop]";
+    let plain = "[data-queue-entry]:not(.dragging):not(.drop-target)";
+    // Down, the dragged row lands after the one it is over; up, before it.
+    for (from, to, side) in [(0, 2, "after"), (2, 0, "before")] {
+        let steps = vec![
+            json!({"wait": dragging}),
+            json!({"wait": target}),
+            json!({"styles": dragging, "props": ["opacity", "outline-style", "outline-color"]}),
+            json!({"styles": bar, "props": ["background-color"]}),
+            json!({"styles": plain, "props": ["opacity", "outline-style", "box-shadow"]}),
+            json!({"boxes": target}),
+            json!({"boxes": bar}),
+            json!({"boxes": "[data-queue-entry].drop-target > .queue-entry-text"}),
+            json!({"boxes": "[data-queue-entry] > [data-queue-drop]"}),
+            json!({"tokens": ["--accent"]}),
+        ];
+        let result = chromium_run(&chromium, 1280, "/projects/demo/queue", &project_replies(Value::Null), steps, &drag(from, to));
+        let styles = |selector: &str| result["styles"][selector].as_array().unwrap_or_else(|| panic!("no styles for {selector}: {result}")).clone();
+        let accent = result["tokens"]["--accent"].as_str().unwrap().to_string();
+        let (dragged, marked, rest) = (styles(dragging), styles(bar), styles(plain));
+        assert_eq!((dragged.len(), marked.len(), rest.len()), (1, 1, 1), "one row dragged, one bar, one plain row: {result}");
+        assert_eq!(rects(&result, "[data-queue-entry] > [data-queue-drop]").len(), 1, "only the drop place has a bar: {result}");
+        assert!(dragged[0]["opacity"].as_str().unwrap().parse::<f64>().unwrap() < 1.0, "the dragged row is faded: {result}");
+        assert_eq!((dragged[0]["outline-style"].as_str().unwrap(), dragged[0]["outline-color"].as_str().unwrap()), ("dashed", accent.as_str()), "the dragged row has a dashed accent outline: {result}");
+        assert_eq!(marked[0]["background-color"].as_str().unwrap(), accent, "the drop place is an accent bar: {result}");
+        assert_eq!((rest[0]["opacity"].as_str().unwrap(), rest[0]["outline-style"].as_str().unwrap(), rest[0]["box-shadow"].as_str().unwrap()), ("1", "none", "none"), "the other row is plain: {result}");
+        let (row, line, column) = (rects(&result, target)[0], rects(&result, bar)[0], rects(&result, "[data-queue-entry].drop-target > .queue-entry-text")[0]);
+        assert!(line.left == column.left && line.right <= row.right && line.bottom - line.top <= 4, "a thin bar {line:?} across the text column {column:?}");
+        if side == "after" {
+            assert!(line.top >= row.bottom, "dragged down, the bar {line:?} is under the row {row:?}");
+        } else {
+            assert!(line.bottom <= row.top, "dragged up, the bar {line:?} is above the row {row:?}");
+        }
+    }
 }
 
 #[test]

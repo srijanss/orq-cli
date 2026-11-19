@@ -850,35 +850,58 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .set-aside-conflict p { margin: 0; }
 .run-row .waiting-banner { margin: 0.375rem 0 0; padding: 0.375rem 0.625rem; font-size: 0.875rem; }
 
-/* The Queue page across every project: one card per project, its name linking to the project's queue. */
+/* The Queue page across every project: one card per project, headed as the Dashboard's project card is: the
+   folder icon, the name and a chevron as one link to the project's queue, with the count on the right (under
+   it on a phone). */
 .queue-group + .queue-group { margin-top: 0.75rem; }
-.queue-group-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
-.queue-group-name { font-size: 0.9375rem; font-weight: 700; overflow-wrap: anywhere; min-width: 0; }
+.queue-group-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.25rem 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+.queue-group-name { display: inline-flex; align-items: center; gap: 0.625rem; min-width: 0; color: var(--text); font-size: 1.0625rem; font-weight: 700; text-decoration: none; }
+.queue-group-name:hover .queue-group-title { text-decoration: underline; }
+.queue-group-name > .icon { flex: none; }
+.queue-group-name > .icon:first-child { color: var(--accent); }
+.queue-group-name > .icon:last-child { color: var(--text-muted); }
+.queue-group-title { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .queue-group-name { flex: 1 1 100%; }
+}
 
-/* A project's queue and the all-projects one: a head (or a paused banner), then one row per entry with its
-   position, its name and state badge, its reason under the name and, on a project's queue, its controls at
-   the row's end (under the text on a phone). */
+/* A project's queue and the all-projects one: a head (or a paused banner), then the entries as a timeline.
+   Each entry's marker sits on the rail with its position, toned by its state; right of it the name, the
+   badge's line and the reason, and, on a project's queue, the controls on the right of the name's line
+   (under the text on a phone). The name's first line, the marker and the controls share one middle. */
 .queue-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; }
 .queue-head > p { flex: 1 1 16rem; min-width: 0; margin: 0; }
 .queue-paused { align-items: center; margin: 0.5rem 0 0; }
 .queue-section > .queue-paused:first-child { margin-top: 0; }
 .queue-paused-text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
 .queue-paused > button { margin-left: auto; }
-.queue-list { list-style: none; margin: 0.75rem 0 0; padding: 0; }
-.queue-list > li + li { border-top: 1px solid var(--border); }
-.queue-entry { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; align-items: center; gap: 0.5rem 0.75rem; padding: 0.625rem 0; }
-.queue-position { align-self: start; line-height: 1.75rem; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.queue-entry-text { grid-column: 2; min-width: 0; }
-.queue-entry-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; min-width: 0; min-height: 1.75rem; }
-.queue-feature { font-family: ui-monospace, 'JetBrains Mono', monospace; overflow-wrap: anywhere; min-width: 0; }
+.queue-list { --queue-marker: 1.75rem; --queue-line: 2.75rem; --queue-name-line: 1.5rem; --queue-gap: 0.75rem; list-style: none; margin: 0.75rem 0 0; padding: 0; }
+.queue-list > li + li { margin-top: var(--queue-gap); }
+.queue-entry { position: relative; display: grid; grid-template-columns: var(--queue-marker) minmax(0, 1fr) auto; align-items: start; gap: 0.25rem 0.75rem; }
+.queue-marker { position: relative; z-index: 1; grid-column: 1; grid-row: 1; box-sizing: border-box; width: var(--queue-marker); height: var(--queue-marker); margin-top: calc((var(--queue-line) - var(--queue-marker)) / 2); display: grid; place-items: center; border: 2px solid var(--text-muted); border-radius: 50%; background: var(--surface); color: var(--text-muted); font-size: 0.75rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.queue-marker[data-queue-marker="next"] { border-color: var(--accent); color: var(--accent); }
+.queue-marker[data-queue-marker="running"] { border-color: var(--accent); background: var(--accent); color: var(--surface); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); animation: queue-pulse 2s ease-in-out infinite; }
+.queue-marker[data-queue-marker="failed"] { border-color: var(--status-failed); background: var(--status-failed-bg); color: var(--status-failed); }
+.queue-marker[data-queue-marker="review"] { border-color: var(--status-waiting); background: var(--status-waiting-bg); color: var(--status-waiting); }
+@keyframes queue-pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 10%, transparent); } }
+/* The rail part from an entry's marker centre down to the next entry's: the entry's height plus the gap. */
+.queue-rail { position: absolute; z-index: 0; left: calc(var(--queue-marker) / 2 - 1px); top: calc(var(--queue-line) / 2); width: 2px; height: calc(100% + var(--queue-gap)); background: var(--border); }
+.queue-rail[data-queue-rail="passed"] { background: var(--accent); }
+.queue-entry-text { grid-column: 2; grid-row: 1; min-width: 0; padding-top: calc((var(--queue-line) - var(--queue-name-line)) / 2); }
+.queue-feature { display: block; font-family: ui-monospace, 'JetBrains Mono', monospace; line-height: var(--queue-name-line); overflow-wrap: anywhere; min-width: 0; }
+.queue-entry-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; margin-top: 0.25rem; min-width: 0; }
 .queue-reason { margin: 0.25rem 0 0; color: var(--text-muted); font-size: 0.875rem; overflow-wrap: anywhere; }
-.queue-controls { grid-column: 3; display: flex; gap: 0.25rem; }
-.queue-entry.dragging { opacity: 0.5; outline: 2px dashed var(--accent); outline-offset: -2px; }
-.queue-entry.drop-target { box-shadow: inset 0 3px 0 var(--accent); }
+.queue-controls { grid-column: 3; grid-row: 1; display: flex; gap: 0.25rem; }
+.queue-entry.dragging { opacity: 0.5; outline: 2px dashed var(--accent); outline-offset: 4px; }
+/* Where a dragged entry would land: an accent bar across the text column, in the gap before or after the
+   entry it is over. */
+.queue-drop { position: absolute; z-index: 1; left: calc(var(--queue-marker) + 0.75rem); right: 0; height: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+.queue-drop[data-queue-drop="before"] { top: calc(var(--queue-gap) / -2 - 1.5px); }
+.queue-drop[data-queue-drop="after"] { bottom: calc(var(--queue-gap) / -2 - 1.5px); }
 @media (max-width: 700px) {
   .queue-paused-text { flex-basis: calc(100% - 2rem); }
   .queue-paused > button { margin-left: 0; }
-  .queue-controls { grid-column: 2 / -1; justify-self: start; }
+  .queue-controls { grid-column: 2 / -1; grid-row: 2; justify-self: start; }
 }
 .queue-waiting { display: flex; align-items: center; gap: 0.375rem; margin: 0.5rem 0 0; overflow-wrap: anywhere; min-width: 0; }
 .queue-mr { display: inline-flex; align-items: center; gap: 0.25rem; }
