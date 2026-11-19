@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::review_inbox::{self, ActionOutcome, InboxDetail, ReviewAction};
 use crate::review_lifecycle::{ProviderState, LOCAL_PROVIDER};
 use crate::storage::{check_run_id, StorageRoots};
+use crate::store::todo::TodoChange;
 use crate::store::Store;
 
 pub struct RemoteConfig {
@@ -285,6 +286,18 @@ pub trait ProjectsProvider {
     /// ledger's words. A provider that cannot does not know the feature.
     fn promote_feature(&self, _id: &str, _feature: &str) -> Result<RunControlOutcome, String> {
         Ok(RunControlOutcome::Unknown)
+    }
+
+    /// Whether the draft `feature` of project `id` is to be queued once it is approved. A wish whose feature is no
+    /// longer in the ledger (renamed or deleted) is dropped and reads as none. `None` when there is no such project.
+    fn queue_wish(&self, _id: &str, _feature: &str) -> Result<Option<bool>, String> {
+        Ok(None)
+    }
+
+    /// Asks (`wanted`) or no longer asks for the draft `feature` of project `id` to be queued once it is approved.
+    /// `None` when there is no such project.
+    fn set_queue_wish(&self, _id: &str, _feature: &str, _wanted: bool) -> Result<Option<()>, String> {
+        Ok(None)
     }
 
     /// Project `id`'s run queue as the web shows it: `{entries: [{feature, state, run, added_at,
@@ -573,6 +586,8 @@ pub fn handle_with_confirm(roots: &StorageRoots, config: &RemoteConfig, project_
 pub fn action_body_cap(path: &str) -> usize {
     if path == "/api/storage/worktrees/delete-merged" {
         MAX_MERGED_BODY
+    } else if path == "/api/todo" || path.starts_with("/api/todo/") {
+        MAX_TODO_BODY
     } else {
         MAX_ACTION_BODY
     }
@@ -1020,6 +1035,9 @@ fn promote_feature(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>
     match provider.map(|provider| provider.promote_feature(id, feature)) {
         Some(Ok(RunControlOutcome::Done(_))) => {
             audit(Outcome::Allowed, feature);
+            if let Some(provider) = provider {
+                queue_wished(roots, provider, id, feature, now);
+            }
             reply(200, json!({ "feature": feature, "status": "pending" }))
         }
         Some(Ok(RunControlOutcome::Refused(why))) => {
@@ -1050,11 +1068,16 @@ fn feature_path(path: &str) -> Option<(&str, &str)> {
 /// editor's fields are taken, each of its own type; an add must name the feature, and an edit must send a
 /// version and may not rename the feature.
 fn feature_save_body(body: &[u8], feature: Option<&str>) -> Result<(FeatureInput, Option<String>), Response> {
-    let bad = || error(400, "the request body is not one this action takes");
     if let Some(refusal) = body_refusal(body, &["fields", "version"]) {
         return Err(refusal);
     }
-    let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(body) else { return Err(bad()) };
+    let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(body) else { return Err(error(400, "the request body is not one this action takes")) };
+    feature_save_fields(&body, feature)
+}
+
+/// [`feature_save_body`]'s fields and version, from a body already read and checked for its size.
+fn feature_save_fields(body: &serde_json::Map<String, Value>, feature: Option<&str>) -> Result<(FeatureInput, Option<String>), Response> {
+    let bad = || error(400, "the request body is not one this action takes");
     let Some(Value::Object(fields)) = body.get("fields") else { return Err(bad()) };
     const FIELDS: [&str; 6] = ["name", "description", "depends_on", "parallelizable", "test_file", "target_files"];
     if !fields.keys().all(|key| FIELDS.contains(&key.as_str())) {
@@ -1093,6 +1116,341 @@ fn feature_save_body(body: &[u8], feature: Option<&str>) -> Result<(FeatureInput
         Some(feature) => version.is_some() && input.name.as_deref().is_none_or(|name| name == feature),
     };
     if fits { Ok((input, version)) } else { Err(bad()) }
+}
+
+/// Queues the just-approved draft `feature` of project `id` when it was moved from Todo asking for that, spends
+/// the wish, and leaves a queue.add audit line saying so.
+fn queue_wished(roots: &StorageRoots, provider: &dyn ProjectsProvider, id: &str, feature: &str, now: u64) {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    if provider.queue_wish(id, feature) != Ok(Some(true)) {
+        return;
+    }
+    let _ = provider.set_queue_wish(id, feature, false);
+    let why = format!("{feature}: requested when moved from Todo");
+    let change = QueueChange::Add { features: vec![feature.to_string()], profiles: None };
+    let (outcome, reason) = match provider.change_queue(id, &change) {
+        Ok(RunControlOutcome::Done(_)) => (Outcome::Allowed, why),
+        Ok(RunControlOutcome::Refused(refusal)) => (Outcome::Refused, format!("{why}: {refusal}")),
+        _ => (Outcome::Refused, format!("{why}: the queue could not be changed")),
+    };
+    let _ = record(roots, &Attempt { identity: "web", action: "queue.add", project: id, run: None, outcome, reason: Some(&reason) }, now);
+}
+
+/// Whether the draft `feature` of project `id` is to be queued once approved (a read, there with actions off), or a
+/// change of that wish (`{queue_when_approved}`), which needs actions on and leaves a queue.wish audit line.
+fn queue_wish(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, method: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    if !plain_feature_name(feature) {
+        return error(404, "not found");
+    }
+    if method != "POST" {
+        return match provider.map(|provider| provider.queue_wish(id, feature)) {
+            Some(Ok(Some(wanted))) => reply(200, json!({ "queue_when_approved": wanted })),
+            Some(Err(_)) => error(500, "the wish could not be read"),
+            _ => error(404, "not found"),
+        };
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "queue.wish", project: id, run: None, outcome, reason: Some(&format!("{feature}: {reason}")) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    let wanted = match body_object(body, MAX_ACTION_BODY) {
+        Ok(sent) if sent.keys().all(|key| key == "queue_when_approved") => sent.get("queue_when_approved").and_then(Value::as_bool),
+        _ => None,
+    };
+    let Some(wanted) = wanted else {
+        audit(Outcome::Refused, "bad request body");
+        return error(400, "the request body is not one this action takes");
+    };
+    match provider.map(|provider| provider.set_queue_wish(id, feature, wanted)) {
+        Some(Ok(Some(()))) => {
+            audit(Outcome::Allowed, if wanted { "requested" } else { "cancelled" });
+            reply(200, json!({ "queue_when_approved": wanted }))
+        }
+        Some(Err(_)) => {
+            audit(Outcome::Refused, "the wish could not be changed");
+            error(500, "the wish could not be changed")
+        }
+        _ => {
+            audit(Outcome::Refused, "no such project");
+            error(404, "not found")
+        }
+    }
+}
+
+/// The most bytes a Todo change takes in its body: the longest description with every character escaped.
+const MAX_TODO_BODY: usize = 256 * 1024;
+
+/// What `/api/todo...` asks for: an add, or an edit, delete or move of item `id`.
+#[derive(Clone, Copy)]
+enum TodoTarget {
+    Add,
+    Edit(i64),
+    Delete(i64),
+    Move(i64),
+    /// A path under `/api/todo/` that names no item.
+    Unknown,
+}
+
+fn todo_target(path: &str) -> Option<TodoTarget> {
+    if path == "/api/todo" {
+        return Some(TodoTarget::Add);
+    }
+    let rest = path.strip_prefix("/api/todo/")?;
+    let (id, leaf) = rest.split_once('/').unwrap_or((rest, ""));
+    // Only an id written plainly names an item, so `/api/todo/+1` or `/api/todo/01` names none.
+    let Some(number) = id.parse::<i64>().ok().filter(|number| *number > 0 && number.to_string() == id) else { return Some(TodoTarget::Unknown) };
+    Some(match leaf {
+        "" if !rest.ends_with('/') => TodoTarget::Edit(number),
+        "delete" => TodoTarget::Delete(number),
+        "move" => TodoTarget::Move(number),
+        _ => TodoTarget::Unknown,
+    })
+}
+
+fn todo_json(item: &crate::store::todo::TodoItem) -> Value {
+    json!({
+        "id": item.id,
+        "name": item.name,
+        "description": item.description,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "version": item.version,
+    })
+}
+
+/// The Todo list, newest first, and whether actions are on, so the page offers its changes only then.
+/// No database yet reads as an empty list and creates nothing.
+fn todo_list(roots: &StorageRoots) -> Response {
+    let items = if roots.database().exists() { Store::open(&roots.database()).and_then(|store| store.todos()) } else { Ok(Vec::new()) };
+    match items {
+        Ok(items) => reply(200, json!({ "todos": items.iter().map(todo_json).collect::<Vec<_>>(), "remote_actions": remote_actions_on(roots) })),
+        Err(_) => error(500, "the Todo list could not be read"),
+    }
+}
+
+/// Adds, edits, deletes or moves a Todo item for the web, if actions are on, and leaves an audit line for the
+/// attempt as todo.add, todo.edit, todo.delete or todo.move; a move's line names the project it went to.
+fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, target: TodoTarget, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let action = match target {
+        TodoTarget::Add => "todo.add",
+        TodoTarget::Edit(_) | TodoTarget::Unknown => "todo.edit",
+        TodoTarget::Delete(_) => "todo.delete",
+        TodoTarget::Move(_) => "todo.move",
+    };
+    let sent = body_object(body, MAX_TODO_BODY);
+    let project = match (target, &sent) {
+        (TodoTarget::Move(_), Ok(sent)) => sent.get("project").and_then(Value::as_str).unwrap_or_default().to_string(),
+        _ => String::new(),
+    };
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action, project: &project, run: None, outcome, reason: Some(reason) }, now);
+    };
+    let failed = "the Todo list could not be changed";
+    let id = match target {
+        TodoTarget::Add => None,
+        TodoTarget::Edit(id) | TodoTarget::Delete(id) | TodoTarget::Move(id) => Some(id),
+        TodoTarget::Unknown => {
+            audit(Outcome::Refused, "no such item");
+            return error(404, "not found");
+        }
+    };
+    // Only an existing database holds items; an add creates it.
+    let store = if id.is_some() && !roots.database().exists() {
+        None
+    } else {
+        match Store::open(&roots.database()) {
+            Ok(store) => Some(store),
+            Err(_) => {
+                audit(Outcome::Refused, failed);
+                return error(500, failed);
+            }
+        }
+    };
+    let item = match (id, &store) {
+        (Some(id), Some(store)) => match store.todo(id) {
+            Ok(item) => item,
+            Err(_) => {
+                audit(Outcome::Refused, failed);
+                return error(500, failed);
+            }
+        },
+        _ => None,
+    };
+    let label = match (&item, &sent) {
+        (Some(item), _) => Some(item.name.clone()),
+        (None, Ok(sent)) if id.is_none() => sent.get("name").and_then(Value::as_str).map(str::to_string),
+        _ => None,
+    };
+    let named = |why: &str| label.as_deref().map_or_else(|| why.to_string(), |label| format!("{label}: {why}"));
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, &named("remote actions are off"));
+        return error(404, "not found");
+    }
+    let sent = match sent {
+        Ok(sent) => sent,
+        Err(refusal) => {
+            audit(Outcome::Refused, &named("bad request body"));
+            return refusal;
+        }
+    };
+    let bad = |why: &str| {
+        audit(Outcome::Refused, &named(why));
+        error(400, "the request body is not one this action takes")
+    };
+    let gone = || {
+        audit(Outcome::Refused, "no such item");
+        error(404, "not found")
+    };
+    let broken = || {
+        audit(Outcome::Refused, &named(failed));
+        error(500, failed)
+    };
+    let Some(store) = store else { return gone() };
+    let Some(id) = id else {
+        let Some((name, description, _)) = todo_fields(&sent, false) else { return bad("bad request body") };
+        return match store.todo_add(&name, &description, now as i64) {
+            Ok(TodoChange::Done(item)) => {
+                audit(Outcome::Allowed, &item.name);
+                reply(200, json!({ "todo": todo_json(&item) }))
+            }
+            Ok(TodoChange::Invalid(why)) => {
+                audit(Outcome::Refused, &named(&why));
+                reply(400, json!({ "error": why }))
+            }
+            _ => broken(),
+        };
+    };
+    let Some(item) = item else { return gone() };
+    match target {
+        TodoTarget::Edit(_) => {
+            let Some((name, description, Some(version))) = todo_fields(&sent, true) else { return bad("bad request body") };
+            match store.todo_edit(id, &name, &description, version, now as i64) {
+                Ok(TodoChange::Done(item)) => {
+                    audit(Outcome::Allowed, &item.name);
+                    reply(200, json!({ "todo": todo_json(&item) }))
+                }
+                Ok(TodoChange::Invalid(why)) => {
+                    audit(Outcome::Refused, &named(&why));
+                    reply(400, json!({ "error": why }))
+                }
+                Ok(TodoChange::Conflict) => {
+                    audit(Outcome::Refused, &named("the item changed since it was read"));
+                    error(409, "The item changed since you opened it; nothing was written")
+                }
+                Ok(TodoChange::Unknown) => gone(),
+                Err(_) => broken(),
+            }
+        }
+        TodoTarget::Delete(_) => {
+            if !sent.is_empty() {
+                return bad("bad request body");
+            }
+            match store.todo_delete(id) {
+                Ok(true) => {
+                    audit(Outcome::Allowed, &item.name);
+                    reply(200, json!({ "deleted": id }))
+                }
+                Ok(false) => gone(),
+                Err(_) => broken(),
+            }
+        }
+        TodoTarget::Move(_) => {
+            const KEYS: [&str; 4] = ["project", "fields", "version", "queue_when_approved"];
+            let queue_when_approved = match sent.get("queue_when_approved") {
+                None | Some(Value::Null) => Some(false),
+                Some(Value::Bool(wanted)) => Some(*wanted),
+                _ => None,
+            };
+            let (true, Some(queue_when_approved)) = (sent.keys().all(|key| KEYS.contains(&key.as_str())) && !project.is_empty(), queue_when_approved) else {
+                return bad("bad request body");
+            };
+            let (input, version) = match feature_save_fields(&sent, None) {
+                Ok(parsed) => parsed,
+                Err(refusal) => {
+                    audit(Outcome::Refused, &named("bad request body"));
+                    return refusal;
+                }
+            };
+            let feature = input.name.clone().unwrap_or_default();
+            // The save is the editor's own; the item goes only once it succeeded.
+            match provider.map(|provider| provider.save_feature(&project, None, &input, version.as_deref())) {
+                Some(Ok(FeatureSave::Saved)) => match store.todo_delete(id) {
+                    Ok(_) => {
+                        audit(Outcome::Allowed, &named(&feature));
+                        if let (true, Some(provider)) = (queue_when_approved, provider) {
+                            let wished = matches!(provider.set_queue_wish(&project, &feature, true), Ok(Some(())));
+                            let (outcome, why) = if wished { (Outcome::Allowed, "requested") } else { (Outcome::Refused, "the wish could not be kept") };
+                            let reason = format!("{feature}: {why}");
+                            let _ = record(roots, &Attempt { identity: "web", action: "queue.wish", project: &project, run: None, outcome, reason: Some(&reason) }, now);
+                        }
+                        reply(200, json!({ "feature": feature, "project": project }))
+                    }
+                    Err(_) => {
+                        audit(Outcome::Refused, &named("the draft was saved but the item could not be removed"));
+                        error(500, "the draft was saved but the Todo item could not be removed")
+                    }
+                },
+                Some(Ok(FeatureSave::Invalid(why))) => {
+                    audit(Outcome::Refused, &named(&why));
+                    reply(422, json!({ "error": why }))
+                }
+                Some(Ok(FeatureSave::Conflict(why))) => {
+                    audit(Outcome::Refused, &named(&why));
+                    reply(409, json!({ "error": why }))
+                }
+                // The reason can name a path on this machine, so the caller is only told it failed.
+                Some(Err(_)) => {
+                    audit(Outcome::Refused, &named("the feature could not be saved"));
+                    error(500, "the feature could not be saved")
+                }
+                _ => {
+                    audit(Outcome::Refused, &named("no such project"));
+                    error(404, "not found")
+                }
+            }
+        }
+        TodoTarget::Add | TodoTarget::Unknown => gone(),
+    }
+}
+
+/// The name, description (empty when not sent) and, for an edit, version of a Todo add or edit body.
+fn todo_fields(sent: &serde_json::Map<String, Value>, edit: bool) -> Option<(String, String, Option<i64>)> {
+    let keys: &[&str] = if edit { &["name", "description", "version"] } else { &["name", "description"] };
+    if !sent.keys().all(|key| keys.contains(&key.as_str())) {
+        return None;
+    }
+    let name = sent.get("name")?.as_str()?.to_string();
+    let description = match sent.get("description") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text.clone(),
+        _ => return None,
+    };
+    let version = match sent.get("version") {
+        None => None,
+        Some(version) => Some(version.as_i64()?),
+    };
+    Some((name, description, version))
+}
+
+/// A request body as a JSON object of at most `max` bytes; an empty body is an empty object.
+fn body_object(body: &[u8], max: usize) -> Result<serde_json::Map<String, Value>, Response> {
+    if body.len() > max {
+        return Err(error(413, "the request body is too large"));
+    }
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(serde_json::Map::new());
+    }
+    match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(fields)) => Ok(fields),
+        _ => Err(error(400, "the request body is not one this action takes")),
+    }
 }
 
 /// Adds (`feature` is `None`) or edits a feature for the web's editor, if actions are on, and leaves an audit
@@ -1966,6 +2324,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "model")).flatten() {
         return switch_model(roots, provider, id, run, body);
     }
+    if let Some((id, feature)) = feature_target(path, "queue-wish").filter(|_| matches!(request.method, "GET" | "HEAD" | "POST")) {
+        return queue_wish(roots, provider, id, feature, request.method, body);
+    }
     if let Some((id, feature)) = (request.method == "POST").then(|| feature_target(path, "promote")).flatten() {
         return promote_feature(roots, provider, id, feature, body);
     }
@@ -2003,6 +2364,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, leaf)) = (request.method == "POST").then(|| queue_target(path)).flatten() {
         return change_queue(roots, provider, id, leaf, body);
+    }
+    if let Some(target) = (request.method == "POST").then(|| todo_target(path)).flatten() {
+        return change_todo(roots, provider, target, body);
     }
     if !matches!(request.method, "GET" | "HEAD") {
         return error(405, "this view is read-only");
@@ -2056,6 +2420,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             },
             None => error(404, "not found"),
         };
+    }
+    if path == "/api/todo" {
+        return todo_list(roots);
     }
     if path == "/api/audit" {
         return match crate::remote_audit::read(roots, AUDIT_LIMIT) {

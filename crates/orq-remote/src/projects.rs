@@ -1254,6 +1254,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         self.change_queue_of(id, change)
     }
 
+    fn queue_wish(&self, id: &str, feature: &str) -> Result<Option<bool>, String> {
+        self.queue_wish_of(id, feature)
+    }
+
+    fn set_queue_wish(&self, id: &str, feature: &str, wanted: bool) -> Result<Option<()>, String> {
+        self.set_queue_wish_of(id, feature, wanted)
+    }
+
     fn start_run_with(&self, id: &str, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<orq_core::remote_inbox::RunStart, String> {
         self.launch(id, Launch::One(feature), Some(profiles))
     }

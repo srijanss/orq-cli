@@ -450,6 +450,37 @@ impl StoreProjects {
     }
 
     /// Changes project `id`'s queue from the web.
+    /// Whether `feature` of project `id` is to be queued once approved; a wish whose feature left the ledger is
+    /// dropped. orq.db is not created for a read.
+    pub(super) fn queue_wish_of(&self, id: &str, feature: &str) -> Result<Option<bool>, String> {
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
+        if !self.roots.database().exists() {
+            return Ok(Some(false));
+        }
+        let store = Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
+        if !store.queue_wish(&root, feature).map_err(|error| error.to_string())? {
+            return Ok(Some(false));
+        }
+        let listed = read_ledger(&orq_features::ledger_path(&git))?.iter().any(|entry| entry.feature_name == feature);
+        if !listed {
+            store.queue_wish_drop(&root, feature).map_err(|error| error.to_string())?;
+        }
+        Ok(Some(listed))
+    }
+
+    /// Asks (`wanted`) or no longer asks for `feature` of project `id` to be queued once approved.
+    pub(super) fn set_queue_wish_of(&self, id: &str, feature: &str, wanted: bool) -> Result<Option<()>, String> {
+        let Some((_, root)) = self.settings_key(id)? else { return Ok(None) };
+        let store = Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
+        if wanted {
+            store.queue_wish_set(&root, feature, now).map_err(|error| error.to_string())?;
+        } else {
+            store.queue_wish_drop(&root, feature).map_err(|error| error.to_string())?;
+        }
+        Ok(Some(()))
+    }
+
     pub(super) fn change_queue_of(&self, id: &str, change: &QueueChange) -> Result<RunControlOutcome, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(RunControlOutcome::Unknown) };
         if let QueueChange::Add { profiles: Some(chosen), .. } = change {

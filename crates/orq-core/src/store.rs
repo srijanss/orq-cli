@@ -13,6 +13,7 @@ use crate::review_lifecycle::{Gate, ProviderState, ReviewLifecycle};
 use crate::storage::{check_head_sha, check_run_id, write_atomic};
 
 pub mod run_queue;
+pub mod todo;
 
 /// One stored review report, pinned to the head SHA it reviewed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +29,7 @@ pub struct ReviewRecord {
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
 /// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
-const MIGRATIONS: [&str; 11] = ["
+const MIGRATIONS: [&str; 12] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -111,12 +112,27 @@ const MIGRATIONS: [&str; 11] = ["
     ALTER TABLE run_queue ADD COLUMN target_run TEXT;
     ALTER TABLE run_queue ADD COLUMN answer TEXT;
     ALTER TABLE run_queue ADD COLUMN skipped TEXT;
+", "
+    CREATE TABLE todos (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT    NOT NULL,
+        description TEXT    NOT NULL,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        version     INTEGER NOT NULL
+    );
+    CREATE TABLE queue_wishes (
+        project_root TEXT    NOT NULL,
+        feature      TEXT    NOT NULL,
+        requested_at INTEGER NOT NULL,
+        PRIMARY KEY (project_root, feature)
+    );
 "];
 
 /// Whether each migration, by version, changes or drops something an older Orq reads or writes. A migration that
 /// only adds (a table, a column with a default, an index) leaves older Orq binaries using the database; one that
 /// breaks them raises the database's `compat_from`, so they are refused instead of misreading it.
-const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false];
+const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false, false];
 
 /// Whether migration `version` leaves an older Orq unable to use the database. An unknown version is taken as breaking.
 pub fn is_breaking(version: u32) -> bool {
