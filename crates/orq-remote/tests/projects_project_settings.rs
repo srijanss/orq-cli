@@ -87,6 +87,7 @@ fn a_saved_role_and_delivery_are_given_with_the_revision_and_an_unset_role_says_
         "queue_hours": null,
         "queue_stop_on_failure": false,
         "queue_wait_for_review": true,
+        "pull_target_before_runs": true,
         "revision": revision
     }}));
 }

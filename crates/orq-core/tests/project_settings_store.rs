@@ -217,3 +217,24 @@ fn waiting_for_each_run_s_review_before_the_next_is_on_by_default_and_saved_off(
     drop(conn);
     assert!(Store::read_project_settings(&db, Path::new("/work/beta")).unwrap().settings.queue_wait_for_review);
 }
+
+#[test]
+fn pulling_the_target_before_runs_is_on_by_default_and_saved_off() {
+    let (mut store, db) = open("pull-target");
+    let alpha = Path::new("/work/alpha");
+    assert!(ProjectSettings::default().pull_target_before_runs, "on by default");
+    assert!(store.project_settings(alpha).unwrap().settings.pull_target_before_runs);
+
+    let off = ProjectSettings { pull_target_before_runs: false, ..ProjectSettings::default() };
+    store.save_project_settings(alpha, 0, &off).unwrap();
+    assert!(!store.project_settings(alpha).unwrap().settings.pull_target_before_runs);
+    store.save_project_settings(Path::new("/work/beta"), 0, &ProjectSettings::default()).unwrap();
+    drop(store);
+
+    // A database from before the column: a project saved then pulls, as the default does.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("ALTER TABLE project_settings DROP COLUMN pull_target_before_runs;").unwrap();
+    conn.pragma_update(None, "user_version", 12).unwrap();
+    drop(conn);
+    assert!(Store::read_project_settings(&db, Path::new("/work/beta")).unwrap().settings.pull_target_before_runs);
+}

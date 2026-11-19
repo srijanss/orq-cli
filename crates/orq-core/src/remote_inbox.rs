@@ -2192,7 +2192,7 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("remote actions are off"));
         return error(404, "not found");
     }
-    const KEYS: [&str; 9] = ["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "queue_hours", "queue_stop_on_failure", "queue_wait_for_review", "revision"];
+    const KEYS: [&str; 10] = ["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "queue_hours", "queue_stop_on_failure", "queue_wait_for_review", "pull_target_before_runs", "revision"];
     if let Some(refusal) = body_refusal(body, &KEYS) {
         audit(Outcome::Refused, Some("bad request body"));
         return refusal;
@@ -2283,7 +2283,12 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("bad request body"));
         return error(400, "the request body is not one this action takes");
     };
-    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review };
+    // Pulling the target before runs is on unless false, as it is by default.
+    let Some(pull_target_before_runs) = fields.get("pull_target_before_runs").map_or(Some(true), Value::as_bool) else {
+        audit(Outcome::Refused, Some("bad request body"));
+        return error(400, "the request body is not one this action takes");
+    };
+    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs };
     match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
         Some(Ok(ProjectSettingsSave::Saved(settings))) => {
             audit(Outcome::Allowed, None);

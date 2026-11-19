@@ -866,6 +866,7 @@ impl StoreProjects {
             "queue_hours": stored.settings.queue_hours,
             "queue_stop_on_failure": stored.settings.queue_stop_on_failure,
             "queue_wait_for_review": stored.settings.queue_wait_for_review,
+            "pull_target_before_runs": stored.settings.pull_target_before_runs,
             "revision": stored.revision,
         })
     }

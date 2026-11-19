@@ -295,7 +295,23 @@ impl StoreProjects {
                         }
                     }
                 }
-                None => {
+                None => 'start: {
+                    // A project whose runs end in an MR has its target pulled first, so the run starts
+                    // from what was merged on the forge; a target that cannot be brought level holds it.
+                    if settings.pull_target_before_runs && settings.delivery != orq_core::project_settings::Delivery::MergeLocal {
+                        let target = project_target(root);
+                        let outcome = orq_git::pull_target(root, PULL_REMOTE, &target);
+                        // A forge out of reach for a moment is tried again next round; only a few
+                        // rounds in a row of it pause the queue.
+                        let failures = FetchFailures::of(&self.roots, git);
+                        if matches!(outcome, orq_git::PullOutcome::FetchFailed { .. }) && failures.add() < FETCH_FAILURES_BEFORE_PAUSE {
+                            return Ok(started);
+                        }
+                        failures.clear();
+                        if !outcome.may_start() {
+                            break 'start Some(format!("{}: {}: pull by hand, then resume", git.name, outcome.describe(PULL_REMOTE, &target)));
+                        }
+                    }
                     let profiles = entry.profiles.as_ref().map(|p| LaunchProfiles { implementer: p.implementer.clone(), reviewer: p.reviewer.clone() });
                     match self.launch(id, Launch::Queued(&entry.feature), profiles.as_ref()) {
                         Ok(RunStart::Started(run) | RunStart::StartedWithWarning { run, .. }) => {
@@ -766,6 +782,55 @@ fn action_applies(runs: &RunStore, git: &orq_git::Project, action: &QueueAction)
         RunPhase::Completed | RunPhase::Merged => Err(format!("{run} was accepted or merged")),
         phase => Err(format!("{run} is {}", phase.as_str().replace('_', " "))),
     }
+}
+
+/// The remote a project's target is pulled from: the one its runs push to.
+const PULL_REMOTE: &str = "origin";
+
+/// How many queue rounds in a row the target may fail to fetch before the queue pauses.
+const FETCH_FAILURES_BEFORE_PAUSE: u32 = 3;
+
+/// The count of a project's queue rounds in a row whose pull of the target could not fetch, kept in a
+/// file under the state root so it outlasts the server's restarts.
+struct FetchFailures(std::path::PathBuf);
+
+impl FetchFailures {
+    fn of(roots: &orq_core::storage::StorageRoots, git: &orq_git::Project) -> Self {
+        Self(roots.state.join("queue-pull").join(orq_git::project_id(git)))
+    }
+
+    /// Counts one more failure; the count now.
+    fn add(&self) -> u32 {
+        let count = std::fs::read_to_string(&self.0).ok().and_then(|text| text.trim().parse::<u32>().ok()).unwrap_or(0) + 1;
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&self.0, count.to_string());
+        count
+    }
+
+    fn clear(&self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The branch project `root`'s runs target: its configured base branch, else the remote's default,
+/// else `main`, as `orq run` picks it.
+fn project_target(root: &Path) -> String {
+    let configured = orq_orchestrator::load_run_settings(root, &|name| std::env::var(name).ok()).ok().and_then(|settings| settings.base_branch);
+    configured.unwrap_or_else(|| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["symbolic-ref", "--short", &format!("refs/remotes/{PULL_REMOTE}/HEAD")])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|text| text.trim().strip_prefix(&format!("{PULL_REMOTE}/")).map(str::to_string))
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or_else(|| "main".to_string())
+    })
 }
 
 /// The server-log line for a start that failed with `why`, with any secret in it redacted.

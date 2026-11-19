@@ -65,6 +65,9 @@ pub struct ProjectSettings {
     /// Whether the queue starts nothing more while a run it started waits for review: an open MR,
     /// or a run that needs a person's review. On by default; off, only the run limit holds it.
     pub queue_wait_for_review: bool,
+    /// Whether a project whose runs end in an MR has its local target fast-forwarded from the
+    /// remote after an MR merges and before each run. On by default; off, the target is left as it is.
+    pub pull_target_before_runs: bool,
 }
 
 impl Default for ProjectSettings {
@@ -78,6 +81,7 @@ impl Default for ProjectSettings {
             queue_hours: None,
             queue_stop_on_failure: false,
             queue_wait_for_review: true,
+            pull_target_before_runs: true,
         }
     }
 }

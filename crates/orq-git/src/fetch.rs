@@ -97,6 +97,169 @@ pub fn local_target_base(repo: &Path, branch: &str) -> Result<String, FetchError
     Ok(sha)
 }
 
+/// What [`pull_target`] did to a project's local target branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullOutcome {
+    /// The local target was behind the remote's and was moved to it, fast-forward only.
+    FastForwarded { from: String, to: String },
+    /// The local target is the remote's: nothing to do.
+    UpToDate,
+    /// The local target has `n` commits the remote's lacks, and none the other way: nothing to do.
+    Ahead { n: usize },
+    /// Both sides have commits the other lacks: nothing was touched.
+    Diverged { local_only: usize, remote_only: usize },
+    /// The checkout is on the target and has changes to these tracked files (at most
+    /// [`DIRTY_FILES_NAMED`]): nothing was touched.
+    Dirty { files: Vec<String> },
+    /// Git refused the fast-forward, for this reason (an untracked file it would overwrite, ...):
+    /// nothing was touched.
+    Refused { reason: String },
+    /// The remote's target could not be fetched, for this reason with any credentials in a URL
+    /// removed: nothing was touched.
+    FetchFailed { message: String },
+}
+
+impl PullOutcome {
+    /// The outcome's name, as events and the API carry it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PullOutcome::FastForwarded { .. } => "fast_forwarded",
+            PullOutcome::UpToDate => "up_to_date",
+            PullOutcome::Ahead { .. } => "ahead",
+            PullOutcome::Diverged { .. } => "diverged",
+            PullOutcome::Dirty { .. } => "dirty",
+            PullOutcome::Refused { .. } => "refused",
+            PullOutcome::FetchFailed { .. } => "fetch_failed",
+        }
+    }
+
+    /// Whether a run may start from the local target now: it holds every commit `remote` has.
+    pub fn may_start(&self) -> bool {
+        matches!(self, PullOutcome::FastForwarded { .. } | PullOutcome::UpToDate | PullOutcome::Ahead { .. })
+    }
+
+    /// What happened to `target`, pulled from `remote`, in a line for a person.
+    pub fn describe(&self, remote: &str, target: &str) -> String {
+        let plural = |n: usize| if n == 1 { "commit" } else { "commits" };
+        match self {
+            PullOutcome::FastForwarded { from, to } => format!("{target} fast-forwarded from {} to {}", short(from), short(to)),
+            PullOutcome::UpToDate => format!("{target} is up to date with {remote}"),
+            PullOutcome::Ahead { n } => format!("{target} is {n} {} ahead of {remote}", plural(*n)),
+            PullOutcome::Diverged { local_only, remote_only } => {
+                format!("{target} has {local_only} {} not on {remote} and {remote} has {remote_only} not here", plural(*local_only))
+            }
+            PullOutcome::Dirty { files } => format!("{target} has uncommitted changes to {}", files.join(", ")),
+            PullOutcome::Refused { reason } => format!("{target} could not be fast-forwarded: {reason}"),
+            PullOutcome::FetchFailed { message } => format!("{target} could not be fetched from {remote}: {message}"),
+        }
+    }
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..8).unwrap_or(sha)
+}
+
+/// How many changed files a [`PullOutcome::Dirty`] names.
+pub const DIRTY_FILES_NAMED: usize = 10;
+
+/// Fetch `remote/target` into `repo` (the project's main checkout) and bring the local `target` up
+/// to it, fast-forward only. Never merges, rebases, resets, stashes or pushes.
+pub fn pull_target(repo: &Path, remote: &str, target: &str) -> PullOutcome {
+    let to = match fetch_target_base(repo, remote, target) {
+        Ok(to) => to,
+        Err(error) => return PullOutcome::FetchFailed { message: redact_urls(&error.to_string()) },
+    };
+    match fast_forward(repo, target, &to) {
+        Ok(outcome) | Err(outcome) => outcome,
+    }
+}
+
+/// Brings the local `target` of `repo` up to the fetched commit `to`, fast-forward only.
+fn fast_forward(repo: &Path, target: &str, to: &str) -> Result<PullOutcome, PullOutcome> {
+    let refused = |reason: String| PullOutcome::Refused { reason: redact_urls(&reason) };
+    let from = local_target_base(repo, target).map_err(|error| refused(error.to_string()))?;
+    if from == to {
+        return Ok(PullOutcome::UpToDate);
+    }
+    let counted = git(repo, &["rev-list", "--left-right", "--count", &format!("{from}...{to}"), "--"]).map_err(|error| refused(error.to_string()))?;
+    if !counted.status.success() {
+        return Err(refused(stderr(&counted)));
+    }
+    let counts: Vec<usize> = String::from_utf8_lossy(&counted.stdout).split_whitespace().filter_map(|n| n.parse().ok()).collect();
+    let [local_only, remote_only] = counts[..] else { return Err(refused(format!("unexpected rev-list output {counts:?}"))) };
+    match (local_only, remote_only) {
+        (0, 0) => return Ok(PullOutcome::UpToDate),
+        (n, 0) => return Ok(PullOutcome::Ahead { n }),
+        (0, _) => {}
+        _ => return Ok(PullOutcome::Diverged { local_only, remote_only }),
+    }
+    let head = git(repo, &["symbolic-ref", "--quiet", "HEAD"]).map_err(|error| refused(error.to_string()))?;
+    let target_ref = format!("refs/heads/{target}");
+    let on_target = head.status.success() && String::from_utf8_lossy(&head.stdout).trim() == target_ref;
+    if on_target {
+        let files = changed_tracked_files(repo).map_err(refused)?;
+        if !files.is_empty() {
+            return Ok(PullOutcome::Dirty { files });
+        }
+        let merged = git(repo, &["merge", "--ff-only", "--quiet", to]).map_err(|error| refused(error.to_string()))?;
+        if !merged.status.success() {
+            return Err(refused(stderr(&merged)));
+        }
+    } else {
+        if let Some(path) = checked_out_elsewhere(repo, &target_ref).map_err(refused)? {
+            return Err(refused(format!("{target} is checked out in {path}; update it there")));
+        }
+        // Compare-and-swap on the old value: the ref moves only from the commit that was checked.
+        let updated = git(repo, &["update-ref", &target_ref, to, &from]).map_err(|error| refused(error.to_string()))?;
+        if !updated.status.success() {
+            return Err(refused(stderr(&updated)));
+        }
+    }
+    Ok(PullOutcome::FastForwarded { from, to: to.to_string() })
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+/// The worktree of `repo`'s repository, if any, that has `branch_ref` checked out.
+fn checked_out_elsewhere(repo: &Path, branch_ref: &str) -> Result<Option<String>, String> {
+    let listed = git(repo, &["worktree", "list", "--porcelain", "-z"]).map_err(|error| error.to_string())?;
+    if !listed.status.success() {
+        return Err(stderr(&listed));
+    }
+    let mut path = None;
+    for field in listed.stdout.split(|b| *b == 0) {
+        let field = String::from_utf8_lossy(field);
+        if let Some(at) = field.strip_prefix("worktree ") {
+            path = Some(at.to_string());
+        } else if field.strip_prefix("branch ") == Some(branch_ref) {
+            return Ok(path);
+        }
+    }
+    Ok(None)
+}
+
+/// The tracked files the checkout at `repo` has changes to, staged or not, at most
+/// [`DIRTY_FILES_NAMED`]; untracked files are not looked at.
+fn changed_tracked_files(repo: &Path) -> Result<Vec<String>, String> {
+    let status = git(repo, &["status", "--porcelain=v1", "-z", "--untracked-files=no"]).map_err(|error| error.to_string())?;
+    if !status.status.success() {
+        return Err(stderr(&status));
+    }
+    let mut files = Vec::new();
+    let mut entries = status.stdout.split(|b| *b == 0).filter(|entry| entry.len() > 3);
+    while let Some(entry) = entries.next() {
+        files.push(String::from_utf8_lossy(&entry[3..]).into_owned());
+        // A rename or copy is followed by the path it came from.
+        if matches!(entry[0], b'R' | b'C') {
+            entries.next();
+        }
+    }
+    files.truncate(DIRTY_FILES_NAMED);
+    Ok(files)
+}
+
 fn check_remote(remote: &str) -> Result<(), FetchError> {
     let ok = !remote.is_empty()
         && !remote.starts_with('-')
