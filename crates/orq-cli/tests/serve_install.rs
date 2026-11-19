@@ -336,3 +336,20 @@ fn an_identical_install_after_a_failed_one_enables_and_starts_the_unit() {
     assert!(!out.contains("already installed"), "{out}");
     assert_eq!(world.systemctl_calls(), format!("{SHOW}systemctl --user daemon-reload\nsystemctl --user enable --now orq-serve.service\n"));
 }
+
+#[test]
+fn install_refuses_a_bad_passkey_host_or_a_folder_that_is_not_a_git_project_before_writing_anything() {
+    let world = World::new("validate");
+    let repo = world.repo.display().to_string();
+    let bad_host = world.serve(&["install", "--repo", &repo, "--listen", "127.0.0.1:7999", "--passkey-host", "Not A Host"]);
+    assert!(!bad_host.status.success(), "{}", text(&bad_host.stdout));
+    assert!(text(&bad_host.stderr).contains("the passkey host"), "{}", text(&bad_host.stderr));
+    let plain = world.root.join("plain folder");
+    fs::create_dir_all(&plain).unwrap();
+    let plain = plain.display().to_string();
+    let not_git = world.serve(&["install", "--repo", &plain, "--listen", "127.0.0.1:7999"]);
+    assert!(!not_git.status.success(), "{}", text(&not_git.stdout));
+    assert!(text(&not_git.stderr).contains("cannot resolve project"), "{}", text(&not_git.stderr));
+    assert!(!world.unit_path().exists(), "nothing is written");
+    assert_eq!(world.systemctl_calls(), "", "systemd is never asked");
+}

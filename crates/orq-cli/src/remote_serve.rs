@@ -661,6 +661,13 @@ fn install_command(args: &[OsString]) -> ExitCode {
         Ok(repo) => repo,
         Err(code) => return code,
     };
+    // What `orq serve` itself would refuse is refused here, before a unit is written that could only fail.
+    if let Some(Err(reason)) = flags.passkey_host.as_deref().map(orq_core::passkey_register::PasskeyHost::from_setting) {
+        return fail(reason);
+    }
+    if let Err(err) = orq_git::resolve_project(&repo) {
+        return fail(format!("cannot resolve project: {err:?}"));
+    }
     let binary = match std::env::current_exe() {
         Ok(exe) => match restart_target(&exe, &installed_binary()) {
             Ok(binary) => binary,
