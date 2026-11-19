@@ -719,6 +719,23 @@ fn a_clean_up_that_cannot_record_its_steps_stops_and_says_so() {
 }
 
 #[test]
+fn a_clean_up_that_cannot_read_the_runs_history_changes_nothing() {
+    let s = setup("cleanup-unreadable", |_| {});
+    let before = std::fs::read_to_string(s.repo.join(".tdd-features.json")).unwrap();
+    merge_on_forge(&s);
+    mr(&s, ProviderState::Merged);
+    let events = s.roots.state.join("runs").join(RUN).join("events.jsonl");
+    let mut text = std::fs::read_to_string(&events).unwrap();
+    text.push_str("not an event\n");
+    std::fs::write(&events, text).unwrap();
+    let (status, body) = send_with_passkey(&s, "POST", &cleanup_path(), json!({"confirm": true}).to_string().as_bytes());
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(std::fs::read_to_string(s.repo.join(".tdd-features.json")).unwrap(), before, "the ledger is not touched");
+    assert!(!s.roots.state.join("ledger-snapshots").exists(), "nor snapshotted");
+    assert!(s.worktree.exists() && branch_exists(&s), "nor the worktree or branch deleted");
+}
+
+#[test]
 fn with_after_merge_ask_nothing_is_cleaned_up_until_pressed() {
     let s = setup("cleanup-ask", |_| {});
     let notes = notify_to_file(&s);

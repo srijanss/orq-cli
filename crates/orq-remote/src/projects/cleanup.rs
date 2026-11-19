@@ -301,7 +301,10 @@ impl StoreProjects {
         } else {
             record.remote.as_str()
         };
-        let recorded = store.events(&record.run_id).unwrap_or_default();
+        // Without the run's history the steps already done are unknown, so none is run.
+        let recorded = store
+            .events(&record.run_id)
+            .map_err(|error| format!("the run's history could not be read: {error:?}"))?;
         let done_before = |step: &str| {
             recorded
                 .iter()
