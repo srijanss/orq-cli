@@ -350,7 +350,7 @@ fn a_failed_run_stays_marked_failed_its_dependents_never_start_and_the_rest_go_o
     let entries = queue(&s)["entries"].clone();
     assert_eq!((&entries[0]["feature"], &entries[0]["state"], &entries[0]["run"]), (&json!("COM-01"), &json!("failed"), &json!("run-1-COM-01")));
     assert_eq!((&entries[1]["feature"], &entries[1]["state"]), (&json!("COM-02"), &json!("waiting")));
-    assert_eq!(entries[1]["reason"], "waiting for COM-01");
+    assert_eq!(entries[1]["reason"], "waiting for COM-01 (failed)", "the dependency's run says why it is not met");
 }
 
 #[test]

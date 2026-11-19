@@ -75,9 +75,10 @@ impl StoreProjects {
         // Under a machine run limit the slots are scarce: one start at a time, each to the project
         // whose entry that may start now was added first, until a pass starts nothing.
         let one_at_a_time = machine.limits.max_active.is_some();
+        let runs = RunStore::new(&self.roots.state);
         loop {
             if one_at_a_time {
-                projects.sort_by_cached_key(|(_, git, root)| oldest_waiting(&store, git, root));
+                projects.sort_by_cached_key(|(_, git, root)| oldest_waiting(&store, &runs, git, root));
             }
             let mut started = false;
             for (project, git, root) in &projects {
@@ -199,13 +200,14 @@ impl StoreProjects {
             }
         }
         let ledger = read_ledger(&orq_features::ledger_path(git))?;
+        let unlanded = unlanded_dependencies(Some(store), &runs, git, &queue, &ledger)?;
         let mut started = false;
         for entry in ordered(&queue.entries, &ledger) {
             if entry.run.is_some() || entry.skipped.is_some() {
                 continue;
             }
             match &entry.action {
-                None if orq_features::check_run_eligibility(&ledger, &entry.feature).is_err() => continue,
+                None if start_wait(&ledger, &unlanded, &entry.feature).is_err() => continue,
                 None => {}
                 // An action its run no longer needs is marked so and passed over, never started.
                 Some(action) => {
@@ -532,11 +534,21 @@ impl StoreProjects {
                 entry.feature == *feature && matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) && entry.run.as_deref().is_some_and(|run| self.being_accepted(run).is_some())
             })
         });
-        let mut answer = queue_json_with(&queue, &ledger, &review);
+        let store = if self.roots.database().exists() { Some(Store::open(&self.roots.database()).map_err(|error| error.to_string())?) } else { None };
+        let unlanded = unlanded_dependencies(store.as_ref(), &RunStore::new(&self.roots.state), &git, &queue, &ledger)?;
+        let mut answer = queue_json_with(&queue, &ledger, &review, &unlanded);
         if let Some(warning) = PullWarning::of(&self.roots, &git).read() {
             answer["target_pull_warning"] = json!(warning);
         }
         Ok(Some(answer))
+    }
+
+    /// Why a start of `feature` in project `git`, whose ledger is `ledger`, would wait in the queue
+    /// for a dependency whose work has not landed yet, as the queue page says it; `None` when none.
+    pub(super) fn dependency_wait(&self, git: &orq_git::Project, ledger: &[FeatureEntry], feature: &str) -> Result<Option<String>, String> {
+        let store = if self.roots.database().exists() { Some(Store::open(&self.roots.database()).map_err(|error| error.to_string())?) } else { None };
+        let unlanded = unlanded_of(store.as_ref(), &RunStore::new(&self.roots.state), git, ledger, std::iter::once(feature))?;
+        Ok(start_wait(ledger, &unlanded, feature).err())
     }
 
     fn read_queue(&self, root: &Path) -> Result<RunQueue, String> {
@@ -706,7 +718,117 @@ pub fn project_queue_json(store: &Store, runs: &RunStore, git: &orq_git::Project
     let queue = store.queue(root).map_err(|error| format!("cannot read the queue: {error}"))?;
     let ledger = read_ledger(&orq_features::ledger_path(git))?;
     let wait = store.project_settings(root).map_or(true, |stored| stored.settings.queue_wait_for_review);
-    Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait)))
+    let unlanded = unlanded_dependencies(Some(store), runs, git, &queue, &ledger)?;
+    Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait), &unlanded))
+}
+
+/// For the features queued to start, why each dependency that has a run in `runs` has not landed yet
+/// where the next run starts from: the dependency's name to the reason, read from its newest run. A
+/// dependency whose work landed, or that never ran, is not named.
+fn unlanded_dependencies(store: Option<&Store>, runs: &RunStore, git: &orq_git::Project, queue: &RunQueue, ledger: &[FeatureEntry]) -> Result<std::collections::HashMap<String, String>, String> {
+    let starts = queue.entries.iter().filter(|entry| entry.run.is_none() && entry.action.is_none() && entry.skipped.is_none());
+    unlanded_of(store, runs, git, ledger, starts.map(|entry| entry.feature.as_str()))
+}
+
+/// Why each dependency of `features` that has a run in `runs` has not landed yet, as
+/// [`unlanded_dependencies`] gives it.
+fn unlanded_of<'f>(store: Option<&Store>, runs: &RunStore, git: &orq_git::Project, ledger: &[FeatureEntry], features: impl Iterator<Item = &'f str>) -> Result<std::collections::HashMap<String, String>, String> {
+    let root = orq_git::main_checkout_root(git).unwrap_or_else(|| git.root.clone());
+    let mut deps: Vec<&str> = Vec::new();
+    for feature in features {
+        let Some(listed) = ledger.iter().find(|listed| listed.feature_name == feature) else { continue };
+        for dep in &listed.depends_on {
+            if !deps.contains(&dep.as_str()) {
+                deps.push(dep);
+            }
+        }
+    }
+    let newest = orq_orchestrator::newest_runs_of(runs, &orq_git::project_id(git), &deps)?;
+    let mut unlanded = std::collections::HashMap::new();
+    for (dep, run) in newest {
+        if let Some(why) = landing(store, runs, &root, &run) {
+            unlanded.insert(dep, why);
+        }
+    }
+    Ok(unlanded)
+}
+
+/// Why the work of run `run`, followed through the runs it was continued as, has not landed yet in
+/// the project whose main checkout is `root`; `None` once it has. A run delivered for review has
+/// landed once the newest MR `store` holds for it merged and the local target holds that MR's head.
+fn landing(store: Option<&Store>, runs: &RunStore, root: &Path, run: &str) -> Option<String> {
+    let mut run = run.to_string();
+    for _ in 0..CONTINUATIONS_FOLLOWED {
+        let Ok(events) = runs.events(&run) else { return None };
+        let summary = orq_orchestrator::summarize_live_run(&events);
+        if let Some(next) = summary.resumed_as {
+            run = next;
+            continue;
+        }
+        return match summary.phase {
+            RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Accepting => Some("running".to_string()),
+            RunPhase::Failed | RunPhase::Blocked => Some("failed".to_string()),
+            RunPhase::NeedsReview => Some("in review".to_string()),
+            RunPhase::Completed if matches!(ending(&events), Some("review_ready" | "pushed")) => mr_landing(store, runs, root, &run, &events),
+            RunPhase::Completed | RunPhase::Merged => None,
+        };
+    }
+    Some("running".to_string())
+}
+
+/// Why run `run`, delivered for review, has not landed yet, from the newest MR `store` holds for it
+/// and the run's `events`.
+fn mr_landing(store: Option<&Store>, runs: &RunStore, root: &Path, run: &str, events: &[orq_orchestrator::Event]) -> Option<String> {
+    use orq_core::review_lifecycle::{ProviderState, LOCAL_PROVIDER};
+    let Some(Ok(all)) = store.map(|store| store.lifecycles_for_run(run)) else { return Some("in review".to_string()) };
+    let mr = all.into_iter().rev().find(|lifecycle| lifecycle.provider != LOCAL_PROVIDER)?;
+    match mr.state {
+        ProviderState::Open => Some("in review".to_string()),
+        ProviderState::Closed => Some("MR closed without merging".to_string()),
+        ProviderState::Merged => {
+            let head = mr.observed_head_sha.unwrap_or(mr.reported_head_sha);
+            let target = runs.load(run).ok().map(|record| record.target_branch).filter(|target| !target.is_empty()).unwrap_or_else(|| project_target(root));
+            // A squash or rebase merge never holds the head itself; the pull the refresh made after
+            // the merge, when it brought the target level, says the merge is in.
+            let pulled = || events.iter().any(|event| event.kind == TARGET_PULLED_EVENT && matches!(event.payload["outcome"].as_str(), Some("fast_forwarded" | "up_to_date" | "ahead" | "no_remote")));
+            let landed = target_holds(root, &target, &head) || pulled();
+            (!landed).then(|| "merged, not pulled".to_string())
+        }
+    }
+}
+
+/// Whether the local branch `target` of the repository at `root` holds commit `sha`.
+fn target_holds(root: &Path, target: &str, sha: &str) -> bool {
+    if sha.is_empty() || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["merge-base", "--is-ancestor", sha, &format!("refs/heads/{target}")])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Whether a start of `feature` may go now: the ledger's rule, and every dependency's work landed
+/// (none named in `unlanded`). Why not, as the queue shows it: `waiting for A (running), B`.
+fn start_wait(ledger: &[FeatureEntry], unlanded: &std::collections::HashMap<String, String>, feature: &str) -> Result<(), String> {
+    let mut waiting: Vec<String> = match orq_features::check_run_eligibility(ledger, feature) {
+        Ok(_) => Vec::new(),
+        Err(Ineligible::UnmetDependencies(unmet)) => unmet.iter().map(|dep| dep.name.clone()).collect(),
+        Err(why) => return Err(why.to_string()),
+    };
+    let depends_on = ledger.iter().find(|entry| entry.feature_name == feature).map_or(&[][..], |entry| &entry.depends_on[..]);
+    for dep in depends_on {
+        if unlanded.contains_key(dep) && !waiting.contains(dep) {
+            waiting.push(dep.clone());
+        }
+    }
+    if waiting.is_empty() {
+        return Ok(());
+    }
+    let named: Vec<String> = waiting.iter().map(|dep| unlanded.get(dep).map_or_else(|| dep.clone(), |why| format!("{dep} ({why})"))).collect();
+    Err(format!("waiting for {}", named.join(", ")))
 }
 
 /// Why the last accept of run `run` failed, when the run is still where that failure left it.
@@ -736,12 +858,13 @@ fn in_review(store: &Store, runs: &RunStore, queue: &RunQueue, git: &orq_git::Pr
 /// The queue as the page and `orq queue list` show it: entries in the order they will start, each
 /// with its state (`running`, `failed`, `next`, `queued` or `waiting`) and why it waits.
 pub fn queue_json(queue: &RunQueue, ledger: &[FeatureEntry]) -> Value {
-    queue_json_with(queue, ledger, &std::collections::HashMap::new())
+    queue_json_with(queue, ledger, &std::collections::HashMap::new(), &std::collections::HashMap::new())
 }
 
 /// [`queue_json`], with the entries whose run waits for a person's review (`review`: feature to its
-/// open MR's address, if any) shown waiting for review.
-fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::collections::HashMap<String, Option<String>>) -> Value {
+/// open MR's address, if any) shown waiting for review, and those whose dependency's work has not
+/// landed (`unlanded`: dependency to why) shown waiting for it.
+fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::collections::HashMap<String, Option<String>>, unlanded: &std::collections::HashMap<String, String>) -> Value {
     let mut next_given = false;
     let mut waiting_for_review = None;
     let entries: Vec<Value> = ordered(&queue.entries, ledger)
@@ -749,7 +872,7 @@ fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::coll
         .map(|entry| {
             let eligible = || match &entry.action {
                 Some(_) => Ok(()),
-                None => orq_features::check_run_eligibility(ledger, &entry.feature).map(drop),
+                None => start_wait(ledger, unlanded, &entry.feature),
             };
             let (state, reason) = match (&entry.run, entry.failed) {
                 _ if entry.skipped.is_some() => ("skipped", entry.skipped.as_ref().map(|why| format!("No longer needed: {why}"))),
@@ -762,11 +885,7 @@ fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::coll
                         ("next", None)
                     }
                     Ok(_) => ("queued", None),
-                    Err(Ineligible::UnmetDependencies(unmet)) => {
-                        let names: Vec<String> = unmet.iter().map(|dep| dep.name.clone()).collect();
-                        ("waiting", Some(format!("waiting for {}", names.join(", "))))
-                    }
-                    Err(why) => ("waiting", Some(why.to_string())),
+                    Err(why) => ("waiting", Some(why)),
                 }
             };
             let profiles = entry.profiles.as_ref();
@@ -1105,11 +1224,12 @@ fn local_minute_of_day() -> u16 {
 
 /// When the first entry of project `git`'s queue at `root` that may start now was added; a queue
 /// with none comes last.
-fn oldest_waiting(store: &Store, git: &orq_git::Project, root: &Path) -> i64 {
+fn oldest_waiting(store: &Store, runs: &RunStore, git: &orq_git::Project, root: &Path) -> i64 {
     let queue = store.queue(root).unwrap_or_default();
     // An entry still waiting on its dependencies cannot take a slot, so it does not count.
     let ledger = read_ledger(&orq_features::ledger_path(git)).unwrap_or_default();
-    let may_start = |entry: &&QueuedFeature| entry.run.is_none() && !entry.failed && entry.skipped.is_none() && (entry.action.is_some() || orq_features::check_run_eligibility(&ledger, &entry.feature).is_ok());
+    let unlanded = unlanded_dependencies(Some(store), runs, git, &queue, &ledger).unwrap_or_default();
+    let may_start = |entry: &&QueuedFeature| entry.run.is_none() && !entry.failed && entry.skipped.is_none() && (entry.action.is_some() || start_wait(&ledger, &unlanded, &entry.feature).is_ok());
     queue.entries.iter().filter(may_start).map(|entry| entry.added_at).min().unwrap_or(i64::MAX)
 }
 

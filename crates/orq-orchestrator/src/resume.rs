@@ -161,6 +161,30 @@ pub fn newest_run_of(store: &RunStore, project_id: &str, feature_id: &str) -> Re
     Ok(newest_record(store, project_id, feature_id)?.map(|record| record.run_id))
 }
 
+/// [`newest_run_of`] for each of `features` at once, in one pass over the runs: each feature that ran,
+/// to its newest run. Nothing is reconciled or changed.
+pub fn newest_runs_of(store: &RunStore, project_id: &str, features: &[&str]) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut latest: std::collections::HashMap<String, RunOrder> = std::collections::HashMap::new();
+    let mut runs = std::collections::HashMap::new();
+    if features.is_empty() {
+        return Ok(runs);
+    }
+    for run_id in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
+        let Ok(record) = store.load(&run_id) else {
+            continue;
+        };
+        if record.project_id != project_id || !features.contains(&record.feature_id.as_str()) {
+            continue;
+        }
+        let order = run_order(&run_id, &store.events(&run_id).unwrap_or_default());
+        if latest.get(&record.feature_id).is_none_or(|best| *best < order) {
+            latest.insert(record.feature_id.clone(), order);
+            runs.insert(record.feature_id, run_id);
+        }
+    }
+    Ok(runs)
+}
+
 fn newest_record(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<RunRecord>, String> {
     let mut latest: Option<(RunOrder, RunRecord)> = None;
     for run_id in store

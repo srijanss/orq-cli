@@ -965,6 +965,12 @@ impl StoreProjects {
         if let Some(why) = self.start_blocked_of(&git)? {
             return Ok(RunStart::Refused(why));
         }
+        // A person starting one feature by hand may start it before its dependency has landed, but is
+        // told so, in the words the queue page uses.
+        let waiting = match target {
+            Launch::One(feature) => self.dependency_wait(&git, &ledger, feature)?,
+            _ => None,
+        };
         let started = match (target, profiles) {
             (Launch::Group(_), profiles) => launcher.start_group(&project.path, &ordered, profiles),
             (Launch::One(feature), Some(chosen)) => launcher.start_with(&project.path, feature, chosen),
@@ -972,10 +978,14 @@ impl StoreProjects {
             (Launch::Queued(feature), profiles) => launcher.start_unattended(&project.path, feature, profiles),
         };
         match started {
-            Ok(run) => Ok(match launcher.start_warning(&project.path) {
-                Some(warning) => RunStart::StartedWithWarning { run, warning: orq_core::redact::redact(&warning) },
-                None => RunStart::Started(run),
-            }),
+            Ok(run) => {
+                let warnings: Vec<String> = waiting.into_iter().chain(launcher.start_warning(&project.path)).collect();
+                Ok(if warnings.is_empty() {
+                    RunStart::Started(run)
+                } else {
+                    RunStart::StartedWithWarning { run, warning: orq_core::redact::redact(&warnings.join("; ")) }
+                })
+            }
             Err(LaunchError::Refused(why)) => Ok(RunStart::Refused(orq_core::redact::redact(&why))),
             Err(LaunchError::Failed(why)) => Err(why),
         }
