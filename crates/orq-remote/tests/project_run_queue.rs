@@ -583,6 +583,27 @@ fn a_failed_entry_whose_run_recovered_and_merged_leaves_the_queue_and_lifts_the_
     assert_eq!(lifted["reason"], "run-1-COM-01 recovered and merged");
 }
 
+/// A round that sees the failed entry's run going again, between its failure and its end, follows it
+/// again; the pause its failure caused holds until the run ends well, and is lifted then.
+#[test]
+fn a_failed_entry_seen_going_again_lifts_its_pause_once_the_run_merges() {
+    let s = setup("queue-failed-going-then-merged");
+    git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+    save_settings(&s, json!({"max_active_runs": 1, "queue_stop_on_failure": true}));
+    queue_add(&s, &["COM-01", "COM-02"]);
+    round(&s);
+    stage_failed(&s, "run-1-COM-01", "verify", "red");
+    round(&s);
+    event_in(&s, "run-1-COM-01", "stage.started", "gate_fix", json!({}));
+    round(&s);
+    assert_eq!(states(&s), pairs(&[("COM-01", "running"), ("COM-02", "next")]), "the entry follows its run again");
+
+    end_run(&s, "run-1-COM-01", "merged");
+    round(&s);
+    assert_eq!(paused(&s), Value::Null, "the pause its failure caused is lifted once it merges");
+    assert_eq!(started(&s), ["COM-01", "COM-02"]);
+}
+
 /// A pause a person set, or one another run's failure caused, is kept when a failed entry's run
 /// recovers: only the entry leaves.
 #[test]

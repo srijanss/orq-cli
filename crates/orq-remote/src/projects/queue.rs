@@ -137,26 +137,13 @@ impl StoreProjects {
                 _ => settle(store, &runs, &run, Some(root), settings.queue_wait_for_review),
             };
             // A failure already marked is looked at again every round: the run may have recovered since,
-            // and then the entry follows it again and any pause its failure caused is lifted.
+            // and then the entry follows it again. The pause its failure caused holds until the run
+            // ends well or waits for review, which lifts it below, in this round or a later one.
             if entry.failed {
                 match &settled {
                     Settled::Failed(_) | Settled::MrClosed => continue,
                     Settled::ContinuedAs(_) => {}
-                    Settled::Going => {
-                        store.queue_started(root, &entry.feature, &run).map_err(failed)?;
-                        continue;
-                    }
-                    Settled::InReview(_) => {
-                        store.queue_started(root, &entry.feature, &run).map_err(failed)?;
-                        self.lift_failure_pause(store, id, root, &run, &what, "recovered and waits for review").map_err(failed)?;
-                        in_review = true;
-                        continue;
-                    }
-                    Settled::Done => {
-                        store.queue_remove(root, &entry.feature).map_err(failed)?;
-                        self.lift_failure_pause(store, id, root, &run, &what, "recovered and merged").map_err(failed)?;
-                        continue;
-                    }
+                    Settled::Going | Settled::InReview(_) | Settled::Done => store.queue_started(root, &entry.feature, &run).map_err(failed)?,
                 }
             }
             // The entry follows the run it was continued as, as far as it goes, so that a run that
@@ -170,8 +157,15 @@ impl StoreProjects {
             match settled {
                 Settled::Going if matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) => accepts_going.push((run, entry.feature.clone())),
                 Settled::Going => {}
-                Settled::InReview(_) => in_review = true,
-                Settled::Done => drop(store.queue_remove(root, &entry.feature).map_err(failed)?),
+                // A run that ends well or waits for review lifts the pause its own failure caused.
+                Settled::InReview(_) => {
+                    in_review = true;
+                    self.lift_failure_pause(store, id, root, &run, &what, "recovered and waits for review").map_err(failed)?;
+                }
+                Settled::Done => {
+                    store.queue_remove(root, &entry.feature).map_err(failed)?;
+                    self.lift_failure_pause(store, id, root, &run, &what, "recovered and merged").map_err(failed)?;
+                }
                 // A chain longer than one round follows: the run at its end may already wait for
                 // review, so a queue that waits for review starts nothing until a later round knows.
                 Settled::ContinuedAs(next) => {
