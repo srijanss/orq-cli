@@ -1,6 +1,6 @@
 //! A failed Accept's banner says what failed, lists each failing test by name with its own output (the first one
 //! open), links to the Accept's full log and keeps the end of the output collapsed below; with no test named the
-//! end of the output shows open. A failed verify gate on the timeline lists its failing tests the same way.
+//! end of the output shows open. A failed verify gate on the timeline keeps its failing tests behind a closed line.
 
 mod web_deps;
 
@@ -107,7 +107,7 @@ fn with_no_test_names_the_tail_shows_open_and_no_log_named_gives_no_link() {
 }
 
 #[test]
-fn a_failed_verify_gate_on_the_timeline_lists_its_failing_tests() {
+fn a_failed_verify_gate_on_the_timeline_keeps_its_failing_tests_behind_a_closed_line() {
     let run = json!({"run_id": "r-rev", "feature": "f-r-rev", "state": "failed", "stage": "verify", "started_at": null, "updated_at": null, "target_branch": "main"});
     let events = json!([
         {"event_id": "e-1", "kind": "stage.started", "stage": "verify", "attempt": 1, "occurred_at": "2026-11-19T10:00:00Z"},
@@ -118,6 +118,8 @@ fn a_failed_verify_gate_on_the_timeline_lists_its_failing_tests() {
         return;
     }
     let end = last(&out);
-    assert_eq!(count(end, ".run-step [data-failed-test]"), 2, "{out}");
-    assert!(texts(end).iter().any(|t| t == "orq-core::store saves"), "{out}");
+    // The banner's open list is not the timeline's: there they sit behind one closed line (web_timeline_failed_tests).
+    assert_eq!(count(end, ".run-step [data-failed-test]"), 0, "{out}");
+    assert!(texts(end).iter().any(|t| t == "Failed tests: 2"), "{out}");
+    assert!(!texts(end).iter().any(|t| t == "orq-core::store saves"), "{out}");
 }

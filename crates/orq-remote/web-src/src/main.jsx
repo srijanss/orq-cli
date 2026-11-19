@@ -4499,6 +4499,32 @@ function StepDetail({ place, kind, label, startOpen = false, children }) {
   );
 }
 
+// A failed step's named tests behind one closed line, "Failed tests: N": opened, each name with its output
+// under it (or a note that none was kept), and how many more failed than are named.
+function StepFailedTests({ place, tests, more }) {
+  if (tests.length === 0) return null;
+  const label = "Failed tests: " + tests.length + (more > 0 ? " (and " + more + " more)" : "");
+  return (
+    <StepDetail place={place} kind="failed-tests" label={label}>
+      <ul className="run-step-failed-tests" data-step-failed-tests>
+        {tests.map((test, at) => (
+          <li key={at}>
+            <code className="failed-test-name" data-step-failed-test-name>{test.name}</code>
+            {test.output === "" ? (
+              <p className="field-hint muted">No output was kept.</p>
+            ) : (
+              <div className="run-step-excerpt">
+                <pre data-step-failed-test-output tabIndex={0} aria-label={"Output of " + test.name}>{test.output}</pre>
+              </div>
+            )}
+          </li>
+        ))}
+        {more > 0 ? <li className="field-hint muted" data-step-failed-tests-more>{"and " + more + " more"}</li> : null}
+      </ul>
+    </StepDetail>
+  );
+}
+
 function RunSteps({ runId, events, rounds, running, ended = false, failedRun = false, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
   // The step a failed run ended on: the last failed one. Its excerpt starts open; every other starts closed.
@@ -4552,7 +4578,7 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
                 {onLogs ? <button type="button" className="link-button" data-step-logs onClick={() => onLogs(failedLog)}>See the logs</button> : null}
               </p>
             ) : null}
-            {failure === null ? null : <FailedTests tests={failure.failed.tests} more={failure.failed.more} />}
+            {failure === null ? null : <StepFailedTests place={place} tests={failure.failed.tests} more={failure.failed.more} />}
             {failedLog !== null && failedLog.excerpt !== "" ? (
               <StepDetail place={place} kind="excerpt" label="Log lines at the error" startOpen={at === failedOn}>
                 <div className="run-step-excerpt">
