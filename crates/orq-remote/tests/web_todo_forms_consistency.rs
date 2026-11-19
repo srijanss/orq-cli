@@ -198,6 +198,22 @@ fn move_and_draft_with_claude_use_the_same_picker_waiting_on_a_project() {
     assert_eq!(count(moved, ".feature-modal [data-project-choice]"), 2, "{out}");
 }
 
+#[test]
+fn an_empty_picker_opened_from_the_keyboard_chooses_nothing_on_enter_or_space() {
+    let unavailable = json!({"status": 200, "json": {"projects": [{"id": "alpha", "name": "alpha", "available": false, "features": 1, "active_runs": 0, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24}]}});
+    let selectors = [".feature-modal [data-plan-project][aria-expanded=true]", ".feature-modal [data-plan-project][data-value=\"\"]", "[data-plan-start]:disabled"];
+    for key in ["Enter", " "] {
+        let steps = vec![json!({"click": "[data-todo-draft]"}), json!({"keydown": "ArrowDown", "on": ".feature-modal [data-plan-project]"}), json!({"keydown": key, "on": ".feature-modal [data-plan-project]"})];
+        // A page error fails the run, so a crash on the empty list fails here.
+        let Some(out) = run_with("/dashboard", vec![unavailable.clone()], vec![todos(vec![item(7, "dark mode")])], steps, &selectors) else { return };
+        let all = frames(&out);
+        assert_eq!(count(&all[3], selectors[0]), 1, "the empty list opens: {out}");
+        let last = all.last().unwrap();
+        assert_eq!(count(last, selectors[1]), 1, "nothing chosen: {out}");
+        assert_eq!(count(last, selectors[2]), 1, "{out}");
+    }
+}
+
 /// The Dashboard in Chromium at `width` with one Todo item, after pressing `open` and waiting for `wait`, then the
 /// `measured` steps; `None` without a Chromium.
 fn dashboard_in_chromium(width: u32, open: &str, wait: &str, measured: Value) -> Option<Value> {

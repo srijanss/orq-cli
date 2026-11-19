@@ -2923,15 +2923,16 @@ function ProjectChooser({ choices, value, onChoose, label = "Project", placehold
       if (event.target === button.current && (event.key === "Enter" || event.key === " " || event.key === "ArrowDown")) {
         event.preventDefault();
         show();
-        setActive(Math.max(chosen, 0));
+        setActive(choices.length === 0 ? -1 : Math.max(chosen, 0));
       }
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
+      if (choices.length === 0) return;
       const from = active < 0 ? chosen : active;
       setActive(event.key === "ArrowDown" ? Math.min(from + 1, last) : Math.max(from < 0 ? last : from - 1, 0));
-    } else if ((event.key === "Enter" || event.key === " ") && active >= 0) {
+    } else if ((event.key === "Enter" || event.key === " ") && choices[active] !== undefined) {
       event.preventDefault();
       choose(choices[active]);
     } else if (event.key === "Tab") {
