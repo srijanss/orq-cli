@@ -461,9 +461,12 @@ impl StoreProjects {
         if !pulls_target(&settings) {
             return;
         }
-        let target = project_target(&root);
-        let outcome = orq_git::pull_target(&root, PULL_REMOTE, &target);
-        let message = orq_core::redact::redact(&outcome.describe(PULL_REMOTE, &target));
+        // The MR merged into the run's own target, on its own remote, which a run started with a
+        // different target than the project's names in its record.
+        let target = if record.target_branch.is_empty() { project_target(&root) } else { record.target_branch.clone() };
+        let remote = if record.remote.is_empty() { PULL_REMOTE } else { record.remote.as_str() };
+        let outcome = orq_git::pull_target(&root, remote, &target);
+        let message = orq_core::redact::redact(&outcome.describe(remote, &target));
         let mut payload = json!({"outcome": outcome.kind(), "target": target, "message": message, "review": review_ref(&review)});
         if let orq_git::PullOutcome::FastForwarded { from, to } = &outcome {
             payload["from"] = json!(from);

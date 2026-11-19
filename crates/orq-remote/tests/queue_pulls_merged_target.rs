@@ -129,6 +129,11 @@ fn event(store: &RunStore, run: &str, kind: &str, payload: Value) {
 
 /// A run of `feature` in the project at `repo`, started from the local `main` and still running.
 fn seed_run(state: &Path, repo: &Path, run: &str, feature: &str) {
+    seed_run_on(state, repo, run, feature, "main");
+}
+
+/// A run of `feature` in the project at `repo`, started from the local `target` and still running.
+fn seed_run_on(state: &Path, repo: &Path, run: &str, feature: &str, target: &str) {
     let store = RunStore::new(state);
     let record = RunRecord {
         delivery: Default::default(),
@@ -137,8 +142,8 @@ fn seed_run(state: &Path, repo: &Path, run: &str, feature: &str) {
         feature_id: feature.into(),
         remote: "origin".into(),
         provider: "gitlab".into(),
-        target_branch: "main".into(),
-        base_sha: git(repo, &["rev-parse", "refs/heads/main"]),
+        target_branch: target.into(),
+        base_sha: git(repo, &["rev-parse", &format!("refs/heads/{target}")]),
         branch: format!("orq/{run}"),
         worktree: repo.join(".claude/worktrees").join(run),
         repository: String::new(),
@@ -475,6 +480,31 @@ fn a_queue_pull_that_brings_the_target_level_clears_the_merge_warning() {
     assert_eq!(base_sha(&s, "run-2-COM-02"), merged);
     assert!(card(&s)["queue"].get("target_pull_warning").is_none(), "{}", card(&s));
     assert!(queue(&s).get("target_pull_warning").is_none());
+}
+
+/// A run that targeted another branch than the project's pulls that branch once its MR merged, and
+/// leaves the project's target alone.
+#[test]
+fn a_merged_run_on_another_target_pulls_its_own_target() {
+    let s = setup("pull-run-target", Delivery::Review, |_| {});
+    git(&s.repo, &["branch", "release"]);
+    git(&s.repo, &["push", "-q", "origin", "release"]);
+    let main = git(&s.repo, &["rev-parse", "refs/heads/main"]);
+    seed_run_on(&s.roots.state, &s.repo, "run-9-COM-01", "COM-01", "release");
+    git(&s.forge, &["fetch", "-q", "origin"]);
+    git(&s.forge, &["checkout", "-q", "-b", "release", "origin/release"]);
+    std::fs::write(s.forge.join("release.txt"), "release\n").unwrap();
+    git(&s.forge, &["add", "."]);
+    git(&s.forge, &["commit", "-q", "-m", "merged into release"]);
+    git(&s.forge, &["push", "-q", "origin", "release"]);
+    let merged = git(&s.forge, &["rev-parse", "HEAD"]);
+    mr(&s, "run-9-COM-01", ProviderState::Merged);
+
+    provider(&s).review_looked_at("run-9-COM-01");
+    assert_eq!(git(&s.repo, &["rev-parse", "refs/heads/release"]), merged, "the run's target was pulled");
+    assert_eq!(git(&s.repo, &["rev-parse", "refs/heads/main"]), main, "the project's target was left alone");
+    let pulled = events_of(&s, "run-9-COM-01", "target.pulled");
+    assert_eq!((pulled[0]["outcome"].as_str(), pulled[0]["target"].as_str()), (Some("fast_forwarded"), Some("release")), "{pulled:?}");
 }
 
 #[test]
