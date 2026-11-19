@@ -228,15 +228,20 @@ pub fn run_worktree_tests(worktree: &Path, configured: Option<&[String]>) -> Res
 }
 
 /// Run each of `steps` in `worktree`, in order; the first to fail ends the run and the rest do not run.
+/// Each step sees what a verify gate step sees: `PATH`, `HOME` and `TERM`, and nothing else of this process.
 pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
+    run_steps_with_env(worktree, steps, &[])
+}
+
+/// `run_steps`, with `env` added to what each step sees, as the verify gate adds its configured env.
+pub fn run_steps_with_env(worktree: &Path, steps: &[Vec<String>], env: &[(String, String)]) -> Result<(), String> {
     for argv in steps {
         let Some((program, args)) = argv.split_first() else { continue };
         let cannot_run = |e: std::io::Error| format!("could not run `{}`: {e}", argv.join(" "));
         let (mut reader, writer) = std::io::pipe().map_err(cannot_run)?;
-        let mut command = std::process::Command::new(program);
+        let mut command = crate::gate_stage::step_command(program, worktree, env);
         command
             .args(args)
-            .current_dir(worktree)
             .stdin(std::process::Stdio::null())
             .stdout(writer.try_clone().map_err(cannot_run)?)
             .stderr(writer);

@@ -57,7 +57,7 @@ pub use checkpoint::{
 };
 pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
-pub use accept::{accept_check, accept_run, accept_run_by, fail_interrupted_accept, run_steps, run_worktree_tests, ACCEPT_INTERRUPTED};
+pub use accept::{accept_check, accept_run, accept_run_by, fail_interrupted_accept, run_steps, run_steps_with_env, run_worktree_tests, ACCEPT_INTERRUPTED};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use merge_local::{merge_into_base, merge_setting_aside, waiting_on_dirty_checkout, MergeOutcome, SetAsideOutcome};
 pub use conflict_fix::{conflict_fix_task, fix_rebase_conflicts, ConflictFixOutcome};

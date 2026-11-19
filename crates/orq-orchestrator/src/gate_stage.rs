@@ -439,6 +439,20 @@ fn listed_count(line: &str) -> Option<Option<u64>> {
     Some(tests.checked_add(benchmarks))
 }
 
+/// A test step's command, as the verify gate and an Accept both start it: in `worktree`, with only
+/// `REQUIRED_ENV` of this process's environment, and `env` added.
+pub(crate) fn step_command(program: &str, worktree: &Path, env: &[(String, String)]) -> Command {
+    let mut command = Command::new(program);
+    command.current_dir(worktree).env_clear();
+    for name in REQUIRED_ENV {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.envs(env.iter().map(|(name, value)| (name, value)));
+    command
+}
+
 /// Run one step; the second value is why it failed, if it did.
 fn run_step(
     record: &RunRecord,
@@ -451,15 +465,9 @@ fn run_step(
     let Some((program, args)) = argv.split_first() else {
         return Ok((None, Some("is empty".to_string())));
     };
-    let mut command = Command::new(program);
-    command.args(args).current_dir(&record.worktree).env_clear();
-    for name in REQUIRED_ENV {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    command.envs(env.iter().map(|(name, value)| (name, value)));
+    let mut command = step_command(program, &record.worktree, env);
     command
+        .args(args)
         .stdin(Stdio::null())
         .stdout(stdout.try_clone()?)
         .stderr(log.try_clone()?);

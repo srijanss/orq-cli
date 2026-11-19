@@ -136,10 +136,16 @@ pub fn orq_command(home: &TempHome) -> Command {
 /// folders are this test process's own, under `process_temp_dir()`, with `ORQ_TEST_SANDBOX=1`.
 /// HOME is left alone so git keeps the person's identity; a test that sets an `XDG_*` folder
 /// itself afterwards overrides that one. Under nextest every test is its own process, so its own
-/// folders.
+/// folders. No `HERDR_*` variable of this process is passed on, so a test run from a Herdr pane
+/// cannot reach the person's real Herdr; a test that wants one sets its own fake afterwards.
 pub fn sandboxed_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let root = process_temp_dir().join("orq-home");
     let mut command = Command::new(program);
+    for (name, _) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"HERDR_") {
+            command.env_remove(name);
+        }
+    }
     command
         .env(SANDBOX_FLAG, "1")
         .env("XDG_DATA_HOME", root.join("data"))

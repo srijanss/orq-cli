@@ -127,6 +127,35 @@ fn a_sandboxed_command_points_every_orq_folder_into_the_temp_dir_and_keeps_home(
     assert_eq!(lines[5], "/home/someone");
 }
 
+/// A test run from a Herdr pane inherits that Herdr's variables; what the helper starts must not
+/// find the person's real Herdr through them.
+#[test]
+fn a_sandboxed_command_started_from_a_herdr_pane_gets_no_herdr_variable() {
+    let names = [
+        "HERDR_ACTIVE_PANE_CWD",
+        "HERDR_ACTIVE_PANE_ID",
+        "HERDR_ACTIVE_TAB_ID",
+        "HERDR_ACTIVE_WORKSPACE_ID",
+        "HERDR_SOCKET_PATH",
+        "HERDR_BIN_PATH",
+        "HERDR_ENV",
+        "HERDR_PANE_ID",
+        "HERDR_TAB_ID",
+        "HERDR_WORKSPACE_ID",
+    ];
+    for name in names {
+        std::env::set_var(name, "from-the-real-herdr");
+    }
+    let mut command = orq_test_support::sandboxed_command("sh");
+    command.args(["-c", "env"]);
+
+    let output = command.output().unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let herdr: Vec<&str> = stdout.lines().filter(|line| line.starts_with("HERDR_")).collect();
+    assert_eq!(herdr, Vec::<&str>::new(), "the child still sees Herdr");
+}
+
 #[test]
 fn the_helper_keeps_orq_data_inside_the_temp_home() {
     let real = FakeRealHome::new("helper");

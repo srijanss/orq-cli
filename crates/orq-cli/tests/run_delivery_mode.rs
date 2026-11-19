@@ -71,7 +71,6 @@ fn orq(w: &World, args: &[&str]) -> Output {
         .env("ORQ_FORGE", "gh")
         .env("GIT_SSH_COMMAND", &w.ssh)
         .env("PATH", &w.path)
-        .env_remove("HERDR_ACTIVE_PANE_CWD")
         .output()
         .unwrap()
 }
@@ -688,8 +687,36 @@ fn a_merge_local_run_that_catches_up_with_a_base_adding_a_stack_reports_the_step
 #[test]
 fn merging_with_set_aside_detached_in_herdr_names_the_run_that_carries_on_and_it_still_merges() {
     let (w, blocked) = blocked_on_a_dirty_checkout("merge-set-aside-detached");
+    merges_detached_in_herdr(&w, &blocked);
+}
+
+/// A test run from a Herdr pane (or under a server started in one) inherits that Herdr's variables. The run
+/// the test starts must not open a pane in that Herdr: it runs detached in the test's sandbox and merges.
+#[test]
+fn merging_detached_in_herdr_from_inside_a_herdr_pane_never_reaches_that_herdr_and_still_merges() {
+    let (w, blocked) = blocked_on_a_dirty_checkout("merge-set-aside-detached-in-pane");
+    let called = w.home.join("real-herdr-called");
+    let herdr = w.home.join("real-herdr");
+    executable(&herdr, &format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 1\n", called.display()));
+    for (name, value) in [
+        ("HERDR_ENV", "1"),
+        ("HERDR_SOCKET_PATH", w.home.join("real-herdr.sock").to_str().unwrap()),
+        ("HERDR_BIN_PATH", herdr.to_str().unwrap()),
+        ("HERDR_PANE_ID", "w1:p1"),
+        ("HERDR_TAB_ID", "w1:t1"),
+        ("HERDR_WORKSPACE_ID", "w1"),
+    ] {
+        std::env::set_var(name, value);
+    }
+
+    merges_detached_in_herdr(&w, &blocked);
+
+    assert!(!called.exists(), "the person's Herdr was asked: {}", std::fs::read_to_string(&called).unwrap_or_default());
+}
+
+fn merges_detached_in_herdr(w: &World, blocked: &str) {
     let repo = w.repo.root().to_str().unwrap().to_string();
-    let out = orq(&w, &["run", "merge", &blocked, "--set-aside", "--detach", "--in-herdr", "--repo", &repo]);
+    let out = orq(w, &["run", "merge", blocked, "--set-aside", "--detach", "--in-herdr", "--repo", &repo]);
     assert_eq!(out.status.code(), Some(0), "{}\n{}", text(&out.stdout), text(&out.stderr));
 
     let stdout = text(&out.stdout);
@@ -697,9 +724,9 @@ fn merging_with_set_aside_detached_in_herdr_names_the_run_that_carries_on_and_it
     assert_ne!(merged, blocked, "{stdout}");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     // The detached runner records the run as it starts, so it may not be there yet.
-    let ended = |run: &str| store(&w).events(run).is_ok_and(|events| events.iter().any(|e| e.kind == "run.completed"));
+    let ended = |run: &str| store(w).events(run).is_ok_and(|events| events.iter().any(|e| e.kind == "run.completed"));
     while !ended(&merged) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    assert_eq!(ending(&w, &merged).as_deref(), Some("merged"));
+    assert_eq!(ending(w, &merged).as_deref(), Some("merged"));
 }
