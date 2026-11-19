@@ -194,7 +194,7 @@ impl StoreProjects {
         let record = store
             .load(run)
             .map_err(|error| format!("run {run} is unreadable: {error:?}"))?;
-        self.run_steps(id, &root, &store, &record);
+        self.run_steps(id, &root, &store, &record)?;
         let events = store
             .events(run)
             .map_err(|error| format!("run {run} is unreadable: {error:?}"))?;
@@ -220,9 +220,9 @@ impl StoreProjects {
         if tried {
             return;
         }
-        self.run_steps(id, root, store, record);
+        let unrecorded = self.run_steps(id, root, store, record).err();
         let events = store.events(&record.run_id).unwrap_or_default();
-        let stopped = STEPS.iter().find_map(|step| {
+        let stopped = unrecorded.or_else(|| STEPS.iter().find_map(|step| {
             let event = events
                 .iter()
                 .rev()
@@ -233,7 +233,7 @@ impl StoreProjects {
                     .unwrap_or("a step did not finish")
                     .to_string()
             })
-        });
+        }));
         use orq_core::remote_audit::{record as audit, Attempt, Outcome};
         let (outcome, ending, detail) = match &stopped {
             None => (
@@ -288,8 +288,9 @@ impl StoreProjects {
     }
 
     /// Runs the clean-up steps of `record` in project `id`, whose main checkout is `root`, in order,
-    /// recording each; once one is not done, those after it are skipped.
-    fn run_steps(&self, id: &str, root: &Path, store: &RunStore, record: &RunRecord) {
+    /// recording each; once one is not done, those after it are skipped. Why it stopped, when a step
+    /// could not be recorded.
+    fn run_steps(&self, id: &str, root: &Path, store: &RunStore, record: &RunRecord) -> Result<(), String> {
         let target = if record.target_branch.is_empty() {
             project_target(root)
         } else {
@@ -326,8 +327,10 @@ impl StoreProjects {
             if outcome.state != "done" && stopped.is_none() {
                 stopped = Some(step);
             }
-            record_step(store, record, step, &outcome);
+            // A step that cannot be recorded stops the clean-up: nothing is done that the run would not show.
+            record_step(store, record, step, &outcome)?;
         }
+        Ok(())
     }
 
     /// Marks the run's feature completed in the project's ledger, after snapshotting the ledger.
@@ -442,8 +445,8 @@ fn step_name(step: &str) -> &'static str {
     }
 }
 
-/// Appends `step`'s outcome to the run's events.
-fn record_step(store: &RunStore, record: &RunRecord, step: &str, outcome: &Step) {
+/// Appends `step`'s outcome to the run's events; why not, when it could not be.
+fn record_step(store: &RunStore, record: &RunRecord, step: &str, outcome: &Step) -> Result<(), String> {
     let n = store
         .events(&record.run_id)
         .map_or(0, |events| events.len());
@@ -465,12 +468,13 @@ fn record_step(store: &RunStore, record: &RunRecord, step: &str, outcome: &Step)
         occurred_at: utc_now(),
         payload,
     };
-    if let Err(error) = store.append_event(&event) {
+    store.append_event(&event).map_err(|error| {
         eprintln!(
             "orq: cannot record {}'s clean-up step {step}: {error:?}",
             record.run_id
         );
-    }
+        format!("the clean-up could not be recorded: {}", step_name(step))
+    })
 }
 
 /// Deletes the run's kept worktree, only when it has no changes and its HEAD is on `remote`'s `target`.

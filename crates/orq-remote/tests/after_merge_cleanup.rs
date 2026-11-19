@@ -698,6 +698,27 @@ fn with_after_merge_auto_the_server_cleans_up_on_its_own_and_tells() {
 }
 
 #[test]
+fn a_clean_up_that_cannot_record_its_steps_stops_and_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup("cleanup-unrecorded", |settings| settings.after_merge = AfterMerge::Auto);
+    let notes = notify_to_file(&s);
+    merge_on_forge(&s);
+    mr(&s, ProviderState::Merged);
+    let events = s.roots.state.join("runs").join(RUN).join("events.jsonl");
+    assert!(events.is_file(), "{events:?}");
+    std::fs::set_permissions(&events, std::fs::Permissions::from_mode(0o444)).unwrap();
+    provider(&s).review_looked_at(RUN);
+    assert!(s.worktree.exists() && branch_exists(&s), "nothing past the first unrecorded step is done");
+    let told = std::fs::read_to_string(&notes).unwrap_or_default();
+    assert!(told.contains("clean-up stopped") && told.contains("could not be recorded"), "{told:?}");
+
+    let (status, body) = send_with_passkey(&s, "POST", &cleanup_path(), json!({"confirm": true}).to_string().as_bytes());
+    assert_eq!(status, 500, "a pressed Clean up says it failed: {body}");
+    assert!(s.worktree.exists(), "and goes no further");
+    std::fs::set_permissions(&events, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[test]
 fn with_after_merge_ask_nothing_is_cleaned_up_until_pressed() {
     let s = setup("cleanup-ask", |_| {});
     let notes = notify_to_file(&s);
