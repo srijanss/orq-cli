@@ -91,6 +91,12 @@ impl StoreProjects {
         self
     }
 
+    /// Lets a planning session run for `timeout` instead of [`orq_orchestrator::PLAN_TIMEOUT`].
+    pub fn with_plan_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.plan_timeout = Some(timeout);
+        self
+    }
+
     pub(super) fn start_plan_run(&self, id: &str, request: &PlanRequest) -> Result<PlanStart, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(PlanStart::Unknown) };
         let ledger = orq_features::ledger_path(&git);
@@ -159,9 +165,10 @@ impl StoreProjects {
         let project = id.to_string();
         let run = run_id.clone();
         let idea = request.idea.clone();
+        let timeout = self.plan_timeout.unwrap_or(orq_orchestrator::PLAN_TIMEOUT);
         std::thread::spawn(move || {
             let store = RunStore::new(&roots.state);
-            let result = orq_orchestrator::run_plan(&store, &run, &session, orq_orchestrator::PLAN_TIMEOUT, |marker| apply_marker(&roots, &ledger, &idea, marker));
+            let result = orq_orchestrator::run_plan(&store, &run, &session, timeout, |marker| apply_marker(&roots, &ledger, &idea, marker));
             finished(&roots, &root, &project, &run, &title, &result);
         });
         Ok(PlanStart::Started(run_id))

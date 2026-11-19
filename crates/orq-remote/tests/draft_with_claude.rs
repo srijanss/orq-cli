@@ -127,7 +127,10 @@ fn git_repo(root: &Path, name: &str) -> PathBuf {
 }
 
 fn send(s: &Setup, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_plan_agent(s.agent.clone());
+    let mut provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_plan_agent(s.agent.clone());
+    if let Some(ms) = std::fs::read_to_string(s.base.join("timeout-ms")).ok().and_then(|ms| ms.trim().parse().ok()) {
+        provider = provider.with_plan_timeout(Duration::from_millis(ms));
+    }
     let config = RemoteConfig { token: "tok".into() };
     let request = Request { method, path, peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
     let r = handle_with_body(&s.roots, &config, "server-project", "server", &request, body.as_bytes(), &provider);
@@ -503,6 +506,57 @@ fn the_agent_runs_no_hooks_and_ignores_the_projects_settings() {
     let settings: Value = serde_json::from_str(&value_of("--settings").unwrap_or_default()).unwrap_or_default();
     assert_eq!(settings["disableAllHooks"], true, "{args:?}");
     assert_eq!(value_of("--setting-sources").as_deref(), Some("user"), "the project's own settings and hooks are not loaded: {args:?}");
+}
+
+/// Makes the fake agent run the shell `body` (after recording its arguments) instead of printing the answer.
+fn agent_runs(s: &Setup, body: &str) {
+    let script = format!("#!/bin/sh\nprintf '%s\\0' \"$@\" > '{args}'\n{body}\n", args = s.base.join("args").display());
+    std::fs::write(&s.agent, script).unwrap();
+    std::fs::set_permissions(&s.agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_session_that_times_out_fails_the_run_keeps_the_idea_and_the_next_run_can_start() {
+    let s = setup("plan-timeout");
+    let alpha = git_repo(&s.scan, "alpha");
+    std::fs::write(s.base.join("timeout-ms"), "300").unwrap();
+    let item = add_todo(&s, "dark mode", "Make it dark");
+    agent_runs(&s, &format!("sleep 5\ncat '{}'", s.base.join("answer").display()));
+    let started = Instant::now();
+    let (_, plan) = draft_todo(&s, &item, "");
+    assert_eq!(plan["state"], "failed", "{plan}");
+    assert!(started.elapsed() < Duration::from_secs(4), "the session is ended at its timeout");
+    assert!(!alpha.join(".tdd-features.json").exists(), "nothing was saved");
+    assert_eq!(todos(&s).len(), 1, "the item stays");
+    answer_with(&s, &json!({"name": "dark-mode", "description": "x"}).to_string());
+    let (_, plan) = draft_todo(&s, &todos(&s)[0], "");
+    assert_eq!(plan["state"], "completed", "the next run starts: {plan}");
+}
+
+#[test]
+fn a_session_that_fails_keeps_the_idea_applies_nothing_and_the_next_run_can_start() {
+    let s = setup("plan-session-fails");
+    let alpha = git_repo(&s.scan, "alpha");
+    let item = add_todo(&s, "dark mode", "Make it dark");
+    let answer = s.base.join("answer").display().to_string();
+    for (how, body) in [
+        ("a nonzero exit", format!("cat '{answer}'\nexit 3")),
+        ("oversized output", format!("head -c 300000 /dev/zero | tr '\\000' x\ncat '{answer}'")),
+        ("a missing program", String::new()),
+    ] {
+        if body.is_empty() {
+            std::fs::remove_file(&s.agent).unwrap();
+        } else {
+            agent_runs(&s, &body);
+        }
+        let (_, plan) = draft_todo(&s, &item, "");
+        assert_eq!(plan["state"], "failed", "{how}: {plan}");
+        assert!(!alpha.join(".tdd-features.json").exists(), "nothing was saved after {how}");
+        assert_eq!(todos(&s).len(), 1, "the item stays after {how}");
+    }
+    answer_with(&s, &json!({"name": "dark-mode", "description": "x"}).to_string());
+    let (_, plan) = draft_todo(&s, &item, "");
+    assert_eq!(plan["state"], "completed", "the next run starts: {plan}");
 }
 
 #[test]

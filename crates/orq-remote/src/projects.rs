@@ -491,6 +491,8 @@ pub struct StoreProjects {
     server: Option<std::sync::Arc<dyn orq_core::remote_inbox::ServerControl>>,
     /// The program planning runs start as their agent; `claude` when unset.
     plan_agent: Option<PathBuf>,
+    /// How long a planning session may run; [`orq_orchestrator::PLAN_TIMEOUT`] when unset.
+    plan_timeout: Option<std::time::Duration>,
 }
 
 /// A report serve builds for a run whose own build of it failed: the run, its head, and the evidence its events hold.
@@ -584,6 +586,7 @@ impl StoreProjects {
             report_builder: None,
             server: None,
             plan_agent: None,
+            plan_timeout: None,
         }
     }
 
