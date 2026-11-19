@@ -1,7 +1,7 @@
 // Mounts the app shell in jsdom and plays steps against it, printing a snapshot after each.
 // Usage: node web_shell_run.mjs '<{projectId, hash, steps}>'
 // steps: {click: selector} | {press: "Escape"|"Tab", shift?: bool} | {go: "/path"}
-//      | {pointer: "down"|"move"|"up", at: selector, y: number} | {wait: ms}
+//      | {pointer: "down"|"move"|"up"|"cancel", at: selector, y: number, click?: bool} | {tap: selector} | {wait: ms}
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,12 @@ Object.defineProperty(window.HTMLElement.prototype, "scrollHeight", {
   configurable: true,
   get() { return this.hasAttribute("data-tab-drawer") ? drawerHeight : 0; },
 });
+// Pointer capture as a browser does it: once an element captures the finger, its moves and its lift go to that
+// element, and so does the click that follows the lift; the capture ends with the lift.
+let captured = null;
+window.Element.prototype.setPointerCapture = function () { captured = this; };
+window.Element.prototype.releasePointerCapture = function () { if (captured === this) captured = null; };
+window.Element.prototype.hasPointerCapture = function () { return captured === this; };
 
 const dir = mkdtempSync(join(tmpdir(), "orq-shell-"));
 try {
@@ -91,11 +97,28 @@ try {
   for (const step of scenario.steps || []) {
     if (step.click) {
       window.document.querySelector(step.click).dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
-    } else if (step.pointer) {
-      // A finger going down, moving or lifting at height `y` over the element `at`.
+    } else if (step.pointer || step.tap) {
+      // A finger going down, moving, lifting or cancelled at height `y` over the element `at` (or the element
+      // that captured it). `click: true` on a lift, and every `tap` (a down and a lift in place), also send the
+      // click a browser sends after the lift, to the captured element if there is one.
       const Pointer = window.PointerEvent || window.MouseEvent;
-      const event = new Pointer("pointer" + step.pointer, { bubbles: true, cancelable: true, clientX: 100, clientY: step.y, pointerId: 1 });
-      window.document.querySelector(step.at).dispatchEvent(event);
+      const send = (type, y, over) => {
+        const target = type === "down" ? over : captured || over;
+        target.dispatchEvent(new Pointer("pointer" + type, { bubbles: true, cancelable: true, clientX: 100, clientY: y, pointerId: 1 }));
+        return target;
+      };
+      const over = window.document.querySelector(step.tap || step.at);
+      const y = step.y ?? 600;
+      const types = step.tap ? ["down", "up"] : [step.pointer];
+      let lifted = null;
+      for (const type of types) {
+        const target = send(type, y, over);
+        if (type === "up" || type === "cancel") {
+          lifted = type === "up" ? target : null;
+          captured = null;
+        }
+      }
+      if (lifted && (step.tap || step.click)) lifted.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     } else if (step.wait !== undefined) {
       await new Promise((resolve) => setTimeout(resolve, step.wait));
     } else if (step.press) {

@@ -124,6 +124,14 @@ fn a_tap_on_the_handle_opens_every_section_as_tiles_and_a_second_tap_closes_it()
 }
 
 #[test]
+fn a_finger_tapping_the_handle_opens_and_closes_it_as_a_browser_sends_the_tap() {
+    // A real tap: a down and a lift in place, then the click, which goes to whatever captured the finger.
+    let Some(out) = seven(json!([{"tap": HANDLE}, {"tap": HANDLE}]), false) else { return };
+    let open: Vec<bool> = out["frames"].as_array().unwrap().iter().map(drawer_open).collect();
+    assert_eq!(open, [false, true, false], "{out}");
+}
+
+#[test]
 fn the_bar_follows_a_drag_and_opens_when_let_go_past_a_third() {
     let Some(out) = seven(slow_drag(600, 480), false) else { return };
     let moving = &probed(&out["frames"][2], DRAWER)[0];

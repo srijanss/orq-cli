@@ -222,13 +222,15 @@ export function TabBar({ entries, path }) {
     if (!handle.current?.contains(event.target) && event.target !== bar.current) return;
     const height = open ? full : measure();
     drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false, samples: [{ y: event.clientY, t: now() }] };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
   };
 
   const onPointerMove = (event) => {
     const current = drag.current;
     if (!current) return;
     if (!current.moved && Math.abs(event.clientY - current.startY) < DRAG_SLOP) return;
+    // The bar takes the finger only once it drags: a capture from the press would send a tap's click
+    // to the bar instead of the handle.
+    if (!current.moved) event.currentTarget.setPointerCapture?.(event.pointerId);
     current.moved = true;
     const t = now();
     current.samples = current.samples.filter((sample) => sample.t >= t - FLICK_WINDOW).concat({ y: event.clientY, t });
