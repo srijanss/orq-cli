@@ -546,6 +546,51 @@ fn a_worktree_path_with_a_backslash_fails_the_refresh_with_its_reason() {
     assert!(!allow.iter().any(|rule| rule.contains("odd\\1")), "{allow:?}");
 }
 
+/// A path holding a control character, one that is not UTF-8, and one that cannot be resolved each
+/// fail the refresh with their reason, and the settings name no rule for them.
+#[test]
+fn a_worktree_path_no_rule_can_name_fails_the_refresh_with_its_reason() {
+    use std::os::unix::ffi::OsStrExt;
+    let (_repo, worktree) = checkout("permissions-unnameable-path");
+    let parent = worktree.parent().unwrap();
+    let cases = [
+        (parent.join("odd\u{1}1"), true, "'\\u{1}'"),
+        (parent.join(std::ffi::OsStr::from_bytes(b"odd\xff1")), true, "not UTF-8"),
+        (parent.join("gone"), false, "cannot be resolved"),
+    ];
+    for (odd, made, reason) in cases {
+        if made {
+            fs::create_dir_all(&odd).unwrap();
+            git(&odd, &["init", "--quiet"]);
+        }
+
+        let why = refresh_run_permissions(&odd, &[], Path::new("/logs/r"), "").expect_err("no rule can name the path");
+
+        assert!(why.contains(reason), "{reason}: {why}");
+        let notes = write_run_permissions(&odd, &[], Path::new("/logs/r"), "");
+        assert!(notes.iter().any(|note| note.contains(reason)), "{reason}: {notes:?}");
+        if odd.join(".claude/settings.local.json").exists() {
+            let allow = allowed(&odd);
+            assert!(!allow.iter().any(|rule| rule.starts_with("Edit(") && rule != "Edit(//logs/r/**)"), "{allow:?}");
+        }
+    }
+}
+
+/// Settings that cannot be written do not hide the refusal: the refresh still fails with its reason.
+#[test]
+fn a_worktree_path_with_a_pattern_character_and_unwritable_settings_still_fails_the_refresh() {
+    let (_repo, worktree) = checkout("permissions-pattern-unwritable");
+    let odd = worktree.parent().unwrap().join("odd*1");
+    fs::create_dir_all(odd.join(".claude")).unwrap();
+    git(&odd, &["init", "--quiet"]);
+    fs::write(odd.join(".claude/settings.local.json"), "not json").unwrap();
+
+    let why = refresh_run_permissions(&odd, &[], Path::new("/logs/r"), "").expect_err("the path can't be written as a rule");
+
+    assert!(why.contains("odd*1") && why.contains("'*'"), "{why}");
+    assert_eq!(fs::read_to_string(odd.join(".claude/settings.local.json")).unwrap(), "not json");
+}
+
 /// What git ignores is checked like what it does not track: an ignored script, repository or link to
 /// a folder, deep in an ignored folder, takes the built-in rule out as an untracked one would.
 #[test]
