@@ -281,6 +281,23 @@ fn a_dependency_completed_in_the_ledger_that_never_ran_is_met_as_before() {
     assert_eq!(started(&s), ["DEP-B"]);
 }
 
+/// A run that ended delivered for review with no MR recorded for it yet has given no sign that its work
+/// reached the target; a review kept here and merged into the target locally has.
+#[test]
+fn a_dependency_delivered_for_review_with_no_mr_recorded_holds_its_dependent_until_it_is_merged_locally() {
+    let s = setup("dep-lands-no-mr", Delivery::Review);
+    run_a(&s, "run-1-DEP-A");
+    end_run(&s, "run-1-DEP-A", "review_ready");
+    round(&s);
+    assert!(started(&s).is_empty(), "no MR is no evidence that DEP-A landed");
+    assert_eq!(entry_b(&s)["reason"], "waiting for DEP-A (in review)");
+
+    let head = git(&s.repo, &["rev-parse", "main"]);
+    Store::open(&s.roots.database()).unwrap().save_lifecycle("run-1-DEP-A", &ReviewLifecycle::merged_locally(&head, &head)).unwrap();
+    round(&s);
+    assert_eq!(started(&s), ["DEP-B"], "merged into the target here");
+}
+
 /// A manual Start is never refused for an unlanded dependency: someone is there to judge it, so the
 /// Start popup is told the same reason the queue page shows, as a warning.
 #[test]

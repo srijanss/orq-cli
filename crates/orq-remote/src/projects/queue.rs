@@ -781,7 +781,12 @@ fn landing(store: Option<&Store>, runs: &RunStore, root: &Path, run: &str) -> Op
 fn mr_landing(store: Option<&Store>, runs: &RunStore, root: &Path, run: &str, events: &[orq_orchestrator::Event]) -> Option<String> {
     use orq_core::review_lifecycle::{ProviderState, LOCAL_PROVIDER};
     let Some(Ok(all)) = store.map(|store| store.lifecycles_for_run(run)) else { return Some("in review".to_string()) };
-    let mr = all.into_iter().rev().find(|lifecycle| lifecycle.provider != LOCAL_PROVIDER)?;
+    // No MR recorded yet is no sign the work landed; a review kept here has landed once it was merged
+    // into the target locally.
+    let Some(mr) = all.iter().rev().find(|lifecycle| lifecycle.provider != LOCAL_PROVIDER).cloned() else {
+        let merged_here = all.iter().any(|lifecycle| lifecycle.provider == LOCAL_PROVIDER && lifecycle.state == ProviderState::Merged);
+        return (!merged_here).then(|| "in review".to_string());
+    };
     match mr.state {
         ProviderState::Open => Some("in review".to_string()),
         ProviderState::Closed => Some("MR closed without merging".to_string()),
