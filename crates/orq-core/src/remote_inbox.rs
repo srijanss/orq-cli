@@ -2489,7 +2489,9 @@ fn delete_merged_worktrees(roots: &StorageRoots, provider: Option<&dyn ProjectsP
 /// Saves project `id`'s own agents, delivery and run limits for its Settings page. The body names the
 /// whole record and the revision it was read at; a null role is reset so runs fall back again, and a
 /// null limit is no limit.
-fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8]) -> Response {
+/// Saves project `id`'s settings; `passkey` is whether the request came from a passkey session, which
+/// turning `after_merge` to `auto` needs, as Clean up itself does.
+fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8], passkey: bool) -> Response {
     use crate::project_settings::{AfterMerge, Delivery, ProjectAgent, ProjectSettings};
     use crate::remote_audit::{record, Attempt, Outcome};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
@@ -2602,6 +2604,14 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("bad request body"));
         return error(400, "the request body is not one this action takes");
     };
+    // Cleaning up on its own does what only a passkey session may press Clean up for, so only one turns it on.
+    if after_merge.as_str() == "auto" && !passkey {
+        let already = provider.and_then(|provider| provider.project_settings(id).ok().flatten()).is_some_and(|current| current["after_merge"] == "auto");
+        if !already {
+            audit(Outcome::Refused, Some("after_merge auto needs a passkey"));
+            return error(403, "Cleaning up on its own after a merge needs a passkey sign-in");
+        }
+    }
     let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge };
     match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
         Some(Ok(ProjectSettingsSave::Saved(settings))) => {
@@ -2705,7 +2715,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return set_agents(roots, provider, body);
     }
     if let Some(id) = (request.method == "POST").then(|| project_target(path, "settings")).flatten() {
-        return save_project_settings(roots, provider, id, body);
+        return save_project_settings(roots, provider, id, body, confirm.is_some());
     }
     if let Some((id, leaf)) = (request.method == "POST").then(|| queue_target(path)).flatten() {
         return change_queue(roots, provider, id, leaf, body);

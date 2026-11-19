@@ -723,7 +723,7 @@ fn after_merge_is_ask_by_default_and_saved_from_the_settings() {
     assert_eq!(shown["after_merge"], "ask", "{shown}");
     let mut body = json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "revision": shown["revision"]});
     body["after_merge"] = json!("auto");
-    let (status, reply) = send(
+    let (status, reply) = send_with_passkey(
         &s,
         "POST",
         "/api/projects/alpha/settings",
@@ -749,6 +749,24 @@ fn after_merge_is_ask_by_default_and_saved_from_the_settings() {
         "auto",
         "a refused save writes nothing"
     );
+}
+
+#[test]
+fn turning_after_merge_to_auto_needs_a_passkey_session() {
+    let s = setup("cleanup-setting-passkey", |_| {});
+    let body = |revision: &Value| json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "after_merge": "auto", "revision": revision}).to_string();
+    let path = "/api/projects/alpha/settings";
+    let (status, reply) = send(&s, "POST", path, body(&project_settings(&s)["revision"]).as_bytes());
+    assert_eq!(status, 403, "the token alone cannot turn it on: {reply}");
+    assert!(reply["error"].as_str().unwrap_or_default().contains("passkey"), "{reply}");
+    assert_eq!(project_settings(&s)["after_merge"], "ask", "a refused save writes nothing");
+
+    let (status, reply) = send_with_passkey(&s, "POST", path, body(&project_settings(&s)["revision"]).as_bytes());
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(project_settings(&s)["after_merge"], "auto");
+
+    let (status, reply) = send(&s, "POST", path, body(&project_settings(&s)["revision"]).as_bytes());
+    assert_eq!(status, 200, "the token may save other settings while it stays on: {reply}");
 }
 
 /// Project alpha's dashboard card.
