@@ -112,29 +112,30 @@ fn libtest_block_start(line: &str) -> Option<String> {
 
 #[derive(Default)]
 struct Found {
-    /// In the order first named.
-    names: Vec<String>,
-    /// The same names, to tell in constant time whether one is named.
-    named: std::collections::HashSet<String>,
+    /// Each time a test was named, in order, with the count it was named at. Only an entry whose count is still the
+    /// one in `named` stands: one unnamed (or unnamed and named again) is skipped at the end, not searched out now.
+    names: Vec<(String, usize)>,
+    /// The tests named now, each with the count of its standing entry in `names`.
+    named: std::collections::HashMap<String, usize>,
     outputs: std::collections::HashMap<String, String>,
 }
 
 impl Found {
     fn name(&mut self, name: &str) {
-        if self.named.insert(name.to_string()) {
-            self.names.push(name.to_string());
+        if !self.named.contains_key(name) {
+            let at = self.names.len();
+            self.named.insert(name.to_string(), at);
+            self.names.push((name.to_string(), at));
         }
     }
 
     fn is_named(&self, name: &str) -> bool {
-        self.named.contains(name)
+        self.named.contains_key(name)
     }
 
     /// A test named as failed on a try that then passed on a later one.
     fn unname(&mut self, name: &str) {
-        if self.named.remove(name) {
-            self.names.retain(|known| known != name);
-        }
+        self.named.remove(name);
         self.outputs.remove(name);
     }
 
@@ -145,9 +146,10 @@ impl Found {
     }
 
     fn finish(mut self) -> TestFailures {
-        let more = self.names.len().saturating_sub(FAILED_TESTS_KEPT);
-        let tests = self
-            .names
+        let named = std::mem::take(&mut self.named);
+        let names: Vec<String> = std::mem::take(&mut self.names).into_iter().filter(|(name, at)| named.get(name) == Some(at)).map(|(name, _)| name).collect();
+        let more = names.len().saturating_sub(FAILED_TESTS_KEPT);
+        let tests = names
             .iter()
             .take(FAILED_TESTS_KEPT)
             .map(|name| FailedTest { name: orq_core::redact::redact(name), output: kept_output(&self.outputs.remove(name).unwrap_or_default()) })

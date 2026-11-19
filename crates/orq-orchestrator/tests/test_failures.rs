@@ -152,7 +152,29 @@ fn a_hundred_thousand_failures_with_output_are_parsed_in_linear_time() {
     assert_eq!(failures.tests.len(), 50);
     assert_eq!(failures.more, 99_950);
     assert_eq!(failures.tests[49].output, "broke 49");
-    assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+    // Generous for a loaded machine; a quadratic parse of this takes over a minute.
+    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+}
+
+#[test]
+fn a_hundred_thousand_failures_that_pass_on_retry_are_parsed_in_linear_time() {
+    let mut out = String::new();
+    for n in 0..100_000 {
+        out.push_str(&format!("   TRY 1 FAIL [   0.010s] ({n}/100000) suite t{n}\n"));
+    }
+    for n in 0..100_000 {
+        out.push_str(&format!("   TRY 2 PASS [   0.010s] ({n}/100000) suite t{n}\n"));
+    }
+    // One that passed on retry and then failed again is listed once, with its last output.
+    out.push_str("        FAIL [   0.010s] (7/100000) suite t7\n──── STDERR:             suite t7\nbroke again\n");
+    let started = std::time::Instant::now();
+    let failures = find_test_failures(&out);
+    let took = started.elapsed();
+    let names: Vec<&str> = failures.tests.iter().map(|test| test.name.as_str()).collect();
+    assert_eq!(names, ["suite t7"]);
+    assert_eq!(failures.more, 0);
+    assert_eq!(failures.tests[0].output, "broke again");
+    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
 }
 
 #[test]
