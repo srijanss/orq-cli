@@ -271,6 +271,35 @@ fn a_commit_made_after_the_accept_is_tested_before_the_accepted_run_is_merged() 
 }
 
 #[test]
+fn an_accept_that_recorded_no_head_is_tested_again_before_the_accepted_run_is_merged() {
+    let w = world("no-head", Delivery::MergeLocal);
+    // An accept from before the head was recorded: nothing says which head its tests passed on.
+    w.store.append_event(&event("run.accept_started", serde_json::json!({ "by": "web" }))).unwrap();
+    w.store.append_event(&event("run.completed", serde_json::json!({ "ending": "review_ready", "note": "accepted: tests passed", "by": "web" }))).unwrap();
+    let main = git(&w.repo, &["rev-parse", "main"]);
+    let tested = RefCell::new(0);
+    let tests = |_: &Path| {
+        *tested.borrow_mut() += 1;
+        Err("a test fails".to_string())
+    };
+    let ledger_asked = RefCell::new(false);
+    let complete = |_: &str, features: &[String], _: &str| {
+        *ledger_asked.borrow_mut() = true;
+        Ok(features.to_vec())
+    };
+
+    let err = merge_accepted_run(&w.store, "run-1", "web", &tests, &complete).unwrap_err();
+
+    assert!(err.contains("a test fails"), "{err}");
+    assert_eq!(*tested.borrow(), 1, "the tests run on a head no accept recorded");
+    assert_eq!(git(&w.repo, &["rev-parse", "main"]), main, "main is untouched");
+    assert!(w.worktree.exists(), "the worktree is kept");
+    assert!(payloads(&w.store, "merge.completed").is_empty());
+    assert!(payloads(&w.store, "ledger.completed_by_run").is_empty());
+    assert!(!*ledger_asked.borrow());
+}
+
+#[test]
 fn only_an_accepted_merge_local_run_can_be_merged_after_its_accept() {
     let w = world("not-accepted", Delivery::MergeLocal);
     let err = merge_accepted_run(&w.store, "run-1", "web", &|_: &Path| Ok(()), &no_ledger).unwrap_err();
