@@ -177,6 +177,21 @@ fn a_touch_drag_from_the_handle_keeps_going_when_the_bar_takes_the_finger() {
 }
 
 #[test]
+fn a_touch_drag_lifted_as_a_browser_lifts_it_stays_open_and_the_next_tap_still_closes_it() {
+    // The whole touch lifecycle in browser order: the handle holds the finger from the press, the bar takes it
+    // over once it drags, and the lift sends the bar its pointerup, then its lostpointercapture, then the click.
+    let steps = json!([
+        {"pointer": "down", "at": HANDLE, "y": 600, "touch": true}, {"pointer": "move", "at": HANDLE, "y": 480}, {"wait": 150},
+        {"pointer": "up", "at": HANDLE, "y": 480, "thenClick": true}, {"wait": 350}, {"tap": HANDLE}
+    ]);
+    let Some(out) = seven(steps, false) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(out["lifted"], json!(["pointerup", "lostpointercapture", "click"]), "the bar gets the lift in browser order: {out}");
+    assert!(drawer_open(&frames[4]), "the lift's lost capture and click leave it open: {out}");
+    assert!(!drawer_open(frames.last().unwrap()), "a later tap still works: {out}");
+}
+
+#[test]
 fn an_open_drawer_takes_its_new_height_when_the_window_resizes() {
     // Crossing 600px wide moves the grid from five a row to four, so it grows.
     let Some(out) = seven(json!([{"click": HANDLE}, {"resize": 380}]), false) else { return };

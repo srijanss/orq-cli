@@ -43,6 +43,8 @@ Object.defineProperty(window.HTMLElement.prototype, "scrollHeight", {
 // captured by the element it went down on; when another element takes the capture, the one that had it gets
 // a bubbling lostpointercapture first, as a browser sends it.
 let captured = null;
+// What the element holding the finger got on the last lift of a captured finger, in order.
+let liftLog = null;
 window.Element.prototype.setPointerCapture = function (pointerId) {
   const previous = captured;
   captured = this;
@@ -125,14 +127,24 @@ try {
       const types = step.tap ? ["down", "up"] : [step.pointer];
       let lifted = null;
       for (const type of types) {
+        const holder = captured;
         const target = send(type, y, over);
         if (type === "down" && step.touch) captured = target;
         if (type === "up" || type === "cancel" || type === "lostcapture") {
           lifted = type === "up" ? target : null;
           captured = null;
         }
+        // A lift releases the capture after its pointerup, so the element that held the finger gets a bubbling
+        // lostpointercapture before the click, as a browser sends it.
+        if (type === "up" && holder) {
+          holder.dispatchEvent(new Pointer("lostpointercapture", { bubbles: true, pointerId: 1 }));
+          liftLog = ["pointerup", "lostpointercapture"];
+        }
       }
-      if (lifted && (step.tap || step.thenClick)) lifted.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+      if (lifted && (step.tap || step.thenClick)) {
+        lifted.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+        if (liftLog && liftLog.length === 2) liftLog.push("click");
+      }
     } else if (step.resize !== undefined) {
       drawerHeight = step.resize;
       window.dispatchEvent(new window.Event("resize"));
@@ -159,7 +171,7 @@ try {
     await tick();
     frames.push(snapshot());
   }
-  console.log(JSON.stringify({ frames }));
+  console.log(JSON.stringify({ frames, lifted: liftLog }));
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
