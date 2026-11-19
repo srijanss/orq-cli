@@ -312,6 +312,25 @@ fn a_restart_when_idle_waits_for_an_active_run_and_goes_ahead_once_it_ends() {
     assert_eq!(world.wait_for_exec(&server), world.serve_args());
 }
 
+/// A run between its gate's failure and its gate fix, its process going on, is still active: a
+/// restart waits for it to end.
+#[test]
+fn a_restart_when_idle_waits_for_a_run_whose_stage_failed_while_its_process_goes_on() {
+    let world = World::new("gap");
+    let installed = world.installed();
+    world.start_run("run-gap");
+    world.append("run-gap", "run.launched", serde_json::json!({"pid": std::process::id()}));
+    world.append("run-gap", "stage.failed", serde_json::json!({"reason": "gate step 1 (cargo) exited with status 100"}));
+    let server = world.serve(&installed);
+    let asked = world.restart(&installed, &["--when-idle"]);
+    assert!(asked.status.success(), "{}", text(&asked.stderr));
+    assert!(text(&asked.stdout).contains("waiting for 1 run"), "{}", text(&asked.stdout));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(world.execd().is_none(), "restarted over a run that goes on to fix its failure");
+    world.append("run-gap", "run.completed", serde_json::json!({"ending": "merged"}));
+    assert_eq!(world.wait_for_exec(&server), world.serve_args());
+}
+
 #[test]
 fn cancel_stops_a_pending_restart() {
     let world = World::new("cancel");

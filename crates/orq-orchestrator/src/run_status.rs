@@ -320,3 +320,34 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
     }
     summary
 }
+
+/// [`summarize_run`], but a run whose last word is a failed stage, with no ending after it, is still
+/// running while the process that owns it (its latest `run.launched`) is `alive`: the pipeline goes
+/// on to fix the failure (a gate fix, a retry) and writes the run's ending itself. With the process
+/// gone, or none recorded, the failure stands.
+pub fn summarize_run_with(events: &[Event], alive: &dyn Fn(u32, Option<u64>) -> bool) -> RunSummary {
+    let mut summary = summarize_run(events);
+    if summary.phase == RunPhase::Failed && last_word_is_a_failed_stage(events) && owner_alive(events, alive) {
+        summary.phase = RunPhase::Running;
+        summary.reason = None;
+    }
+    summary
+}
+
+/// [`summarize_run_with`] over the system's processes.
+pub fn summarize_live_run(events: &[Event]) -> RunSummary {
+    summarize_run_with(events, &crate::interrupted::process_is_alive)
+}
+
+/// Whether the latest event that ends or fails the run is a `stage.failed`, not the run's own ending.
+fn last_word_is_a_failed_stage(events: &[Event]) -> bool {
+    const ENDINGS: [&str; 6] = ["stage.failed", "run.failed", "run.completed", "run.blocked", "worktree.removed", "run.resumed"];
+    events.iter().rev().find(|event| ENDINGS.contains(&event.kind.as_str())).is_some_and(|event| event.kind == "stage.failed")
+}
+
+/// Whether the process the run's latest `run.launched` names is still `alive`.
+fn owner_alive(events: &[Event], alive: &dyn Fn(u32, Option<u64>) -> bool) -> bool {
+    let Some(launch) = events.iter().rev().find(|event| event.kind == "run.launched") else { return false };
+    let Some(pid) = launch.payload.get("pid").and_then(|pid| pid.as_u64()).and_then(|pid| u32::try_from(pid).ok()) else { return false };
+    alive(pid, launch.payload.get("start_ticks").and_then(|ticks| ticks.as_u64()))
+}

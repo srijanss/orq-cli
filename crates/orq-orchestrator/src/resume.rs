@@ -580,7 +580,7 @@ pub fn resume_takes_a_slot(store: &RunStore, run_id: &str) -> Result<bool, Strin
     if events.is_empty() {
         store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
     }
-    Ok(!holds_run_slot(summarize_run(&events).phase))
+    Ok(!holds_run_slot(crate::run_status::summarize_live_run(&events).phase))
 }
 
 /// The runs among `runs` (run id, record, events) that are active, as (run id, feature id) in the
@@ -611,7 +611,8 @@ pub fn active_runs(runs: &[(String, RunRecord, Vec<Event>)]) -> Vec<(String, Str
     };
     runs.iter()
         .zip(&ordered)
-        .filter(|((_, _, events), _)| holds_run_slot(summarize_run(events).phase))
+        // A run whose stage failed while its process goes on to fix it still holds its slot.
+        .filter(|((_, _, events), _)| holds_run_slot(crate::run_status::summarize_live_run(events).phase))
         .filter(|((_, record, _), own)| !continued(record, own))
         .map(|((run_id, record, _), _)| (run_id.clone(), record.feature_id.clone()))
         .collect()

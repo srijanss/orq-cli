@@ -109,7 +109,8 @@ impl StoreProjects {
             let wait = store.project_settings(root).map_or(true, |stored| stored.settings.queue_wait_for_review);
             queue.entries.iter().any(|entry| match (&entry.run, entry.failed) {
                 (Some(run), false) => !matches!(settle(&store, &runs, run, None, wait), Settled::Going | Settled::InReview(_)),
-                (Some(run), true) => matches!(settle(&store, &runs, run, None, wait), Settled::ContinuedAs(_)),
+                // A failed entry whose run recovered since is settled again at once.
+                (Some(run), true) => !matches!(settle(&store, &runs, run, None, wait), Settled::Failed(_) | Settled::MrClosed),
                 _ => false,
             })
         })
@@ -135,9 +136,28 @@ impl StoreProjects {
                 Some(QueueAction { kind: QueueKind::Accept, .. }) => self.settle_accept(store, &runs, &run, Some(root), settings.queue_wait_for_review),
                 _ => settle(store, &runs, &run, Some(root), settings.queue_wait_for_review),
             };
-            // A failure already marked is only looked at again for the run it was resumed as.
-            if entry.failed && !matches!(settled, Settled::ContinuedAs(_)) {
-                continue;
+            // A failure already marked is looked at again every round: the run may have recovered since,
+            // and then the entry follows it again and any pause its failure caused is lifted.
+            if entry.failed {
+                match &settled {
+                    Settled::Failed(_) | Settled::MrClosed => continue,
+                    Settled::ContinuedAs(_) => {}
+                    Settled::Going => {
+                        store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                        continue;
+                    }
+                    Settled::InReview(_) => {
+                        store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                        self.lift_failure_pause(store, id, root, &run, &what, "recovered and waits for review").map_err(failed)?;
+                        in_review = true;
+                        continue;
+                    }
+                    Settled::Done => {
+                        store.queue_remove(root, &entry.feature).map_err(failed)?;
+                        self.lift_failure_pause(store, id, root, &run, &what, "recovered and merged").map_err(failed)?;
+                        continue;
+                    }
+                }
             }
             // The entry follows the run it was continued as, as far as it goes, so that a run that
             // already waits for review holds the starts below in this same round.
@@ -311,6 +331,25 @@ impl StoreProjects {
             }
         }
         Ok(started)
+    }
+
+    /// Lifts the pause of project `id`'s queue at `root` when it is the one the failure of `run`, the
+    /// run of `what`, caused, and records the lift like a resume, saying how the run `recovered`. A
+    /// pause a person set, or one another run's failure caused, is kept.
+    fn lift_failure_pause(&self, store: &Store, id: &str, root: &Path, run: &str, what: &str, recovered: &str) -> std::io::Result<()> {
+        let caused = orq_core::redact::redact(&format!("the run {run} of {what} failed"));
+        let Some(paused) = store.queue(root)?.paused else { return Ok(()) };
+        if paused != caused && !paused.starts_with(&format!("{caused}: ")) {
+            return Ok(());
+        }
+        store.queue_resume(root)?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+        let reason = format!("{run} {recovered}");
+        let attempt = orq_core::remote_audit::Attempt { identity: "queue", action: "queue.resume", project: id, run: Some(run), outcome: orq_core::remote_audit::Outcome::Allowed, reason: Some(&reason) };
+        if let Err(error) = orq_core::remote_audit::record(&self.roots, &attempt, now) {
+            eprintln!("orq: the lifted pause of {what}'s queue could not be recorded: {error}");
+        }
+        Ok(())
     }
 
     /// Whether project `git` or the machine is now at its run limit: a start refused once another
@@ -710,7 +749,8 @@ fn launch_error_line(feature: &str, why: &str) -> String {
 /// A run that cannot be read anymore counts as failed.
 fn settle(store: &Store, runs: &RunStore, run: &str, repo: Option<&Path>, wait: bool) -> Settled {
     let Ok(events) = runs.events(run) else { return Settled::Failed(Some(format!("the run {run} cannot be read"))) };
-    let summary = orq_orchestrator::summarize_run(&events);
+    // A failed stage the run's process goes on to fix is not the run's end.
+    let summary = orq_orchestrator::summarize_live_run(&events);
     if let Some(next) = summary.resumed_as {
         return Settled::ContinuedAs(next);
     }

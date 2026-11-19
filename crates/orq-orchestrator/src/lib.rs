@@ -130,7 +130,7 @@ pub use run_activity::{activity_line, newest_log_tail, run_activity, step_lines,
 pub use review_escalation::{escalated_review, last_review, EscalatedFinding, EscalatedReview, UnreviewedCommit};
 pub use run_status::{
     record_capability_skipped, record_mcp_setup, record_model_switched, record_run_completed, request_model_switch,
-    request_pause, summarize_run, AcceptFailure, RunPhase, RunSummary,
+    request_pause, summarize_live_run, summarize_run, summarize_run_with, AcceptFailure, RunPhase, RunSummary,
 };
 pub use session_references::{
     carry_session_references, resumable_session, session_references, SessionReference,

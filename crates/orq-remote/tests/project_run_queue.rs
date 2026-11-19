@@ -535,6 +535,123 @@ fn the_server_s_queue_rounds_start_a_queued_feature_on_their_own_and_stop_when_d
     assert_eq!(started(&s), ["COM-01"]);
 }
 
+/// `run`'s stage `stage` failed with `reason`, as the gate's verify does before the run's own fix.
+fn stage_failed(s: &Setup, run: &str, stage: &str, reason: &str) {
+    event_in(s, run, "stage.failed", stage, json!({"reason": reason}));
+}
+
+fn event_in(s: &Setup, run: &str, kind: &str, stage: &str, payload: Value) {
+    let store = RunStore::new(&s.roots.state);
+    let record = store.load(run).unwrap();
+    let n = store.events(run).unwrap().len();
+    let event = Event {
+        schema_version: 1,
+        event_id: format!("{run}-{n}"),
+        run_id: run.into(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: kind.into(),
+        stage: Some(stage.into()),
+        attempt: 1,
+        occurred_at: "2026-11-18T10:00:00Z".into(),
+        payload,
+    };
+    store.append_event(&event).unwrap();
+}
+
+/// The race as it happened: a round read the run between its gate's failure and its gate fix, so
+/// the entry was marked failed and the queue paused; the run then fixed itself and merged.
+#[test]
+fn a_failed_entry_whose_run_recovered_and_merged_leaves_the_queue_and_lifts_the_pause_it_caused() {
+    let s = setup("queue-failed-recovered");
+    git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+    save_settings(&s, json!({"max_active_runs": 1, "queue_stop_on_failure": true}));
+    queue_add(&s, &["COM-01", "COM-02"]);
+    round(&s);
+    stage_failed(&s, "run-1-COM-01", "verify", "gate step 1 (cargo) exited with status 100");
+    round(&s);
+    assert_eq!(paused(&s), "the run run-1-COM-01 of COM-01 failed: gate step 1 (cargo) exited with status 100");
+
+    event_in(&s, "run-1-COM-01", "stage.started", "gate_fix", json!({}));
+    end_run(&s, "run-1-COM-01", "merged");
+    round(&s);
+    assert_eq!(paused(&s), Value::Null, "the pause its failure caused is lifted");
+    assert_eq!(started(&s), ["COM-01", "COM-02"], "the next entry starts");
+    assert_eq!(states(&s), pairs(&[("COM-02", "running")]), "the recovered entry left the queue");
+    let lifted = orq_core::remote_audit::read(&s.roots, 10).unwrap().into_iter().find(|line| line["action"] == "queue.resume");
+    let lifted = lifted.expect("lifting the pause is recorded like a resume");
+    assert_eq!(lifted["reason"], "run-1-COM-01 recovered and merged");
+}
+
+/// A pause a person set, or one another run's failure caused, is kept when a failed entry's run
+/// recovers: only the entry leaves.
+#[test]
+fn a_recovered_run_lifts_only_the_pause_its_own_failure_caused() {
+    for (name, pause) in [("person", "paused from the web"), ("other-run", "the run run-9-COM-09 of COM-09 failed: red")] {
+        let s = setup(&format!("queue-recovered-keeps-{name}"));
+        let repo = git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+        save_settings(&s, json!({"max_active_runs": 1, "queue_stop_on_failure": true}));
+        queue_add(&s, &["COM-01", "COM-02"]);
+        round(&s);
+        stage_failed(&s, "run-1-COM-01", "verify", "red");
+        round(&s);
+        orq_core::store::Store::open(&s.roots.database()).unwrap().queue_pause(&repo, pause).unwrap();
+
+        end_run(&s, "run-1-COM-01", "merged");
+        round(&s);
+        assert_eq!(paused(&s), pause, "{name}: a pause the run did not cause is kept");
+        assert_eq!(states(&s), pairs(&[("COM-02", "next")]), "{name}: the recovered entry left the queue");
+        assert_eq!(started(&s), ["COM-01"]);
+    }
+}
+
+/// A failed entry whose run recovered and now waits for review shows `review`, and the pause its
+/// failure caused is lifted.
+#[test]
+fn a_failed_entry_whose_run_recovered_and_waits_for_review_shows_review_and_lifts_the_pause() {
+    let s = setup("queue-failed-recovered-review");
+    git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+    save_settings(&s, json!({"max_active_runs": 1, "queue_stop_on_failure": true}));
+    queue_add(&s, &["COM-01", "COM-02"]);
+    round(&s);
+    stage_failed(&s, "run-1-COM-01", "verify", "red");
+    round(&s);
+    assert_eq!(paused(&s), "the run run-1-COM-01 of COM-01 failed: red");
+
+    end_run(&s, "run-1-COM-01", "needs_review");
+    round(&s);
+    assert_eq!(paused(&s), Value::Null);
+    assert_eq!(states(&s)[0], ("COM-01".to_string(), "review".to_string()));
+    assert_eq!(started(&s), ["COM-01"], "the queue waits for the review");
+}
+
+/// `run` is owned by this test's process, which goes on.
+fn launched_here(s: &Setup, run: &str) {
+    event_in(s, run, "run.launched", "implement", json!({"pid": std::process::id()}));
+}
+
+/// A run between its gate's failure and its gate fix, its process going on, is still running: its
+/// entry is not marked failed, the queue is not paused, and the run keeps its slot.
+#[test]
+fn a_run_whose_stage_failed_while_its_process_goes_on_stays_running_and_keeps_its_slot() {
+    let s = setup("queue-stage-failed-going");
+    git_repo(&s, &[("COM-01", "pending", &[]), ("COM-02", "pending", &[])]);
+    save_settings(&s, json!({"max_active_runs": 1, "queue_stop_on_failure": true}));
+    queue_add(&s, &["COM-01", "COM-02"]);
+    round(&s);
+    launched_here(&s, "run-1-COM-01");
+    stage_failed(&s, "run-1-COM-01", "verify", "gate step 1 (cargo) exited with status 100");
+
+    round(&s);
+    assert_eq!(paused(&s), Value::Null, "a failure the run goes on to fix does not pause the queue");
+    assert_eq!(states(&s), pairs(&[("COM-01", "running"), ("COM-02", "next")]));
+    assert_eq!(started(&s), ["COM-01"], "the run keeps its slot, so COM-02 waits");
+
+    end_run(&s, "run-1-COM-01", "failed");
+    round(&s);
+    assert_eq!(paused(&s), "the run run-1-COM-01 of COM-01 failed", "once it ends failed, the failure pauses the queue as before");
+}
+
 /// Nobody watches a run the queue starts, so it starts unattended; a run started from the web's Start
 /// has someone there, so it does not.
 #[test]
