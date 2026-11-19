@@ -196,11 +196,33 @@ fn record_accept_failed(store: &RunStore, record: &crate::store::RunRecord, why:
 /// The most of an accept log read back to find the failed tests in.
 const LOG_READ: u64 = 64 * 1024 * 1024;
 
+/// Where a log too long to read whole was cut: a separator line, so no block runs on across the cut.
+const LOG_CUT: &str = "…\n────────────\n";
+
 fn read_log(path: &Path) -> Option<String> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path).ok()?.take(LOG_READ).read_to_end(&mut bytes).ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    read_log_within(path, LOG_READ)
+}
+
+/// The log, or when it is longer than `cap` bytes, the whole lines of its first and last halves of that around a
+/// cut: a test failing early and one failing late are both found.
+fn read_log_within(path: &Path, cap: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len <= cap {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).ok()?;
+        return Some(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let half = cap / 2;
+    let mut head = Vec::new();
+    (&mut file).take(half).read_to_end(&mut head).ok()?;
+    file.seek(SeekFrom::Start(len - half)).ok()?;
+    let mut tail = Vec::new();
+    file.take(half).read_to_end(&mut tail).ok()?;
+    let head = head.iter().rposition(|&byte| byte == b'\n').map_or(&head[..0], |at| &head[..=at]);
+    let tail = tail.iter().position(|&byte| byte == b'\n').map_or(&tail[..0], |at| &tail[at + 1..]);
+    Some(format!("{}{LOG_CUT}{}", String::from_utf8_lossy(head), String::from_utf8_lossy(tail)))
 }
 
 /// A new `accept-<n>.log` in the run's log folder, `n` one past the last, for what this accept's test steps print.
@@ -512,5 +534,36 @@ mod tests {
         let shown = read_tail(&mut Interrupted(&chunks, false), None);
         assert!(shown.contains("FAILED"), "{shown}");
         assert!(!shown.contains("MIIkeybody"), "{shown}");
+    }
+
+    #[test]
+    fn a_log_longer_than_the_read_keeps_failures_from_its_start_and_its_end() {
+        let mut log = String::from("        FAIL [   0.010s] (1/900) suite early\n");
+        for n in 2..900 {
+            log.push_str(&format!("        PASS [   0.004s] ({n}/900) suite test_{n}\n"));
+        }
+        log.push_str("        FAIL [   0.010s] (900/900) suite late\n──── STDERR:             suite late\nthread 'late' panicked at src/a.rs:1:1:\nlate broke\n");
+        let path = log_file("long");
+        std::fs::write(&path, &log).unwrap();
+        let read = super::read_log_within(&path, 4096).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(read.len() < 4200, "{}", read.len());
+        let failures = crate::test_failures::find_test_failures(&read);
+        let names: Vec<&str> = failures.tests.iter().map(|test| test.name.as_str()).collect();
+        assert_eq!(names, ["suite early", "suite late"], "{read}");
+        assert!(failures.tests[1].output.contains("late broke"), "{:?}", failures.tests[1]);
+    }
+
+    #[test]
+    fn a_log_within_the_read_is_read_whole() {
+        let path = log_file("short");
+        std::fs::write(&path, "        FAIL [   0.010s] (1/1) suite only\n").unwrap();
+        let read = super::read_log_within(&path, 4096).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(read, "        FAIL [   0.010s] (1/1) suite only\n");
+    }
+
+    fn log_file(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("orq-accept-log-{tag}-{}.log", std::process::id()))
     }
 }
