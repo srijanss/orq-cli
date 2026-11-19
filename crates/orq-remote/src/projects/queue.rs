@@ -527,6 +527,14 @@ impl StoreProjects {
         Ok(Some(json!({"outcome": outcome.kind(), "message": message, "target_pull_warning": warning.read()})))
     }
 
+    /// Clears project `id`'s target pull warning once `target` was pulled level from `remote`, when that is what it is about.
+    pub(super) fn target_pulled(&self, id: &str, remote: &str, target: &str) -> Result<(), String> {
+        if let Some((git, _)) = self.settings_key(id)? {
+            PullWarning::of(&self.roots, &git).pulled(remote, target);
+        }
+        Ok(())
+    }
+
     /// Project `id`'s queue as the web shows it; `None` when there is no such project.
     pub(super) fn queue_answer(&self, id: &str) -> Result<Option<Value>, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };

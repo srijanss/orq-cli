@@ -392,24 +392,15 @@ impl StoreProjects {
             }
             None => return Step::skipped(format!("the main checkout is not on {target}")),
         }
-        if pulled.is_some() {
-            return match self.pull_target_of(id) {
-                Ok(Some(answer)) if pull_may_start(&answer) => {
-                    Step::done(answer["message"].as_str().map(str::to_string))
-                }
-                Ok(Some(answer)) => Step::skipped(
-                    answer["message"]
-                        .as_str()
-                        .unwrap_or("the target could not be pulled")
-                        .to_string(),
-                ),
-                Ok(None) => Step::failed("the project is gone".to_string()),
-                Err(why) => Step::failed(orq_core::redact::redact(&why)),
-            };
-        }
+        // A retry pulls the run's own target, and clears the project's warning only when it is about that target.
         let outcome = orq_git::pull_target(root, remote, target);
         let message = orq_core::redact::redact(&outcome.describe(remote, target));
         if outcome.may_start() {
+            if pulled.is_some() {
+                if let Err(why) = self.target_pulled(id, remote, target) {
+                    eprintln!("orq: cannot clear the target pull warning of {id}: {why}");
+                }
+            }
             Step::done(Some(message))
         } else {
             Step::skipped(message)

@@ -513,6 +513,24 @@ fn a_branch_checked_out_in_another_checkout_is_not_deleted() {
 }
 
 #[test]
+fn a_retried_pull_fast_forwards_the_runs_own_target() {
+    let s = setup("cleanup-retry-target", |_| {});
+    let merged = merge_on_forge(&s);
+    mr(&s, ProviderState::Merged);
+    // The merge's own pull failed, and the project's warning is about another target.
+    event(&RunStore::new(&s.roots.state), "target.pulled", json!({"outcome": "fetch_failed", "message": "could not fetch origin"}));
+    let project = orq_git::project_id(&orq_git::resolve_project(&s.repo).unwrap());
+    let warning = s.roots.state.join("target-pull").join(project);
+    std::fs::create_dir_all(warning.parent().unwrap()).unwrap();
+    let release = json!({"remote": "origin", "target": "release", "message": "release could not be pulled"}).to_string();
+    std::fs::write(&warning, &release).unwrap();
+    let answer = clean_up(&s);
+    assert_eq!(step(&answer, "pull_target")["state"], "done", "{answer}");
+    assert_eq!(git(&s.repo, &["rev-parse", "refs/heads/main"]), merged, "the run's target, main, is pulled");
+    assert_eq!(std::fs::read_to_string(&warning).unwrap(), release, "the warning about release is kept");
+}
+
+#[test]
 fn a_main_checkout_on_another_branch_is_not_fast_forwarded() {
     let s = setup("cleanup-other-branch", |_| {});
     merge_on_forge(&s);
