@@ -115,12 +115,14 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     assert_eq!(queued.len(), 1, "{queued:?}");
     assert!(queued[0].starts_with("\"queue\")"), "{}", queued[0]);
     let queue_view = paths("QueueView");
-    assert_eq!(queue_view.len(), 1, "{queue_view:?}");
+    // The queue view also retries the pull of a target a merge left behind, at the project's own pull route.
+    assert_eq!(queue_view.len(), 2, "{queue_view:?}");
     assert!(queue_view[0].starts_with("\"queue/\" + tail)"), "{}", queue_view[0]);
+    assert_eq!(queue_view[1], "\"pull\"), control.token, {})", "{queue_view:?}");
     let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
     let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
     assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 22, "the definition, the seven run actions with their own path, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing and the queue view's changes are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 23, "the definition, the seven run actions with their own path, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

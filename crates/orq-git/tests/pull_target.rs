@@ -31,7 +31,7 @@ mod tempdir {
 }
 
 fn repos(label: &str) -> Repos {
-    let base = std::env::temp_dir().join(format!("orq-pull-target-{label}-{}", std::process::id()));
+    let base = orq_test_support::process_temp_dir().join(format!("orq-pull-target-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     let base = std::fs::canonicalize(base).unwrap();
@@ -183,7 +183,7 @@ fn logging_git() -> PathBuf {
     LOG.get_or_init(|| {
         let path = std::env::var_os("PATH").unwrap();
         let real = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file()).expect("git on PATH");
-        let dir = std::env::temp_dir().join(format!("orq-pull-target-bin-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-pull-target-bin-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("git.log");
         let script = format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n", log.display(), real.display());
@@ -241,6 +241,18 @@ fn each_outcome_says_whether_a_run_may_start_and_why_not() {
     assert_eq!(PullOutcome::Ahead { n: 1 }.describe("origin", "main"), "main is 1 commit ahead of origin");
     assert_eq!(PullOutcome::UpToDate.describe("origin", "main"), "main is up to date with origin");
     assert_eq!(ff.describe("origin", "main"), format!("main fast-forwarded from aaaaaaaa to bbbbbbbb"));
+}
+
+#[test]
+fn a_project_without_the_remote_has_nothing_to_pull_and_may_start() {
+    let r = repos("no-remote");
+    let before = git(&r.project, &["rev-parse", "refs/heads/main"]);
+    git(&r.project, &["remote", "remove", "origin"]);
+    let outcome = pull_target(&r.project, "origin", "main");
+    assert_eq!(outcome, PullOutcome::NoRemote);
+    assert_eq!((outcome.kind(), outcome.may_start()), ("no_remote", true));
+    assert_eq!(outcome.describe("origin", "main"), "main has no origin to be pulled from");
+    assert_eq!(git(&r.project, &["rev-parse", "refs/heads/main"]), before, "nothing was touched");
 }
 
 #[test]

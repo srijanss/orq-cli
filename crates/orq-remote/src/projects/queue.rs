@@ -495,7 +495,7 @@ impl StoreProjects {
         }
         let warning = PullWarning::of(&self.roots, &git);
         match outcome {
-            orq_git::PullOutcome::FastForwarded { .. } | orq_git::PullOutcome::UpToDate | orq_git::PullOutcome::Ahead { .. } => warning.pulled(remote, &target),
+            orq_git::PullOutcome::FastForwarded { .. } | orq_git::PullOutcome::UpToDate | orq_git::PullOutcome::Ahead { .. } | orq_git::PullOutcome::NoRemote => warning.pulled(remote, &target),
             _ => warning.set(remote, &target, &format!("{target} not updated after {} merged: {message}", review_ref(&review))),
         }
     }

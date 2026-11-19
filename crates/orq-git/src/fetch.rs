@@ -117,6 +117,8 @@ pub enum PullOutcome {
     /// The remote's target could not be fetched, for this reason with any credentials in a URL
     /// removed: nothing was touched.
     FetchFailed { message: String },
+    /// The project has no such remote, so there is nothing to pull: nothing was touched.
+    NoRemote,
 }
 
 impl PullOutcome {
@@ -130,12 +132,14 @@ impl PullOutcome {
             PullOutcome::Dirty { .. } => "dirty",
             PullOutcome::Refused { .. } => "refused",
             PullOutcome::FetchFailed { .. } => "fetch_failed",
+            PullOutcome::NoRemote => "no_remote",
         }
     }
 
-    /// Whether a run may start from the local target now: it holds every commit `remote` has.
+    /// Whether a run may start from the local target now: it holds every commit `remote` has, or
+    /// there is no `remote` to have any.
     pub fn may_start(&self) -> bool {
-        matches!(self, PullOutcome::FastForwarded { .. } | PullOutcome::UpToDate | PullOutcome::Ahead { .. })
+        matches!(self, PullOutcome::FastForwarded { .. } | PullOutcome::UpToDate | PullOutcome::Ahead { .. } | PullOutcome::NoRemote)
     }
 
     /// What happened to `target`, pulled from `remote`, in a line for a person.
@@ -151,6 +155,7 @@ impl PullOutcome {
             PullOutcome::Dirty { files } => format!("{target} has uncommitted changes to {}", files.join(", ")),
             PullOutcome::Refused { reason } => format!("{target} could not be fast-forwarded: {reason}"),
             PullOutcome::FetchFailed { message } => format!("{target} could not be fetched from {remote}: {message}"),
+            PullOutcome::NoRemote => format!("{target} has no {remote} to be pulled from"),
         }
     }
 }
@@ -167,6 +172,8 @@ pub const DIRTY_FILES_NAMED: usize = 10;
 pub fn pull_target(repo: &Path, remote: &str, target: &str) -> PullOutcome {
     let to = match fetch_target_base(repo, remote, target) {
         Ok(to) => to,
+        // A project without the remote (one never pushed anywhere) has nothing to bring its target level with.
+        Err(FetchError::RemoteNotFound { .. }) => return PullOutcome::NoRemote,
         Err(error) => return PullOutcome::FetchFailed { message: redact_urls(&error.to_string()) },
     };
     match fast_forward(repo, target, &to) {

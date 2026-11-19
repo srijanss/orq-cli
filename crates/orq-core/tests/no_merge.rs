@@ -98,6 +98,11 @@ const MERGE_CAPABLE: [&str; 10] = [
 /// The whole argument list, closing bracket included, so no argument (`--no-ff`) can be added to it.
 const MERGE_LOCAL_FAST_FORWARD: &str = r#"&["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", &head_sha]"#;
 
+/// The target pull's one fast-forward of a checked-out target to what was fetched from its remote:
+/// `--ff-only` cannot make a merge commit, nothing is pushed, and no forge merges or approves anything.
+/// The whole argument list, closing bracket included, so no argument (`--no-ff`) can be added to it.
+const PULL_TARGET_FAST_FORWARD: &str = r#"&["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", to]"#;
+
 /// The `orq run merge` subcommand's dispatch arm: it names the subcommand, which resumes a
 /// merge-local run through merge-local's own fast-forward, and invokes no merge itself.
 /// The whole arm, handler included, so the name cannot be reused to dispatch to anything else.
@@ -115,6 +120,8 @@ const RUN_MERGE_SET_ASIDE: &str = r#"self.carry_on(run, &["merge", run, "--set-a
 fn merge_capable_text(path: &Path, text: &str) -> Option<&'static str> {
     let text = if path.ends_with("merge_local.rs") {
         text.replacen(MERGE_LOCAL_FAST_FORWARD, "", 1)
+    } else if path.ends_with("orq-git/src/fetch.rs") {
+        text.replacen(PULL_TARGET_FAST_FORWARD, "", 1)
     } else if path.ends_with("orq-cli/src/main.rs") {
         text.replacen(RUN_MERGE_DISPATCH, "", 1)
     } else if path.ends_with("orq-cli/src/remote_launch.rs") {
@@ -139,6 +146,18 @@ fn only_merge_locals_one_fast_forward_of_the_base_branch_is_allowed() {
     assert_eq!(merge_capable_text(merge_local, &no_ff), Some("\"merge\""), "the fast-forward with an argument appended");
     let pr_merge = format!("{fast_forward}\nlet call = \"gh pr merge\";");
     assert_eq!(merge_capable_text(merge_local, &pr_merge), Some("pr merge"), "other merge-capable text");
+}
+
+#[test]
+fn only_the_target_pulls_one_fast_forward_is_allowed_and_only_in_fetch() {
+    let fetch = Path::new("crates/orq-git/src/fetch.rs");
+    let fast_forward = r#"git(repo, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", to])"#;
+    assert_eq!(merge_capable_text(fetch, fast_forward), None, "the target pull's fast-forward");
+    assert_eq!(merge_capable_text(Path::new("crates/orq-git/src/lib.rs"), fast_forward), Some("\"merge\""), "anywhere else");
+    let twice = format!("{fast_forward}\n{fast_forward}");
+    assert_eq!(merge_capable_text(fetch, &twice), Some("\"merge\""), "a second one");
+    let no_ff = fast_forward.replace("\"--quiet\"", "\"--quiet\", \"--no-ff\"");
+    assert_eq!(merge_capable_text(fetch, &no_ff), Some("\"merge\""), "the fast-forward with an argument appended");
 }
 
 #[test]
@@ -178,6 +197,9 @@ fn no_production_code_path_can_invoke_a_merge() {
             seen += 1;
             if path.ends_with("merge_local.rs") {
                 assert!(text.contains(MERGE_LOCAL_FAST_FORWARD), "merge-local no longer has the fast-forward the allowlist names; drop the allowlist");
+            }
+            if path.ends_with("orq-git/src/fetch.rs") {
+                assert!(text.contains(PULL_TARGET_FAST_FORWARD), "the target pull no longer has the fast-forward the allowlist names; drop the allowlist");
             }
             if path.ends_with("orq-cli/src/remote_launch.rs") {
                 assert!(text.contains(RUN_MERGE_SET_ASIDE), "remote_launch no longer has the set-aside call the allowlist names; drop the allowlist");
