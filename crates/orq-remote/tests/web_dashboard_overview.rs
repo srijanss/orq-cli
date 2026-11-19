@@ -39,7 +39,7 @@ fn totals_sum_the_readable_projects_and_count_every_project() {
     assert_eq!(value_of(&texts, "Projects"), "3", "{texts:?}");
     assert_eq!(value_of(&texts, "Active runs"), "5", "{texts:?}");
     assert_eq!(value_of(&texts, "Reviews waiting"), "5", "{texts:?}");
-    assert!(texts.iter().any(|t| t == "Add feature"), "the fourth tile adds a feature: {texts:?}");
+    assert_eq!(value_of(&texts, "Todos"), "–", "the fourth tile counts the Todos (unreadable here): {texts:?}");
 }
 
 #[test]
