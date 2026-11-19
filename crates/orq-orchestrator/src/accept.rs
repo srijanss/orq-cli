@@ -564,6 +564,6 @@ mod tests {
     }
 
     fn log_file(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("orq-accept-log-{tag}-{}.log", std::process::id()))
+        orq_test_support::process_temp_dir().join(format!("orq-accept-log-{tag}-{}.log", std::process::id()))
     }
 }
