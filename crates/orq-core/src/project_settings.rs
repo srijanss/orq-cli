@@ -39,6 +39,33 @@ impl Delivery {
     }
 }
 
+/// What the server does once it sees a run's MR merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AfterMerge {
+    /// Offer Clean up on the run, its review and the project, for a person to press.
+    #[default]
+    Ask,
+    /// Clean up on its own, and send a notification saying how it went.
+    Auto,
+}
+
+impl AfterMerge {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AfterMerge::Ask => "ask",
+            AfterMerge::Auto => "auto",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<AfterMerge> {
+        match text {
+            "ask" => Some(AfterMerge::Ask),
+            "auto" => Some(AfterMerge::Auto),
+            _ => None,
+        }
+    }
+}
+
 /// The agent a project uses for one role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectAgent {
@@ -68,6 +95,8 @@ pub struct ProjectSettings {
     /// Whether a project whose runs end in an MR has its local target fast-forwarded from the
     /// remote after an MR merges and before each run. On by default; off, the target is left as it is.
     pub pull_target_before_runs: bool,
+    /// What happens once a run's MR merged: Clean up offered (the default), or done unasked.
+    pub after_merge: AfterMerge,
 }
 
 impl Default for ProjectSettings {
@@ -82,6 +111,7 @@ impl Default for ProjectSettings {
             queue_stop_on_failure: false,
             queue_wait_for_review: true,
             pull_target_before_runs: true,
+            after_merge: AfterMerge::default(),
         }
     }
 }

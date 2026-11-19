@@ -810,6 +810,24 @@ function queuedCount(queue) {
   return queue !== null && typeof queue === "object" && isCount(queue.count) ? queue.count : 0;
 }
 
+// The runs of a project whose MR merged and whose clean-up has not finished, as its card lists them.
+function waitingCleanups(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter((waiting) => waiting !== null && typeof waiting === "object" && typeof waiting.run === "string" && RUN_ID.test(waiting.run) && typeof waiting.feature === "string" && typeof waiting.review === "string");
+}
+
+// The commits on a project's target its remote does not have: how many, and the newest subjects.
+function Unpushed({ unpushed, subjects = false }) {
+  if (unpushed === null || typeof unpushed !== "object" || typeof unpushed.message !== "string") return null;
+  const listed = subjects && Array.isArray(unpushed.subjects) ? unpushed.subjects.filter((subject) => typeof subject === "string") : [];
+  return (
+    <div className="unpushed" role="note" data-unpushed>
+      <p><Icon name="alert" size={16} />{unpushed.message}</p>
+      {listed.length > 0 ? <ul className="unpushed-subjects">{listed.map((subject, at) => <li key={at}>{subject}</li>)}</ul> : null}
+    </div>
+  );
+}
+
 function ProjectCard({ project, selected = false, pinned = false, onPin = null }) {
   const base = "/projects/" + encodeURIComponent(project.id) + "/";
   return (
@@ -840,6 +858,12 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null }
       {typeof project.queue?.target_pull_warning === "string" ? (
         <p className="error-text" role="note" data-card-target-pull><Icon name="alert" size={16} />{project.queue.target_pull_warning}</p>
       ) : null}
+      {waitingCleanups(project.cleanup).map((waiting) => (
+        <button key={waiting.run} type="button" className="card-cleanup" data-card-cleanup={waiting.run} onClick={() => navigate(base + "orchestrations/" + encodeURIComponent(waiting.run))}>
+          <Icon name="check" size={16} />{waiting.feature + " merged in " + waiting.review + ": clean up"}
+        </button>
+      ))}
+      <Unpushed unpushed={project.unpushed} />
     </li>
   );
 }
@@ -3250,6 +3274,7 @@ function QueueView({ data, control, projectId }) {
           {control !== null ? <button type="button" data-target-pull-retry disabled={busy} onClick={pull}><Icon name="rotate" size={16} />Retry</button> : null}
         </div>
       ) : null}
+      <Unpushed unpushed={queue.unpushed ?? null} subjects />
       {queue.paused !== null ? (
         <QueuePausedBanner reason={queue.paused}>
           {control !== null ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button> : null}
@@ -4781,6 +4806,40 @@ function SetAsideNotes({ events }) {
   );
 }
 
+const CLEANUP_STATES = { done: "Done", pending: "Not done yet", skipped: "Skipped", failed: "Failed" };
+
+// What is left to tidy once a run's MR merged, on its page: each step with its state and, when it did not
+// finish, why. Clean up runs the steps that are left, after asking; the server takes it only from a passkey
+// session, so signed in with the token the card says so instead.
+function CleanupCard({ run, control }) {
+  const card = run.cleanup;
+  if (card === null || typeof card !== "object" || !Array.isArray(card.steps)) return null;
+  const target = typeof run.target_branch === "string" && run.target_branch !== "" ? run.target_branch : "the target";
+  const labels = { complete_feature: "Mark " + run.feature + " completed", delete_worktree: "Delete the worktree", delete_branch: "Delete the branch", pull_target: "Fast-forward " + target };
+  const steps = card.steps.filter((step) => step !== null && typeof step === "object" && typeof labels[step.step] === "string" && typeof CLEANUP_STATES[step.state] === "string");
+  const left = steps.some((step) => step.state !== "done");
+  const question = "Clean up " + run.run_id + "? Marks " + run.feature + " completed, deletes its worktree and branch if nothing on them would be lost, and fast-forwards " + target + ".";
+  const path = control === null ? null : controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/cleanup");
+  return (
+    <div className="cleanup-card" data-cleanup>
+      <strong>After the merge</strong>
+      <ul className="cleanup-steps">
+        {steps.map((step) => (
+          <li key={step.step} className={"cleanup-step " + step.state} data-cleanup-step={step.step}>
+            <span>{labels[step.step]}</span> <span className="badge">{CLEANUP_STATES[step.state]}</span>
+            {typeof step.reason === "string" && step.reason !== "" ? <span className="muted">{" " + step.reason}</span> : null}
+          </li>
+        ))}
+      </ul>
+      {left && control !== null ? (
+        control.token === SESSION
+          ? <RunAction kind="run-cleanup" label="Clean up" tone="primary" icon="check" question={question} path={path} body={{ confirm: true }} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Clean up ran."} />
+          : <p className="muted" data-cleanup-needs-passkey>Clean up needs a passkey sign-in.</p>
+      ) : null}
+    </div>
+  );
+}
+
 // A start that could not pull the run's target, on its timeline: why, and that it began from the local one.
 function TargetPullNotes({ events, target }) {
   const warned = events.filter((event) => event.target_pull && typeof event.target_pull === "object" && typeof event.target_pull.message === "string");
@@ -5217,6 +5276,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           <AcceptNotes run={run} runPath={runPath} />
           <MissingReport run={run} control={control} />
           <RowActions run={run} control={control} />
+          <CleanupCard run={run} control={control} />
           <ResumeLinks run={run} listPath={listPath} />
           {run.kind === "plan" ? <PlanProposal plan={run.plan === undefined ? null : run.plan} projectId={projectId} apiRun={follow === null ? null : follow.base} control={control} /> : null}
           {validTime(run.started_at) === null && delivery === null ? null : (
@@ -5595,10 +5655,11 @@ function parseProjectSettings(data) {
     && (settings.queue_stop_on_failure === undefined || typeof settings.queue_stop_on_failure === "boolean")
     && (settings.queue_wait_for_review === undefined || typeof settings.queue_wait_for_review === "boolean")
     && (settings.pull_target_before_runs === undefined || typeof settings.pull_target_before_runs === "boolean")
+    && (settings.after_merge === undefined || settings.after_merge === "ask" || settings.after_merge === "auto")
     && (settings.target_branch === undefined || typeof settings.target_branch === "string");
   // Waiting for each run's review, and pulling the target, are on unless the server says they are off, as their defaults are.
   const target = typeof settings?.target_branch === "string" && settings.target_branch !== "" ? settings.target_branch : "the target";
-  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true, queue_wait_for_review: settings.queue_wait_for_review !== false, pull_target_before_runs: settings.pull_target_before_runs !== false, target_branch: target } : null;
+  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true, queue_wait_for_review: settings.queue_wait_for_review !== false, pull_target_before_runs: settings.pull_target_before_runs !== false, after_merge: settings.after_merge === "auto" ? "auto" : "ask", target_branch: target } : null;
 }
 
 // The limits a project may put on starting a run, as the server checks them; empty is no limit.
@@ -5751,7 +5812,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, waitForReview: settings.queue_wait_for_review, pullTarget: settings.pull_target_before_runs, revision: settings.revision });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, waitForReview: settings.queue_wait_for_review, pullTarget: settings.pull_target_before_runs, afterMerge: settings.after_merge, revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -5764,7 +5825,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
     setConflict(false);
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, queue_wait_for_review: draft.waitForReview, pull_target_before_runs: draft.pullTarget, revision: draft.revision });
+      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, queue_wait_for_review: draft.waitForReview, pull_target_before_runs: draft.pullTarget, after_merge: draft.afterMerge, revision: draft.revision });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -5852,6 +5913,14 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           </label>
         ) : (
           <SettingsRow label={"Pull " + settings.target_branch + " after an MR merges and before each run"} editing={false} value={<span data-project-pull-target>{settings.pull_target_before_runs ? "Fast-forwards " + settings.target_branch + " first" : "Leaves " + settings.target_branch + " as it is"}</span>} />
+        )}
+        {editing ? (
+          <label className="settings-row settings-check">
+            <input type="checkbox" data-after-merge checked={draft.afterMerge === "auto"} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, afterMerge: event.target.checked ? "auto" : "ask" })} />
+            <span>After an MR merges, clean up on its own (mark the feature completed, delete the worktree and branch, fast-forward {settings.target_branch})</span>
+          </label>
+        ) : (
+          <SettingsRow label="After an MR merges" editing={false} value={<span data-project-after-merge>{settings.after_merge === "auto" ? "Cleans up on its own and tells you" : "Offers Clean up on the run"}</span>} />
         )}
       </section>
       {phase === "editing" ? (

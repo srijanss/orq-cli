@@ -450,8 +450,11 @@ impl StoreProjects {
         let Ok(store) = Store::open_read_only(&self.roots.database()) else { return };
         let latest = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().filter(|l| l.provider != orq_core::review_lifecycle::LOCAL_PROVIDER).last());
         let Some(review) = latest.filter(|review| review.state == orq_core::review_lifecycle::ProviderState::Merged) else { return };
-        // Only a merged review reads the run's events, to pull its merge once.
-        if runs.events(run_id).map_or(true, |events| events.iter().any(|event| event.kind == TARGET_PULLED_EVENT)) {
+        // Only a merged review reads the run's events, to pull its merge once and clean up once.
+        let Ok(events) = runs.events(run_id) else { return };
+        let pulled = events.iter().any(|event| event.kind == TARGET_PULLED_EVENT);
+        let cleaned = events.iter().any(|event| event.kind.starts_with("cleanup."));
+        if pulled && cleaned {
             return;
         }
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| {
@@ -461,9 +464,17 @@ impl StoreProjects {
         };
         let Ok(Some((git, root))) = self.settings_key(&project.id) else { return };
         let Ok(settings) = self.settings_of_git(&git) else { return };
-        if !pulls_target(&settings) {
-            return;
+        if !pulled && pulls_target(&settings) {
+            self.pull_merged_target(run_id, &record, &review, &project.id, &git, &root);
         }
+        if !cleaned && settings.after_merge == orq_core::project_settings::AfterMerge::Auto {
+            self.auto_clean_up(&project.id, &root, &runs, &record, &review_ref(&review));
+        }
+    }
+
+    /// Pulls the target `review` merged into, fast-forward only, and records how it went.
+    fn pull_merged_target(&self, run_id: &str, record: &orq_orchestrator::RunRecord, review: &orq_core::review_lifecycle::ReviewLifecycle, project_id: &str, git: &orq_git::Project, root: &std::path::Path) {
+        let runs = RunStore::new(&self.roots.state);
         // The MR merged into the run's own target, on its own remote, which a run started with a
         // different target than the project's names in its record.
         let target = if record.target_branch.is_empty() { project_target(&root) } else { record.target_branch.clone() };
@@ -491,11 +502,11 @@ impl StoreProjects {
             eprintln!("orq: cannot record that {run_id}'s target was pulled: {error:?}");
         }
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
-        let attempt = orq_core::remote_audit::Attempt { identity: "orq serve", action: "project.pull", project: &project.id, run: Some(run_id), outcome: orq_core::remote_audit::Outcome::Allowed, reason: Some(&message) };
+        let attempt = orq_core::remote_audit::Attempt { identity: "orq serve", action: "project.pull", project: project_id, run: Some(run_id), outcome: orq_core::remote_audit::Outcome::Allowed, reason: Some(&message) };
         if let Err(error) = orq_core::remote_audit::record(&self.roots, &attempt, now) {
-            eprintln!("orq: cannot audit the pull of {}'s target: {error}", project.id);
+            eprintln!("orq: cannot audit the pull of {project_id}'s target: {error}");
         }
-        let warning = PullWarning::of(&self.roots, &git);
+        let warning = PullWarning::of(&self.roots, git);
         match outcome {
             orq_git::PullOutcome::FastForwarded { .. } | orq_git::PullOutcome::UpToDate | orq_git::PullOutcome::Ahead { .. } | orq_git::PullOutcome::NoRemote => warning.pulled(remote, &target),
             _ => warning.set(remote, &target, &format!("{target} not updated after {} merged: {message}", review_ref(&review))),
@@ -539,6 +550,9 @@ impl StoreProjects {
         let mut answer = queue_json_with(&queue, &ledger, &review, &unlanded);
         if let Some(warning) = PullWarning::of(&self.roots, &git).read() {
             answer["target_pull_warning"] = json!(warning);
+        }
+        if let Some(unpushed) = super::cleanup::unpushed(&root) {
+            answer["unpushed"] = unpushed;
         }
         Ok(Some(answer))
     }
@@ -1011,7 +1025,7 @@ fn action_applies(runs: &RunStore, git: &orq_git::Project, action: &QueueAction)
 }
 
 /// The remote a project's target is pulled from: the one its runs push to.
-const PULL_REMOTE: &str = "origin";
+pub(super) const PULL_REMOTE: &str = "origin";
 
 /// The run event that says the project's target was pulled after the run's MR merged.
 pub const TARGET_PULLED_EVENT: &str = "target.pulled";
@@ -1023,13 +1037,13 @@ fn pulls_target(settings: &orq_core::project_settings::ProjectSettings) -> bool 
 }
 
 /// How a review is named on its forge: GitLab's `!12`, anyone else's `#12`.
-fn review_ref(review: &orq_core::review_lifecycle::ReviewLifecycle) -> String {
+pub(super) fn review_ref(review: &orq_core::review_lifecycle::ReviewLifecycle) -> String {
     let sign = if review.provider == "gitlab" { '!' } else { '#' };
     format!("{sign}{}", review.review_id)
 }
 
 /// The current UTC time as RFC 3339, without a date-time dependency.
-fn utc_now() -> String {
+pub(super) fn utc_now() -> String {
     let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let (days, rem) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
     // Civil-from-days (Howard Hinnant's algorithm).

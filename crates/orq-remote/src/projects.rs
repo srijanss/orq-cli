@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use orq_core::retention::PrunePlan;
 
+mod cleanup;
 mod plan;
 mod queue;
 pub use queue::{action_label, change_queue, project_queue_json, queue_json, start_queue_rounds, QueueRound, QueueRounds, QUEUE_ROUND_EVERY};
@@ -881,6 +882,7 @@ impl StoreProjects {
             "queue_stop_on_failure": stored.settings.queue_stop_on_failure,
             "queue_wait_for_review": stored.settings.queue_wait_for_review,
             "pull_target_before_runs": stored.settings.pull_target_before_runs,
+            "after_merge": stored.settings.after_merge.as_str(),
             "target_branch": queue::project_target(&git.root),
             "revision": stored.revision,
         })
@@ -1656,6 +1658,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .collect()
     }
 
+    fn clean_up_run(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunCleanup, String> {
+        self.clean_up(id, run)
+    }
+
     fn discard_run(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunDiscard, String> {
         use orq_core::remote_inbox::RunDiscard;
         let Some((project, _)) = self.own_run(id, run)? else { return Ok(RunDiscard::Unknown) };
@@ -1932,6 +1938,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         if reviewable_again {
             shown["reviewable_again"] = serde_json::json!(true);
         }
+        if cleanup::merged_review(&self.roots, run).is_some() {
+            shown["cleanup"] = cleanup::card(&events);
+        }
         Ok(Some(serde_json::json!({
             "run": shown,
             "events": listed,
@@ -1951,15 +1960,18 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let runs = orq_orchestrator::RunStore::new(&self.roots.state);
         let active = active_runs_by_project(&runs);
         let machine = self.machine_runs_now()?;
+        let waiting = cleanup::waiting_by_project(reviews.as_ref(), &runs);
         let list = discover(&self.scan_root)
             .into_iter()
             .map(|project| match counts(&project, reviews.as_ref(), &active).and_then(|counts| {
                 let settings = self.settings_of_git(&counts.git)?;
                 let blocked = start_blocked(&counts.git, &settings, &counts.active, &machine)?.map(|why| orq_core::redact::redact(&why));
                 let queue = queue::queue_summary(&self.roots, reviews.as_ref(), &runs, &counts.git, settings.queue_wait_for_review)?;
-                Ok((counts, settings.max_active_runs, blocked, queue))
+                let cleanup = waiting.get(&orq_git::project_id(&counts.git)).cloned().unwrap_or_default();
+                let unpushed = cleanup::unpushed(&orq_git::main_checkout_root(&counts.git).unwrap_or_else(|| counts.git.root.clone()));
+                Ok((counts, settings.max_active_runs, blocked, queue, cleanup, unpushed))
             }) {
-                Ok((counts, max_active_runs, start_blocked, queue)) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active.len(), "max_active_runs": max_active_runs, "start_blocked": start_blocked, "queue": queue, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),
+                Ok((counts, max_active_runs, start_blocked, queue, cleanup, unpushed)) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active.len(), "max_active_runs": max_active_runs, "start_blocked": start_blocked, "queue": queue, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS, "cleanup": cleanup, "unpushed": unpushed}),
                 Err(_) => json!({"id": project.id, "name": project.name, "available": false, "features": null, "active_runs": null, "reviews_waiting": null, "failed_runs": null, "failed_window_hours": FAILED_WINDOW_HOURS}),
             })
             .collect::<Vec<_>>();

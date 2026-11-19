@@ -363,6 +363,13 @@ pub trait ProjectsProvider {
         Ok(RunDiscard::Unknown)
     }
 
+    /// Cleans up run `run` of project `id` after its MR merged: marks its feature completed, deletes its
+    /// worktree and branch and fast-forwards the main checkout's target, in order, each only when it is
+    /// safe, stopping at the first that is not. A provider that cannot does not know the run.
+    fn clean_up_run(&self, _id: &str, _run: &str) -> Result<RunCleanup, String> {
+        Ok(RunCleanup::Unknown)
+    }
+
     /// What a storage cleanup would remove now, as `{lines, files, bytes, size, runs, metadata, hash}`; the
     /// hash names that set. `None` when this provider cannot clean up.
     fn storage_preview(&self) -> Result<Option<Value>, String> {
@@ -541,6 +548,16 @@ pub enum RunControl {
     MergeSetAside,
     /// Build the review report an ended run could not build itself.
     BuildReport,
+}
+
+/// How a Clean up of a merged run ended.
+pub enum RunCleanup {
+    /// The steps were run as far as they could go: the Clean up card as it now stands, `{steps}`.
+    Done(Value),
+    /// Why this run may not be cleaned up now; safe to show.
+    Refused(String),
+    /// There is no such project or run.
+    Unknown,
 }
 
 /// How a request to pause or resume a run ended.
@@ -2008,6 +2025,57 @@ fn discard_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
     }
 }
 
+/// Cleans up a merged run for the web, as its Clean up card asks: only with actions on, from a passkey
+/// session (`passkey`), and with the press confirmed (`{"confirm": true}`). Every attempt is audited as
+/// `run.cleanup`.
+fn clean_up_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, body: &[u8], passkey: bool) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let failed = "the run could not be cleaned up";
+    let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: "run.cleanup", project: id, run, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, None, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    if !plain_run_id(run) {
+        audit(Outcome::Refused, None, Some("not a run id"));
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &["confirm"]) {
+        audit(Outcome::Refused, Some(run), Some("bad request body"));
+        return refusal;
+    }
+    if !passkey {
+        audit(Outcome::Refused, Some(run), Some("no passkey session"));
+        return error(403, "cleaning up a run needs a passkey sign-in");
+    }
+    if serde_json::from_slice::<Value>(body).ok().and_then(|fields| fields["confirm"].as_bool()) != Some(true) {
+        audit(Outcome::Refused, Some(run), Some("not confirmed"));
+        return error(400, "cleaning up a run needs it confirmed");
+    }
+    match provider.map(|provider| provider.clean_up_run(id, run)) {
+        Some(Ok(RunCleanup::Done(card))) => {
+            audit(Outcome::Allowed, Some(run), None);
+            reply(200, card)
+        }
+        Some(Ok(RunCleanup::Refused(why))) => {
+            audit(Outcome::Refused, Some(run), Some(&why));
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, Some(run), Some(failed));
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, None, Some("no such project or run"));
+            error(404, "not found")
+        }
+    }
+}
+
 /// The role and profile of a model switch body, `{"role": "implementer"|"reviewer", "profile": "<name>"}` and
 /// nothing else; `None` for any other body.
 fn model_switch(body: &[u8]) -> Option<(String, String)> {
@@ -2422,7 +2490,7 @@ fn delete_merged_worktrees(roots: &StorageRoots, provider: Option<&dyn ProjectsP
 /// whole record and the revision it was read at; a null role is reset so runs fall back again, and a
 /// null limit is no limit.
 fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8]) -> Response {
-    use crate::project_settings::{Delivery, ProjectAgent, ProjectSettings};
+    use crate::project_settings::{AfterMerge, Delivery, ProjectAgent, ProjectSettings};
     use crate::remote_audit::{record, Attempt, Outcome};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
     let audit = |outcome, reason: Option<&str>| {
@@ -2432,7 +2500,7 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("remote actions are off"));
         return error(404, "not found");
     }
-    const KEYS: [&str; 10] = ["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "queue_hours", "queue_stop_on_failure", "queue_wait_for_review", "pull_target_before_runs", "revision"];
+    const KEYS: [&str; 11] =["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "queue_hours", "queue_stop_on_failure", "queue_wait_for_review", "pull_target_before_runs", "after_merge", "revision"];
     if let Some(refusal) = body_refusal(body, &KEYS) {
         audit(Outcome::Refused, Some("bad request body"));
         return refusal;
@@ -2528,7 +2596,13 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("bad request body"));
         return error(400, "the request body is not one this action takes");
     };
-    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs };
+    // After a merge the server asks unless told `auto`, as it does by default.
+    let after_merge = fields.get("after_merge").map_or(Some(AfterMerge::Ask), |value| value.as_str().and_then(AfterMerge::parse));
+    let Some(after_merge) = after_merge else {
+        audit(Outcome::Refused, Some("bad request body"));
+        return error(400, "the request body is not one this action takes");
+    };
+    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge };
     match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
         Some(Ok(ProjectSettingsSave::Saved(settings))) => {
             audit(Outcome::Allowed, None);
@@ -2588,6 +2662,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "discard")).flatten() {
         return discard_run(roots, provider, id, run, body);
+    }
+    if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "cleanup")).flatten() {
+        return clean_up_run(roots, provider, id, run, body, confirm.is_some());
     }
     if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "model")).flatten() {
         return switch_model(roots, provider, id, run, body);
