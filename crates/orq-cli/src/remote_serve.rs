@@ -2,7 +2,7 @@
 //! points here.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::{fail, usage_error};
@@ -282,7 +282,12 @@ fn run(args: &[OsString]) -> ExitCode {
         let user_config = orq_features::settings_path(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref());
         std::sync::Arc::new(crate::remote_launch::CliLauncher::new(exe, user_config))
     });
-    let restart = std::sync::Arc::new(restart_control(&roots));
+    let mut control = restart_control(&roots);
+    if own_unit().is_some() {
+        // Under the unit, this server's PATH is the one runs get: say which harness it cannot find.
+        control = control.harness_warnings(harness_warnings(&project.root, &std::env::var("PATH").unwrap_or_default()));
+    }
+    let restart = std::sync::Arc::new(control);
     let listen_key = listen.clone();
     let mut projects = orq_remote::projects::StoreProjects::new(roots.clone(), scan_root).with_server(restart.clone());
     if let Some(launcher) = launcher {
@@ -560,6 +565,8 @@ pub(crate) struct RestartControl {
     now: std::sync::atomic::AtomicBool,
     /// Whether systemd started this server, so it is started again after a crash or a reboot.
     managed: bool,
+    /// What runs started by this server will fail on: a harness missing from its PATH.
+    harness_warnings: Vec<String>,
 }
 
 impl RestartControl {
@@ -573,7 +580,14 @@ impl RestartControl {
             pending: Default::default(),
             now: Default::default(),
             managed: false,
+            harness_warnings: Vec::new(),
         }
+    }
+
+    /// Says what runs started by this server will fail on.
+    pub(crate) fn harness_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.harness_warnings = warnings;
+        self
     }
 
     /// Says systemd started this server when `managed`.
@@ -626,6 +640,7 @@ impl orq_core::remote_inbox::ServerControl for RestartControl {
             "waiting_for": waiting_for,
             "managed_by_systemd": self.managed,
             "supervision": if self.managed { "Managed by systemd (restarts automatically)" } else { "Not managed: stops on reboot" },
+            "harness_warnings": self.harness_warnings,
         })
     }
 
@@ -694,7 +709,15 @@ fn install_command(args: &[OsString]) -> ExitCode {
             words.push("--no-loopback-token".into());
         }
     }
-    let unit = unit_text(&words);
+    let (service_path, dropped) = service_path(&std::env::var("PATH").unwrap_or_default());
+    println!("orq serve: the service's PATH: {service_path}");
+    for entry in &dropped {
+        println!("orq serve: left out of the service's PATH (gone after a reboot): {entry}");
+    }
+    for warning in harness_warnings(&repo, &service_path) {
+        println!("orq serve: {warning}");
+    }
+    let unit = unit_text(&words, &service_path);
     let before = match read_unit(&path) {
         Ok(before) => before,
         Err(code) => return code,
@@ -786,6 +809,17 @@ fn status_command() -> ExitCode {
     }
     println!("linger: {}", if linger_on() { "yes" } else { "no" });
     println!("binary: {}", unit_binary(&unit).unwrap_or_else(|| "unknown (no ExecStart in the unit)".into()));
+    match systemd_path().or_else(|| unit_file_path(&unit)) {
+        Some(service_path) => {
+            println!("path: {service_path}");
+            if let Some(repo) = unit_repo(&unit) {
+                for warning in harness_warnings(Path::new(&repo), &service_path) {
+                    println!("warning: {warning}");
+                }
+            }
+        }
+        None => println!("path: unknown (systemd's default; the unit sets none)"),
+    }
     match system_call("journalctl", &["--user", "-u", UNIT, "-n", "5", "--no-pager"]) {
         Ok(lines) => {
             println!("last journal lines:");
@@ -821,17 +855,45 @@ fn unit_state() -> Result<UnitState, String> {
 
 /// The binary a unit written by [`unit_text`] runs: the first word of its `ExecStart`, unquoted.
 fn unit_binary(unit: &str) -> Option<String> {
+    unit_words(unit)?.into_iter().next()
+}
+
+/// The project a unit written by [`unit_text`] serves: the word after `--repo` in its `ExecStart`.
+fn unit_repo(unit: &str) -> Option<String> {
+    let words = unit_words(unit)?;
+    words.iter().position(|word| word == "--repo").and_then(|at| words.get(at + 1)).cloned()
+}
+
+/// The words of the `ExecStart` of a unit written by [`unit_text`], each unquoted.
+fn unit_words(unit: &str) -> Option<Vec<String>> {
     let exec = unit.lines().find_map(|line| line.strip_prefix("ExecStart="))?;
-    let mut chars = exec.strip_prefix('"')?.chars();
+    let mut words = Vec::new();
+    let mut rest = exec;
+    while let Some(quoted) = rest.trim_start().strip_prefix('"') {
+        let (word, after) = unquote(quoted, true)?;
+        words.push(word);
+        rest = after;
+    }
+    (!words.is_empty()).then_some(words)
+}
+
+/// A word [`unit_quote`] or [`env_quote`] quoted, from just after its opening quote; the word and what
+/// follows its closing quote. `dollar` says whether `$` was doubled, as only `ExecStart` does.
+fn unquote(quoted: &str, dollar: bool) -> Option<(String, &str)> {
+    let mut chars = quoted.char_indices();
     let mut word = String::new();
-    while let Some(c) = chars.next() {
+    while let Some((at, c)) = chars.next() {
         match c {
-            '"' => return Some(word),
-            '\\' => match chars.next()? {
+            '"' => return Some((word, &quoted[at + 1..])),
+            '\\' => match chars.next()?.1 {
                 'n' => word.push('\n'),
                 escaped => word.push(escaped),
             },
-            '%' | '$' => {
+            '%' => {
+                chars.next();
+                word.push(c);
+            }
+            '$' if dollar => {
                 chars.next();
                 word.push(c);
             }
@@ -841,10 +903,41 @@ fn unit_binary(unit: &str) -> Option<String> {
     None
 }
 
+/// The PATH the unit file gives the service: its `Environment="PATH=..."` line, unquoted.
+fn unit_file_path(unit: &str) -> Option<String> {
+    unit.lines().find_map(|line| line.strip_prefix("Environment=\"PATH=")).and_then(|quoted| unquote(quoted, false)).map(|(path, _)| path)
+}
+
+/// The PATH systemd gives the service, drop-ins and all: the `PATH=` in `systemctl show -p Environment`.
+/// `None` when systemd does not say.
+fn systemd_path() -> Option<String> {
+    let shown = systemctl(&["show", UNIT, "-p", "Environment"]).ok()?;
+    let assignments = shown.lines().find_map(|line| line.strip_prefix("Environment="))?;
+    environment_words(assignments).into_iter().rev().find_map(|word| word.strip_prefix("PATH=").map(str::to_string))
+}
+
+/// The assignments in systemd's `Environment=` value: separated by spaces, a word in double quotes may hold one.
+fn environment_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '\\' if quoted => word.extend(chars.next()),
+            ' ' if !quoted => words.extend((!word.is_empty()).then(|| std::mem::take(&mut word))),
+            c => word.push(c),
+        }
+    }
+    words.extend((!word.is_empty()).then_some(word));
+    words
+}
+
 /// The unit this server runs under: `orq serve install`'s, when systemd started it from that unit. That unit
 /// restarts it, so this is what makes it managed. `INVOCATION_ID` or `NOTIFY_SOCKET` alone is not enough: a
 /// shell under some other unit (a terminal's) passes them on to whatever it starts.
-fn own_unit() -> Option<String> {
+pub(crate) fn own_unit() -> Option<String> {
     let unit = std::env::var("ORQ_SYSTEMD_UNIT").ok().filter(|unit| unit == UNIT)?;
     std::env::var_os("INVOCATION_ID").filter(|id| !id.is_empty()).map(|_| unit)
 }
@@ -879,8 +972,9 @@ fn read_unit(path: &std::path::Path) -> Result<Option<String>, ExitCode> {
 /// The unit that runs `exec`, the binary and its arguments. It restarts after any exit, at most 10 times in 10
 /// minutes; it stops with SIGTERM, which lets the server finish what is in flight. Only the server is stopped
 /// (`KillMode=process`): the runs it started go on, as they do when a hand-started server stops.
-fn unit_text(exec: &[String]) -> String {
+fn unit_text(exec: &[String], path: &str) -> String {
     let exec_start = exec.iter().map(|word| unit_quote(word)).collect::<Vec<_>>().join(" ");
+    let path = env_quote(&format!("PATH={path}"));
     format!(
         "# Written by `orq serve install`; `orq serve uninstall` removes it.\n\
          [Unit]\n\
@@ -892,6 +986,7 @@ fn unit_text(exec: &[String]) -> String {
          Type=simple\n\
          ExecStart={exec_start}\n\
          Environment=ORQ_SYSTEMD_UNIT={UNIT}\n\
+         Environment={path}\n\
          Restart=always\n\
          RestartSec=5\n\
          KillSignal=SIGTERM\n\
@@ -916,6 +1011,92 @@ fn unit_quote(word: &str) -> String {
             '\n' => quoted.push_str("\\n"),
             '%' => quoted.push_str("%%"),
             '$' => quoted.push_str("$$"),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// The PATH the unit gives the service, made from the install shell's `shell_path`, and the entries left out.
+/// Folders under `$XDG_RUNTIME_DIR` are gone after a reboot: the first fnm shell folder there becomes fnm's
+/// default alias when that exists, and the rest are dropped. Each folder is kept once, at its first place.
+fn service_path(shell_path: &str) -> (String, Vec<String>) {
+    let runtime = std::env::var("XDG_RUNTIME_DIR").ok().filter(|dir| !dir.is_empty()).map(PathBuf::from);
+    let fnm_default = std::env::var_os("FNM_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share/fnm")))
+        .map(|dir| dir.join("aliases/default/bin"))
+        .filter(|bin| bin.is_dir());
+    let mut swapped = false;
+    let mut kept: Vec<String> = Vec::new();
+    let mut dropped = Vec::new();
+    for entry in shell_path.split(':').filter(|entry| !entry.is_empty()) {
+        let mut entry = entry.to_string();
+        if let Some(runtime) = runtime.as_deref().filter(|runtime| Path::new(&entry).starts_with(runtime)) {
+            let fnm_shell = Path::new(&entry).strip_prefix(runtime).is_ok_and(|rest| rest.starts_with("fnm_multishells"));
+            match fnm_default.as_ref().filter(|_| fnm_shell && !swapped) {
+                Some(default) => {
+                    swapped = true;
+                    entry = default.display().to_string();
+                }
+                None => {
+                    dropped.push(entry);
+                    continue;
+                }
+            }
+        }
+        if !kept.contains(&entry) {
+            kept.push(entry);
+        }
+    }
+    (kept.join(":"), dropped)
+}
+
+/// The harnesses the project's runs start by default: its implementer's and its reviewer's. When its
+/// models cannot be worked out, `claude`, the one every run's implementer needs.
+fn project_harnesses(repo: &Path) -> Vec<String> {
+    let resolved = orq_git::resolve_project(repo).map_err(|err| format!("{err:?}")).and_then(|project| {
+        let (profiles, reviewers) = crate::load_model_config(&project.root)?;
+        let agents = crate::project_agents(&project)?;
+        orq_features::resolve_project_run_models(&profiles, &reviewers, &orq_features::RunSelection::default(), &agents).map_err(|err| err.to_string())
+    });
+    let mut harnesses = match resolved {
+        Ok(models) => vec![models.implementer.harness, models.reviewer.harness],
+        Err(_) => vec!["claude".to_string()],
+    };
+    harnesses.dedup();
+    harnesses
+}
+
+/// A warning for each of the project's harnesses that is not on `path`.
+pub(crate) fn harness_warnings(repo: &Path, path: &str) -> Vec<String> {
+    project_harnesses(repo)
+        .into_iter()
+        .filter(|harness| !on_path(harness, path))
+        .map(|harness| format!("runs will fail: {harness} is not on the PATH the service gets ({path})"))
+        .collect()
+}
+
+/// Whether an executable `name` is in one of `path`'s folders.
+fn on_path(name: &str, path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.split(':').filter(|dir| !dir.is_empty()).any(|dir| {
+        std::fs::metadata(Path::new(dir).join(name)).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    })
+}
+
+/// One `Environment=` assignment in double quotes. systemd expands `%` specifiers there but never `$`
+/// variables, so only `%` is doubled; a `$` stays as it is.
+fn env_quote(assignment: &str) -> String {
+    let mut quoted = String::from("\"");
+    for c in assignment.chars() {
+        match c {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+            '\n' => quoted.push_str("\\n"),
+            '%' => quoted.push_str("%%"),
             c => quoted.push(c),
         }
     }

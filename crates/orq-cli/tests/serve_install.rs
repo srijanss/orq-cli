@@ -102,6 +102,27 @@ impl World {
         let repo = self.repo.display().to_string();
         self.serve(&["install", "--repo", &repo, "--listen", listen])
     }
+
+    /// `orq serve install` run from a shell whose PATH is the stand-in tools, then `entries`, then the system's.
+    fn install_with_path(&self, entries: &[&str], env: &[(&str, &str)]) -> Output {
+        let repo = self.repo.display().to_string();
+        let mut command = self.command();
+        command.env("PATH", self.shell_path(entries)).envs(env.iter().copied());
+        command.args(["serve", "install", "--repo", &repo, "--listen", "127.0.0.1:7999"]).output().unwrap()
+    }
+
+    /// The stand-in tools, then `entries`, then the system's own `/usr/bin:/bin`.
+    fn shell_path(&self, entries: &[&str]) -> String {
+        let mut all = vec![self.root.join("fakebin").display().to_string()];
+        all.extend(entries.iter().map(|entry| entry.to_string()));
+        all.extend(["/usr/bin".to_string(), "/bin".to_string()]);
+        all.join(":")
+    }
+
+    /// The `Environment="PATH=..."` line of the written unit, unquoted, `None` when it has none.
+    fn unit_path_line(&self) -> Option<String> {
+        self.unit().lines().find_map(|line| line.strip_prefix("Environment=\"PATH=").and_then(|rest| rest.strip_suffix('"')).map(String::from))
+    }
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -124,6 +145,67 @@ fn install_writes_a_unit_that_restarts_the_installed_orq_and_enables_it() {
         assert!(unit.contains(line), "{line:?} missing:\n{unit}");
     }
     assert_eq!(world.calls(), "systemctl --user daemon-reload\nsystemctl --user enable --now orq-serve.service\nloginctl show-user tester -p Linger\n");
+}
+
+#[test]
+fn the_unit_keeps_the_path_install_was_run_with_so_runs_find_their_tools() {
+    let world = World::new("path");
+    let out = ok(&world.install_with_path(&["/home/me/.local/bin", "/home/me/.cargo/bin"], &[]));
+    let path = world.shell_path(&["/home/me/.local/bin", "/home/me/.cargo/bin"]);
+    assert_eq!(world.unit_path_line().as_deref(), Some(path.as_str()), "{}", world.unit());
+    assert!(out.contains(&format!("PATH: {path}\n")), "install prints the PATH it wrote: {out}");
+}
+
+#[test]
+fn an_fnm_shell_folder_is_swapped_for_the_default_alias_and_other_runtime_folders_are_dropped() {
+    let world = World::new("fnm");
+    let run = world.root.join("run");
+    let fnm = world.root.join("fnm");
+    let default_bin = fnm.join("aliases/default/bin");
+    fs::create_dir_all(&default_bin).unwrap();
+    let shell = run.join("fnm_multishells/123_456/bin").display().to_string();
+    let other = run.join("other/bin").display().to_string();
+    let env = [("XDG_RUNTIME_DIR", run.to_str().unwrap()), ("FNM_DIR", fnm.to_str().unwrap())];
+    let out = ok(&world.install_with_path(&[&shell, "/home/me/.local/bin", &other], &env));
+    let expected = world.shell_path(&[default_bin.to_str().unwrap(), "/home/me/.local/bin"]);
+    assert_eq!(world.unit_path_line().as_deref(), Some(expected.as_str()), "{}", world.unit());
+    assert!(out.contains(&format!("PATH: {expected}\n")), "{out}");
+    assert!(out.contains(&other), "install names the entry it dropped: {out}");
+}
+
+#[test]
+fn install_warns_when_the_projects_harness_is_not_on_the_services_path_but_still_installs() {
+    let world = World::new("noharness");
+    let out = ok(&world.install_with_path(&["/home/me/.local/bin"], &[]));
+    let path = world.shell_path(&["/home/me/.local/bin"]);
+    assert!(out.contains(&format!("runs will fail: claude is not on the PATH the service gets ({path})")), "{out}");
+    assert!(world.unit_path().exists(), "the install goes ahead");
+    let tools = world.root.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(tools.join("claude"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(tools.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    let out = ok(&world.install_with_path(&[tools.to_str().unwrap()], &[]));
+    assert!(!out.contains("runs will fail: claude"), "claude is found now: {out}");
+}
+
+#[test]
+fn a_folder_named_twice_is_kept_once_and_percent_signs_in_the_path_are_escaped() {
+    let world = World::new("dedupe");
+    ok(&world.install_with_path(&["/home/me/.local/bin", "", "/opt/100% $HOME", "/home/me/.local/bin", "/usr/bin"], &[]));
+    let expected = world.shell_path(&["/home/me/.local/bin", "/opt/100%% $HOME"]);
+    assert_eq!(world.unit_path_line().as_deref(), Some(expected.as_str()), "{}", world.unit());
+}
+
+#[test]
+fn without_an_fnm_default_alias_the_shell_folder_is_dropped_too() {
+    let world = World::new("nofnm");
+    let run = world.root.join("run");
+    let shell = run.join("fnm_multishells/123_456/bin").display().to_string();
+    let env = [("XDG_RUNTIME_DIR", run.to_str().unwrap()), ("FNM_DIR", "/nonexistent/fnm")];
+    let out = ok(&world.install_with_path(&[&shell, "/home/me/.local/bin"], &env));
+    let expected = world.shell_path(&["/home/me/.local/bin"]);
+    assert_eq!(world.unit_path_line().as_deref(), Some(expected.as_str()), "{}", world.unit());
+    assert!(out.contains(&shell), "install names the entry it dropped: {out}");
 }
 
 #[test]
@@ -266,6 +348,21 @@ fn status_says_whether_the_unit_is_installed_enabled_and_active_its_restarts_lin
     assert!(calls.contains("journalctl --user -u orq-serve.service -n 5 --no-pager\n"), "{calls}");
 }
 
+#[test]
+fn status_shows_the_path_systemd_gives_the_service_so_a_drop_in_wins_and_warns_when_a_harness_is_missing() {
+    let world = World::new("statuspath");
+    let path = world.shell_path(&["/home/me/.local/bin"]);
+    ok(&world.install_with_path(&["/home/me/.local/bin"], &[]));
+    let out = ok(&world.serve(&["status"]));
+    assert!(out.contains(&format!("path: {path}\n")), "without systemd's word, the unit file's PATH: {out}");
+    world.answer("systemctl", "case \"$*\" in *Environment*) echo 'Environment=ORQ_SYSTEMD_UNIT=orq-serve.service \"PATH=/drop in/bin:/usr/bin\"';; esac");
+    world.forget_calls();
+    let out = ok(&world.serve(&["status"]));
+    assert!(world.calls().contains("systemctl --user show orq-serve.service -p Environment\n"), "{}", world.calls());
+    assert!(out.contains("path: /drop in/bin:/usr/bin\n"), "a drop-in's PATH wins: {out}");
+    assert!(out.contains("runs will fail: claude is not on the PATH the service gets (/drop in/bin:/usr/bin)"), "{out}");
+}
+
 /// `GET /api/settings` with the bearer token; the JSON body.
 fn settings(addr: &str) -> serde_json::Value {
     use std::io::{Read, Write};
@@ -300,6 +397,20 @@ fn settings_says_the_server_is_managed_only_when_the_installed_unit_started_it()
     let server = &settings(&addr)["server"];
     assert_eq!(server["managed_by_systemd"], true, "{server}");
     assert_eq!(server["supervision"], "Managed by systemd (restarts automatically)", "{server}");
+}
+
+#[test]
+fn settings_warns_of_a_missing_harness_only_when_the_unit_runs_the_server() {
+    let world = World::new("settingswarn");
+    let path = world.shell_path(&[]);
+    let (_by_hand, addr) = world.serve_with(&[("PATH", &path)]);
+    let server = &settings(&addr)["server"];
+    assert_eq!(server["harness_warnings"], serde_json::json!([]), "a server started by hand has its shell's PATH: {server}");
+    let (_managed, addr) = world.serve_with(&[("PATH", &path), ("INVOCATION_ID", "0123abcd"), ("ORQ_SYSTEMD_UNIT", "orq-serve.service")]);
+    let server = &settings(&addr)["server"];
+    let warnings = server["harness_warnings"].as_array().unwrap_or_else(|| panic!("{server}"));
+    let claude = format!("runs will fail: claude is not on the PATH the service gets ({path})");
+    assert!(warnings.iter().any(|warning| warning == &serde_json::json!(claude)), "{server}");
 }
 
 #[test]

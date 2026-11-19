@@ -136,6 +136,31 @@ fn a_configured_gate_runs_and_a_failing_one_stops_the_run_before_the_push() {
 }
 
 #[test]
+fn a_harness_missing_from_the_path_fails_the_run_naming_that_path_and_under_the_unit_how_to_set_it() {
+    let w = world("noclaude");
+    let agent = FakeAgent::builder().build();
+    let provider = github();
+    let path = format!("{}:/usr/bin:/bin", provider.bin_dir().display());
+
+    let output = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &[]).env("PATH", &path).output().unwrap();
+
+    assert_eq!(output.status.code(), Some(EXIT_FAILED), "{}", stderr(&output));
+    assert!(stderr(&output).contains(&format!("the claude harness is not on PATH ({path})")), "{}", stderr(&output));
+    assert!(!stderr(&output).contains("orq serve install"), "a run started by hand is told nothing of the unit: {}", stderr(&output));
+
+    let w = world("noclaudeunit");
+    let output = run_command(&w, &agent, &provider, &["--feature", "COM-01"], &[])
+        .env("PATH", &path)
+        .env("INVOCATION_ID", "0123abcd")
+        .env("ORQ_SYSTEMD_UNIT", "orq-serve.service")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(EXIT_FAILED), "{}", stderr(&output));
+    assert!(stderr(&output).contains("set it with `orq serve install` from a shell where `claude` is found"), "{}", stderr(&output));
+}
+
+#[test]
 fn a_run_names_the_script_file_its_gate_came_from() {
     let w = world("scriptgatenotice");
     std::fs::write(w.repo.root().join(".git/orchestrate.env"), "GATE_CMD=true\n").unwrap();

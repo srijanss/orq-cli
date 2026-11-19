@@ -982,6 +982,8 @@ function parseServer(server) {
     pending: server.restart_pending === true,
     waiting: typeof server.waiting_for === "number" ? server.waiting_for : 0,
     supervision: typeof server.supervision === "string" ? server.supervision : null,
+    // Under systemd, each harness its PATH lacks: runs started from here would fail.
+    harnessWarnings: Array.isArray(server.harness_warnings) ? server.harness_warnings.filter((w) => typeof w === "string") : [],
   };
 }
 
@@ -1026,6 +1028,7 @@ function ServerCard({ server, on, token, onSignedOut, onChanged }) {
         <div className="settings-row"><dt>Installed</dt><dd>{server.installed ?? <span className="muted">No installed orq found</span>}</dd></div>
         {server.supervision !== null ? <div className="settings-row" data-supervision><dt>Restarts</dt><dd>{server.supervision}</dd></div> : null}
       </dl>
+      {server.harnessWarnings.map((warning) => <p key={warning} className="settings-block" role="status" data-harness-warning>{warning}</p>)}
       {server.newer ? <p className="settings-block" role="status" data-newer-installed>A newer orq is installed</p> : null}
       {server.pending ? (
         <div className="settings-row" data-restart-pending>

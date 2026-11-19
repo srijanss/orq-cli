@@ -240,6 +240,17 @@ pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
+/// Why a run cannot start `harness`: it is not on this PATH, named in full. Under `orq serve install`'s unit
+/// the PATH is the one install wrote, so it says how to write it again.
+fn harness_missing(harness: &str) -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let mut reason = format!("the {harness} harness is not on PATH ({path})");
+    if crate::remote_serve::own_unit().is_some() {
+        reason.push_str(&format!("; set it with `orq serve install` from a shell where `{harness}` is found"));
+    }
+    reason
+}
+
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
     Command::new("git").arg("-C").arg(repo).args(args).output().is_ok_and(|o| o.status.success())
 }
@@ -1829,7 +1840,7 @@ fn stages(
     let implementer = with_run_model(&options.implementer, options, settings);
 
     let Some(claude) = find_program(&options.implementer.harness) else {
-        return stopped(Ending::Failed, format!("the {} harness is not on PATH", options.implementer.harness));
+        return stopped(Ending::Failed, harness_missing(&options.implementer.harness));
     };
     let Some(claude_program) = claude.to_str() else {
         return stopped(Ending::Failed, format!("the {} harness path is not valid UTF-8", options.implementer.harness));

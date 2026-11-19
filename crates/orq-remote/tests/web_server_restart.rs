@@ -80,6 +80,17 @@ fn settings_says_whether_systemd_restarts_the_server() {
 }
 
 #[test]
+fn settings_shows_each_harness_the_servers_path_lacks() {
+    let warning = "runs will fail: claude is not on the PATH the service gets (/usr/bin:/bin)";
+    let mut reply = settings(false, false, 0);
+    reply["json"]["server"]["harness_warnings"] = json!([warning]);
+    let Some(out) = as_session(json!([reply]), json!([])) else { return };
+    assert!(says(last(&out), warning), "{out}");
+    let Some(out) = as_session(json!([settings(false, false, 0)]), json!([])) else { return };
+    assert!(!says(last(&out), "runs will fail"), "no warning when the server sends none: {out}");
+}
+
+#[test]
 fn restart_when_idle_asks_first_then_asks_the_server_and_shows_it_pending() {
     let responses = json!([settings(true, false, 0), {"status": 202, "json": {"restart_pending": true, "waiting_for": 1}}, settings(true, true, 1)]);
     let steps = json!([{"click": "[data-restart-server]"}, {"click": "[data-confirm]"}]);
