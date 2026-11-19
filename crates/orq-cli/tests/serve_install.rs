@@ -361,3 +361,47 @@ fn install_refuses_a_bad_passkey_host_or_a_folder_that_is_not_a_git_project_befo
     assert!(!world.unit_path().exists(), "nothing is written");
     assert_eq!(world.systemctl_calls(), "", "systemd is never asked");
 }
+
+#[test]
+fn uninstall_keeps_the_unit_file_when_systemd_cannot_stop_it() {
+    let world = World::new("uninstall-fails");
+    ok(&world.install("127.0.0.1:7999"));
+    let unit = world.unit();
+    world.answer("systemctl", "case \"$*\" in *disable*) echo 'Access denied' >&2; exit 1;; esac");
+    let out = world.serve(&["uninstall"]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(text(&out.stderr).contains("Access denied"), "{}", text(&out.stderr));
+    assert_eq!(world.unit(), unit, "the file stays for another try");
+}
+
+#[test]
+fn status_shows_what_systemd_and_the_journal_cannot_tell_as_unknown_and_why() {
+    let world = World::new("status-fails");
+    ok(&world.install("127.0.0.1:7999"));
+    world.answer("systemctl", "echo 'Failed to connect to bus' >&2; exit 1");
+    world.answer("journalctl", "echo 'No journal files were found' >&2; exit 1");
+    world.answer("loginctl", "exit 1");
+    let out = ok(&world.serve(&["status"]));
+    assert!(out.contains("enabled, active, restarts: unknown ("), "{out}");
+    assert!(out.contains("Failed to connect to bus"), "{out}");
+    assert!(out.contains("last journal lines: unknown ("), "{out}");
+    assert!(out.contains("No journal files were found"), "{out}");
+    assert!(out.contains("linger: no"), "unknown linger counts as off: {out}");
+    assert!(out.contains(&format!("binary: {}", world.installed.display())), "{out}");
+}
+
+#[test]
+fn an_update_whose_restart_fails_says_so_and_installing_again_starts_it() {
+    let world = World::new("update-fails");
+    ok(&world.install("127.0.0.1:7999"));
+    world.answer("systemctl", "case \"$*\" in *restart*) echo 'Job failed' >&2; exit 1;; esac");
+    let failed = world.install("127.0.0.1:7998");
+    assert!(!failed.status.success(), "{}", text(&failed.stdout));
+    assert!(text(&failed.stderr).contains("Job failed"), "{}", text(&failed.stderr));
+    assert!(world.unit().contains("127.0.0.1:7998"), "the new unit is written");
+    world.answer("systemctl", "case \"$*\" in *show*) printf 'UnitFileState=enabled\\nActiveState=failed\\nNRestarts=0\\n';; esac");
+    world.forget_calls();
+    let out = ok(&world.install("127.0.0.1:7998"));
+    assert!(out.contains("enabled and started it"), "{out}");
+    assert_eq!(world.systemctl_calls(), format!("{SHOW}systemctl --user daemon-reload\nsystemctl --user enable --now orq-serve.service\n"));
+}

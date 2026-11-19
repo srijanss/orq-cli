@@ -933,6 +933,11 @@ fn systemctl_each(calls: &[&[&str]]) -> Result<(), String> {
 /// Runs `program` with `args`, bounded by [`SYSTEM_CALL_TIMEOUT`]; its standard output when it succeeds, else
 /// why not, with what it said on standard error.
 fn system_call(program: &str, args: &[&str]) -> Result<String, String> {
+    system_call_within(program, args, SYSTEM_CALL_TIMEOUT)
+}
+
+/// [`system_call`] bounded by `timeout`: a call still running then is killed.
+fn system_call_within(program: &str, args: &[&str], timeout: std::time::Duration) -> Result<String, String> {
     use std::io::Read;
     use std::process::Stdio;
     let shown = format!("{program} {}", args.join(" "));
@@ -956,7 +961,7 @@ fn system_call(program: &str, args: &[&str]) -> Result<String, String> {
     };
     let out = read(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
     let err = read(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
-    let deadline = std::time::Instant::now() + SYSTEM_CALL_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -964,7 +969,7 @@ fn system_call(program: &str, args: &[&str]) -> Result<String, String> {
             Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("`{shown}` did not finish within {} seconds", SYSTEM_CALL_TIMEOUT.as_secs()));
+                return Err(format!("`{shown}` did not finish within {timeout:?}"));
             }
         }
     };
@@ -992,6 +997,16 @@ fn linger_on() -> bool {
 #[cfg(test)]
 mod restart_tests {
     use super::*;
+
+    #[test]
+    fn a_system_tool_that_hangs_is_killed_at_the_deadline_and_one_that_is_missing_is_named() {
+        let started = std::time::Instant::now();
+        let hung = system_call_within("sleep", &["30"], std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", started.elapsed());
+        assert_eq!(hung, "`sleep 30` did not finish within 200ms");
+        let missing = system_call("orq-no-such-tool-anywhere", &["show"]).unwrap_err();
+        assert_eq!(missing, "cannot run `orq-no-such-tool-anywhere show`: NotFound");
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let dir = orq_test_support::process_temp_dir().join(format!("orq-restart-unit-{}-{tag}", std::process::id()));
