@@ -642,6 +642,42 @@ fn manual_start_pull_is_left_out_of_a_merge_local_run() {
     assert!(events_of_kind(&w, &run_id, "target.pull_warning").is_empty());
 }
 
+/// Asserts the start left the local `main` where it was, with `upstream` not pulled into it, and
+/// recorded no pull warning.
+fn assert_not_pulled(w: &World, output: &std::process::Output, before: &str, upstream: &str) {
+    assert_eq!(git(w.repo.root(), &["rev-parse", "main"]).trim(), before, "main did not move: {}", stderr(output));
+    let pulled = Command::new("git").arg("-C").arg(w.repo.root()).args(["merge-base", "--is-ancestor", upstream, "main"]).env("GIT_CONFIG_GLOBAL", "/dev/null").status().unwrap();
+    assert!(!pulled.success(), "the merged-upstream commit was pulled into main: {}", stderr(output));
+    assert!(events_of_kind(w, &printed_run_id(output), "target.pull_warning").is_empty());
+}
+
+/// A project that turned pulling off starts from its local target as it is.
+#[test]
+fn manual_start_pull_is_left_out_when_the_project_turned_it_off() {
+    let w = world("pulloff");
+    save_settings(&w, &orq_core::project_settings::ProjectSettings { pull_target_before_runs: false, ..Default::default() });
+    let before = git(w.repo.root(), &["rev-parse", "main"]).trim().to_string();
+    let upstream = merged_upstream(&w);
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check"]);
+
+    assert_not_pulled(&w, &output, &before, &upstream);
+}
+
+/// An unattended start is the queue's, which pulls before it starts; the run does not pull again.
+#[test]
+fn manual_start_pull_is_left_out_of_an_unattended_start() {
+    let w = world("pullunattended");
+    let before = git(w.repo.root(), &["rev-parse", "main"]).trim().to_string();
+    let upstream = merged_upstream(&w);
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+
+    let output = run_with(&w, &agent, &github(), &["--no-ci-check", "--unattended"]);
+
+    assert_not_pulled(&w, &output, &before, &upstream);
+}
+
 /// A target with no local branch in the project root has nothing to start from: the run is refused,
 /// naming it, before anything is recorded.
 #[test]
@@ -2641,6 +2677,11 @@ fn a_feature_added_to_the_ledger_after_the_fix_session_ended_is_not_closed_by_th
 
 /// Saves the project's settings so it allows at most `max` active runs.
 fn limit_active_runs(w: &World, max: u8) {
+    save_settings(w, &orq_core::project_settings::ProjectSettings { max_active_runs: Some(max), ..Default::default() });
+}
+
+/// Saves `settings` as the project's settings.
+fn save_settings(w: &World, settings: &orq_core::project_settings::ProjectSettings) {
     let cache = w.env.state.parent().unwrap().join("cache");
     let roots = orq_core::storage::StorageRoots::resolve(&|name| match name {
         "XDG_DATA_HOME" => Some(w.env.data.display().to_string()),
@@ -2654,8 +2695,7 @@ fn limit_active_runs(w: &World, max: u8) {
     let mut store = orq_core::store::Store::open(&roots.database()).unwrap();
     let root = std::fs::canonicalize(w.repo.root()).unwrap();
     let revision = store.project_settings(&root).unwrap().revision;
-    let settings = orq_core::project_settings::ProjectSettings { max_active_runs: Some(max), ..Default::default() };
-    assert!(matches!(store.save_project_settings(&root, revision, &settings).unwrap(), orq_core::project_settings::SaveOutcome::Saved { .. }));
+    assert!(matches!(store.save_project_settings(&root, revision, settings).unwrap(), orq_core::project_settings::SaveOutcome::Saved { .. }));
 }
 
 #[test]
