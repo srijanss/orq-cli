@@ -4485,13 +4485,15 @@ function undeclaredFiles(events) {
 const shownDetails = new Map();
 
 // One closed line under a step, with a chevron, that opens its detail in place. Its button is marked
-// data-step-<kind>-toggle. `startOpen` is how it starts until someone opens or closes it.
+// data-step-<kind>-toggle. `startOpen` is how it is shown until someone opens or closes it, so a run
+// that turns failed on a refresh opens the step it failed on.
 function StepDetail({ place, kind, label, startOpen = false, children }) {
   const key = place + "\n" + kind;
-  const [open, setOpen] = useState(() => (shownDetails.has(key) ? shownDetails.get(key) : startOpen));
+  const [choice, setChoice] = useState(() => (shownDetails.has(key) ? shownDetails.get(key) : null));
+  const open = choice === null ? startOpen : choice;
   const toggle = () => {
     shownDetails.set(key, !open);
-    setOpen(!open);
+    setChoice(!open);
   };
   return (
     <div className="run-step-undeclared run-step-detail">

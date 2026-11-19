@@ -148,6 +148,24 @@ fn a_run_that_did_not_end_failed_keeps_every_excerpt_closed() {
 }
 
 #[test]
+fn a_running_run_that_turns_failed_on_a_refresh_opens_the_step_it_failed_on_unless_its_line_was_closed() {
+    let mut running = failed_gate(gate_log());
+    running["json"]["run"]["state"] = json!("running");
+    let responses = json!([running, projects(), stream(), failed_gate(gate_log()), stream()]);
+    let Some(out) = run(RUN, responses.clone(), json!([{"submit": TOKEN}, {"tick": 30000}])) else { return };
+    assert_eq!(count(&out["frames"][1], "[data-step-excerpt]"), 0, "{out}");
+    let refreshed = &out["frames"][2];
+    assert_eq!(count(refreshed, ".run-step:last-child [data-step-excerpt]"), 1, "the step the run failed on opens once the run is failed: {out}");
+    assert_eq!(count(refreshed, "[data-step-excerpt]"), 1, "{out}");
+
+    // A line the reader opened and closed again stays as they left it.
+    let steps = json!([{"submit": TOKEN}, {"click": EXCERPT_TOGGLE, "index": 1}, {"click": EXCERPT_TOGGLE, "index": 1}, {"tick": 30000}]);
+    let Some(out) = run(RUN, responses, steps) else { return };
+    let refreshed = &out["frames"][4];
+    assert_eq!(count(refreshed, "[data-step-excerpt]"), 0, "the reader's choice is kept: {out}");
+}
+
+#[test]
 fn an_opened_error_address_highlights_its_line_and_a_filter_drops_the_highlight() {
     let responses = json!([failed_gate(gate_log()), projects(), stream(), files(), page_after_37()]);
     let steps = json!([{"submit": TOKEN}, {"set": "input[data-log-filter]", "value": "line"}]);
