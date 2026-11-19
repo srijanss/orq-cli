@@ -1397,10 +1397,15 @@ fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, ta
                 }
             };
             let feature = input.name.clone().unwrap_or_default();
-            // The save is the editor's own; the item goes only once it succeeded.
+            // The save is the editor's own; the item goes only once it succeeded, and only as it was read: an edit
+            // made meanwhile keeps the item, and the caller is told the draft was saved from the older text.
             match provider.map(|provider| provider.save_feature(&project, None, &input, version.as_deref())) {
-                Some(Ok(FeatureSave::Saved)) => match store.todo_delete(id) {
-                    Ok(_) => {
+                Some(Ok(FeatureSave::Saved)) => match store.todo_delete_at(id, read) {
+                    Ok(false) => {
+                        audit(Outcome::Refused, &named("the draft was saved but the item changed meanwhile, so it was kept"));
+                        error(409, "The draft was saved, but the Todo item changed meanwhile and was kept")
+                    }
+                    Ok(true) => {
                         audit(Outcome::Allowed, &named(&feature));
                         if let (true, Some(provider)) = (queue_when_approved, provider) {
                             let wished = matches!(provider.set_queue_wish(&project, &feature, true), Ok(Some(Ok(()))));

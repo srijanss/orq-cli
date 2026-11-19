@@ -159,6 +159,41 @@ fn with_remote_actions_off_an_add_creates_no_database() {
     assert_eq!(audited(&s)[0], ("todo.add".into(), "".into(), "refused".into(), "two: remote actions are off".into()));
 }
 
+/// A project that saves every draft, while somebody else edits Todo item `edited` in the meantime.
+struct EditedDuringSave {
+    roots: StorageRoots,
+    edited: i64,
+}
+
+impl orq_core::remote_inbox::ProjectsProvider for EditedDuringSave {
+    fn projects(&self) -> Result<Value, String> {
+        Ok(json!([]))
+    }
+
+    fn save_feature(&self, _id: &str, _feature: Option<&str>, _fields: &orq_core::remote_inbox::FeatureInput, _version: Option<&str>) -> Result<orq_core::remote_inbox::FeatureSave, String> {
+        let store = orq_core::store::Store::open(&self.roots.database()).unwrap();
+        let item = store.todo(self.edited).unwrap().unwrap();
+        store.todo_edit(self.edited, "one, edited meanwhile", "", item.version, 1).unwrap();
+        Ok(orq_core::remote_inbox::FeatureSave::Saved)
+    }
+}
+
+#[test]
+fn an_item_edited_while_its_move_saves_the_draft_is_kept_and_the_move_says_so() {
+    let s = setup("todo-move-race");
+    let item = add(&s, "one", "");
+    let id = item["id"].as_i64().unwrap();
+    let provider = EditedDuringSave { roots: s.roots.clone(), edited: id };
+    let config = RemoteConfig { token: "tok".into() };
+    let path = format!("/api/todo/{id}/move");
+    let request = Request { method: "POST", path: &path, peer: "127.0.0.1".parse().unwrap(), authorization: Some("Bearer tok") };
+    let body = json!({"project": "alpha", "fields": {"name": "one"}, "version": item["version"]}).to_string();
+    let r = handle_with_body(&s.roots, &config, "server-project", "server", &request, body.as_bytes(), &provider);
+    assert_eq!(r.status, 409, "{}", r.body);
+    assert_eq!(names(&s), ["one, edited meanwhile"], "the newer edit is not deleted");
+    assert_eq!(audited(&s)[0].2, "refused");
+}
+
 #[test]
 fn with_remote_actions_off_a_change_leaves_an_older_database_unmigrated() {
     let s = setup("todo-off-old-db");

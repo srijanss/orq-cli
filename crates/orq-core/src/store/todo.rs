@@ -119,6 +119,12 @@ impl Store {
         Ok(self.conn.execute("DELETE FROM todos WHERE id = ?1", params![id]).map_err(db)? == 1)
     }
 
+    /// Deletes item `id` only while it is still at `version`, in one statement so an edit cannot slip between the
+    /// check and the delete; `false` when it is gone or was changed.
+    pub fn todo_delete_at(&self, id: i64, version: i64) -> Result<bool> {
+        Ok(self.conn.execute("DELETE FROM todos WHERE id = ?1 AND version = ?2", params![id, version]).map_err(db)? == 1)
+    }
+
     /// Asks for draft `feature` of the project whose main checkout is `root` to be queued once it is approved.
     pub fn queue_wish_set(&self, root: &Path, feature: &str, now: i64) -> Result<()> {
         let key = project_key(root)?;
