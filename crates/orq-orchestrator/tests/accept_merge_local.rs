@@ -155,6 +155,40 @@ fn a_target_that_moved_without_conflict_is_rebased_onto_tested_again_and_merged(
 }
 
 #[test]
+fn tests_failing_on_the_rebased_head_fail_the_accept_and_leave_the_target_and_the_run_alone() {
+    let w = world("rebased-fails", Delivery::MergeLocal);
+    let moved = move_target(&w, "theirs.txt", "theirs\n");
+    let calls = RefCell::new(0);
+    let tests = |_: &Path| {
+        *calls.borrow_mut() += 1;
+        if *calls.borrow() == 1 {
+            Ok(())
+        } else {
+            Err("theirs.txt breaks a test".to_string())
+        }
+    };
+    let ledger_asked = RefCell::new(false);
+    let complete = |_: &str, features: &[String], _: &str| {
+        *ledger_asked.borrow_mut() = true;
+        Ok(features.to_vec())
+    };
+
+    let err = accept_run_delivering(&w.store, "run-1", "web", &tests, &complete).unwrap_err();
+
+    assert!(err.contains("theirs.txt breaks a test"), "{err}");
+    assert_eq!(*calls.borrow(), 2, "the tests ran on the accepted head and on the rebased one");
+    assert_eq!(git(&w.repo, &["rev-parse", "main"]), moved, "main stays where it moved to");
+    assert!(w.worktree.exists(), "the worktree is kept");
+    assert!(git_ok(&w.repo, &["rev-parse", "--verify", "--quiet", "refs/heads/fix--COM-02"]), "the branch is kept");
+    let failed = payloads(&w.store, "run.accept_failed").pop().unwrap();
+    assert!(failed["reason"].as_str().unwrap().contains("theirs.txt breaks a test"), "{failed}");
+    assert_eq!(phase(&w.store), RunPhase::NeedsReview, "the run is back where it was");
+    assert!(payloads(&w.store, "merge.completed").is_empty());
+    assert!(payloads(&w.store, "ledger.completed_by_run").is_empty());
+    assert!(!*ledger_asked.borrow(), "no feature is completed in the ledger");
+}
+
+#[test]
 fn a_rebase_conflict_fails_the_accept_naming_the_files_and_leaves_the_target_alone() {
     let w = world("conflict", Delivery::MergeLocal);
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
