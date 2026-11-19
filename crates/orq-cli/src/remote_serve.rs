@@ -920,21 +920,60 @@ fn systemd_path() -> Option<String> {
     environment_words(assignments).into_iter().rev().find_map(|word| word.strip_prefix("PATH=").map(str::to_string))
 }
 
-/// The assignments in systemd's `Environment=` value: separated by spaces, a word in double quotes may hold one.
+/// The assignments in systemd's `Environment=` value: separated by spaces, a word in double quotes may hold
+/// one, and C escapes (`\n`, `\t`, `\\`, `\"`, `\xNN`, `\NNN`, …) stand for the character or byte they name.
 fn environment_words(value: &str) -> Vec<String> {
     let mut words = Vec::new();
-    let mut word = String::new();
+    let mut word: Vec<u8> = Vec::new();
     let mut quoted = false;
-    let mut chars = value.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => quoted = !quoted,
-            '\\' if quoted => word.extend(chars.next()),
-            ' ' if !quoted => words.extend((!word.is_empty()).then(|| std::mem::take(&mut word))),
-            c => word.push(c),
+    let bytes = value.as_bytes();
+    let mut at = 0;
+    let finish = |word: &mut Vec<u8>, words: &mut Vec<String>| {
+        if !word.is_empty() {
+            words.push(String::from_utf8_lossy(&std::mem::take(word)).into_owned());
+        }
+    };
+    while at < bytes.len() {
+        let byte = bytes[at];
+        at += 1;
+        match byte {
+            b'"' => quoted = !quoted,
+            b' ' if !quoted => finish(&mut word, &mut words),
+            b'\\' if at < bytes.len() => {
+                let escape = bytes[at];
+                at += 1;
+                let digits = |at: usize, count: usize, radix: u32| {
+                    std::str::from_utf8(bytes.get(at..at + count)?).ok().and_then(|text| u8::from_str_radix(text, radix).ok())
+                };
+                match escape {
+                    b'a' => word.push(0x07),
+                    b'b' => word.push(0x08),
+                    b'f' => word.push(0x0c),
+                    b'n' => word.push(b'\n'),
+                    b'r' => word.push(b'\r'),
+                    b't' => word.push(b'\t'),
+                    b'v' => word.push(0x0b),
+                    b'x' => match digits(at, 2, 16) {
+                        Some(decoded) => {
+                            word.push(decoded);
+                            at += 2;
+                        }
+                        None => word.push(b'x'),
+                    },
+                    b'0'..=b'7' => match digits(at - 1, 3, 8) {
+                        Some(decoded) => {
+                            word.push(decoded);
+                            at += 2;
+                        }
+                        None => word.push(escape),
+                    },
+                    other => word.push(other),
+                }
+            }
+            other => word.push(other),
         }
     }
-    words.extend((!word.is_empty()).then_some(word));
+    finish(&mut word, &mut words);
     words
 }
 

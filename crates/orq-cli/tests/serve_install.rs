@@ -373,6 +373,15 @@ fn status_shows_the_path_systemd_gives_the_service_so_a_drop_in_wins_and_warns_w
     assert!(out.contains("runs will fail: claude is not on the PATH the service gets (/drop in/bin:/usr/bin)"), "{out}");
 }
 
+#[test]
+fn status_decodes_the_c_escapes_systemd_shows_in_the_path() {
+    let world = World::new("statusescapes");
+    ok(&world.install_with_path(&[], &[]));
+    world.answer("systemctl", r#"case "$*" in *Environment*) printf '%s\n' 'Environment=ORQ_SYSTEMD_UNIT=orq-serve.service "PATH=/tools \"x\"\\y\ttab\x41\nline:/usr/bin"';; esac"#);
+    let out = ok(&world.serve(&["status"]));
+    assert!(out.contains("path: /tools \"x\"\\y\ttabA\nline:/usr/bin\n"), "{out}");
+}
+
 /// `GET /api/settings` with the bearer token; the JSON body.
 fn settings(addr: &str) -> serde_json::Value {
     use std::io::{Read, Write};
