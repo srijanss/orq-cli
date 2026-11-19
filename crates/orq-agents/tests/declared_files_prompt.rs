@@ -120,7 +120,7 @@ fn each_listed_name_reads_back_as_the_exact_file_name() {
 /// The paragraph that comes right after the refusal rule; `{report}` is where the session says PROBLEM.
 fn no_ledger_workaround(report: &str) -> String {
     format!(
-        "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature. Never mark the run's feature complete while any of its behaviour is left to do. Commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left."
+        "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature. Never mark the run's feature complete while any of its behaviour is left to do. If a refusal still blocks the work after what the rule above allows, commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left."
     )
 }
 
@@ -140,6 +140,20 @@ fn a_refusal_is_never_got_around_by_changing_the_tdd_ledger() {
                 assert!(prompt.contains(&after_rule), "{harness} {declared:?} {undeclared:?} attended={attended}: {prompt}");
             }
         }
+    }
+}
+
+/// A write_code refusal the rule above lets the session recover from (drill_down, or Edit and name the
+/// file) doesn't end the session: it stops and says PROBLEM only while a refusal still blocks the work.
+#[test]
+fn a_refusal_the_rule_lets_the_session_recover_from_does_not_stop_it() {
+    for harness in ["claude", "pi"] {
+        let prompt = prompt(&request(harness, &[], &[]));
+        assert!(
+            prompt.contains("If a refusal still blocks the work after what the rule above allows, commit what is done and passing, then stop and say PROBLEM in implement.done"),
+            "{harness}: {prompt}"
+        );
+        assert!(!prompt.contains("left to do. Commit what is done"), "{harness}: {prompt}");
     }
 }
 

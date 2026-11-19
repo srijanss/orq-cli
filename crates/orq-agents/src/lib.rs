@@ -448,8 +448,9 @@ const REFUSAL_RULE: &str = "Files: when write_code refuses a file because it is 
 
 /// The paragraph right after the refusal rule: a refused edit or command is never got around by
 /// changing the TDD ledger's state, and the run's feature is never completed with work left to do.
+/// The session stops only when a refusal still blocks the work after the recovery the rule allows.
 /// `{report}` is the same place the refusal rule names.
-const NO_LEDGER_WORKAROUND: &str = "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature. Never mark the run's feature complete while any of its behaviour is left to do. Commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left.";
+const NO_LEDGER_WORKAROUND: &str = "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature. Never mark the run's feature complete while any of its behaviour is left to do. If a refusal still blocks the work after what the rule above allows, commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left.";
 
 /// Where a session with a finish marker names the files it changed outside its features.
 const REPORT_IN_MARKER: &str = "implement.done";
