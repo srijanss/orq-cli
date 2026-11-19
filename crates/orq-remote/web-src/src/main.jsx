@@ -859,13 +859,290 @@ function Stat({ icon, tone, value, label, to = null, link = undefined }) {
   );
 }
 
-// The totals above the project cards; a project that could not be read adds nothing to the sums.
-function Dashboard({ projects, machine = null }) {
-  const updated = useMemo(checkedTime, [projects]);
-  const [pins, setPins] = useState(readPins);
-  if (projects.length === 0) {
-    return <p>No projects found.</p>;
+const API_TODO = "/api/todo";
+// How many Todo items show before "Show all".
+const TODO_SHOWN = 10;
+const ACTIONS_OFF = "Remote actions are off, so nothing can be added. Turn them on in Settings.";
+
+function isTodo(item) {
+  return item !== null && typeof item === "object" && Number.isInteger(item.id) && item.id > 0 && typeof item.name === "string" && typeof item.description === "string"
+    && Number.isInteger(item.created_at) && Number.isInteger(item.version);
+}
+
+function parseTodos(data) {
+  return data && Array.isArray(data.todos) && data.todos.every(isTodo) ? { items: data.todos, actions: data.remote_actions === true } : null;
+}
+
+// Seconds since the epoch as the UTC time a Moment shows.
+function epochTime(seconds) {
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// Posts body to path; null when it went through, otherwise what to say. A refused sign-in signs out (undefined).
+async function todoSend(path, token, onSignedOut, body, fallback) {
+  try {
+    const response = await actionRequest(path, token, body);
+    if (response.status === 401) {
+      onSignedOut();
+      return undefined;
+    }
+    const reply = await jsonOrNull(response);
+    if (response.ok) return null;
+    if (response.status === 403) return "Not allowed.";
+    return reply !== null && typeof reply.error === "string" ? reply.error : fallback;
+  } catch (unreachable) {
+    return "The server could not be reached.";
   }
+}
+
+// A name and a description as the Todo list keeps them.
+function TodoFields({ name, description, onName, onDescription }) {
+  return (
+    <>
+      <label className="field"><span className="field-label">Name</span><input type="text" data-todo-name value={name} maxLength={200} onChange={(event) => onName(event.target.value)} /></label>
+      <label className="field field-wide"><span className="field-label">Description</span><textarea data-todo-description rows={4} value={description} onChange={(event) => onDescription(event.target.value)} /></label>
+    </>
+  );
+}
+
+// One Todo item: its name, two lines of its description and when it was added, with Move to project, Edit and
+// Delete while remote actions are on. Edit sends the version it read; Delete asks first.
+function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove }) {
+  const [mode, setMode] = useState("view");
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState(item.name);
+  const [description, setDescription] = useState(item.description);
+  const [note, setNote] = useState("");
+  const itemPath = API_TODO + "/" + item.id;
+  const send = async (path, body, fallback) => {
+    setBusy(true);
+    setNote("");
+    const why = await todoSend(path, token, onSignedOut, body, fallback);
+    if (why === undefined) return;
+    setBusy(false);
+    if (why === null) {
+      setMode("view");
+      onChanged();
+    } else {
+      setNote(why);
+    }
+  };
+  return (
+    <li className="todo-item card" data-todo-item={item.id}>
+      {mode === "edit" ? (
+        <div className="todo-edit" role="group" aria-label={"Edit " + item.name}>
+          <TodoFields name={name} description={description} onName={setName} onDescription={setDescription} />
+          <div className="feature-editor-actions">
+            <button type="button" className="primary-button" data-todo-save disabled={busy || name.trim() === ""} onClick={() => send(itemPath, { name, description, version: item.version }, "The item could not be saved.")}><Icon name="check" size={16} />Save</button>
+            <button type="button" data-cancel disabled={busy} onClick={() => { setNote(""); setName(item.name); setDescription(item.description); setMode("view"); }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="todo-item-head">
+            <strong className="todo-item-name">{item.name}</strong>
+            <span className="todo-item-when muted">{"Added "}<Moment at={epochTime(item.created_at)} /></span>
+          </div>
+          {item.description !== "" ? <p className="todo-item-description">{item.description}</p> : null}
+          {actions && mode === "view" ? (
+            <div className="todo-item-actions">
+              <button type="button" data-todo-move onClick={() => onMove(item)}><Icon name="chevronRight" size={16} />Move to project</button>
+              <button type="button" data-todo-edit onClick={() => setMode("edit")}><Icon name="pencil" size={16} />Edit</button>
+              <button type="button" data-todo-delete onClick={() => setMode("delete")}><Icon name="close" size={16} />Delete</button>
+            </div>
+          ) : null}
+          {mode === "delete" ? (
+            <Confirm question="Delete this Todo item?" detail={item.name} answer="Yes, delete" tone="danger" busy={busy} onConfirm={() => send(itemPath + "/delete", {}, "The item could not be deleted.")} onCancel={() => { setNote(""); setMode("view"); }} />
+          ) : null}
+        </>
+      )}
+      {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
+    </li>
+  );
+}
+
+// The Todo list above the projects: always shown, newest first, TODO_SHOWN items until "Show all".
+function TodoList({ todo, token, onSignedOut, onChanged, onMove }) {
+  const [all, setAll] = useState(false);
+  let body;
+  if (todo === null) body = <p className="muted">Loading the Todo list…</p>;
+  else if (typeof todo === "string") body = <p className="muted">{todo}</p>;
+  else if (todo.items.length === 0) body = <p className="muted todo-empty">Nothing to do. Add feature puts ideas here.</p>;
+  else {
+    const shown = all ? todo.items : todo.items.slice(0, TODO_SHOWN);
+    body = (
+      <>
+        <ul className="todo-list">
+          {shown.map((item) => <TodoItem key={item.id + ":" + item.version} item={item} actions={todo.actions} token={token} onSignedOut={onSignedOut} onChanged={onChanged} onMove={onMove} />)}
+        </ul>
+        {todo.items.length > TODO_SHOWN ? <button type="button" className="todo-show-all" data-todo-show-all aria-expanded={all ? "true" : "false"} onClick={() => setAll(!all)}>{all ? "Show fewer" : "Show all (" + todo.items.length + ")"}</button> : null}
+      </>
+    );
+  }
+  return (
+    <section className="todo" data-todo>
+      <h2 className="section-title">Todo</h2>
+      {body}
+    </section>
+  );
+}
+
+// Add feature (item null) or a Todo item's Move to project, as a popup. Add's Project choice starts at Todo, which
+// keeps a name and a description; a project opens the full feature editor and saves a draft there. A move offers
+// only projects, prefills the editor from the item and can ask for the draft to be queued once it is approved.
+function AddFeatureDialog({ projects, item = null, todoActions, token, onSignedOut, onClose, onFinished }) {
+  const moving = item !== null;
+  const [target, setTarget] = useState("");
+  const [ledger, setLedger] = useState(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [queue, setQueue] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const choices = projects.filter((project) => project.available).sort((a, b) => a.name.localeCompare(b.name));
+  const project = choices.find((entry) => entry.id === target) || null;
+  useEffect(() => {
+    if (busy) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [busy]);
+  useEffect(() => {
+    setLedger(null);
+    if (target === "") return undefined;
+    const controller = new AbortController();
+    (async () => {
+      let next = "The project's features could not be read.";
+      try {
+        const response = await get(API_PROJECTS + "/" + encodeURIComponent(target) + "/features", token, controller.signal);
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        const parsed = response.ok ? parseFeatures(await jsonOrNull(response)) : null;
+        if (parsed !== null) next = parsed;
+      } catch (unreachable) {
+        next = "The server could not be reached.";
+      }
+      if (!controller.signal.aborted) setLedger(next);
+    })();
+    return () => controller.abort();
+  }, [target]);
+  const saveTodo = async () => {
+    setBusy(true);
+    setNote("");
+    const why = await todoSend(API_TODO, token, onSignedOut, { name, description }, "The item could not be added.");
+    if (why === undefined) return;
+    if (why === null) {
+      onFinished("Added to Todo");
+      return;
+    }
+    setBusy(false);
+    setNote(why);
+  };
+  const todoBlocked = todoActions ? null : ACTIONS_OFF;
+  let form = null;
+  if (target === "" && !moving) {
+    form = (
+      <div className="feature-editor-fields" role="group" aria-label="Add to Todo">
+        <TodoFields name={name} description={description} onName={setName} onDescription={setDescription} />
+        {todoBlocked !== null ? <p className="field-hint muted" data-add-blocked>{todoBlocked}</p> : null}
+        <div className="feature-editor-actions">
+          <button type="button" className="primary-button" data-todo-save disabled={busy || todoBlocked !== null || name.trim() === ""} onClick={saveTodo}><Icon name="check" size={16} />Save</button>
+          <button type="button" data-cancel disabled={busy} onClick={onClose}>Cancel</button>
+        </div>
+        {busy ? <span role="status">Sending…</span> : null}
+        {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
+      </div>
+    );
+  } else if (project !== null && ledger === null) {
+    form = <p role="status">Loading the project's features…</p>;
+  } else if (project !== null && typeof ledger === "string") {
+    form = <p role="status" className="error-text">{ledger}</p>;
+  } else if (project !== null) {
+    const control = { token, projectId: project.id, onSignedOut, onDone: () => {} };
+    const queueBox = moving ? (
+      <label className="depends-option" data-queue-option><input type="checkbox" data-queue-when-approved checked={queue} onChange={(event) => setQueue(event.target.checked)} />Queue once approved</label>
+    ) : null;
+    form = (
+      <FeatureEditor
+        key={project.id}
+        embedded
+        features={ledger.rows}
+        control={control}
+        initial={moving ? { name: item.name, description: item.description } : null}
+        target={moving ? { path: API_TODO + "/" + item.id + "/move", body: (fields) => ({ project: project.id, fields, version: item.version, queue_when_approved: queue }) } : null}
+        doneText={(moving ? "Moved to " : "Added to ") + project.name + " as a draft"}
+        onFinished={onFinished}
+        onClose={onClose}
+        blocked={ledger.actions ? null : ACTIONS_OFF}
+        extra={queueBox}
+      />
+    );
+  }
+  const title = moving ? "Move to project" : "Add feature";
+  return (
+    <div className="feature-modal" data-feature-modal>
+      <div className="feature-modal-box" role="dialog" aria-modal="true" aria-labelledby="add-feature-title">
+        <div className="feature-modal-head">
+          <h2 id="add-feature-title">{title}</h2>
+          <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={busy} onClick={onClose}><Icon name="close" size={18} /></button>
+        </div>
+        {moving ? <p className="muted">{item.name}</p> : null}
+        <label className="field">
+          <span className="field-label">Project</span>
+          <select data-add-target value={target} disabled={busy} onChange={(event) => setTarget(event.target.value)}>
+            {moving ? <option value="" disabled>Choose a project</option> : <option value="">Todo (no project)</option>}
+            {choices.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+          </select>
+        </label>
+        {form}
+      </div>
+    </div>
+  );
+}
+
+// The Todo list as the Dashboard reads it: null while loading, what went wrong, or { items, actions }.
+function useTodo(token, onSignedOut, reads) {
+  const [todo, setTodo] = useState(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    (async () => {
+      let next = "The Todo list could not be read.";
+      try {
+        const response = await get(API_TODO, token, controller.signal);
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        const parsed = response.ok ? parseTodos(await jsonOrNull(response)) : null;
+        if (parsed !== null) next = parsed;
+      } catch (unreachable) {
+        next = "The Todo list could not be read.";
+      }
+      if (!controller.signal.aborted) setTodo(next);
+    })();
+    return () => controller.abort();
+  }, [reads]);
+  return todo;
+}
+
+// The totals above the project cards; a project that could not be read adds nothing to the sums.
+function Dashboard({ projects, machine = null, token, onSignedOut }) {
+  const [pins, setPins] = useState(readPins);
+  const [reads, setReads] = useState(0);
+  const todo = useTodo(token, onSignedOut, reads);
+  // The open popup: { item } (null for Add feature, a Todo item for its move), or null when none is.
+  const [adding, setAdding] = useState(null);
+  const [notice, setNotice] = useState("");
+  const reread = () => setReads((n) => n + 1);
+  const finished = (text) => {
+    setAdding(null);
+    setNotice(text);
+    reread();
+  };
   const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
   const toggle = (id) => {
     const next = pins.includes(id) ? pins.filter((pin) => pin !== id) : [...pins, id];
@@ -881,9 +1158,19 @@ function Dashboard({ projects, machine = null }) {
         <Stat icon="layers" tone="tone-accent" value={projects.length} label="Projects" />
         <Stat icon="play" tone="tone-accent" value={sum("active_runs")} label="Active runs" to="/orchestrations" link="runs" />
         <Stat icon="doc" tone="tone-failed" value={sum("reviews_waiting")} label="Reviews waiting" to="/reviews" link="reviews" />
-        <Stat icon="clock" tone="tone-waiting" value={<Moment at={updated} />} label="Last updated" />
+        <button type="button" className="stat stat-link stat-add" data-dashboard-add onClick={() => { setNotice(""); setAdding({ item: null }); }}>
+          <span className="stat-icon tone-accent"><Icon name="plus" size={24} /></span>
+          <span className="stat-text">
+            <span className="stat-value">Add feature</span>
+            <span className="stat-label">To Todo or a project</span>
+          </span>
+        </button>
       </div>
+      {notice !== "" ? <p role="status" className="run-action-note" data-dashboard-notice>{notice}</p> : null}
       {machine === null ? null : <MachineRuns machine={machine} />}
+      <TodoList todo={todo} token={token} onSignedOut={onSignedOut} onChanged={reread} onMove={(item) => { setNotice(""); setAdding({ item }); }} />
+      {projects.length === 0 ? <p>No projects found.</p> : null}
+      {adding !== null ? <AddFeatureDialog projects={projects} item={adding.item} todoActions={todo !== null && typeof todo === "object" && todo.actions} token={token} onSignedOut={onSignedOut} onClose={() => setAdding(null)} onFinished={finished} /> : null}
       {pinned.length > 0 ? (
         <>
           <h2 className="section-title">Pinned</h2>
@@ -3011,10 +3298,14 @@ function DependsPicker({ others, chosen, onToggle }) {
   );
 }
 
-function FeatureEditor({ name = null, features, control }) {
+// Embedded (in the Dashboard's Add feature popup) it adds only, opens at once from `initial`, and leaves the
+// popup to its host: Cancel calls onClose, a save calls onFinished(doneText), and `target` (a path and the body
+// for the fields) sends it somewhere other than the ledger, such as a Todo item's move. `blocked` holds Save back
+// with its reason; `extra` sits above the buttons.
+function FeatureEditor({ name = null, features, control, embedded = false, initial = null, target = null, doneText = null, onFinished = null, onClose = null, blocked = null, extra = null }) {
   const adding = name === null;
-  const [phase, setPhase] = useState("idle");
-  const [draft, setDraft] = useState(null);
+  const [phase, setPhase] = useState(embedded ? "editing" : "idle");
+  const [draft, setDraft] = useState(embedded ? featureDraft(initial === null ? {} : initial) : null);
   const [opened, setOpened] = useState(null);
   const [version, setVersion] = useState(null);
   const [note, setNote] = useState("");
@@ -3022,11 +3313,12 @@ function FeatureEditor({ name = null, features, control }) {
   // Save pressed with an empty name: only then does the empty box say a name is required.
   const [pressed, setPressed] = useState(false);
   // Adding opens in a popup (on a phone the stylesheet lays it in the page); Close or Escape shuts it unsent.
-  const popup = adding && (phase === "editing" || phase === "asking" || phase === "sending");
+  const popup = adding && !embedded && (phase === "editing" || phase === "asking" || phase === "sending");
   const close = () => {
     setNote("");
     setConflict(false);
     setPhase("idle");
+    if (embedded) onClose();
   };
   useEffect(() => {
     if (!popup || phase === "sending") return undefined;
@@ -3080,13 +3372,17 @@ function FeatureEditor({ name = null, features, control }) {
     let text = "The feature could not be saved.";
     let changed = false;
     try {
-      const path = controlPath(control, adding ? "features" : "features/" + encodeURIComponent(name));
-      const response = await actionRequest(path, control.token, adding ? { fields } : { fields: changedFields(draft, opened, features), version });
+      const path = target !== null ? target.path : controlPath(control, adding ? "features" : "features/" + encodeURIComponent(name));
+      const response = await actionRequest(path, control.token, target !== null ? target.body(fields) : adding ? { fields } : { fields: changedFields(draft, opened, features), version });
       if (response.status === 401) {
         control.onSignedOut();
         return;
       }
       const body = await jsonOrNull(response);
+      if (response.ok && embedded) {
+        onFinished(doneText);
+        return;
+      }
       if (response.ok) {
         // Done for good: the editor stays closed while the ledger is read again.
         setNote((adding ? "Added " : "Saved ") + shownName + ".");
@@ -3125,9 +3421,11 @@ function FeatureEditor({ name = null, features, control }) {
           <label className="field"><span className="field-label">Target files</span><input type="text" data-field-target-files value={draft.target_files} autoComplete="off" spellCheck={false} placeholder="src/a.rs, src/b.rs" onChange={set("target_files")} /></label>
           <label className="field"><span className="field-label">Parallelizable</span><select data-field-parallelizable value={draft.parallelizable} onChange={set("parallelizable")}><option value="">Not set</option><option value="yes">Yes</option><option value="no">No</option></select></label>
           {others.length > 0 ? <DependsPicker others={others} chosen={draft.depends_on} onToggle={toggle} /> : null}
+          {extra}
+          {blocked !== null ? <p className="field-hint muted" data-add-blocked>{blocked}</p> : null}
           <div className="feature-editor-actions">
-            <button type="button" className="primary-button" data-feature-save disabled={nameProblem !== null} onClick={() => { setNote(""); setConflict(false); if (adding && addedNameProblem(fields.name, features) !== null) { setPressed(true); return; } setPhase("asking"); }}><Icon name="check" size={16} />{adding ? "Add" : "Save"}</button>
-            <button type="button" data-cancel onClick={() => { setNote(""); setConflict(false); setPhase("idle"); }}>Cancel</button>
+            <button type="button" className="primary-button" data-feature-save disabled={nameProblem !== null || blocked !== null} onClick={() => { setNote(""); setConflict(false); if (adding && addedNameProblem(fields.name, features) !== null) { setPressed(true); return; } setPhase("asking"); }}><Icon name="check" size={16} />{adding ? "Add" : "Save"}</button>
+            <button type="button" data-cancel onClick={close}>Cancel</button>
           </div>
         </div>
       ) : null}
@@ -3435,6 +3733,44 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
 // for it, and the action to start one when it is pending or to promote it when it is a draft.
 const FEATURE_TABS = [["description", "Description"], ["test", "Test file"], ["dependencies", "Dependencies"], ["runs", "Runs"]];
 
+// A draft moved from Todo with "Queue once approved" says so, with a Cancel that drops the wish.
+function QueueWish({ feature, control }) {
+  const [wished, setWished] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const path = API_PROJECTS + "/" + encodeURIComponent(control.projectId) + "/features/" + encodeURIComponent(feature.name) + "/queue-wish";
+  useEffect(() => {
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const response = await get(path, control.token, controller.signal);
+        const body = response.ok ? await jsonOrNull(response) : null;
+        if (!controller.signal.aborted) setWished(body !== null && body.queue_when_approved === true);
+      } catch (unreachable) {
+        // Unknown: nothing is said.
+      }
+    })();
+    return () => controller.abort();
+  }, [path]);
+  if (!wished) return null;
+  const drop = async () => {
+    setBusy(true);
+    setNote("");
+    const why = await todoSend(path, control.token, control.onSignedOut, { queue_when_approved: false }, "The wish could not be dropped.");
+    if (why === undefined) return;
+    setBusy(false);
+    if (why === null) setWished(false);
+    else setNote(why);
+  };
+  return (
+    <div className="queue-wish" data-queue-wish>
+      <span>Will be queued when approved</span>
+      <button type="button" data-queue-wish-cancel disabled={busy} onClick={drop}>Cancel</button>
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+    </div>
+  );
+}
+
 function FeatureDetail({ feature, features, runs, projectId, control }) {
   const [tab, setTab] = useState("description");
   const known = new Set(features.map((entry) => entry.name));
@@ -3461,6 +3797,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
             {feature.status === "pending" ? <QueueAction feature={feature} control={control} /> : null}
           </div>
         ) : null}
+        {control !== null && feature.status === "draft" ? <QueueWish key={feature.name} feature={feature} control={control} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
             <button key={id} type="button" role="tab" id={"feature-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls="feature-panel" data-feature-tab={id} onClick={() => setTab(id)}>{label}</button>
@@ -5441,7 +5778,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   if (hash === "/dashboard" || hash === "/") {
     return (
       <>
-        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects, machine }) => <Dashboard projects={projects} machine={machine} />} onSignedOut={onSignedOut} />
+        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects, machine }) => <Dashboard projects={projects} machine={machine} token={token} onSignedOut={onSignedOut} />} onSignedOut={onSignedOut} />
       </>
     );
   }

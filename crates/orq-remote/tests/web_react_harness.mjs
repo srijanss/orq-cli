@@ -114,6 +114,8 @@ const held = {};
 const responses = [...scenario.responses];
 const storageReplies = [...(scenario.storage || [])];
 const storageRequests = [];
+const todoReplies = [...(scenario.todo || [])];
+const todoRequests = [];
 
 // The /auth routes are answered apart from the scripted responses, so they never shift them: a
 // scenario may give `auth` (the status answer), otherwise the server has no passkey support (404).
@@ -198,6 +200,14 @@ window.fetch = (url, options = {}) => {
   if (String(url).startsWith("/api/storage/")) {
     storageRequests.push({ url, method: options.method, headers: options.headers, body: options.body === undefined ? null : options.body });
     const next = storageReplies.shift() || { status: 404, json: { error: "not found" } };
+    if (next.reject) return Promise.reject(new Error("offline"));
+    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
+  }
+  // The Todo list and a draft's queue wish are answered from `todo` in order, apart from `responses`, so the
+  // Dashboard and a feature's page read them without shifting the other replies; with none left they answer 404.
+  if (String(url).startsWith("/api/todo") || String(url).endsWith("/queue-wish")) {
+    todoRequests.push({ url, method: options.method || "GET", body: options.body === undefined ? null : options.body });
+    const next = todoReplies.shift() || { status: 404, json: { error: "not found" } };
     if (next.reject) return Promise.reject(new Error("offline"));
     return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
   }
@@ -364,7 +374,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
     } else if (step.set !== undefined) {
       // Types into a field or picks an option, the way React sees a real change.
       const el = root.querySelector(step.set);
-      const proto = el.tagName === "SELECT" ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype;
+      const proto = el.tagName === "SELECT" ? window.HTMLSelectElement.prototype : el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       Object.getOwnPropertyDescriptor(proto, "value").set.call(el, step.value);
       el.dispatchEvent(new window.Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
     } else if (step.swipe !== undefined) {
@@ -430,7 +440,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
   if (pageErrors.length > 0) {
     throw new Error("the page raised " + pageErrors.length + " error(s):\n" + pageErrors.join("\n"));
   }
-  process.stdout.write(JSON.stringify({ requests, authRequests, storageRequests, frames, downloads: saved, worker }));
+  process.stdout.write(JSON.stringify({ requests, authRequests, storageRequests, todoRequests, frames, downloads: saved, worker }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);

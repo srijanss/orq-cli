@@ -1258,7 +1258,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         self.queue_wish_of(id, feature)
     }
 
-    fn set_queue_wish(&self, id: &str, feature: &str, wanted: bool) -> Result<Option<()>, String> {
+    fn set_queue_wish(&self, id: &str, feature: &str, wanted: bool) -> Result<Option<Result<(), String>>, String> {
         self.set_queue_wish_of(id, feature, wanted)
     }
 

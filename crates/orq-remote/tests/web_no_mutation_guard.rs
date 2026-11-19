@@ -1,5 +1,6 @@
 //! The page offers exactly sixteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
-//! and the Settings server card's restart when idle and its cancel, and no other merge, nor any approve,
+//! and the Settings server card's restart when idle and its cancel, the Todo list's add, edit, delete and move,
+//! and a draft's queue wish, and no other merge, nor any approve,
 //! restart or edit control or request.
 
 fn code() -> String {
@@ -97,7 +98,17 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let sent: Vec<&str> = server_body.split("send(").skip(1).filter(|tail| !tail.starts_with("path)")).map(|tail| tail.split(')').next().unwrap()).collect();
     assert_eq!(sent, ["API_SERVER_RESTART + \"/cancel\"", "API_SERVER_RESTART"]);
     assert_eq!(code.matches("API_SERVER_RESTART").count(), 3, "only the Server card uses the restart route");
-    let rest = code.replacen(kept_body, "", 1).replacen(SET_ASIDE, "", 1).replacen(server_body, "", 1).replacen(RESTART_ROUTE, "", 1);
+    // A Todo item posts its edit and its delete to its own path under the Todo list; nothing else.
+    let todo_body = code.split("function TodoItem(").nth(1).expect("TodoItem").split("\nfunction ").next().unwrap();
+    let todo_sent: Vec<&str> = todo_body.split("send(").skip(1).filter(|tail| !tail.starts_with("path,")).map(|tail| tail.split(',').next().unwrap()).collect();
+    assert_eq!(todo_sent, ["itemPath", "itemPath + \"/delete\""]);
+    assert_eq!(todo_body.matches("const itemPath = API_TODO + \"/\" + item.id;").count(), 1);
+    // Adding to the Todo list, and a move out of it, post under the Todo list; a draft's queue wish posts to its own route.
+    assert_eq!(code.matches("todoSend(").count(), 4, "the helper, a Todo item's send (its edit and delete), Todo's add and the wish's cancel");
+    assert!(code.contains("todoSend(API_TODO, token, onSignedOut, { name, description }"), "Todo's add");
+    assert!(code.contains("path: API_TODO + \"/\" + item.id + \"/move\""), "a Todo item's move");
+    assert!(code.contains("encodeURIComponent(feature.name) + \"/queue-wish\";"), "the queue wish");
+    let rest = code.replacen(kept_body, "", 1).replacen(SET_ASIDE, "", 1).replacen(server_body, "", 1).replacen(RESTART_ROUTE, "", 1).replacen(todo_body, "", 1);
     // Queueing posts the chosen features to the project's queue; the queue view posts to its pause,
     // resume, remove and reorder routes; nothing else.
     let queued = paths("queueFeatures");

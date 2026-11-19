@@ -34,7 +34,7 @@ fn order(frame: &Value) -> Vec<String> {
     // The section titles and project names below the totals (whose first label is also "Projects").
     let wanted = ["Pinned", "Projects", "alpha", "beta", "gamma"];
     let texts: Vec<&str> = frame["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
-    let below = texts.iter().position(|t| *t == "Last updated").map_or(0, |at| at + 1);
+    let below = texts.iter().position(|t| *t == "To Todo or a project").map_or(0, |at| at + 1);
     texts[below..].iter().filter(|t| wanted.contains(t)).map(|t| t.to_string()).collect()
 }
 

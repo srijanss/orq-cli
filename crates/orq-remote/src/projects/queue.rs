@@ -468,9 +468,16 @@ impl StoreProjects {
         Ok(Some(listed))
     }
 
-    /// Asks (`wanted`) or no longer asks for `feature` of project `id` to be queued once approved.
-    pub(super) fn set_queue_wish_of(&self, id: &str, feature: &str, wanted: bool) -> Result<Option<()>, String> {
-        let Some((_, root)) = self.settings_key(id)? else { return Ok(None) };
+    /// Asks (`wanted`) or no longer asks for `feature` of project `id` to be queued once approved; only a draft in
+    /// the ledger can be asked for (`Some(Err(why))` otherwise).
+    pub(super) fn set_queue_wish_of(&self, id: &str, feature: &str, wanted: bool) -> Result<Option<Result<(), String>>, String> {
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
+        if wanted {
+            let ledger = read_ledger(&orq_features::ledger_path(&git))?;
+            if !ledger.iter().any(|entry| entry.feature_name == feature && entry.status.known() == Some(orq_core::FeatureStatus::Draft)) {
+                return Ok(Some(Err(format!("{feature} is not a draft in this project"))));
+            }
+        }
         let store = Store::open(&self.roots.database()).map_err(|error| error.to_string())?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
         if wanted {
@@ -478,7 +485,7 @@ impl StoreProjects {
         } else {
             store.queue_wish_drop(&root, feature).map_err(|error| error.to_string())?;
         }
-        Ok(Some(()))
+        Ok(Some(Ok(())))
     }
 
     pub(super) fn change_queue_of(&self, id: &str, change: &QueueChange) -> Result<RunControlOutcome, String> {

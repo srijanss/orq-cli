@@ -206,6 +206,19 @@ fn a_draft_moved_with_queue_once_approved_joins_the_queue_when_it_is_approved() 
 }
 
 #[test]
+fn only_a_draft_in_the_ledger_can_be_asked_to_be_queued_once_approved() {
+    let s = setup("todo-wish-draft");
+    git_repo(&s.scan, "alpha");
+    move_wishing(&s, "dark-mode");
+    assert_eq!(post(&s, "/api/projects/alpha/features/dark-mode/promote", json!({})).0, 200);
+    let wished = |feature: &str| post(&s, &format!("/api/projects/alpha/features/{feature}/queue-wish"), json!({"queue_when_approved": true}));
+    assert_eq!(wished("dark-mode"), (409, json!({"error": "dark-mode is not a draft in this project"})), "no longer a draft");
+    assert_eq!(wished("missing"), (409, json!({"error": "missing is not a draft in this project"})));
+    assert_eq!((wish(&s, "dark-mode"), wish(&s, "missing")), (json!(false), json!(false)), "nothing was kept");
+    assert_eq!(audited(&s)[0], ("queue.wish".into(), "alpha".into(), "refused".into(), "missing: missing is not a draft in this project".into()));
+}
+
+#[test]
 fn a_wish_can_be_cancelled_and_one_whose_draft_is_gone_is_dropped() {
     let s = setup("todo-wish-cancel");
     let alpha = git_repo(&s.scan, "alpha");

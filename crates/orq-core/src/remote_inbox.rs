@@ -295,8 +295,9 @@ pub trait ProjectsProvider {
     }
 
     /// Asks (`wanted`) or no longer asks for the draft `feature` of project `id` to be queued once it is approved.
-    /// `None` when there is no such project.
-    fn set_queue_wish(&self, _id: &str, _feature: &str, _wanted: bool) -> Result<Option<()>, String> {
+    /// `Some(Err(why))` when it is refused (only a draft in the ledger can be asked for); `None` when there is no
+    /// such project.
+    fn set_queue_wish(&self, _id: &str, _feature: &str, _wanted: bool) -> Result<Option<Result<(), String>>, String> {
         Ok(None)
     }
 
@@ -1167,9 +1168,13 @@ fn queue_wish(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id:
         return error(400, "the request body is not one this action takes");
     };
     match provider.map(|provider| provider.set_queue_wish(id, feature, wanted)) {
-        Some(Ok(Some(()))) => {
+        Some(Ok(Some(Ok(())))) => {
             audit(Outcome::Allowed, if wanted { "requested" } else { "cancelled" });
             reply(200, json!({ "queue_when_approved": wanted }))
+        }
+        Some(Ok(Some(Err(why)))) => {
+            audit(Outcome::Refused, &why);
+            error(409, &why)
         }
         Some(Err(_)) => {
             audit(Outcome::Refused, "the wish could not be changed");
@@ -1385,7 +1390,7 @@ fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, ta
                     Ok(_) => {
                         audit(Outcome::Allowed, &named(&feature));
                         if let (true, Some(provider)) = (queue_when_approved, provider) {
-                            let wished = matches!(provider.set_queue_wish(&project, &feature, true), Ok(Some(())));
+                            let wished = matches!(provider.set_queue_wish(&project, &feature, true), Ok(Some(Ok(()))));
                             let (outcome, why) = if wished { (Outcome::Allowed, "requested") } else { (Outcome::Refused, "the wish could not be kept") };
                             let reason = format!("{feature}: {why}");
                             let _ = record(roots, &Attempt { identity: "web", action: "queue.wish", project: &project, run: None, outcome, reason: Some(&reason) }, now);
