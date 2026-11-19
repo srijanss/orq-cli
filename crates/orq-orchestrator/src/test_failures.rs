@@ -75,7 +75,7 @@ pub fn find_test_failures(output: &str) -> TestFailures {
             continue;
         }
         if let At::NextestBlock(name) = &at {
-            if found.names.iter().any(|known| known == name) {
+            if found.is_named(name) {
                 found.add_output(name, line);
             }
             continue;
@@ -112,20 +112,29 @@ fn libtest_block_start(line: &str) -> Option<String> {
 
 #[derive(Default)]
 struct Found {
+    /// In the order first named.
     names: Vec<String>,
+    /// The same names, to tell in constant time whether one is named.
+    named: std::collections::HashSet<String>,
     outputs: std::collections::HashMap<String, String>,
 }
 
 impl Found {
     fn name(&mut self, name: &str) {
-        if !self.names.iter().any(|known| known == name) {
+        if self.named.insert(name.to_string()) {
             self.names.push(name.to_string());
         }
     }
 
+    fn is_named(&self, name: &str) -> bool {
+        self.named.contains(name)
+    }
+
     /// A test named as failed on a try that then passed on a later one.
     fn unname(&mut self, name: &str) {
-        self.names.retain(|known| known != name);
+        if self.named.remove(name) {
+            self.names.retain(|known| known != name);
+        }
         self.outputs.remove(name);
     }
 

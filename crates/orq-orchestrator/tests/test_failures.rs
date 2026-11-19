@@ -141,6 +141,21 @@ fn a_passing_tests_output_block_does_not_make_it_a_failure() {
 }
 
 #[test]
+fn a_hundred_thousand_failures_with_output_are_parsed_in_linear_time() {
+    let mut out = String::new();
+    for n in 0..100_000 {
+        out.push_str(&format!("        FAIL [   0.010s] ({n}/100000) suite t{n}\n──── STDERR:             suite t{n}\nbroke {n}\n"));
+    }
+    let started = std::time::Instant::now();
+    let failures = find_test_failures(&out);
+    let took = started.elapsed();
+    assert_eq!(failures.tests.len(), 50);
+    assert_eq!(failures.more, 99_950);
+    assert_eq!(failures.tests[49].output, "broke 49");
+    assert!(took < std::time::Duration::from_secs(3), "{took:?}");
+}
+
+#[test]
 fn a_build_error_names_no_test() {
     let out = "   Compiling orq-core v0.1.1\nerror[E0425]: cannot find value `x` in this scope\n --> src/lib.rs:3:5\n\nerror: could not compile `orq-core` (lib) due to 1 previous error\n";
     let failures = find_test_failures(out);
