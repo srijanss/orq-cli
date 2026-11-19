@@ -493,6 +493,19 @@ fn the_agent_gets_only_read_grep_and_glob_and_no_mcp_servers() {
 }
 
 #[test]
+fn the_agent_runs_no_hooks_and_ignores_the_projects_settings() {
+    let s = setup("plan-hooks");
+    git_repo(&s.scan, "alpha");
+    let item = add_todo(&s, "dark mode", "Make it dark");
+    draft_todo(&s, &item, "");
+    let args = agent_args(&s);
+    let value_of = |flag: &str| args.iter().position(|arg| arg == flag).map(|at| args[at + 1].clone());
+    let settings: Value = serde_json::from_str(&value_of("--settings").unwrap_or_default()).unwrap_or_default();
+    assert_eq!(settings["disableAllHooks"], true, "{args:?}");
+    assert_eq!(value_of("--setting-sources").as_deref(), Some("user"), "the project's own settings and hooks are not loaded: {args:?}");
+}
+
+#[test]
 fn an_invalid_marker_fails_the_run_and_keeps_the_todo_item() {
     let s = setup("plan-invalid");
     let alpha = git_repo(&s.scan, "alpha");

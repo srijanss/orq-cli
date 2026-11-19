@@ -500,6 +500,11 @@ pub fn plan_agent_args(model: Option<&str>, effort: Option<&str>, prompt: &str) 
         "--allowedTools".into(),
         PLAN_TOOLS.into(),
         "--strict-mcp-config".into(),
+        // Hooks run commands of their own, past the tool list; the project's settings could add them.
+        "--settings".into(),
+        r#"{"disableAllHooks":true}"#.into(),
+        "--setting-sources".into(),
+        "user".into(),
         "--output-format".into(),
         "text".into(),
     ];
