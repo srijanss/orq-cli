@@ -174,9 +174,6 @@ impl StoreProjects {
                 }
             }
         }
-        if let Some(hook) = &self.queue_round_settled {
-            hook(self);
-        }
         let queue = store.queue(root).map_err(failed)?;
         if queue.paused.is_some() || round.restart_pending || in_review {
             return Ok(false);
@@ -217,8 +214,11 @@ impl StoreProjects {
                 Some(action) if action.kind != QueueKind::Accept => !orq_orchestrator::resume_takes_a_slot(&runs, &action.run)?,
                 _ => false,
             };
+            if let Some(hook) = &self.before_queue_slot_count {
+                hook(self);
+            }
             // A queued Accept holds a slot while its tests run, though an accepting run holds none; one
-            // this round read as going holds it until the round ends.
+            // this round read as going or started holds it until the round ends.
             let mut accepting = accepts_going.clone();
             for going in self.queued_accepts_going(&now, &runs) {
                 if !accepting.iter().any(|(run, _)| *run == going.0) {
@@ -263,6 +263,9 @@ impl StoreProjects {
                     match self.start_queued_action(id, action) {
                         Ok(RunControlOutcome::Done(run)) => {
                             store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                            if action.kind == QueueKind::Accept {
+                                accepts_going.push((run, entry.feature.clone()));
+                            }
                             started = true;
                             None
                         }

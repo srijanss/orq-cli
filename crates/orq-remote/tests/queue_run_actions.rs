@@ -488,27 +488,59 @@ fn a_failed_queued_accept_pauses_the_queue_before_anything_starts_fifty_times_in
     }
 }
 
+/// The run whose accept a queue round ends, once that accept is running, just before the round counts
+/// the slots for an entry; taken when ended.
+type EndInRound = Arc<Mutex<Option<String>>>;
+
+/// A provider change that has queue rounds end the accept [`EndInRound`] names with "3 tests failed"
+/// partway through, and wait until it has let go of its run.
+fn ending_accepts_mid_round(end_in_round: &EndInRound) -> impl FnOnce(StoreProjects, AcceptOutcomes) -> StoreProjects {
+    let end = end_in_round.clone();
+    move |projects, outcomes| {
+        projects.with_before_queue_slot_count(Arc::new(move |projects: &StoreProjects| {
+            let mut end = end.lock().unwrap();
+            let Some(run) = end.clone().filter(|run| projects.is_being_accepted(run)) else { return };
+            *end = None;
+            outcomes.lock().unwrap().push(Err("3 tests failed".to_string()));
+            let until = Instant::now() + Duration::from_secs(5);
+            while projects.is_being_accepted(&run) {
+                assert!(Instant::now() < until, "the accept of {run} did not end");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }))
+    }
+}
+
+#[test]
+fn an_accept_started_this_round_keeps_its_slot_for_the_rest_of_the_round_though_it_fails_partway_through() {
+    for stop in [true, false] {
+        let end_in_round = EndInRound::default();
+        let s = setup_with(if stop { "qra-accept-new-stop" } else { "qra-accept-new-go" }, |settings| settings.queue_stop_on_failure = stop, ending_accepts_mid_round(&end_in_round));
+        worktree_run(&s, "run-nr", "COM-00", "needs_review");
+        add(&s, json!({"action": "accept", "run": "run-nr"}));
+        add(&s, json!({"features": ["COM-01"]}));
+        *end_in_round.lock().unwrap() = Some("run-nr".to_string());
+        round(&s);
+        assert_eq!(*end_in_round.lock().unwrap(), None, "stop {stop}: the accept ended in the round that started it");
+        assert_eq!(started(&s), Vec::<String>::new(), "stop {stop}: the accept started this round holds its slot for the rest of it");
+
+        round(&s);
+        if stop {
+            assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "next")]));
+            assert!(queue(&s)["paused"].as_str().is_some_and(|why| why.contains("3 tests failed")), "{}", queue(&s)["paused"]);
+            assert_eq!(started(&s), Vec::<String>::new(), "COM-01 never starts");
+        } else {
+            assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "running")]), "the next round starts COM-01");
+            assert_eq!(started(&s), ["COM-01"]);
+        }
+    }
+}
+
 #[test]
 fn an_accept_read_as_going_keeps_its_slot_for_the_whole_round_though_it_fails_partway_through() {
     for stop in [true, false] {
-        // Set to the run whose accept the next round ends once it has settled its entries.
-        let end_in_round: Arc<Mutex<Option<String>>> = Arc::default();
-        let hook_end = end_in_round.clone();
-        let s = setup_with(
-            if stop { "qra-accept-mid-stop" } else { "qra-accept-mid-go" },
-            |settings| settings.queue_stop_on_failure = stop,
-            move |projects, outcomes| {
-                projects.with_queue_round_settled(Arc::new(move |projects: &StoreProjects| {
-                    let Some(run) = hook_end.lock().unwrap().take() else { return };
-                    outcomes.lock().unwrap().push(Err("3 tests failed".to_string()));
-                    let until = Instant::now() + Duration::from_secs(5);
-                    while projects.is_being_accepted(&run) {
-                        assert!(Instant::now() < until, "the accept of {run} did not end");
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                }))
-            },
-        );
+        let end_in_round = EndInRound::default();
+        let s = setup_with(if stop { "qra-accept-mid-stop" } else { "qra-accept-mid-go" }, |settings| settings.queue_stop_on_failure = stop, ending_accepts_mid_round(&end_in_round));
         worktree_run(&s, "run-nr", "COM-00", "needs_review");
         add(&s, json!({"action": "accept", "run": "run-nr"}));
         add(&s, json!({"features": ["COM-01"]}));
