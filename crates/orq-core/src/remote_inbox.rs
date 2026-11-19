@@ -1267,12 +1267,13 @@ fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, ta
         }
     };
     // Only an existing database holds items; an add creates it, but only with actions on. With them off the store
-    // is read only to name the item in the refusal, and a store that cannot be read is no reason to say otherwise.
+    // is opened read only, never migrated, to name the item in the refusal, and a store that cannot be read is no
+    // reason to say otherwise.
     let actions = remote_actions_on(roots);
     let store = if (id.is_some() || !actions) && !roots.database().exists() {
         None
     } else {
-        match Store::open(&roots.database()) {
+        match if actions { Store::open(&roots.database()) } else { Store::open_read_only(&roots.database()) } {
             Ok(store) => Some(store),
             Err(_) if !actions => None,
             Err(_) => {

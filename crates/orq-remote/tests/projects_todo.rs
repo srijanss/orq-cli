@@ -160,6 +160,22 @@ fn with_remote_actions_off_an_add_creates_no_database() {
 }
 
 #[test]
+fn with_remote_actions_off_a_change_leaves_an_older_database_unmigrated() {
+    let s = setup("todo-off-old-db");
+    drop(orq_core::store::Store::open(&s.roots.database()).unwrap());
+    let conn = rusqlite::Connection::open(s.roots.database()).unwrap();
+    conn.execute_batch("DROP TABLE queue_wishes; DROP TABLE todos").unwrap();
+    conn.pragma_update(None, "user_version", 11).unwrap();
+    drop(conn);
+    std::fs::write(s.roots.config_file(), "remote_actions = false\n").unwrap();
+    assert_eq!(post(&s, "/api/todo/1", json!({"name": "two", "description": "", "version": 1})).0, 404);
+    let conn = rusqlite::Connection::open(s.roots.database()).unwrap();
+    let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+    assert_eq!(version, 11, "a refused change migrates nothing");
+    assert_eq!(audited(&s)[0], ("todo.edit".into(), "".into(), "refused".into(), "remote actions are off".into()));
+}
+
+#[test]
 fn a_move_saves_a_draft_through_the_editors_path_and_only_then_removes_the_item() {
     let s = setup("todo-move");
     let alpha = git_repo(&s.scan, "alpha");
