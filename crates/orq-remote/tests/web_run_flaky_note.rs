@@ -86,8 +86,18 @@ fn a_re_run_event_shows_its_summary_and_whether_it_passed_and_nothing_else_of_it
     assert!(shown(&page, "stage.started").get("flaky").is_none(), "{page}");
 }
 
-/// The run page in the browser harness, or `None` when the web dependencies are not installed.
+const RERUN: &str = "[data-step-rerun-toggle]";
+
+/// The run page in the browser harness after opening each step's closed "Re-run: ..." line, or `None`
+/// when the web dependencies are not installed.
 fn open_run(events: Value) -> Option<Value> {
+    let notes = events.as_array().unwrap().iter().filter(|event| event.get("flaky").is_some()).count();
+    let clicks: Vec<Value> = (0..notes).map(|n| json!({"click": RERUN, "index": n})).collect();
+    open_run_with(events, clicks).map(|out| out["frames"][1 + notes].clone())
+}
+
+/// The run page after signing in and then `clicks`: every frame, the first being the sign-in.
+fn open_run_with(events: Value, clicks: Vec<Value>) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
@@ -95,11 +105,11 @@ fn open_run(events: Value) -> Option<Value> {
     let run = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "merged", "stage": "verify", "started_at": "2026-11-17T10:00:00Z", "updated_at": "2026-11-17T10:00:09Z"});
     let page = json!({"status": 200, "json": {"run": run, "events": events, "next_cursor": null}});
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": "/projects/alpha/orchestrations/run-1", "responses": [page, projects], "steps": [{"submit": TOKEN}], "selectors": [".run-flaky-note"]});
+    let steps: Vec<Value> = std::iter::once(json!({"submit": TOKEN})).chain(clicks).collect();
+    let scenario = json!({"url": "/projects/alpha/orchestrations/run-1", "responses": [page, projects], "steps": steps, "selectors": [".run-flaky-note", RERUN]});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let out: Value = serde_json::from_slice(&output.stdout).unwrap();
-    Some(out["frames"][1].clone())
+    Some(serde_json::from_slice(&output.stdout).unwrap())
 }
 
 fn texts(frame: &Value) -> Vec<String> {
@@ -123,6 +133,9 @@ fn the_timeline_notes_a_step_that_passed_on_a_re_run_and_one_whose_re_run_failed
         event("e3", "stage.started", "ci", 1, "2026-11-17T10:00:07Z", None),
         event("e4", "ci.rerun_failed", "ci", 1, "2026-11-17T10:00:09Z", Some(json!({"summary": "deploy check is flaky", "passed": false}))),
     ]);
+    let Some(out) = open_run_with(events.clone(), vec![]) else { return };
+    let closed = &out["frames"][1];
+    assert_eq!((closed["settled"]["matches"][RERUN].clone(), closed["settled"]["matches"][".run-flaky-note"].clone()), (json!(2), json!(0)), "each note sits behind its closed line: {closed}");
     let Some(frame) = open_run(events) else { return };
 
     assert_eq!(frame["settled"]["matches"][".run-flaky-note"], json!(2), "{frame}");
@@ -140,6 +153,7 @@ fn a_step_with_no_re_run_has_no_flaky_note() {
     ]);
     let Some(frame) = open_run(events) else { return };
     assert_eq!(frame["settled"]["matches"][".run-flaky-note"], json!(0), "{frame}");
+    assert_eq!(frame["settled"]["matches"][RERUN], json!(0), "{frame}");
 }
 
 #[test]

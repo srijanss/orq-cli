@@ -695,8 +695,11 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 /* Run timeline tab: the stages as a line of steps joined by a rule. */
 .run-steps { list-style: none; margin: 0; padding: 0; }
 .run-step { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; min-height: 2.5rem; padding: 0 0.625rem; border-radius: 0.5rem; }
-.run-step + .run-step::before { content: ""; position: absolute; left: calc(0.625rem + 0.6875rem - 1px); top: -0.75rem; height: 1.5rem; width: 2px; background: var(--border); z-index: 0; }
-.run-step-mark { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.375rem; height: 1.375rem; border-radius: 50%; border: 2px solid var(--text-muted); background: var(--surface); color: var(--surface); box-sizing: border-box; }
+/* Each mark sits at 1.25rem from its step's top whatever the step holds, and the line runs from there
+   through the whole step to the next mark's centre (1.25rem into the next step), in the details' gutter.
+   It paints over the next step's highlighted background and under the marks. */
+.run-step:not(:last-child)::after { content: ""; position: absolute; left: calc(0.625rem + 0.6875rem - 1px); top: 1.25rem; bottom: -1.25rem; width: 2px; background: var(--border); z-index: 1; }
+.run-step-mark { position: relative; z-index: 2; align-self: flex-start; margin: calc((2.5rem - 1.375rem) / 2) 0; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.375rem; height: 1.375rem; border-radius: 50%; border: 2px solid var(--text-muted); background: var(--surface); color: var(--surface); box-sizing: border-box; }
 .run-step[data-step="done"] .run-step-mark { border-color: var(--status-completed-bg); background: var(--status-completed-bg); color: var(--status-completed); }
 .run-step[data-step="failed"] .run-step-mark { border-color: var(--status-failed-bg); background: var(--status-failed-bg); color: var(--status-failed); }
 .run-step[data-step="current"] { background: var(--status-running-bg); }
@@ -717,6 +720,8 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .run-step-undeclared-toggle svg { flex: none; }
 .run-step-undeclared-list { margin: 0.25rem 0 0; padding: 0 0 0 1.25rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8125rem; line-height: 1.5; overflow-wrap: anywhere; word-break: break-word; }
 .run-step-undeclared-list li { min-width: 0; }
+.run-step-detail .run-step-excerpt { margin: 0.25rem 0 0; padding-left: 0; }
+.run-step-detail .run-flaky-note { margin: 0.25rem 0 0; }
 /* Run logs tab: a dark box of lines like a terminal, with the follow switch and a pager. */
 .run-logs-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
 .run-logs-head h3 { flex: 1; min-width: 0; margin: 0; font-size: 1.125rem; overflow-wrap: anywhere; }

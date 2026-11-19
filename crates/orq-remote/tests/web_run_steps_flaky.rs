@@ -83,6 +83,58 @@ fn a_verify_step_names_each_test_that_passed_only_on_a_retry() {
     assert_eq!(count(&frame, "[data-step-flaky]"), 3, "only the Timeline step lists them: {frame}");
 }
 
+const RERUN: &str = "[data-step-rerun-toggle]";
+
+/// The run page with a re-run note on its verify step, its selectors counted, after signing in and `steps`.
+fn open_rerun(flaky: Value, steps: Vec<Value>) -> Option<Value> {
+    if !web_deps::ready() {
+        return None;
+    }
+    let events = json!([
+        {"event_id": "e0", "kind": "stage.started", "stage": "verify", "attempt": 2, "occurred_at": "2026-11-16T15:27:21Z"},
+        {"event_id": "e1", "kind": "gate.flaky", "stage": "verify", "attempt": 2, "occurred_at": "2026-11-16T15:35:07Z", "flaky": flaky},
+        {"event_id": "e2", "kind": "stage.completed", "stage": "verify", "attempt": 2, "occurred_at": "2026-11-16T15:35:08Z"},
+    ]);
+    let run = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "completed", "stage": "verify", "started_at": "2026-11-16T15:05:49Z", "updated_at": "2026-11-16T15:35:11Z"});
+    let page = json!({"status": 200, "json": {"run": run, "events": events, "next_cursor": null}});
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let selectors = [".run-flaky-note", RERUN, "[data-step-rerun-toggle][aria-expanded=\"false\"]", "[data-step-rerun-toggle][aria-expanded=\"true\"]"];
+    let all: Vec<Value> = std::iter::once(json!({"submit": TOKEN})).chain(steps).collect();
+    let scenario = json!({"url": "/projects/alpha/orchestrations/run-1", "responses": [page, projects()], "steps": all, "selectors": selectors});
+    let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    Some(serde_json::from_slice(&output.stdout).unwrap())
+}
+
+#[test]
+fn a_re_run_note_is_one_closed_re_run_line_that_opens_to_the_whole_note() {
+    let flaky = json!({"summary": "billing clock test is flaky", "passed": true});
+    let Some(out) = open_rerun(flaky, vec![json!({"click": RERUN})]) else { return };
+    let shown = &out["frames"][1];
+    assert_eq!(count(shown, "[data-step-rerun-toggle][aria-expanded=\"false\"]"), 1, "{shown}");
+    assert_eq!(count(shown, ".run-flaky-note"), 0, "the note is hidden until it is opened: {shown}");
+    assert!(texts(shown).iter().any(|t| t == "Re-run: passed on a re-run"), "{:?}", texts(shown));
+
+    let opened = &out["frames"][2];
+    assert_eq!(count(opened, "[data-step-rerun-toggle][aria-expanded=\"true\"]"), 1, "{opened}");
+    assert_eq!(count(opened, ".run-flaky-note"), 1, "{opened}");
+    let says = "passed on a re-run; the first failure was reported unrelated: billing clock test is flaky";
+    assert!(texts(opened).iter().any(|t| t.contains(says)), "{:?}", texts(opened));
+}
+
+#[test]
+fn the_re_run_line_says_when_the_re_run_failed_too_or_could_not_start() {
+    for (flaky, label) in [
+        (json!({"summary": "s", "passed": false}), "Re-run: the re-run failed too"),
+        (json!({"summary": "s", "passed": false, "not_started": "no failed workflow run"}), "Re-run: could not be started"),
+    ] {
+        let Some(out) = open_rerun(flaky, vec![]) else { return };
+        let shown = &out["frames"][1];
+        assert!(texts(shown).iter().any(|t| t == label), "{label}: {:?}", texts(shown));
+        assert_eq!(count(shown, ".run-flaky-note"), 0, "{shown}");
+    }
+}
+
 #[test]
 fn a_verify_step_with_no_flaky_test_has_no_flaky_line() {
     let Some(out) = open_run_with(verify_events(None), vec![]) else { return };

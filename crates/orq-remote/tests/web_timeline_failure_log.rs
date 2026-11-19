@@ -11,9 +11,18 @@ const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const RUN: &str = "/projects/alpha/orchestrations/run-1";
 const API: &str = "/api/projects/alpha/runs/run-1";
 
+const EXCERPT_TOGGLE: &str = "[data-step-excerpt-toggle]";
+
 fn selectors() -> Vec<&'static str> {
     vec![
         "[data-step-excerpt]",
+        EXCERPT_TOGGLE,
+        "[data-step-excerpt-toggle][aria-expanded=\"false\"]",
+        "[data-step-excerpt-toggle][aria-expanded=\"true\"]",
+        ".run-step:first-child [data-step-excerpt]",
+        ".run-step:first-child [data-step-excerpt-toggle][aria-expanded=\"false\"]",
+        ".run-step:last-child [data-step-excerpt]",
+        ".run-step:first-child .run-step-failure",
         ".log-line[data-log-mark]",
         "button[data-log-follow][aria-checked=false]",
         "button[data-log-follow][aria-checked=true]",
@@ -98,7 +107,7 @@ fn a_failed_step_says_why_with_the_lines_around_the_error_and_opens_its_log_ther
     let shown = &out["frames"][1];
     let t = texts(shown);
     assert!(t.iter().any(|x| x.starts_with("Failed: step 2 exited with status 101")), "{t:?}");
-    assert_eq!(count(shown, "[data-step-excerpt]"), 2, "each failed step with a log has its excerpt: {out}");
+    assert_eq!(count(shown, "[data-step-excerpt]"), 1, "only the step the run failed on has its excerpt open: {out}");
     // The excerpt is text, so markup in a log line is shown as written.
     assert!(t.iter().any(|x| x.contains("panicked at src/lib.rs:7:5\n<b>boom</b>")), "{t:?}");
 
@@ -108,6 +117,34 @@ fn a_failed_step_says_why_with_the_lines_around_the_error_and_opens_its_log_ther
     assert_eq!(count(opened, ".log-line[data-log-mark]"), 1, "{out}");
     assert_eq!(count(opened, "button[data-log-follow][aria-checked=false]"), 1, "an opened error is not followed away from: {out}");
     assert!(opened["settled"]["scrolled"].as_array().unwrap().iter().any(|id| id == "log-mark"), "the error line is scrolled into view: {out}");
+}
+
+#[test]
+fn an_earlier_failed_step_keeps_its_failure_line_and_its_log_lines_behind_a_closed_line() {
+    let steps = json!([{"submit": TOKEN}, {"click": ".run-step:first-child [data-step-excerpt-toggle]"}]);
+    let Some(out) = run(RUN, json!([failed_gate(gate_log()), projects(), stream()]), steps) else { return };
+
+    let shown = &out["frames"][1];
+    assert_eq!(count(shown, ".run-step:first-child .run-step-failure"), 1, "the failure line stays visible: {out}");
+    assert_eq!(count(shown, ".run-step:first-child [data-step-excerpt]"), 0, "{out}");
+    assert_eq!(count(shown, ".run-step:first-child [data-step-excerpt-toggle][aria-expanded=\"false\"]"), 1, "{out}");
+    assert!(texts(shown).iter().any(|t| t == "Log lines at the error"), "{:?}", texts(shown));
+    assert_eq!(count(shown, ".run-step:last-child [data-step-excerpt]"), 1, "the step the run failed on stays open: {out}");
+    assert_eq!(count(shown, "[data-step-excerpt-toggle][aria-expanded=\"true\"]"), 1, "{out}");
+
+    let opened = &out["frames"][2];
+    assert_eq!(count(opened, ".run-step:first-child [data-step-excerpt]"), 1, "opening it shows the excerpt: {out}");
+    assert_eq!(count(opened, "[data-step-excerpt]"), 2, "{out}");
+}
+
+#[test]
+fn a_run_that_did_not_end_failed_keeps_every_excerpt_closed() {
+    let mut page = failed_gate(gate_log());
+    page["json"]["run"]["state"] = json!("running");
+    let Some(out) = run(RUN, json!([page, projects(), stream()]), json!([{"submit": TOKEN}])) else { return };
+    let shown = &out["frames"][1];
+    assert_eq!(count(shown, "[data-step-excerpt]"), 0, "{out}");
+    assert_eq!(count(shown, "[data-step-excerpt-toggle][aria-expanded=\"false\"]"), 2, "{out}");
 }
 
 #[test]

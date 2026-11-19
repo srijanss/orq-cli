@@ -4396,14 +4396,17 @@ function cleanupNote(step) {
   return said.length === 0 ? null : WORKTREE_OUTCOMES[said[said.length - 1].kind];
 }
 
-// What became of a step's re-run after its failure was reported unrelated, or null when it had none.
+// What became of a step's re-run after its failure was reported unrelated, or null when it had none:
+// `label` in a few words for its closed line, `text` in full with the summary.
 function flakyNote(step) {
   const said = step.events.filter((event) => event.flaky && typeof event.flaky === "object");
   if (said.length === 0) return null;
   const { summary, passed, not_started: notStarted } = said[said.length - 1].flaky;
   const what = typeof summary === "string" && summary !== "" ? ": " + summary : "";
-  if (passed !== true && typeof notStarted === "string") return "the re-run could not be started (" + notStarted + "); the failure was reported unrelated" + what;
-  return passed === true ? "passed on a re-run; the first failure was reported unrelated" + what : "the re-run failed too; the failure was reported unrelated" + what;
+  if (passed !== true && typeof notStarted === "string") return { label: "could not be started", text: "the re-run could not be started (" + notStarted + "); the failure was reported unrelated" + what };
+  return passed === true
+    ? { label: "passed on a re-run", text: "passed on a re-run; the first failure was reported unrelated" + what }
+    : { label: "the re-run failed too", text: "the re-run failed too; the failure was reported unrelated" + what };
 }
 
 // A step's mark: failed, finished, or still open (in progress or not finished).
@@ -4501,8 +4504,10 @@ function StepDetail({ place, kind, label, startOpen = false, children }) {
   );
 }
 
-function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
+function RunSteps({ runId, events, rounds, running, ended = false, failedRun = false, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
+  // The step a failed run ended on: the last failed one. Its excerpt starts open; every other starts closed.
+  const failedOn = failedRun ? steps.reduce((found, step, at) => (step.failed ? at : found), -1) : -1;
   return (
     <ol className="run-steps">
       {steps.map((step, at) => {
@@ -4524,7 +4529,11 @@ function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
             <span className="sr-only">{STEP_STATES[kind]}</span>
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
             {note === null ? null : <p className="run-cleanup-note field-hint muted">{note}</p>}
-            {flaky === null ? null : <p className="run-flaky-note field-hint muted">{flaky}</p>}
+            {flaky === null ? null : (
+              <StepDetail place={place} kind="rerun" label={"Re-run: " + flaky.label}>
+                <p className="run-flaky-note field-hint muted">{flaky.text}</p>
+              </StepDetail>
+            )}
             {flakyList.length > 0 ? (
               <StepDetail place={place} kind="flaky" label={"Flaky tests: " + flakyList.length}>
                 <ul className="run-step-undeclared-list">
@@ -4550,9 +4559,11 @@ function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
             ) : null}
             {failure === null ? null : <FailedTests tests={failure.failed.tests} more={failure.failed.more} />}
             {failedLog !== null && failedLog.excerpt !== "" ? (
-              <div className="run-step-excerpt">
-                <pre data-step-excerpt tabIndex={0} aria-label="Log lines at the error">{failedLog.excerpt}</pre>
-              </div>
+              <StepDetail place={place} kind="excerpt" label="Log lines at the error" startOpen={at === failedOn}>
+                <div className="run-step-excerpt">
+                  <pre data-step-excerpt tabIndex={0} aria-label="Log lines at the error">{failedLog.excerpt}</pre>
+                </div>
+              </StepDetail>
             ) : null}
           </li>
         );
@@ -4583,7 +4594,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
     <>
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
         <SetAsideNotes events={all} />
-        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps runId={run.run_id} events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLogs={openLog} />}
+        {all.length === 0 ? <p>No events recorded.</p> : <RunSteps runId={run.run_id} events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} failedRun={run.state === "failed"} onLogs={openLog} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
         {all.length === 0 ? null : <EventTimeline events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} onLog={openLog} />}

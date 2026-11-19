@@ -138,6 +138,95 @@ fn on_a_phone_an_opened_list_wraps_long_paths_without_scrolling_sideways() {
     assert!(boxes[0]["bottom"].as_i64().unwrap() - boxes[0]["top"].as_i64().unwrap() > boxes[1]["bottom"].as_i64().unwrap() - boxes[1]["top"].as_i64().unwrap(), "the long path wraps onto more lines: {result}");
 }
 
+/// Run before the page: keeps one empty `.line-probe` box, fixed over each step's connecting line (its
+/// `::after`), with that line's colour, so the layout probe can measure a pseudo-element like any element.
+const LINE_PROBE: &str = r#"
+setInterval(function () {
+  document.querySelectorAll(".line-probe").forEach(function (old) { old.remove(); });
+  document.querySelectorAll(".run-step").forEach(function (step) {
+    var line = getComputedStyle(step, "::after");
+    if (line.content === "none" || line.display === "none") return;
+    var box = step.getBoundingClientRect();
+    var probe = document.createElement("div");
+    probe.className = "line-probe";
+    probe.style.cssText = "position:fixed;pointer-events:none;left:" + (box.left + parseFloat(line.left)) + "px;top:" + (box.top + parseFloat(line.top)) + "px;width:" + parseFloat(line.width) + "px;height:" + parseFloat(line.height) + "px;background-color:" + line.backgroundColor;
+    document.body.appendChild(probe);
+  });
+}, 50);
+"#;
+
+fn timeline_event(id: &str, kind: &str, stage: &str, extra: Value) -> Value {
+    let mut event = json!({"event_id": id, "kind": kind, "stage": stage, "attempt": 1, "occurred_at": "2026-11-16T15:35:08Z"});
+    for (key, value) in extra.as_object().unwrap() {
+        event[key] = value.clone();
+    }
+    event
+}
+
+/// Five steps: a bare one, one with two flaky tests, a failed one with a log excerpt, one with
+/// out-of-scope files, and the current one.
+fn five_steps() -> Value {
+    let excerpt = (1..=8).map(|n| format!("error line {n}")).collect::<Vec<_>>().join("\n");
+    json!([
+        timeline_event("a0", "stage.started", "implement_and_review", json!({})),
+        timeline_event("a1", "stage.completed", "implement_and_review", json!({})),
+        timeline_event("b0", "stage.started", "verify", json!({})),
+        timeline_event("b1", "gate.flaky_tests", "verify", json!({"flaky_tests": [{"name": "a::one", "retry": 1}, {"name": "b::two", "retry": 2}]})),
+        timeline_event("b2", "stage.completed", "verify", json!({})),
+        timeline_event("c0", "stage.started", "ci", json!({})),
+        timeline_event("c1", "stage.failed", "ci", json!({"failure": {"reason": "deploy failed", "log": {"file": "ci.log", "line": 4, "excerpt": excerpt}}})),
+        timeline_event("d0", "stage.started", "gate_fix", json!({})),
+        timeline_event("d1", "session.undeclared_files", "gate_fix", json!({"undeclared_files": ["src/a.rs", "src/b.rs"]})),
+        timeline_event("d2", "stage.completed", "gate_fix", json!({})),
+        timeline_event("e0", "stage.started", "merge", json!({})),
+    ])
+}
+
+#[test]
+fn the_connecting_line_joins_every_mark_whatever_is_open_between_them() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    let project = json!({"id": "alpha", "name": "alpha", "available": true, "features": 1, "active_runs": 1, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
+    let run = json!({"run_id": "run-1", "feature": "login", "target_branch": "main", "state": "running", "stage": "merge", "started_at": "2026-11-16T15:05:49Z", "updated_at": "2026-11-16T15:35:11Z"});
+    let replies = [web_chromium::get("/api/projects", json!({"projects": [project]})), web_chromium::get("/api/projects/alpha/runs/run-1", json!({"run": run, "events": five_steps(), "next_cursor": null}))];
+    const MARKS: &str = ".run-step-mark";
+    const LINES: &str = ".line-probe";
+    let steps = json!([
+        {"wait": "[data-step-flaky-toggle]"}, {"click": "[data-step-flaky-toggle]"}, {"wait": "[data-step-flaky]"},
+        {"click": "[data-step-excerpt-toggle]"}, {"wait": "[data-step-excerpt]"},
+        {"click": TOGGLE}, {"wait": FILES},
+        {"wait": LINES},
+        {"boxes": MARKS}, {"boxes": LINES}, {"styles": LINES, "props": ["background-color"]},
+    ]);
+    for theme in ["light", "dark"] {
+        let init = format!("try {{ localStorage.setItem(\"orq.theme\", \"{theme}\"); }} catch (e) {{}}\n{LINE_PROBE}");
+        for width in [390, 1280] {
+            let result = web_chromium::measure_with(&chromium, width, "/projects/alpha/orchestrations/run-1", &replies, steps.clone(), &init).result;
+            let at = format!("{theme} {width} px");
+            assert!(result.get("error").is_none(), "{at}: {result}");
+            assert!(result["scrollWidth"].as_u64() <= result["clientWidth"].as_u64(), "{at}: the page scrolls sideways: {result}");
+            let marks = result["boxes"][MARKS].as_array().unwrap();
+            let lines = result["boxes"][LINES].as_array().unwrap();
+            assert_eq!(marks.len(), 5, "{at}: {result}");
+            assert_eq!(lines.len(), 4, "{at}: one line under each mark but the last: {result}");
+            let centre = |b: &Value| (b["top"].as_i64().unwrap() + b["bottom"].as_i64().unwrap()) / 2;
+            let middle = |b: &Value| (b["left"].as_i64().unwrap() + b["right"].as_i64().unwrap()) / 2;
+            for (n, line) in lines.iter().enumerate() {
+                let (above, below) = (&marks[n], &marks[n + 1]);
+                assert!(line["top"].as_i64().unwrap() <= centre(above) + 1, "{at}: line {n} {line} starts below mark {above}'s centre");
+                assert!(line["bottom"].as_i64().unwrap() >= centre(below) - 1, "{at}: line {n} {line} stops short of mark {below}'s centre");
+                assert!(line["right"].as_i64().unwrap() > line["left"].as_i64().unwrap(), "{at}: line {n} has no width: {line}");
+                assert!((middle(line) - middle(above)).abs() <= 1 && (middle(line) - middle(below)).abs() <= 1, "{at}: line {n} {line} is not straight between {above} and {below}");
+            }
+            let last = marks.last().unwrap();
+            assert!(lines.iter().all(|line| line["bottom"].as_i64().unwrap() <= centre(last) + 1), "{at}: a line runs below the last mark: {result}");
+            for style in result["styles"][LINES].as_array().unwrap() {
+                let colour = style["background-color"].as_str().unwrap();
+                assert!(colour != "rgba(0, 0, 0, 0)" && colour != "transparent", "{at}: the line is invisible: {result}");
+            }
+        }
+    }
+}
+
 #[test]
 fn the_opened_list_stays_inside_its_step_at_every_width() {
     let Some(chromium) = web_chromium::binary() else { return };
