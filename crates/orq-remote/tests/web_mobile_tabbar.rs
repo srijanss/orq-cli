@@ -86,6 +86,16 @@ fn a_press_outside_the_sheet_closes_it_and_more_toggles_it() {
 }
 
 #[test]
+fn moving_through_history_closes_the_sheet() {
+    let steps = [json!({"click": "[data-tab-more]"}), json!({"go": "/projects/demo/reviews"})];
+    let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [SHEET], "steps": steps})) else { return };
+    assert_eq!(probed(&out["frames"][1], SHEET).len(), 1, "{out}");
+    let moved = &out["frames"][2];
+    assert_eq!(moved["path"], "/projects/demo/reviews", "{out}");
+    assert!(probed(moved, SHEET).is_empty(), "Back or Forward leaves no sheet over the new page: {out}");
+}
+
+#[test]
 fn picking_a_sheet_destination_goes_there_closes_the_sheet_and_marks_more_current() {
     let scenario = json!({"path": "/dashboard", "phone": true, "probe": [BAR, SHEET, SHEET_LINKS], "steps": [{"click": "[data-tab-more]"}, {"click": "[data-more-sheet] a[href=\"/settings\"]"}, {"click": "[data-tab-more]"}]});
     let Some(out) = shell(scenario) else { return };

@@ -147,7 +147,11 @@ function PhoneShell({ projectId = null, children }) {
 const BAR_TABS = 4;
 
 export function TabBar({ entries, path }) {
-  const [open, setOpen] = useState(false);
+  // The sheet is open on the page it was opened on, so any move, Back and Forward included,
+  // leaves no sheet over the new page.
+  const [openOn, setOpenOn] = useState(null);
+  const open = openOn === path;
+  const setOpen = (value) => setOpenOn(value ? path : null);
   // Five fit the bar as they are; a sixth turns the fifth place into More.
   const overflows = entries.length > BAR_TABS + 1;
   const shown = overflows ? entries.slice(0, BAR_TABS) : entries;
