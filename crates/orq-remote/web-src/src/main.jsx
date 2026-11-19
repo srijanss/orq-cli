@@ -933,18 +933,15 @@ function TodoFields({ name, description, onName, onDescription }) {
 }
 
 // One Todo item: its name, two lines of its description and when it was added, with Move to project, Edit and
-// Delete while remote actions are on. Edit sends the version it read; Delete asks first.
-function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove, onDraft }) {
+// Delete while remote actions are on. Edit opens its popup (onEdit); Delete asks first, in the card.
+function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove, onDraft, onEdit }) {
   const [mode, setMode] = useState("view");
   const [busy, setBusy] = useState(false);
-  const [name, setName] = useState(item.name);
-  const [description, setDescription] = useState(item.description);
   const [note, setNote] = useState("");
-  const itemPath = API_TODO + "/" + item.id;
-  const send = async (path, body, fallback) => {
+  const remove = async () => {
     setBusy(true);
     setNote("");
-    const why = await todoSend(path, token, onSignedOut, body, fallback);
+    const why = await todoSend(API_TODO + "/" + item.id + "/delete", token, onSignedOut, {}, "The item could not be deleted.");
     if (why === undefined) return;
     setBusy(false);
     if (why === null) {
@@ -956,42 +953,95 @@ function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove, onDraf
   };
   return (
     <li className="todo-item card" data-todo-item={item.id}>
-      {mode === "edit" ? (
-        <div className="todo-edit feature-editor-fields" role="group" aria-label={"Edit " + item.name}>
-          <TodoFields name={name} description={description} onName={setName} onDescription={setDescription} />
-          <div className="feature-editor-actions">
-            <button type="button" className="primary-button" data-todo-save disabled={busy || name.trim() === ""} onClick={() => send(itemPath, { name, description, version: item.version }, "The item could not be saved.")}><Icon name="check" size={16} />Save</button>
-            <button type="button" data-cancel disabled={busy} onClick={() => { setNote(""); setName(item.name); setDescription(item.description); setMode("view"); }}>Cancel</button>
-          </div>
+      <div className="todo-item-head">
+        <strong className="todo-item-name">{item.name}</strong>
+        <span className="todo-item-when muted">{"Added "}<Moment at={epochTime(item.created_at)} /></span>
+      </div>
+      {item.description !== "" ? <p className="todo-item-description">{item.description}</p> : null}
+      {actions && mode === "view" ? (
+        <div className="todo-item-actions">
+          <button type="button" data-todo-move onClick={() => onMove(item)}><Icon name="chevronRight" size={16} />Move to project</button>
+          <button type="button" data-todo-draft onClick={() => onDraft(item)}><Icon name="doc" size={16} />Draft with Claude</button>
+          <button type="button" data-todo-edit onClick={() => onEdit(item)}><Icon name="pencil" size={16} />Edit</button>
+          <button type="button" data-todo-delete onClick={() => setMode("delete")}><Icon name="close" size={16} />Delete</button>
         </div>
-      ) : (
-        <>
-          <div className="todo-item-head">
-            <strong className="todo-item-name">{item.name}</strong>
-            <span className="todo-item-when muted">{"Added "}<Moment at={epochTime(item.created_at)} /></span>
-          </div>
-          {item.description !== "" ? <p className="todo-item-description">{item.description}</p> : null}
-          {actions && mode === "view" ? (
-            <div className="todo-item-actions">
-              <button type="button" data-todo-move onClick={() => onMove(item)}><Icon name="chevronRight" size={16} />Move to project</button>
-              <button type="button" data-todo-draft onClick={() => onDraft(item)}><Icon name="doc" size={16} />Draft with Claude</button>
-              <button type="button" data-todo-edit onClick={() => setMode("edit")}><Icon name="pencil" size={16} />Edit</button>
-              <button type="button" data-todo-delete onClick={() => setMode("delete")}><Icon name="close" size={16} />Delete</button>
-            </div>
-          ) : null}
-          {mode === "delete" ? (
-            <Confirm question="Delete this Todo item?" detail={item.name} answer="Yes, delete" tone="danger" busy={busy} onConfirm={() => send(itemPath + "/delete", {}, "The item could not be deleted.")} onCancel={() => { setNote(""); setMode("view"); }} />
-          ) : null}
-        </>
-      )}
+      ) : null}
+      {mode === "delete" ? (
+        <Confirm question="Delete this Todo item?" detail={item.name} answer="Yes, delete" tone="danger" busy={busy} onConfirm={remove} onCancel={() => { setNote(""); setMode("view"); }} />
+      ) : null}
       {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
     </li>
+  );
+}
+
+// A Todo item's Edit, as a popup like Add feature: its name and description, Save (sending the version it read)
+// and Cancel. A failed save keeps the popup and what was typed; Escape, Close, Cancel and the backdrop close it
+// unsaved unless a save is out.
+function TodoEditDialog({ item, token, onSignedOut, onClose, onSaved }) {
+  const [name, setName] = useState(item.name);
+  const [description, setDescription] = useState(item.description);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const box = useRef(null);
+  useEffect(() => {
+    const field = box.current === null ? null : box.current.querySelector("[data-todo-name]");
+    if (field !== null) field.focus();
+  }, []);
+  useEffect(() => {
+    if (busy) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && !event.defaultPrevented) onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [busy]);
+  const save = async () => {
+    setBusy(true);
+    setNote("");
+    const why = await todoSend(API_TODO + "/" + item.id, token, onSignedOut, { name, description, version: item.version }, "The item could not be saved.");
+    if (why === undefined) return;
+    setBusy(false);
+    if (why === null) onSaved();
+    else setNote(why);
+  };
+  return (
+    <div className="feature-modal" data-feature-modal data-todo-edit-dialog onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+      <div className="feature-modal-box" ref={box} role="dialog" aria-modal="true" aria-labelledby="todo-edit-title">
+        <div className="feature-modal-head">
+          <h2 id="todo-edit-title">Edit Todo</h2>
+          <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={busy} onClick={onClose}><Icon name="close" size={18} /></button>
+        </div>
+        <div className="feature-editor-fields" role="group" aria-label={"Edit " + item.name}>
+          <TodoFields name={name} description={description} onName={setName} onDescription={setDescription} />
+          <div className="feature-editor-actions">
+            <button type="button" className="primary-button" data-todo-save disabled={busy || name.trim() === ""} onClick={save}><Icon name="check" size={16} />Save</button>
+            <button type="button" data-cancel disabled={busy} onClick={onClose}>Cancel</button>
+          </div>
+          {busy ? <span role="status">Sending…</span> : null}
+          {note !== "" ? <p role="status" className="run-action-note error-text">{note}</p> : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
 // The Todo list above the projects: always shown, newest first, TODO_SHOWN items until "Show all".
 function TodoList({ todo, token, onSignedOut, onChanged, onMove, onDraft }) {
   const [all, setAll] = useState(false);
+  // The item whose Edit popup is open, or null.
+  const [editing, setEditing] = useState(null);
+  // The item whose Edit button gets the focus back once its popup has closed.
+  const returnTo = useRef(null);
+  useEffect(() => {
+    if (editing !== null || returnTo.current === null) return;
+    const button = document.querySelector("[data-todo-item=\"" + returnTo.current + "\"] [data-todo-edit]");
+    returnTo.current = null;
+    if (button !== null) button.focus();
+  }, [editing]);
+  const closeEdit = () => {
+    returnTo.current = editing.id;
+    setEditing(null);
+  };
   let body;
   if (todo === null) body = <p className="muted">Loading the Todo list…</p>;
   else if (typeof todo === "string") body = <p className="muted">{todo}</p>;
@@ -1001,7 +1051,7 @@ function TodoList({ todo, token, onSignedOut, onChanged, onMove, onDraft }) {
     body = (
       <>
         <ul className="todo-list">
-          {shown.map((item) => <TodoItem key={item.id + ":" + item.version} item={item} actions={todo.actions} token={token} onSignedOut={onSignedOut} onChanged={onChanged} onMove={onMove} onDraft={onDraft} />)}
+          {shown.map((item) => <TodoItem key={item.id} item={item} actions={todo.actions} token={token} onSignedOut={onSignedOut} onChanged={onChanged} onMove={onMove} onDraft={onDraft} onEdit={setEditing} />)}
         </ul>
         {todo.items.length > TODO_SHOWN ? <button type="button" className="todo-show-all" data-todo-show-all aria-expanded={all ? "true" : "false"} onClick={() => setAll(!all)}>{all ? "Show fewer" : "Show all (" + todo.items.length + ")"}</button> : null}
       </>
@@ -1011,6 +1061,7 @@ function TodoList({ todo, token, onSignedOut, onChanged, onMove, onDraft }) {
     <section className="todo" data-todo>
       <h2 className="section-title">Todos</h2>
       {body}
+      {editing !== null ? <TodoEditDialog item={editing} token={token} onSignedOut={onSignedOut} onClose={closeEdit} onSaved={() => { closeEdit(); onChanged(); }} /> : null}
     </section>
   );
 }
@@ -1032,7 +1083,7 @@ function AddFeatureDialog({ projects, item = null, todoActions, token, onSignedO
   useEffect(() => {
     if (busy) return undefined;
     const onKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !event.defaultPrevented) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -1120,13 +1171,10 @@ function AddFeatureDialog({ projects, item = null, todoActions, token, onSignedO
           <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={busy} onClick={onClose}><Icon name="close" size={18} /></button>
         </div>
         {moving ? <p className="muted">{item.name}</p> : null}
-        <label className="field">
+        <div className="field">
           <span className="field-label">Project</span>
-          <select data-add-target value={target} disabled={busy} onChange={(event) => setTarget(event.target.value)}>
-            {moving ? <option value="" disabled>Choose a project</option> : <option value="">Todo (no project)</option>}
-            {choices.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-          </select>
-        </label>
+          <ProjectChooser choices={moving ? choices : [{ id: "", name: "Todo (no project)" }, ...choices]} value={target} placeholder="Choose a project" disabled={busy} onChoose={setTarget} buttonProps={{ "data-add-target": true }} />
+        </div>
         {form}
       </div>
     </div>
@@ -1145,7 +1193,7 @@ function DraftWithClaudeDialog({ projects = [], item = null, draft = null, token
   useEffect(() => {
     if (busy) return undefined;
     const onKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !event.defaultPrevented) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -1190,13 +1238,10 @@ function DraftWithClaudeDialog({ projects = [], item = null, draft = null, token
           <p className="muted">{draft.project + " · " + draft.name}</p>
         ) : (
           <>
-            <label className="field">
+            <div className="field">
               <span className="field-label">Project</span>
-              <select data-plan-project value={target} disabled={busy} onChange={(event) => setTarget(event.target.value)}>
-                <option value="" disabled>Choose a project</option>
-                {choices.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-              </select>
-            </label>
+              <ProjectChooser choices={choices} value={target} placeholder="Choose a project" disabled={busy} onChoose={setTarget} buttonProps={{ "data-plan-project": true }} />
+            </div>
             <div className="plan-idea" data-plan-idea>
               <strong>{item.name}</strong>
               {item.description !== "" ? <p className="todo-item-description">{item.description}</p> : null}
@@ -2823,43 +2868,107 @@ function useFeatureRuns(token, projectId, reloads, enabled) {
   return runs;
 }
 
-// The project chooser at the top of the page; choosing one opens that project's same section.
-function ProjectSelect({ projects, projectId, section = "features", onOpen = null }) {
+// The app's project picker: a button showing the chosen project (or the placeholder, muted) with a chevron, that
+// opens a listbox of `choices` ({ id, name }); the chosen one is aria-selected. `buttonProps` adds the button's own
+// data attributes; its data-value is the chosen id. Enter, Space or Down opens the list, Up and Down move, Enter
+// picks; Escape (taken before a popup's own Escape, which then leaves it be) and a press outside close the list.
+function ProjectChooser({ choices, value, onChoose, label = "Project", placeholder = "", disabled = false, onOpen = null, buttonProps = {} }) {
   const [open, setOpen] = useState(false);
+  // The option the keyboard is on, -1 when none.
+  const [active, setActive] = useState(-1);
   const box = useRef(null);
+  const button = useRef(null);
+  const list = useRef(null);
+  const close = () => {
+    setOpen(false);
+    setActive(-1);
+  };
   useEffect(() => {
     if (!open) return undefined;
     const onKeyDown = (event) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      close();
+      if (box.current && box.current.contains(document.activeElement) && button.current) button.current.focus();
     };
     const onPress = (event) => {
-      if (box.current && !box.current.contains(event.target)) setOpen(false);
+      if (box.current && !box.current.contains(event.target)) close();
     };
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("pointerdown", onPress);
     return () => {
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("pointerdown", onPress);
     };
   }, [open]);
-  if ((projects === null || projects.length === 0) && onOpen === null) return null;
-  const known = projectId === null || projects.some((project) => project.id === projectId);
-  const choices = [{ id: null, name: "All projects" }, ...(known ? [] : [{ id: projectId, name: projectId }]), ...projects];
-  const current = choices.find((project) => project.id === projectId);
+  useEffect(() => {
+    if (!open || active < 0 || list.current === null) return;
+    const option = list.current.querySelectorAll("[role=option]")[active];
+    if (option) option.focus();
+  }, [open, active]);
+  const chosen = choices.findIndex((choice) => choice.id === value);
+  const current = chosen < 0 ? null : choices[chosen];
+  const show = () => {
+    if (onOpen !== null) onOpen();
+    setOpen(true);
+  };
+  const choose = (choice) => {
+    close();
+    onChoose(choice.id);
+    if (button.current) button.current.focus();
+  };
+  const onKeyDown = (event) => {
+    const last = choices.length - 1;
+    if (!open) {
+      if (event.target === button.current && (event.key === "Enter" || event.key === " " || event.key === "ArrowDown")) {
+        event.preventDefault();
+        show();
+        setActive(Math.max(chosen, 0));
+      }
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const from = active < 0 ? chosen : active;
+      setActive(event.key === "ArrowDown" ? Math.min(from + 1, last) : Math.max(from < 0 ? last : from - 1, 0));
+    } else if ((event.key === "Enter" || event.key === " ") && active >= 0) {
+      event.preventDefault();
+      choose(choices[active]);
+    } else if (event.key === "Tab") {
+      close();
+    }
+  };
+  // Space clicks a button when it is let go; the keydown above already acted on it.
+  const onKeyUp = (event) => {
+    if (event.key === " ") event.preventDefault();
+  };
   return (
-    <div className="project-picker" ref={box}>
-      <span className="project-switch-prefix">Project:</span>
-      <button type="button" className="project-switcher" data-project-select aria-label="Project" aria-haspopup="listbox" aria-expanded={open ? "true" : "false"} onClick={() => { if (!open && onOpen !== null) onOpen(); setOpen(!open); }}>
-        <span className="project-switcher-text">{current.name}</span>
+    <div className="project-chooser" ref={box} onKeyDown={onKeyDown} onKeyUp={onKeyUp}>
+      <button type="button" ref={button} className="project-switcher" {...buttonProps} data-value={value ?? ""} aria-label={label} aria-haspopup="listbox" aria-expanded={open ? "true" : "false"} disabled={disabled} onClick={() => { if (open) close(); else show(); }}>
+        <span className={current === null ? "project-switcher-text muted" : "project-switcher-text"}>{current === null ? placeholder : current.name}</span>
         <Icon name="chevronDown" size={18} />
       </button>
-      <ul className="project-list" role="listbox" aria-label="Project" hidden={!open}>
-        {choices.map((project) => (
-          <li key={project.id ?? ""} role="presentation">
-            <button type="button" role="option" tabIndex={-1} data-project-choice={project.id ?? ""} aria-selected={project.id === projectId ? "true" : "false"} onClick={() => { setOpen(false); navigate(project.id === null ? "/" + section : "/projects/" + encodeURIComponent(project.id) + "/" + section); }}>{project.name}</button>
+      <ul className="project-list" ref={list} role="listbox" aria-label={label} hidden={!open}>
+        {choices.map((choice) => (
+          <li key={choice.id ?? ""} role="presentation">
+            <button type="button" role="option" tabIndex={-1} data-project-choice={choice.id ?? ""} aria-selected={choice.id === value ? "true" : "false"} onClick={() => choose(choice)}>{choice.name}</button>
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// The project chooser at the top of the page; choosing one opens that project's same section.
+function ProjectSelect({ projects, projectId, section = "features", onOpen = null }) {
+  if ((projects === null || projects.length === 0) && onOpen === null) return null;
+  const known = projectId === null || projects.some((project) => project.id === projectId);
+  const choices = [{ id: null, name: "All projects" }, ...(known ? [] : [{ id: projectId, name: projectId }]), ...projects];
+  const open = (id) => navigate(id === null ? "/" + section : "/projects/" + encodeURIComponent(id) + "/" + section);
+  return (
+    <div className="project-picker">
+      <span className="project-switch-prefix">Project:</span>
+      <ProjectChooser choices={choices} value={projectId} onChoose={open} onOpen={onOpen} buttonProps={{ "data-project-select": true }} />
       {section === "settings" ? null : <SettingsLink projectId={projectId} />}
     </div>
   );

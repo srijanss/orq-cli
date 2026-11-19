@@ -415,7 +415,8 @@ fn draft_with_claude_on_a_todo_item_asks_for_a_project_and_notes_then_opens_the_
     let steps = vec![
         json!({"click": "[data-todo-draft]"}),
         json!({"set": "[data-plan-notes]", "value": "keep it small"}),
-        json!({"set": "[data-plan-project]", "value": "alpha"}),
+        json!({"click": "[data-plan-project]"}),
+        json!({"click": ".feature-modal [data-project-choice=alpha]"}),
         json!({"click": "[data-plan-start]"}),
     ];
     let Some(out) = page("/dashboard", vec![web_projects()], todo, steps) else { return };

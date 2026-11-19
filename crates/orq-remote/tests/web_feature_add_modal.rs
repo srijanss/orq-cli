@@ -71,12 +71,15 @@ fn the_popup_is_over_the_page_on_a_wide_screen_and_in_the_page_on_a_phone() {
     let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
     let modal = css.lines().find(|line| line.starts_with(".feature-modal {")).expect("a .feature-modal rule");
     assert!(modal.contains("position: fixed") && modal.contains("inset: 0"), "{modal}");
+    // On a phone only the Features page's own editor lies flat in its filters row; the Dashboard's popups keep
+    // their box (web_todo_forms_consistency measures both in Chromium).
     let phone = css.split("@media (max-width: 700px) {").skip(1).map(|block| &block[..block.find("\n}").unwrap()]).find(|block| block.contains(".feature-modal")).expect("a phone rule for the popup");
-    assert!(phone.contains(".feature-modal, .feature-modal-box { display: contents; }"), "{phone}");
-    assert!(phone.contains(".feature-modal-head { display: none; }"), "{phone}");
-    // The popup drops the fields' own frame, but only where it is a popup; on a phone the fields keep it.
-    assert!(css.contains("@media (min-width: 701px) { .feature-modal-box .feature-editor-fields { max-width: none; padding: 0; border: 0; } }"), "frameless only in the popup");
-    assert!(!css.lines().any(|line| line.starts_with(".feature-modal-box .feature-editor-fields")), "not on a phone");
+    assert!(phone.contains(".feature-filters > .feature-editor .feature-modal, .feature-filters > .feature-editor .feature-modal-box { display: contents; }"), "{phone}");
+    assert!(phone.contains(".feature-filters > .feature-editor .feature-modal-head { display: none; }"), "{phone}");
+    assert!(!phone.contains("\n  .feature-modal, .feature-modal-box { display: contents; }"), "{phone}");
+    // In a popup the box is the only card; the Features page's inline editor keeps the fields' frame on a phone.
+    assert!(css.contains(".feature-modal-box .feature-editor-fields { max-width: none; padding: 0; border: 0; background: none; }"), "frameless in the popup");
+    assert!(phone.contains(".feature-filters > .feature-editor .feature-modal-box .feature-editor-fields { max-width: 48rem; padding: 1rem; border: 1px solid var(--border); background: var(--surface); }"), "{phone}");
 }
 
 const NAME_INPUT: &str = "[data-field-name][autocapitalize=none][autocorrect=off][spellcheck=false][autocomplete=off][inputmode=text]";

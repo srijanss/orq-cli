@@ -1,5 +1,5 @@
-//! The Dashboard's fourth tile counts the Todo items and still opens Add feature; the Todo Edit form is the
-//! same card as Add; text areas take the inputs' design tokens; at phone width the tiles fit.
+//! The Dashboard's fourth tile counts the Todo items and still opens Add feature; the Todo Edit popup holds the
+//! same fields as Add; text areas take the inputs' design tokens; at phone width the tiles fit.
 
 mod web_chromium;
 mod web_deps;
@@ -17,9 +17,9 @@ const SELECTORS: [&str; 11] = [
     ".todo-item",
     "[data-dashboard-add][aria-label=\"2 Todos, add feature\"]",
     "[data-dashboard-add][title=\"The Todo list could not be read.\"]",
-    ".todo-item .feature-editor-fields > .field > [data-todo-name]",
-    ".todo-item .feature-editor-fields > .field-wide > [data-todo-description]",
-    ".todo-item .feature-editor-fields > .feature-editor-actions > [data-todo-save].primary-button + [data-cancel]",
+    ".feature-modal .feature-editor-fields > .field > [data-todo-name]",
+    ".feature-modal .feature-editor-fields > .field-wide > [data-todo-description]",
+    ".feature-modal .feature-editor-fields > .feature-editor-actions > [data-todo-save].primary-button + [data-cancel]",
 ];
 
 fn projects() -> Value {

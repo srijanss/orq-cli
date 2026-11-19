@@ -405,8 +405,6 @@ p[role=alert]:empty { display: none; }
 .todo-item-actions, .queue-wish { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .queue-wish { margin: 0.75rem 0 0; }
 .todo-show-all { margin-top: 0.5rem; }
-/* The Edit form is the feature editor's card, already inside the item's card: no second border. */
-.todo-item .feature-editor-fields { max-width: none; padding: 0; border: 0; }
 .todo textarea, .feature-modal textarea { width: 100%; }
 @media (max-width: 700px) {
   .feature-table-wrap:has(.run-table) { overflow-x: visible; }
@@ -431,10 +429,13 @@ p[role=alert]:empty { display: none; }
 .selected-count { align-self: center; margin-right: auto; font-weight: 600; }
 .feature-state-cell { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 0.5rem; }
 .feature-modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 1.5rem; background: color-mix(in srgb, var(--text) 40%, transparent); overflow-y: auto; }
-.feature-modal-box { display: grid; gap: 1rem; width: min(48rem, 100%); max-height: calc(100vh - 3rem); overflow-y: auto; padding: 1.25rem 1.5rem 1.5rem; box-sizing: border-box; background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 25%, transparent); }
+.feature-modal-box { display: grid; gap: 0.75rem; width: min(48rem, 100%); max-height: calc(100vh - 3rem); overflow-y: auto; padding: 1.25rem 1.5rem 1.5rem; box-sizing: border-box; background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 25%, transparent); }
 .feature-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .feature-modal-head h2 { margin: 0; font-size: 1.125rem; }
-@media (min-width: 701px) { .feature-modal-box .feature-editor-fields { max-width: none; padding: 0; border: 0; } }
+/* Inside a popup the box is the only card: the fields lie on it, the Project picker lines up with them. */
+.feature-modal-box .feature-editor-fields { max-width: none; padding: 0; border: 0; background: none; }
+/* Status lines follow the actions after 0.5rem, not the fields' 0.75rem. */
+.feature-modal-box .feature-editor-actions ~ [role=status] { margin: -0.25rem 0 0; }
 .run-more { position: relative; display: inline-flex; }
 .run-more-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 2.25rem; padding: 0 0.5rem; }
 .run-more-toggle .icon { stroke-width: 3; }
@@ -481,8 +482,12 @@ p[role=alert]:empty { display: none; }
   .feature-table tr.feature.swiped > td:first-child { min-width: 0; max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .feature-table:has(tr.feature.swiped) :is(th, td):first-child { min-width: 0; }
   .feature-table tr.swipe-confirm td { padding: 0.75rem; }
-  .feature-modal, .feature-modal-box { display: contents; }
-  .feature-modal-head { display: none; }
+  /* A popup keeps its box on a phone, the width less 0.75rem each side; only the Features page's own editor lies flat in the filters row. */
+  .feature-modal { padding: 0.75rem; }
+  .feature-modal-box { padding: 1rem; max-height: calc(100dvh - 1.5rem); }
+  .feature-filters > .feature-editor .feature-modal, .feature-filters > .feature-editor .feature-modal-box { display: contents; }
+  .feature-filters > .feature-editor .feature-modal-head { display: none; }
+  .feature-filters > .feature-editor .feature-modal-box .feature-editor-fields { max-width: 48rem; padding: 1rem; border: 1px solid var(--border); background: var(--surface); }
   .feature-filters > .feature-editor .feature-modal-box > * { flex-basis: 100%; order: 10; }
 }
 @media (max-width: 700px) and (prefers-reduced-motion: reduce) {
@@ -513,6 +518,7 @@ p[role=alert]:empty { display: none; }
 
 .project-switch { position: relative; display: flex; align-items: center; gap: 0.25rem; min-height: 38px; margin: 0.5rem 0; padding: 0 0.875rem; font-size: 0.9375rem; font-weight: 600; color: var(--text); }
 .project-switch-prefix { flex: none; }
+.project-chooser { display: contents; }
 .project-switcher { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 0.25rem; background: transparent; color: var(--text); border: 0; font: inherit; padding: 0; min-height: 38px; cursor: pointer; text-align: left; }
 .project-switcher-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-switcher .icon { flex: none; color: var(--text-muted); }
@@ -522,6 +528,11 @@ p[role=alert]:empty { display: none; }
 .project-list button { display: block; width: 100%; min-height: 34px; line-height: 1.25; padding: 0 0.625rem; text-align: left; font: inherit; font-weight: 500; background: transparent; color: var(--text); border: 0; border-radius: 0.375rem; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-list button[aria-selected="true"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); }
 .shell.collapsed .project-switch { display: none; }
+/* In a popup the picker is a full-width field and its list opens below it, inside the box. */
+.feature-modal .project-chooser { display: block; position: relative; }
+.feature-modal .project-switcher { width: 100%; min-height: 44px; padding: 0 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--surface); box-sizing: border-box; }
+.feature-modal .project-switcher:disabled { opacity: 0.6; cursor: default; }
+.feature-modal .project-list { position: static; margin-top: 0.25rem; }
 
 .signin .brand { align-self: center; }
 .sidebar-foot { align-items: stretch; }

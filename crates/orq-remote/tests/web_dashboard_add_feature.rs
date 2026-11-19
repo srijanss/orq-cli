@@ -120,7 +120,8 @@ fn adding_to_todo_posts_the_name_and_description_and_says_where_it_went() {
 fn adding_to_a_project_saves_a_draft_through_the_feature_editor_with_hyphens_for_spaces() {
     let steps = vec![
         json!({"click": "[data-dashboard-add]"}),
-        json!({"set": "[data-add-target]", "value": "alpha"}),
+        json!({"click": "[data-add-target]"}),
+        json!({"click": ".feature-modal [data-project-choice=alpha]"}),
         json!({"set": "[data-field-name]", "value": "my new idea"}),
         json!({"click": "[data-feature-save]"}),
         json!({"click": "[data-confirm]"}),
@@ -128,8 +129,8 @@ fn adding_to_a_project_saves_a_draft_through_the_feature_editor_with_hyphens_for
     let saved = json!({"status": 200, "json": {"feature": "my-new-idea"}});
     let Some(out) = run("/dashboard", vec![projects(), ledger(true), saved], vec![todos(vec![], true)], steps) else { return };
     let frames = out["frames"].as_array().unwrap();
-    assert_eq!(count(&frames[3], SELECTORS[8]), 1, "the editor opened for alpha: {out}");
-    assert!(has(&frames[4], "Saved as my-new-idea"), "{out}");
+    assert_eq!(count(&frames[4], SELECTORS[8]), 1, "the editor opened for alpha: {out}");
+    assert!(has(&frames[5], "Saved as my-new-idea"), "{out}");
     let sent = posts(&out);
     assert_eq!(sent.len(), 1, "{out}");
     assert_eq!(sent[0].0, "/api/projects/alpha/features", "{out}");
@@ -142,7 +143,8 @@ fn adding_to_a_project_saves_a_draft_through_the_feature_editor_with_hyphens_for
 fn while_a_project_save_is_in_flight_the_project_cannot_be_changed_nor_the_popup_closed() {
     let steps = vec![
         json!({"click": "[data-dashboard-add]"}),
-        json!({"set": "[data-add-target]", "value": "alpha"}),
+        json!({"click": "[data-add-target]"}),
+        json!({"click": ".feature-modal [data-project-choice=alpha]"}),
         json!({"set": "[data-field-name]", "value": "idea"}),
         json!({"click": "[data-feature-save]"}),
         json!({"click": "[data-confirm]"}),
@@ -151,9 +153,9 @@ fn while_a_project_save_is_in_flight_the_project_cannot_be_changed_nor_the_popup
     let held = json!({"status": 200, "json": {"feature": "idea"}, "hold": "fetch"});
     let Some(out) = run("/dashboard", vec![projects(), ledger(true), held], vec![todos(vec![], true)], steps) else { return };
     let frames = out["frames"].as_array().unwrap();
-    assert_eq!(count(&frames[3], SELECTORS[9]), 0, "the choice is open before the save: {out}");
-    assert_eq!(count(&frames[6], SELECTORS[9]), 1, "{out}");
-    assert_eq!(count(&frames[6], SELECTORS[10]), 1, "{out}");
+    assert_eq!(count(&frames[4], SELECTORS[9]), 0, "the choice is open before the save: {out}");
+    assert_eq!(count(&frames[7], SELECTORS[9]), 1, "{out}");
+    assert_eq!(count(&frames[7], SELECTORS[10]), 1, "{out}");
     assert_eq!(count(last(&out), SELECTORS[5]), 1, "Escape does not close it mid-save: {out}");
 }
 
@@ -163,14 +165,15 @@ fn with_remote_actions_off_save_is_held_back_and_the_reason_shown() {
     let steps = vec![
         json!({"click": "[data-dashboard-add]"}),
         json!({"set": "[data-todo-name]", "value": "x"}),
-        json!({"set": "[data-add-target]", "value": "alpha"}),
+        json!({"click": "[data-add-target]"}),
+        json!({"click": ".feature-modal [data-project-choice=alpha]"}),
     ];
     let Some(out) = run("/dashboard", vec![projects(), ledger(false)], vec![todos(vec![], false)], steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[3], SELECTORS[3]), 1, "Todo's Save: {out}");
     assert!(has(&frames[3], reason), "{out}");
-    assert_eq!(count(&frames[4], SELECTORS[4]), 1, "the project's Save: {out}");
-    assert!(has(&frames[4], reason), "{out}");
+    assert_eq!(count(&frames[5], SELECTORS[4]), 1, "the project's Save: {out}");
+    assert!(has(&frames[5], reason), "{out}");
 }
 
 #[test]
@@ -191,8 +194,8 @@ fn an_item_is_edited_with_its_version_and_deleted_after_asking() {
     let deleted = json!({"status": 200, "json": {"deleted": 7}});
     let steps = vec![
         json!({"click": "[data-todo-edit]"}),
-        json!({"set": ".todo-item [data-todo-name]", "value": "one better"}),
-        json!({"click": ".todo-item [data-todo-save]"}),
+        json!({"set": ".feature-modal [data-todo-name]", "value": "one better"}),
+        json!({"click": ".feature-modal [data-todo-save]"}),
         json!({"click": "[data-todo-delete]"}),
         json!({"click": "[data-confirm]"}),
     ];
@@ -212,7 +215,8 @@ fn move_to_project_prefills_the_editor_and_can_ask_for_the_draft_to_be_queued_on
     let moved = json!({"status": 200, "json": {"feature": "Fix-the-thing", "project": "alpha"}});
     let steps = vec![
         json!({"click": "[data-todo-move]"}),
-        json!({"set": "[data-add-target]", "value": "alpha"}),
+        json!({"click": "[data-add-target]"}),
+        json!({"click": ".feature-modal [data-project-choice=alpha]"}),
         json!({"click": "[data-queue-when-approved]"}),
         json!({"click": "[data-feature-save]"}),
         json!({"click": "[data-confirm]"}),
