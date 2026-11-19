@@ -548,8 +548,10 @@ pub fn plan_marker(store: &RunStore, run_id: &str) -> Result<Option<PlanMarker>,
 /// marker. A marker that parses is handed to `apply`, which checks it and acts on it; what `apply` returns
 /// is recorded as the run's completion, and its refusal fails the run with the reason. The session's pid is
 /// recorded as the run's owner, so Stop ends it; a run stopped meanwhile is left as it was stopped, and
-/// nothing is applied. The run's feature lock is released before its ending is recorded, so whoever sees
-/// it ended may start the next one.
+/// nothing is applied. From checking it was not stopped to recording its ending the run holds its ending
+/// (see [`crate::run_ending_lock`]), which Stop holds too, so a Stop lands before the marker is applied or
+/// after the ending is recorded, never between. The run's feature lock is released before its ending is
+/// recorded, so whoever sees it ended may start the next one.
 pub fn run_plan(
     store: &RunStore,
     run_id: &str,
@@ -558,7 +560,13 @@ pub fn run_plan(
     apply: impl FnOnce(&PlanMarker) -> Result<serde_json::Value, String>,
 ) -> Result<serde_json::Value, String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
-    let ended = plan_session(store, &record, session, timeout, apply);
+    let answer = plan_answer(store, run_id, session, timeout);
+    let ending = crate::run_ending_lock(store, run_id);
+    let ended = match &ending {
+        Err(reason) => PlanEnd::Failed(reason.clone()),
+        Ok(_) if stopped(store, run_id) => PlanEnd::Stopped,
+        Ok(_) => conclude(store, run_id, answer, apply),
+    };
     let _ = store.finish_run(&record.project_id, &record.feature_id, run_id);
     let event = |kind: &str, payload: serde_json::Value| {
         record_plan_event(store, run_id, kind, payload).map_err(|e| e.to_string())
@@ -587,31 +595,33 @@ enum PlanEnd {
     Applied(serde_json::Value),
 }
 
-fn plan_session(
-    store: &RunStore,
-    record: &RunRecord,
-    session: &DraftSession,
-    timeout: Duration,
-    apply: impl FnOnce(&PlanMarker) -> Result<serde_json::Value, String>,
-) -> PlanEnd {
-    let run_id = record.run_id.as_str();
-    if let Err(e) = record_plan_event(store, run_id, "stage.started", serde_json::json!({})) {
-        return PlanEnd::Failed(e.to_string());
-    }
+/// What planning run `run_id`'s session answered, or why it did not.
+fn plan_answer(store: &RunStore, run_id: &str, session: &DraftSession, timeout: Duration) -> Result<String, String> {
+    record_plan_event(store, run_id, "stage.started", serde_json::json!({})).map_err(|e| e.to_string())?;
     let sink = Arc::new(StderrSink {
         bytes: Mutex::new(Vec::new()),
         done: AtomicBool::new(true),
     });
-    let answer = run_session(session, timeout, &sink, MAX_PLAN_BYTES, true, &|pid| {
+    run_session(session, timeout, &sink, MAX_PLAN_BYTES, true, &|pid| {
         let _ = crate::launch::record_owner(store, run_id, pid);
-    });
-    let stopped = store
+    })
+}
+
+/// Whether run `run_id` was ended meanwhile (stopped); a run whose events cannot be read counts as ended.
+fn stopped(store: &RunStore, run_id: &str) -> bool {
+    store
         .events(run_id)
         .map(|events| crate::run_status::summarize_run(&events).phase != crate::RunPhase::Running)
-        .unwrap_or(true);
-    if stopped {
-        return PlanEnd::Stopped;
-    }
+        .unwrap_or(true)
+}
+
+/// The marker in `answer`, kept as the run's marker and handed to `apply`.
+fn conclude(
+    store: &RunStore,
+    run_id: &str,
+    answer: Result<String, String>,
+    apply: impl FnOnce(&PlanMarker) -> Result<serde_json::Value, String>,
+) -> PlanEnd {
     let fail = PlanEnd::Failed;
     let text = match answer {
         Ok(text) => text,

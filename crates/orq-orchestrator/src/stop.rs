@@ -52,6 +52,22 @@ pub fn owner_state(pid: u32, start: u64) -> OwnerState {
     owner_state_in(Path::new("/proc"), pid, start)
 }
 
+/// The run's ending, held exclusively until the returned file is dropped. Stop holds it from checking the run
+/// to recording it stopped; a run that acts on its own result (a planning run) holds it from checking it was
+/// not stopped to recording how it ended, so one never lands inside the other.
+pub fn run_ending_lock(store: &RunStore, run_id: &str) -> Result<std::fs::File, String> {
+    let dir = store.run_dir(run_id).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot open the ending of {run_id}: {e}"))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("ending.lock"))
+        .map_err(|e| format!("cannot open the ending of {run_id}: {e}"))?;
+    file.lock().map_err(|e| format!("cannot hold the ending of {run_id}: {e}"))?;
+    Ok(file)
+}
+
 /// End the owner process of `run_id` and append `run.failed`. Only a running (or pause-requested)
 /// run can be stopped. The owner is signalled only when its recorded pid is a single real process
 /// and its recorded start time identifies it, so a reused pid is never hit. `signal(pid, force)`
@@ -65,6 +81,7 @@ pub fn stop_run(
     sleep: &dyn Fn(Duration),
 ) -> Result<(), String> {
     let record = store.load(run_id).map_err(|e| e.to_string())?;
+    let _ending = run_ending_lock(store, run_id)?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
     if !matches!(phase, RunPhase::Running | RunPhase::PauseRequested) {

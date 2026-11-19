@@ -40,6 +40,79 @@ fn answer_with(s: &Setup, answer: &str) {
     std::fs::set_permissions(&s.agent, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Makes the fake agent record its arguments, then wait for the file `go` before it answers.
+fn answer_when_told(s: &Setup) {
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\0' \"$@\" > '{args}'\nwhile [ ! -e '{go}' ]; do sleep 0.05; done\ncat '{answer}'\n",
+        args = s.base.join("args").display(),
+        go = s.base.join("go").display(),
+        answer = s.base.join("answer").display()
+    );
+    std::fs::write(&s.agent, script).unwrap();
+    std::fs::set_permissions(&s.agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Starts Draft with Claude on a new Todo item for project alpha, without waiting for the run to end.
+fn start_todo_plan(s: &Setup) -> String {
+    let item = add_todo(s, "dark mode", "Make it dark");
+    let (status, started) = post(s, &format!("/api/todo/{}/draft-with-claude", item["id"]), json!({"project": "alpha", "version": item["version"], "notes": ""}));
+    assert_eq!(status, 200, "{started}");
+    started["run"].as_str().unwrap().to_string()
+}
+
+fn wait_for(what: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !what() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_stop_recorded_while_the_answer_waits_keeps_the_idea_and_applies_nothing() {
+    let s = setup("plan-stop-race");
+    let alpha = git_repo(&s.scan, "alpha");
+    answer_when_told(&s);
+    let run = start_todo_plan(&s);
+    let store = orq_orchestrator::RunStore::new(&s.roots.state);
+    // A Stop holds the run's ending while it checks the run and records it stopped.
+    let ending = orq_orchestrator::run_ending_lock(&store, &run).unwrap();
+    std::fs::write(s.base.join("go"), "").unwrap();
+    wait_for(|| s.base.join("args").exists());
+    std::thread::sleep(Duration::from_millis(500));
+    orq_orchestrator::record_plan_event(&store, &run, "run.failed", json!({"reason": "stopped by the user"})).unwrap();
+    drop(ending);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(finished_plan(&s, "alpha", &run)["state"], "failed");
+    assert_eq!(todos(&s).len(), 1, "the idea stays on the Todo list");
+    assert!(!alpha.join(".tdd-features.json").exists(), "no draft was saved");
+}
+
+#[test]
+fn stop_waits_for_the_runs_ending_and_ends_a_drafting_run() {
+    let s = setup("plan-stop");
+    let alpha = git_repo(&s.scan, "alpha");
+    answer_when_told(&s);
+    let run = start_todo_plan(&s);
+    wait_for(|| s.base.join("args").exists());
+    let store = orq_orchestrator::RunStore::new(&s.roots.state);
+    let ending = orq_orchestrator::run_ending_lock(&store, &run).unwrap();
+    let stopping = {
+        let (roots, scan, agent, base) = (s.roots.clone(), s.scan.clone(), s.agent.clone(), s.base.clone());
+        let path = format!("/api/projects/alpha/runs/{run}/stop");
+        std::thread::spawn(move || post(&Setup { base, scan, roots, agent }, &path, json!({})))
+    };
+    std::thread::sleep(Duration::from_millis(400));
+    let (_, now) = send(&s, "GET", &format!("/api/projects/alpha/runs/{run}/plan"), "");
+    assert_eq!(now["plan"]["state"], "running", "Stop waits while the ending is held");
+    drop(ending);
+    let (status, body) = stopping.join().unwrap();
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(finished_plan(&s, "alpha", &run)["state"], "failed");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(todos(&s).len(), 1, "the idea stays on the Todo list");
+    assert!(!alpha.join(".tdd-features.json").exists(), "no draft was saved");
+}
+
 /// The arguments the fake agent was last started with.
 fn agent_args(s: &Setup) -> Vec<String> {
     let bytes = std::fs::read(s.base.join("args")).unwrap();
