@@ -249,6 +249,54 @@ fn improve_draft_proposes_beside_the_current_text_and_changes_nothing_until_repl
     assert_eq!(finished_plan(&s, "alpha", &run)["decision"], "discarded");
 }
 
+/// Project alpha with draft `dark-mode` reading "old text", and a finished Improve draft run proposing "new text".
+fn improved(s: &Setup) -> (PathBuf, String) {
+    let alpha = git_repo(&s.scan, "alpha");
+    std::fs::write(alpha.join(".tdd-features.json"), r#"[{"featureName":"dark-mode","description":"old text","status":"draft"}]"#).unwrap();
+    answer_with(s, &json!({"name": "dark-mode", "description": "new text"}).to_string());
+    let (run, plan) = improve(s, "dark-mode");
+    assert_eq!(plan["state"], "completed", "{plan}");
+    (alpha, run)
+}
+
+#[test]
+fn a_choice_waits_for_the_one_before_it_and_a_second_choice_is_refused() {
+    let s = setup("plan-choose-once");
+    let (alpha, run) = improved(&s);
+    let store = orq_orchestrator::RunStore::new(&s.roots.state);
+    let held = orq_orchestrator::run_ending_lock(&store, &run).unwrap();
+    let replacing = {
+        let (roots, scan, agent, base) = (s.roots.clone(), s.scan.clone(), s.agent.clone(), s.base.clone());
+        let path = format!("/api/projects/alpha/runs/{run}/plan-replace");
+        std::thread::spawn(move || post(&Setup { base, scan, roots, agent }, &path, json!({})))
+    };
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(ledger(&alpha)[0]["description"], "old text", "Replace waits while another choice holds the run");
+    drop(held);
+    let (status, body) = replacing.join().unwrap();
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = post(&s, &format!("/api/projects/alpha/runs/{run}/plan-discard"), json!({}));
+    assert_eq!(status, 409, "only one choice is taken");
+    assert_eq!(finished_plan(&s, "alpha", &run)["decision"], "replaced");
+}
+
+#[test]
+fn a_replace_whose_choice_cannot_be_recorded_puts_the_draft_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup("plan-replace-unrecorded");
+    let (alpha, run) = improved(&s);
+    let before = ledger(&alpha);
+    let events = s.roots.state.join("runs").join(&run).join("events.jsonl");
+    std::fs::set_permissions(&events, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let (status, body) = post(&s, &format!("/api/projects/alpha/runs/{run}/plan-replace"), json!({}));
+    std::fs::set_permissions(&events, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_ne!(status, 200, "{body}");
+    assert_eq!(ledger(&alpha), before, "the draft is as it was");
+    let (status, body) = post(&s, &format!("/api/projects/alpha/runs/{run}/plan-replace"), json!({}));
+    assert_eq!(status, 200, "a retry can still replace: {body}");
+    assert_eq!(ledger(&alpha)[0]["description"], "new text");
+}
+
 #[test]
 fn the_planning_run_is_listed_in_runs_with_its_kind_and_audited() {
     let s = setup("plan-runs");

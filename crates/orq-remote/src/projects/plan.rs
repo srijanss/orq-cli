@@ -198,9 +198,12 @@ impl StoreProjects {
         }))))
     }
 
-    /// The person's Replace or Discard of planning run `run`'s improved draft.
+    /// The person's Replace or Discard of planning run `run`'s improved draft. The run is held (its ending lock)
+    /// from reading its choices to recording this one, so of two choices made at once the second sees the first
+    /// and is refused; a Replace whose choice cannot be recorded puts the draft back as it was.
     pub(super) fn decide_plan_run(&self, id: &str, run: &str, replace: bool) -> Result<PlanDecision, String> {
         let Some((project, store)) = self.own_run(id, run)? else { return Ok(PlanDecision::Unknown) };
+        let _held = orq_orchestrator::run_ending_lock(&store, run)?;
         let events = store.events(run).map_err(|error| format!("{error:?}"))?;
         let Some(requested) = events.iter().find(|event| event.kind == PLAN_REQUESTED).map(|event| event.payload.clone()) else { return Ok(PlanDecision::Unknown) };
         let refused = |why: &str| Ok(PlanDecision::Refused(orq_core::redact::redact(why)));
@@ -214,15 +217,24 @@ impl StoreProjects {
             return refused("the proposal was already replaced or discarded");
         }
         let feature = requested["feature"].as_str().unwrap_or_default().to_string();
+        let mut replaced_in = None;
         if replace {
             let Some(marker) = orq_orchestrator::plan_marker(&store, run).map_err(|error| format!("{error:?}"))? else { return refused("the proposal could not be read") };
             let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
-            if let Some(why) = replace_draft(&orq_features::ledger_path(&git), &feature, &requested["current"], &marker)? {
+            let ledger = orq_features::ledger_path(&git);
+            let before = read_ledger_bytes(&ledger)?;
+            if let Some(why) = replace_draft(&ledger, &feature, &requested["current"], &marker)? {
                 return refused(&why);
             }
+            replaced_in = before.map(|bytes| (ledger, bytes));
         }
         let kind = if replace { PLAN_REPLACED } else { PLAN_DISCARDED };
-        orq_orchestrator::record_plan_event(&store, run, kind, json!({ "feature": feature })).map_err(|error| error.to_string())?;
+        if let Err(error) = orq_orchestrator::record_plan_event(&store, run, kind, json!({ "feature": feature })) {
+            if let Some((ledger, before)) = replaced_in {
+                std::fs::write(&ledger, before).map_err(|put| format!("{error}; and {feature} could not be put back: {put}"))?;
+            }
+            return Err(error.to_string());
+        }
         Ok(PlanDecision::Done)
     }
 }
