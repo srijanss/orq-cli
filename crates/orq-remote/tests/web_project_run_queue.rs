@@ -1,6 +1,6 @@
 //! A project's run queue on the page: its Queue section lists the entries in the order they start, each
 //! waiting, next, queued, running (with its run) or failed (with its run), with Pause/Resume, Remove and
-//! ↑/↓ to reorder, all only while remote actions are on; the dashboard card says "Queue: N (paused)";
+//! ↑/↓ to reorder, all only while remote actions are on; the dashboard card says only "N Queued";
 //! a pending feature's page offers Queue, the Features list offers "Queue N" for the marked features; and
 //! the project's settings show and save the queue hours and whether a failed run pauses the queue.
 
@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 23] = [
+const SELECTORS: [&str; 24] = [
     "[data-queue-entry]",
     "[data-queue-link]",
     "[data-queue-state=\"next\"]",
@@ -26,7 +26,8 @@ const SELECTORS: [&str; 23] = [
     "[data-queue-remove]",
     "[data-queue-feature]",
     "[data-queue-marked]",
-    "[data-card-queue]",
+    "[data-card-stat=\"alpha/queue\"]",
+    "[data-card-stat=\"beta/queue\"]",
     "[data-confirm]",
     "[data-queue-hours]",
     "[data-queue-stop-on-failure]",
@@ -171,12 +172,17 @@ fn with_remote_actions_off_the_queue_is_shown_without_its_controls() {
 }
 
 #[test]
-fn the_dashboard_card_says_how_many_are_queued_and_whether_the_queue_is_paused() {
+fn the_dashboard_card_says_only_how_many_are_queued() {
     let listing = projects(vec![project("alpha", json!({"count": 3, "paused": true})), project("beta", json!({"count": 0, "paused": false}))]);
     let Some(out) = run("/dashboard", vec![listing], vec![]) else { return };
     let frame = last(&out);
-    assert_eq!(count(frame, "[data-card-queue]"), 1, "an empty queue says nothing: {out}");
-    assert!(texts(frame).iter().any(|t| t == "Queue: 3 (paused)"), "{:?}", texts(frame));
+    assert_eq!((count(frame, "[data-card-stat=\"alpha/queue\"]"), count(frame, "[data-card-stat=\"beta/queue\"]")), (1, 1), "an empty queue shows 0: {out}");
+    let texts = texts(frame);
+    let alpha = texts.iter().position(|t| t == "alpha").unwrap();
+    assert_eq!(texts[alpha + 5..alpha + 7], ["3", "Queued"], "{texts:?}");
+    let beta = texts.iter().position(|t| t == "beta").unwrap();
+    assert_eq!(texts[beta + 5..beta + 7], ["0", "Queued"], "{texts:?}");
+    assert!(!texts.iter().any(|t| t.contains("paused")), "whether it is paused stays on the Queue page: {texts:?}");
 }
 
 #[test]

@@ -474,10 +474,11 @@ p[role=alert]:empty { display: none; }
   .content .page-header .last-updated { grid-column: 1 / -1; grid-row: 2; justify-self: end; }
 }
 .connection .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--status-completed); }
-.card-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr)); gap: 0.5rem; }
-.card-stat { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 0.375rem; }
+.card-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.card-stat { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; align-content: start; align-items: center; column-gap: 0.375rem; min-width: 0; }
 .card-stat > .icon { color: var(--text-muted); }
-.card-stat-label { grid-column: 1 / -1; }
+/* Every label keeps room for two lines, so a label that wraps on a phone ("Reviews waiting") never makes its card taller than the next. */
+.card-stat-label { grid-column: 1 / -1; align-self: start; line-height: 1.25; min-height: 2.5em; overflow-wrap: anywhere; }
 .card-stat-value { font-weight: 600; font-size: 1.125rem; }
 .card-stat-label { color: var(--text-muted); font-size: 0.8125rem; }
 .project.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }

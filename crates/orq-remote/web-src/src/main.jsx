@@ -805,12 +805,9 @@ function CardStat({ icon, value, label, to, id }) {
   );
 }
 
-// "Queue: 3 (paused)", or "Queue: 2 (waiting for COM-01's review)", for a project with features queued;
-// null when nothing is.
-function queueLine(queue) {
-  if (queue === null || typeof queue !== "object" || !isCount(queue.count) || queue.count === 0) return null;
-  const waiting = typeof queue.waiting_for_review === "string" ? " (waiting for " + queue.waiting_for_review + "'s review)" : "";
-  return "Queue: " + queue.count + (queue.paused === true ? " (paused)" : waiting);
+// How many features the project has queued: 0 when nothing is, or the queue is unknown.
+function queuedCount(queue) {
+  return queue !== null && typeof queue === "object" && isCount(queue.count) ? queue.count : 0;
 }
 
 function ProjectCard({ project, selected = false, pinned = false, onPin = null }) {
@@ -833,13 +830,9 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null }
           {Number.isInteger(project.max_active_runs) && project.active_runs !== null
             ? <CardStat icon="play" value={project.active_runs + " of " + project.max_active_runs} label="runs active" to={base + "orchestrations"} id={project.id + "/runs"} />
             : <CardStat icon="play" value={project.active_runs} label="Active runs" to={base + "orchestrations"} id={project.id + "/runs"} />}
-          <CardStat icon="doc" value={project.reviews_waiting} label="Reviews waiting" to={base + "reviews"} id={project.id + "/reviews"} />
-          {queueLine(project.queue) !== null ? (
-            <button type="button" className="card-stat" data-card-queue={project.id} onClick={() => navigate(base + "queue")}>
-              <Icon name="clock" size={16} />
-              <span className="card-stat-label">{queueLine(project.queue)}</span>
-            </button>
-          ) : null}
+          {project.reviews_waiting > 0
+            ? <CardStat icon="doc" value={project.reviews_waiting} label="Reviews waiting" to={base + "reviews"} id={project.id + "/reviews"} />
+            : <CardStat icon="clock" value={queuedCount(project.queue)} label="Queued" to={base + "queue"} id={project.id + "/queue"} />}
         </div>
       ) : (
         <em>Unavailable</em>

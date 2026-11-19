@@ -391,8 +391,8 @@ fn a_queued_run_continued_more_times_than_one_round_follows_still_holds_the_queu
 mod page {
     //! On the page, a queue that waits for a run's review says so: the entry shows "Waiting for review"
     //! with its MR linked, the queue's head says "Waiting for <feature>'s MR to merge" (or its review, with
-    //! no MR), on the project's queue page and the all-projects Queue page alike; the dashboard card's
-    //! queue line says it waits; and the project's settings show and save whether the queue waits.
+    //! no MR), on the project's queue page and the all-projects Queue page alike; the dashboard card
+    //! shows only the queue's count; and the project's settings show and save whether the queue waits.
 
     use super::web_deps;
     use serde_json::{json, Value};
@@ -405,7 +405,7 @@ mod page {
         "[data-queue-state=\"review\"]",
         "[data-queue-mr]",
         "[data-queue-waiting-review]",
-        "[data-card-queue]",
+        "[data-card-stat=\"alpha/queue\"]",
         "[data-queue-wait-for-review]",
         "[data-project-queue-wait]",
     ];
@@ -495,13 +495,16 @@ mod page {
     }
 
     #[test]
-    fn the_dashboard_card_s_queue_line_says_it_waits_for_review() {
-        let listing = projects(vec![project("alpha", json!({"count": 2, "paused": false, "waiting_for_review": "COM-01"})), project("beta", json!({"count": 1, "paused": false, "waiting_for_review": null}))]);
-        let Some(out) = run("/dashboard", vec![listing], vec![]) else { return };
+    fn the_dashboard_card_shows_only_the_queue_s_count_not_what_it_waits_for() {
+        let mut waits = project("alpha", json!({"count": 2, "paused": false, "waiting_for_review": "COM-01"}));
+        waits["reviews_waiting"] = json!(0);
+        let Some(out) = run("/dashboard", vec![projects(vec![waits])], vec![]) else { return };
         let frame = last(&out);
-        assert_eq!(count(frame, "[data-card-queue]"), 2, "{out}");
-        assert!(texts(frame).iter().any(|t| t == "Queue: 2 (waiting for COM-01's review)"), "{:?}", texts(frame));
-        assert!(texts(frame).iter().any(|t| t == "Queue: 1"), "{:?}", texts(frame));
+        assert_eq!(count(frame, "[data-card-stat=\"alpha/queue\"]"), 1, "{out}");
+        let texts = texts(frame);
+        let alpha = texts.iter().position(|t| t == "alpha").unwrap();
+        assert_eq!(texts[alpha + 5..alpha + 7], ["2", "Queued"], "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("COM-01")), "what the queue waits for stays on the Queue page: {texts:?}");
     }
 
     fn project_settings(wait: Value) -> Value {
