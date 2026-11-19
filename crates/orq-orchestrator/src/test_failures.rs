@@ -60,8 +60,8 @@ pub fn find_test_failures(output: &str) -> TestFailures {
     let mut found = Found::default();
     let mut at = At::Elsewhere;
     for line in output.lines() {
+        // A block is a passing test's too under `--success-output`: only a FAIL status names a failure.
         if let Some(name) = nextest_block_start(line) {
-            found.name(&name);
             at = At::NextestBlock(name);
             continue;
         }
@@ -75,7 +75,9 @@ pub fn find_test_failures(output: &str) -> TestFailures {
             continue;
         }
         if let At::NextestBlock(name) = &at {
-            found.add_output(name, line);
+            if found.names.iter().any(|known| known == name) {
+                found.add_output(name, line);
+            }
             continue;
         }
         if let Some(name) = libtest_block_start(line) {
@@ -188,12 +190,17 @@ fn kept_output(text: &str) -> String {
     format!("{key}{CUT}{end}")
 }
 
-/// The test a nextest `STDOUT:`/`STDERR:` header opens the output of: `--- STDOUT: <test> ---` or `──── STDERR: <test>`.
+/// The test a nextest `STDOUT:`/`STDERR:` header opens the output of: `--- STDOUT: <test> ---`, `──── STDERR: <test>`
+/// or a retry's `──── TRY 2 STDERR: <test>`.
 fn nextest_block_start(line: &str) -> Option<String> {
     let rest = line.trim().trim_start_matches(['-', '─']).trim_start();
     if rest.len() == line.trim().len() {
         return None;
     }
+    let rest = match rest.strip_prefix("TRY ") {
+        Some(retry) => retry.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start(),
+        None => rest,
+    };
     let name = rest.strip_prefix("STDOUT:").or_else(|| rest.strip_prefix("STDERR:"))?;
     let name = name.trim().trim_end_matches(['-', '─']).trim();
     (!name.is_empty()).then(|| name.to_string())

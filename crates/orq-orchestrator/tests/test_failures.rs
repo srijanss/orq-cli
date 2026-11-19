@@ -124,6 +124,23 @@ fn a_long_block_keeps_its_end_and_its_panic_with_left_right_within_4000_bytes() 
 }
 
 #[test]
+fn a_passing_tests_output_block_does_not_make_it_a_failure() {
+    // `--success-output` prints blocks for passing tests too; only a FAIL status names a failure.
+    let out = "        PASS [   0.004s] (1/3) suite ok_one\n\
+               ──── STDOUT:             suite ok_one\nall fine\n\
+               \x20  TRY 1 FAIL [   0.010s] (2/3) suite flaky\n\
+               ──── TRY 1 STDERR:       suite flaky\nfirst try broke\n\
+               \x20  TRY 2 PASS [   0.010s] (2/3) suite flaky\n\
+               ──── TRY 2 STDOUT:       suite flaky\nsecond try fine\n\
+               \x20       FAIL [   0.010s] (3/3) suite broken\n\
+               ──── STDERR:             suite broken\nthread 'broken' panicked at src/a.rs:1:1:\nboom\n";
+    let failures = find_test_failures(out);
+    let names: Vec<&str> = failures.tests.iter().map(|test| test.name.as_str()).collect();
+    assert_eq!(names, ["suite broken"]);
+    assert!(failures.tests[0].output.contains("boom"), "{:?}", failures.tests[0]);
+}
+
+#[test]
 fn a_build_error_names_no_test() {
     let out = "   Compiling orq-core v0.1.1\nerror[E0425]: cannot find value `x` in this scope\n --> src/lib.rs:3:5\n\nerror: could not compile `orq-core` (lib) due to 1 previous error\n";
     let failures = find_test_failures(out);
