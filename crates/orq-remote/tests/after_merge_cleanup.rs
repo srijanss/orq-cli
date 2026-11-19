@@ -582,6 +582,25 @@ fn the_ledger_is_snapshotted_before_the_feature_is_marked_completed() {
 }
 
 #[test]
+fn a_second_clean_up_keeps_the_first_snapshot_and_does_not_redo_a_done_step() {
+    let s = setup("cleanup-again", |_| {});
+    let before = std::fs::read_to_string(s.repo.join(".tdd-features.json")).unwrap();
+    merge_on_forge(&s);
+    mr(&s, ProviderState::Merged);
+    std::fs::write(s.worktree.join("feature.txt"), "edited after the merge\n").unwrap();
+    clean_up(&s);
+    let answer = clean_up(&s);
+    assert_eq!(step(&answer, "complete_feature")["state"], "done", "{answer}");
+    let project = RunStore::new(&s.roots.state).load(RUN).unwrap().project_id;
+    let dir = s.roots.state.join("ledger-snapshots").join(project);
+    let snapshots: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    assert_eq!(snapshots.len(), 1, "{snapshots:?}");
+    assert_eq!(std::fs::read_to_string(&snapshots[0]).unwrap(), before, "the snapshot is still the ledger before the clean-up");
+    let completions = cleanup_events(&s).into_iter().filter(|(kind, _)| kind == "cleanup.complete_feature").count();
+    assert_eq!(completions, 1, "marking the feature completed is not redone");
+}
+
+#[test]
 fn clean_up_needs_remote_actions_a_passkey_a_confirmation_and_a_merged_mr() {
     let s = setup("cleanup-gated", |_| {});
     let confirmed = json!({"confirm": true}).to_string();

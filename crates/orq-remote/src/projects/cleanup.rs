@@ -300,8 +300,20 @@ impl StoreProjects {
         } else {
             record.remote.as_str()
         };
+        let recorded = store.events(&record.run_id).unwrap_or_default();
+        let done_before = |step: &str| {
+            recorded
+                .iter()
+                .rev()
+                .find(|event| event.kind == event_kind(step))
+                .is_some_and(|event| event.payload["state"] == "done")
+        };
         let mut stopped: Option<&str> = None;
         for step in STEPS {
+            // A step an earlier clean-up did is not redone, so its record, and the ledger snapshot, stand.
+            if stopped.is_none() && done_before(step) {
+                continue;
+            }
             let outcome = match stopped {
                 Some(earlier) => Step::skipped(format!("{} did not finish", step_name(earlier))),
                 None => match step {
@@ -357,9 +369,21 @@ impl StoreProjects {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let name = format!("{}-{secs}.json", record.run_id);
-        std::fs::copy(ledger, dir.join(&name)).map_err(|error| error.to_string())?;
-        Ok(name)
+        let text = std::fs::read(ledger).map_err(|error| error.to_string())?;
+        // Each snapshot gets a file of its own: an existing one is never written over.
+        for n in 0.. {
+            let name = if n == 0 { format!("{}-{secs}.json", record.run_id) } else { format!("{}-{secs}-{n}.json", record.run_id) };
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&name)) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    file.write_all(&text).map_err(|error| error.to_string())?;
+                    return Ok(name);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        unreachable!("an unbounded range always yields")
     }
 
     /// Fast-forwards the main checkout's target, only when the checkout is on it; a pull the merge itself
