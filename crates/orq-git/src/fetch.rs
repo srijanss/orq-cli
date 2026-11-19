@@ -201,7 +201,8 @@ fn fast_forward(repo: &Path, target: &str, to: &str) -> Result<PullOutcome, Pull
         if !files.is_empty() {
             return Ok(PullOutcome::Dirty { files });
         }
-        let merged = git(repo, &["merge", "--ff-only", "--quiet", to]).map_err(|error| refused(error.to_string()))?;
+        // An ignored file in the way (a local .env, say) stops the merge rather than being overwritten.
+        let merged = git(repo, &["merge", "--ff-only", "--no-overwrite-ignore", "--quiet", to]).map_err(|error| refused(error.to_string()))?;
         if !merged.status.success() {
             return Err(refused(stderr(&merged)));
         }

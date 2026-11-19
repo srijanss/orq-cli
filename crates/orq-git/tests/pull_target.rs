@@ -75,6 +75,21 @@ fn a_checkout_on_the_target_behind_origin_is_fast_forwarded() {
     assert!(r.project.join("merged.txt").exists());
 }
 
+/// An ignored local file whose path origin starts tracking is never overwritten: the pull is refused
+/// and the file, HEAD and the target are left as they were.
+#[test]
+fn an_ignored_local_file_that_origin_starts_tracking_is_kept_and_the_pull_refused() {
+    let r = repos("ignored-kept");
+    let from = git(&r.project, &["rev-parse", "HEAD"]);
+    std::fs::write(r.project.join(".git/info/exclude"), "local.env\n").unwrap();
+    std::fs::write(r.project.join("local.env"), "SECRET=mine\n").unwrap();
+    merge_on_origin(&r, "local.env");
+    let outcome = pull_target(&r.project, "origin", "main");
+    assert!(matches!(outcome, PullOutcome::Refused { .. }), "{outcome:?}");
+    assert_eq!(std::fs::read_to_string(r.project.join("local.env")).unwrap(), "SECRET=mine\n", "the ignored file is kept");
+    assert_eq!(git(&r.project, &["rev-parse", "HEAD"]), from);
+}
+
 #[test]
 fn a_checkout_on_another_branch_has_only_the_target_ref_moved() {
     let r = repos("ff-other-branch");
@@ -173,9 +188,10 @@ fn logging_git() -> PathBuf {
         let log = dir.join("git.log");
         let script = format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n", log.display(), real.display());
         let wrapper = dir.join("git");
-        std::fs::write(&wrapper, script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Written by a child shell: a file this test process opened for writing could be inherited by
+        // another test thread's fork, and running it would then fail with "Text file busy".
+        let wrote = Command::new("sh").args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "sh", &script, wrapper.to_str().unwrap()]).status().unwrap();
+        assert!(wrote.success());
         let mut paths = vec![dir];
         paths.extend(std::env::split_paths(&path));
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
