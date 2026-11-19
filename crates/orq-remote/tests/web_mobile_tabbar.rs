@@ -1,7 +1,8 @@
 //! On a phone the page is framed like a mobile app and there is no sidebar: a fixed top bar with the
 //! theme switch, the centred brand and the page's Refresh (signing out is on Settings), and a fixed bottom tab bar holding the destinations,
 //! coloured like the reference sidebar with the current tab as the same light pill. Past five destinations the bar keeps
-//! five tabs and a grab handle on its top edge: dragging it (or tapping it) pulls the bar up to show every section as tiles.
+//! five tabs and a grab handle inside its top: dragging it (or tapping it) slides the bar itself up, the other sections
+//! showing below the tabs as further rows of icons on the same columns.
 
 mod web_deps;
 
@@ -98,29 +99,45 @@ fn with_a_project_the_bar_has_five_tabs_and_settings_is_behind_the_handle() {
     assert_eq!(texts(frame, TABS), ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews"], "{out}");
     assert_eq!(probed(frame, TABS)[1]["current"], "page", "Features is the current tab: {out}");
     assert!(probed(frame, TABS).iter().all(|item| item["icon"].is_string() && item["iconSize"] == "28"), "every tab has its icon: {out}");
-    assert_eq!(texts(frame, TILES), ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
+    assert_eq!(texts(frame, TILES), ["Settings"], "{out}");
     assert_eq!(handle(frame)["label"], "Show all sections", "{out}");
 }
 
 #[test]
-fn a_tap_on_the_handle_opens_every_section_as_tiles_and_a_second_tap_closes_it() {
+fn a_tap_on_the_handle_opens_the_rest_of_the_sections_and_a_second_tap_closes_it() {
     let Some(out) = seven(json!([{"click": HANDLE}, {"click": HANDLE}]), false) else { return };
     let open = &out["frames"][1];
     assert!(drawer_open(open), "{out}");
-    assert_eq!(texts(open, TILES), ["s0", "s1", "s2", "s3", "s4", "s5", "s6"], "{out}");
-    let marked: Vec<Value> = probed(open, TILES).iter().map(|tile| tile["current"].clone()).collect();
-    assert_eq!(marked[2], "page", "the current section is marked: {out}");
-    assert_eq!(marked.iter().filter(|mark| !mark.is_null()).count(), 1, "{out}");
+    assert_eq!(texts(open, TILES), ["s5", "s6"], "{out}");
+    assert!(probed(open, TILES).iter().all(|tile| tile["current"].is_null()), "the current section is in the tab row: {out}");
+    assert_eq!(probed(open, TABS)[2]["current"], "page", "and stays marked there: {out}");
     assert!(probed(open, TILES).iter().all(|tile| tile["iconSize"] == "28"), "the tiles are the bar's: {out}");
     assert_eq!(handle(open)["expanded"], "true", "{out}");
     assert_eq!(probed(open, DRAWER)[0]["height"], "300px", "{out}");
     assert_eq!(probed(open, BACKDROP).len(), 1, "a backdrop dims the page: {out}");
-    assert_eq!(open["active"], json!({"text": "s2", "handle": false, "inDrawer": true}), "focus moves into the grid: {out}");
+    assert_eq!(open["active"], json!({"text": "s5", "handle": false, "inDrawer": true}), "focus moves into the extra rows: {out}");
     let closed = &out["frames"][2];
     assert!(!drawer_open(closed), "{out}");
     assert_eq!(handle(closed)["expanded"], "false", "{out}");
     assert!(probed(closed, BACKDROP).is_empty(), "{out}");
     assert_eq!(closed["active"]["handle"], true, "{out}");
+}
+
+#[test]
+fn the_open_bar_holds_each_section_once_as_icons_with_the_rest_after_the_tab_row() {
+    let links = "nav.tabbar a";
+    let labels = "nav.tabbar a .tab-label";
+    let tiles = "nav.tabbar .tile-label";
+    let Some(out) = shell(json!({"tabbar": sections(7), "path": "/s2", "probe": [links, labels, tiles, TILES], "steps": [{"click": HANDLE}]})) else { return };
+    let open = &out["frames"][1];
+    assert_eq!(texts(open, links), ["s0", "s1", "s2", "s3", "s4", "s5", "s6"], "the tab row, then the rest, each once: {out}");
+    assert_eq!(texts(open, TILES), ["s5", "s6"], "only the sections not in the tab row: {out}");
+    assert_eq!(texts(open, labels), texts(open, links), "every name is a visually hidden label: {out}");
+    assert!(probed(open, tiles).is_empty(), "no visible label: {out}");
+    for tile in probed(open, TILES) {
+        assert_eq!(tile["iconSize"], "28", "the tab row's icon size: {out}");
+        assert_eq!(tile["title"], tile["text"], "the name is the link's title: {out}");
+    }
 }
 
 #[test]
@@ -193,7 +210,7 @@ fn a_touch_drag_lifted_as_a_browser_lifts_it_stays_open_and_the_next_tap_still_c
 
 #[test]
 fn an_open_drawer_takes_its_new_height_when_the_window_resizes() {
-    // Crossing 600px wide moves the grid from five a row to four, so it grows.
+    // The rows measure a new height after the window resizes (a phone turning), and the open bar follows it.
     let Some(out) = seven(json!([{"click": HANDLE}, {"resize": 380}]), false) else { return };
     assert_eq!(probed(&out["frames"][1], DRAWER)[0]["height"], "300px", "{out}");
     assert_eq!(probed(&out["frames"][2], DRAWER)[0]["height"], "380px", "nothing is clipped: {out}");
@@ -286,21 +303,38 @@ fn choosing_a_section_goes_there_and_closes_it() {
 
 #[test]
 fn choosing_the_current_section_closes_it_too() {
-    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"click": "[data-tab-drawer] a[href=\"/projects/demo/features\"]"}])) else { return };
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"click": "nav.tabbar > a[href=\"/projects/demo/features\"]"}])) else { return };
     closed_with_focus_on_the_handle(&out);
 }
 
 #[test]
+fn choosing_a_tab_in_the_row_while_open_goes_there_and_closes_it() {
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"click": "nav.tabbar > a[href=\"/projects/demo/queue\"]"}])) else { return };
+    closed_with_focus_on_the_handle(&out);
+    assert_eq!(out["frames"][2]["path"], "/projects/demo/queue", "{out}");
+}
+
+#[test]
+fn opened_on_a_section_in_the_extra_rows_it_is_marked_and_focused_there() {
+    let Some(out) = shell(json!({"tabbar": sections(7), "path": "/s6", "probe": [TABS, TILES], "steps": [{"click": HANDLE}]})) else { return };
+    let open = &out["frames"][1];
+    assert!(probed(open, TABS).iter().all(|tab| tab["current"].is_null()), "{out}");
+    let marks: Vec<Value> = probed(open, TILES).iter().map(|tile| tile["current"].clone()).collect();
+    assert_eq!(marks, [Value::Null, json!("page")], "{out}");
+    assert_eq!(open["active"], json!({"text": "s6", "handle": false, "inDrawer": true}), "{out}");
+}
+
+#[test]
 fn tab_stays_within_the_bar_while_open() {
-    // Open on Features: focus is on its tile, the second, after the handle; past the handle Shift+Tab wraps to the bar's last tab.
+    // Open on Features: focus is on Settings, the one extra link and the bar's last stop; Tab wraps to the handle
+    // at the bar's top, Shift+Tab comes back, and Shift+Tab again goes up to the tab row's last tab.
     let back = json!({"press": "Tab", "shift": true});
-    let Some(out) = phone_shell(json!([{"click": HANDLE}, back, back, back, {"press": "Tab"}])) else { return };
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"press": "Tab"}, back, back])) else { return };
     let focus: Vec<Value> = out["frames"].as_array().unwrap()[1..].iter().map(|frame| frame["active"].clone()).collect();
-    assert_eq!(focus[0], json!({"text": "Features", "handle": false, "inDrawer": true}), "{out}");
-    assert_eq!(focus[1], json!({"text": "Dashboard", "handle": false, "inDrawer": true}), "{out}");
-    assert_eq!(focus[2], json!({"text": "", "handle": true, "inDrawer": false}), "{out}");
-    assert_eq!(focus[3], json!({"text": "Reviews", "handle": false, "inDrawer": false}), "wraps to the bar's last tab: {out}");
-    assert_eq!(focus[4]["handle"], true, "and Tab wraps back: {out}");
+    assert_eq!(focus[0], json!({"text": "Settings", "handle": false, "inDrawer": true}), "{out}");
+    assert_eq!(focus[1], json!({"text": "", "handle": true, "inDrawer": false}), "wraps to the handle: {out}");
+    assert_eq!(focus[2], json!({"text": "Settings", "handle": false, "inDrawer": true}), "and back: {out}");
+    assert_eq!(focus[3], json!({"text": "Reviews", "handle": false, "inDrawer": false}), "the tab row comes before the extra rows: {out}");
 }
 
 #[test]
@@ -371,21 +405,26 @@ fn the_bars_use_the_sidebar_colours_and_the_current_tab_is_the_light_pill() {
 }
 
 #[test]
-fn the_handle_is_a_short_grip_in_a_44px_strip_and_the_grid_has_four_or_five_columns() {
+fn the_handle_is_a_short_grip_in_a_44px_strip_inside_the_bar_and_the_rows_have_the_tab_rows_five_columns() {
     let css = css();
     let phone = phone(&css);
     let strip = rule(phone, ".tabbar-handle {");
-    for part in ["position: absolute", "height: 2.75rem", "touch-action: none", "border: 0", "background: none"] {
+    for part in ["position: absolute", "top: 0", "height: 2.75rem", "touch-action: none", "border: 0", "background: none"] {
         assert!(strip.contains(part), "{part}: {strip}");
     }
     let grip = rule(phone, ".tabbar-handle::before {");
     for part in ["width: 36px", "height: 4px", "border-radius: 2px", "background: var(--sidebar-muted)"] {
         assert!(grip.contains(part), "{part}: {grip}");
     }
+    assert!(rule(phone, ".tabbar[data-handle] {").contains("padding-top: 1.125rem"), "the bar gains 0.75rem at its top for the grip");
+    assert!(rule(phone, ".tabbar > a {").contains("position: relative"), "the tabs paint over the handle's strip and keep their taps");
     assert!(!rule(phone, ".tabbar a {").contains("touch-action"), "the tabs still take taps normally");
-    assert!(rule(phone, ".tabbar-grid {").contains("grid-template-columns: repeat(4, 1fr)"), "four a row on a phone");
-    let wide = &css[css.find("@media (min-width: 600px) and (max-width: 700px) {").expect("a 600px and up block")..];
-    assert!(rule(wide, ".tabbar-grid {").contains("grid-template-columns: repeat(5, 1fr)"), "five a row at 600px and up");
+    let grid = rule(phone, ".tabbar-grid {");
+    assert!(grid.contains("grid-template-columns: repeat(5, 1fr)") && grid.contains("gap: 0.25rem"), "the tab row's columns: {grid}");
+    assert!(!css.contains("@media (min-width: 600px) and (max-width: 700px)"), "one column template at every phone width");
+    for dead in ["tile-label", ".tabbar-grid a {"] {
+        assert!(!css.contains(dead), "{dead} is no longer used");
+    }
     let all = rule(phone, ".tabbar-all {");
     assert!(all.contains("overflow: hidden") && all.contains("flex: 0 0 100%"), "the drawer grows inside the bar: {all}");
     let backdrop = rule(phone, ".tabbar-backdrop {");
@@ -406,6 +445,59 @@ fn the_top_bar_is_fixed_and_the_content_clears_both_bars() {
     assert!(top.contains("display: grid") && top.contains("grid-template-columns: 1fr auto 1fr"), "theme, brand, refresh: {top}");
     assert!(rule(phone, ".topbar .brand {").contains("justify-self: center"), "the app icon and name sit in the centre of the header");
     assert!(rule(phone, ".content {").contains("padding-bottom: calc(5rem + env(safe-area-inset-bottom))"), "content is not hidden under the tab bar");
+}
+
+mod web_chromium;
+
+/// The rounded boxes of the bar, its links, its handle and its extra rows on /dashboard (six sections) at `width`,
+/// closed or after a tap on the handle.
+fn bar_boxes(chromium: &std::path::Path, width: u32, open: bool) -> Value {
+    let project = json!({"id": "alpha", "name": "alpha", "available": true, "features": 1, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
+    let replies = [web_chromium::get("/api/projects", json!({"projects": [project]}))];
+    let mut steps = vec![json!({"wait": "nav.tabbar a"})];
+    if open {
+        steps.push(json!({"click": HANDLE}));
+    }
+    for selector in ["nav.tabbar", TABS, "nav.tabbar a", HANDLE, DRAWER] {
+        steps.push(json!({"boxes": selector}));
+    }
+    // The settled bar is measured: headless virtual time does not reliably run a CSS transition to its end.
+    let settled = "document.addEventListener('DOMContentLoaded', function () { var style = document.createElement('style'); style.textContent = '[data-tab-drawer] { transition: none !important; }'; document.head.appendChild(style); });";
+    let result = web_chromium::measure_with(chromium, width, "/dashboard", &replies, Value::Array(steps), settled).result;
+    assert!(result.get("error").is_none(), "{result}\n=> {width} open {open}: {}", result["error"]);
+    result
+}
+
+fn edge(result: &Value, selector: &str, at: usize, side: &str) -> i64 {
+    result["boxes"][selector][at][side].as_i64().unwrap_or_else(|| panic!("no {side} of {selector} #{at}: {result}"))
+}
+
+#[test]
+fn opened_the_bar_itself_slides_up_with_the_rest_below_the_tabs_in_their_columns_and_the_handle_inside() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    for width in [390, 650] {
+        let closed = bar_boxes(&chromium, width, false);
+        let open = bar_boxes(&chromium, width, true);
+        let (shut, shown) = (&closed["boxes"], &open["boxes"]);
+        // Each message ends with what failed, after the boxes, so a clipped log still shows it.
+        let same = |a: i64, b: i64, boxes: String, what: &str| assert!(a == b, "{boxes}\n=> {width}: {what}: {a} != {b}");
+        let links = shown["nav.tabbar a"].as_array().unwrap();
+        same(links.len() as i64, 6, shown.to_string(), "six links");
+        same(edge(&open, "nav.tabbar a", 5, "left"), edge(&open, "nav.tabbar a", 0, "left"), shown.to_string(), "the sixth's left is the first's");
+        same(edge(&open, "nav.tabbar a", 5, "right"), edge(&open, "nav.tabbar a", 0, "right"), shown.to_string(), "the sixth's right is the first's");
+        assert!(edge(&open, "nav.tabbar a", 5, "top") >= edge(&open, TABS, 0, "bottom"), "{shown}\n=> {width}: the rest is below the tab row");
+        let grown = edge(&open, DRAWER, 0, "bottom") - edge(&open, DRAWER, 0, "top");
+        assert!(grown > 0, "{shown}\n=> {width}: the rows show");
+        same(edge(&closed, DRAWER, 0, "bottom") - edge(&closed, DRAWER, 0, "top"), 0, shut.to_string(), "closed shows no rows");
+        same(edge(&closed, "nav.tabbar", 0, "top") - edge(&open, "nav.tabbar", 0, "top"), grown, format!("{shut} {shown}"), "the bar's top goes up by the rows");
+        same(edge(&closed, TABS, 0, "top") - edge(&open, TABS, 0, "top"), grown, format!("{shut} {shown}"), "the tab row goes up with it");
+        for result in [&closed, &open] {
+            let boxes = &result["boxes"];
+            assert!(edge(result, HANDLE, 0, "top") >= edge(result, "nav.tabbar", 0, "top"), "{boxes}\n=> {width}: the handle is inside the bar");
+            assert!(edge(result, HANDLE, 0, "bottom") - edge(result, HANDLE, 0, "top") >= 44, "{boxes}\n=> {width}: a 44px strip");
+            same(edge(result, TABS, 0, "bottom") - edge(result, TABS, 0, "top"), 48, boxes.to_string(), "the tabs keep 48px");
+        }
+    }
 }
 
 #[test]

@@ -90,6 +90,7 @@ try {
         tag: el.tagName.toLowerCase(),
         text: el.textContent.trim(),
         label: el.getAttribute("aria-label"),
+        title: el.getAttribute("title"),
         href: el.getAttribute("href"),
         current: el.getAttribute("aria-current"),
         expanded: el.getAttribute("aria-expanded"),

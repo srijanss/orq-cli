@@ -110,7 +110,7 @@ fn the_phone_tab_bar_with_queue_fits_360_pixels_without_scrolling_sideways() {
     let result = out.result;
     assert!(result.get("error").is_none(), "{result}");
     assert!(result["scrollWidth"].as_u64() <= result["clientWidth"].as_u64(), "the page scrolls sideways: {result}");
-    // Five tabs; the rest are behind the handle on the bar's top edge.
+    // Five tabs; the rest are behind the handle at the bar's top.
     let tabs = result["boxes"]["nav.tabbar > a"].as_array().unwrap();
     assert_eq!(tabs.len(), 5, "{result}");
     for tab in tabs {

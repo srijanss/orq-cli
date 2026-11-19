@@ -271,15 +271,16 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .tabbar { display: flex; flex-wrap: wrap; position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; gap: 0.25rem; row-gap: 0; padding: 0.375rem 0.5rem; padding-left: calc(0.5rem + env(safe-area-inset-left)); padding-right: calc(0.5rem + env(safe-area-inset-right)); padding-bottom: calc(0.25rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
   .tabbar a { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; text-decoration: none; color: var(--sidebar-muted); }
   .tabbar a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
-  /* Past five sections the bar grows in place: the handle's 44px strip straddles its top edge (mostly above it, so
-     the tabs keep their taps), and the drawer of every section opens as a row of the bar above the tabs. */
+  /* Past five sections the bar itself slides up: it gains 0.75rem at its top for the grab line, and the sections
+     past the tab row open below it as further rows of the bar, on the tab row's five columns. The handle's 44px
+     strip starts at the bar's top and runs under the tabs, which paint over it and so keep their taps. */
+  .tabbar[data-handle] { padding-top: 1.125rem; }
   .tabbar[data-open] { z-index: 7; border-radius: 1rem 1rem 0 0; }
-  .tabbar-handle { position: absolute; left: 50%; top: -2rem; width: 5rem; height: 2.75rem; margin-left: -2.5rem; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
-  .tabbar-handle::before { content: ""; position: absolute; left: 50%; bottom: 0.25rem; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--sidebar-muted); }
+  .tabbar > a { position: relative; }
+  .tabbar-handle { position: absolute; left: 50%; top: 0; width: 5rem; height: 2.75rem; margin-left: -2.5rem; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
+  .tabbar-handle::before { content: ""; position: absolute; left: 50%; top: 0.4375rem; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--sidebar-muted); }
   .tabbar-all { flex: 0 0 100%; overflow: hidden; }
-  .tabbar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.25rem; padding: 0.75rem 0 0.5rem; }
-  .tabbar-grid a { min-height: 64px; }
-  .tabbar .tile-label { font-size: 0.75rem; text-align: center; overflow-wrap: anywhere; }
+  .tabbar-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.25rem; padding-top: 0.25rem; }
   .tabbar-backdrop { position: fixed; inset: 0; z-index: 6; background: rgb(0 0 0 / 0.4); }
   .tabbar .tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .content { padding: 0.75rem; padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-right: calc(0.75rem + env(safe-area-inset-right)); padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
@@ -287,9 +288,6 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .run-filters select { flex: 1 1 0; min-width: 0; padding: 0 1.75rem 0 0.5rem; background-position: right 0.75rem center, right 0.4375rem center; }
   .run-filters .sort-toggle { flex: none; }
   .sidebar nav a, .sign-out, .project-switcher, .sidebar .project-list button, .project-picker .project-list button,   .sidebar .theme-toggle { min-height: 44px; min-width: 44px; }
-}
-@media (min-width: 600px) and (max-width: 700px) {
-  .tabbar-grid { grid-template-columns: repeat(5, 1fr); }
 }
 @media (min-width: 701px) {
   /* viewport-fit=cover reaches this layout too (a phone on its side, an iPad), so it pads by the insets as well. */

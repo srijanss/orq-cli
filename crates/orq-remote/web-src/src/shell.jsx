@@ -143,7 +143,8 @@ function PhoneShell({ projectId = null, children }) {
   );
 }
 
-// The bar holds five tabs; past five, a grab handle on its top edge pulls the bar up to show every section.
+// The bar holds five tabs; past five, a grab handle at its top pulls the bar itself up, the other sections
+// showing as further rows of icons below the tabs.
 const BAR_TABS = 5;
 // A finger has to move this far before a press on the handle is a drag rather than a tap.
 const DRAG_SLOP = 6;
@@ -171,6 +172,7 @@ export function TabBar({ entries, path }) {
   const [pull, setPull] = useState(null);
   const overflows = entries.length > BAR_TABS;
   const shown = entries.slice(0, BAR_TABS);
+  const rest = entries.slice(BAR_TABS);
   const reduced = prefersReducedMotion();
   const bar = useRef(null);
   const handle = useRef(null);
@@ -201,7 +203,7 @@ export function TabBar({ entries, path }) {
         return;
       }
       if (event.key !== "Tab" || !bar.current) return;
-      // Tab and Shift+Tab go round the handle, the tiles and the tabs while the drawer is open.
+      // Tab and Shift+Tab go round the handle, the tabs and the extra rows while the bar is open.
       const stops = [...bar.current.querySelectorAll("a[href], button")].filter((stop) => stop.tabIndex >= 0);
       if (stops.length === 0) return;
       event.preventDefault();
@@ -209,7 +211,7 @@ export function TabBar({ entries, path }) {
       const next = event.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at === -1 || at === stops.length - 1 ? 0 : at + 1);
       stops[next].focus();
     };
-    // A resize can reflow the grid (five a row from 600px wide, four below), so the open height follows it.
+    // A resize (a phone turning) can change the rows' height, so the open height follows it.
     const onResize = () => setFull(measure());
     document.addEventListener("keydown", onKeyDown);
     window.addEventListener("resize", onResize);
@@ -224,7 +226,7 @@ export function TabBar({ entries, path }) {
 
   const onPointerDown = (event) => {
     if (!overflows) return;
-    // The handle, or the bar's own empty strip; a press on a tab or tile stays a tap.
+    // The handle, or the bar's own empty strip; a press on a tab stays a tap.
     if (!handle.current?.contains(event.target) && event.target !== bar.current) return;
     const height = open ? full : measure();
     drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false, samples: [{ y: event.clientY, t: now() }] };
@@ -280,34 +282,39 @@ export function TabBar({ entries, path }) {
   return (
     <>
       {open ? <div className="tabbar-backdrop" data-tab-backdrop aria-hidden="true" onClick={() => setOpenOn(null)} /> : null}
-      <nav className="tabbar" aria-label="Sections" ref={bar} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onLostPointerCapture={onLostPointerCapture}>
+      <nav className="tabbar" aria-label="Sections" ref={bar} data-handle={overflows ? "" : undefined} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onLostPointerCapture={onLostPointerCapture}>
         {overflows ? (
-          <>
-            <button type="button" ref={handle} className="tabbar-handle" data-tab-handle aria-label="Show all sections" aria-expanded={open ? "true" : "false"} aria-controls="tabbar-all" onClick={() => {
-                if (now() - dragEndedAt.current < DRAG_CLICK_MS) return;
-                setOpen(!open);
-              }} />
-            <div id="tabbar-all" className="tabbar-all" data-tab-drawer ref={drawer} aria-hidden={open ? undefined : "true"} style={{ height: `${height}px`, transition }}>
-              <div className="tabbar-grid">
-                {entries.map((entry) => (
-                  <a key={entry.href} href={entry.href} tabIndex={open ? undefined : -1} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
-                      setOpenOn(null);
-                      goTo(entry, event);
-                    }}>
-                    <Icon name={entry.icon} size={28} />
-                    <span className="tile-label">{entry.label}</span>
-                  </a>
-                ))}
-              </div>
-            </div>
-          </>
+          <button type="button" ref={handle} className="tabbar-handle" data-tab-handle aria-label="Show all sections" aria-expanded={open ? "true" : "false"} aria-controls="tabbar-all" onClick={() => {
+              if (now() - dragEndedAt.current < DRAG_CLICK_MS) return;
+              setOpen(!open);
+            }} />
         ) : null}
         {shown.map((entry) => (
-          <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
+          <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
+              // Choosing any section closes the open bar, the one already shown included.
+              if (open) setOpenOn(null);
+              goTo(entry, event);
+            }}>
             <Icon name={entry.icon} size={28} />
             <span className="tab-label">{entry.label}</span>
           </a>
         ))}
+        {overflows ? (
+          // The sections past the tab row, as further rows of the bar below it.
+          <div id="tabbar-all" className="tabbar-all" data-tab-drawer ref={drawer} aria-hidden={open ? undefined : "true"} style={{ height: `${height}px`, transition }}>
+            <div className="tabbar-grid">
+              {rest.map((entry) => (
+                <a key={entry.href} href={entry.href} title={entry.label} tabIndex={open ? undefined : -1} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
+                    setOpenOn(null);
+                    goTo(entry, event);
+                  }}>
+                  <Icon name={entry.icon} size={28} />
+                  <span className="tab-label">{entry.label}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </nav>
     </>
   );
