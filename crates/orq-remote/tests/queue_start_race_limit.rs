@@ -243,6 +243,39 @@ fn a_queued_resume_failing_on_the_limit_reached_meanwhile_waits_for_a_slot() {
 }
 
 #[test]
+fn a_queued_resume_of_a_paused_run_keeps_its_slot_so_a_launch_error_pauses_the_queue() {
+    let s = setup("qsrl-resume-paused", "");
+    let alpha = git_repo(&s, "alpha", &["A-01"], Some(1));
+    seed_run(&s.roots.state, &alpha, "run-old", "A-01");
+    let store = RunStore::new(&s.roots.state);
+    event(&store, "run-old", "run.pause_requested", json!({}));
+    event(&store, "run-old", "run.paused", json!({}));
+    queue_add(&s, "alpha", json!({"action": "resume", "run": "run-old"}));
+    // The paused run fills the project's one slot, but its resume carries on in it: no limit holds it.
+    *s.launcher.fail.lock().unwrap() = Some(LaunchError::Failed("git worktree add failed".into()));
+
+    round(&s);
+    let reason = queue(&s, "alpha")["paused"].as_str().unwrap_or_default().to_string();
+    assert_eq!(reason, "Resume run-old could not start; see the server's log");
+}
+
+#[test]
+fn a_queued_resume_of_a_paused_run_keeps_its_slot_so_a_refusal_pauses_the_queue() {
+    let s = setup("qsrl-resume-paused-refused", "");
+    let alpha = git_repo(&s, "alpha", &["A-01"], Some(1));
+    seed_run(&s.roots.state, &alpha, "run-old", "A-01");
+    let store = RunStore::new(&s.roots.state);
+    event(&store, "run-old", "run.pause_requested", json!({}));
+    event(&store, "run-old", "run.paused", json!({}));
+    queue_add(&s, "alpha", json!({"action": "resume", "run": "run-old"}));
+    *s.launcher.fail.lock().unwrap() = Some(LaunchError::Refused("its worktree has uncommitted changes".into()));
+
+    round(&s);
+    let reason = queue(&s, "alpha")["paused"].as_str().unwrap_or_default().to_string();
+    assert_eq!(reason, "Resume run-old could not start: its worktree has uncommitted changes");
+}
+
+#[test]
 fn a_launch_error_that_is_not_a_run_limit_still_pauses_the_queue() {
     let s = setup("qsrl-other-error", "");
     git_repo(&s, "alpha", &["A-01"], Some(1));

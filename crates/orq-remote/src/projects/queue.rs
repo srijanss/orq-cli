@@ -271,10 +271,10 @@ impl StoreProjects {
                             started = true;
                             None
                         }
-                        Ok(RunControlOutcome::Refused(_)) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
+                        Ok(RunControlOutcome::Refused(_)) if !keeps_slot && self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
                         Ok(RunControlOutcome::Refused(why)) => Some(format!("{what} could not start: {why}")),
                         Ok(RunControlOutcome::Unknown) => Some(format!("{what}: {} is not one of the project's runs", action.run)),
-                        Err(_) if self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
+                        Err(_) if !keeps_slot && self.limit_reached(&runs, git, &settings, &machine)? => return Ok(started),
                         Err(why) => {
                             eprintln!("{}", launch_error_line(&what, &why));
                             Some(format!("{what} could not start; see the server's log"))
