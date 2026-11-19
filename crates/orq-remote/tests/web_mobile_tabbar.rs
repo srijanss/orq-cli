@@ -96,6 +96,14 @@ fn moving_through_history_closes_the_sheet() {
 }
 
 #[test]
+fn coming_back_to_the_page_the_sheet_opened_on_leaves_it_closed() {
+    let steps = [json!({"click": "[data-tab-more]"}), json!({"go": "/projects/demo/reviews"}), json!({"go": "/projects/demo/features"})];
+    let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [SHEET], "steps": steps})) else { return };
+    let open: Vec<bool> = out["frames"].as_array().unwrap().iter().map(|frame| !probed(frame, SHEET).is_empty()).collect();
+    assert_eq!(open, [false, true, false, false], "{out}");
+}
+
+#[test]
 fn picking_a_sheet_destination_goes_there_closes_the_sheet_and_marks_more_current() {
     let scenario = json!({"path": "/dashboard", "phone": true, "probe": [BAR, SHEET, SHEET_LINKS], "steps": [{"click": "[data-tab-more]"}, {"click": "[data-more-sheet] a[href=\"/settings\"]"}, {"click": "[data-tab-more]"}]});
     let Some(out) = shell(scenario) else { return };

@@ -148,8 +148,9 @@ const BAR_TABS = 4;
 
 export function TabBar({ entries, path }) {
   // The sheet is open on the page it was opened on, so any move, Back and Forward included,
-  // leaves no sheet over the new page.
+  // leaves no sheet over the new page; the move also forgets it, so coming back doesn't reopen it.
   const [openOn, setOpenOn] = useState(null);
+  if (openOn !== null && openOn !== path) setOpenOn(null);
   const open = openOn === path;
   const setOpen = (value) => setOpenOn(value ? path : null);
   // Five fit the bar as they are; a sixth turns the fifth place into More.
