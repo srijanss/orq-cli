@@ -796,12 +796,19 @@ fn mr_landing(store: Option<&Store>, runs: &RunStore, root: &Path, run: &str, ev
         ProviderState::Open => Some("in review".to_string()),
         ProviderState::Closed => Some("MR closed without merging".to_string()),
         ProviderState::Merged => {
-            let head = mr.observed_head_sha.unwrap_or(mr.reported_head_sha);
+            let head = mr.observed_head_sha.as_deref().unwrap_or(&mr.reported_head_sha);
             let target = runs.load(run).ok().map(|record| record.target_branch).filter(|target| !target.is_empty()).unwrap_or_else(|| project_target(root));
             // A squash or rebase merge never holds the head itself; the pull the refresh made after
-            // the merge, when it brought the target level, says the merge is in.
-            let pulled = || events.iter().any(|event| event.kind == TARGET_PULLED_EVENT && matches!(event.payload["outcome"].as_str(), Some("fast_forwarded" | "up_to_date" | "ahead" | "no_remote")));
-            let landed = target_holds(root, &target, &head) || pulled();
+            // the merge, when it brought the target level with its remote, says the merge is in. A pull
+            // that found no remote brought nothing in, and one made after an earlier MR merged says
+            // nothing of this one.
+            let this_mr = review_ref(&mr);
+            let pulled = || {
+                events.iter().any(|event| {
+                    event.kind == TARGET_PULLED_EVENT && event.payload["review"].as_str() == Some(this_mr.as_str()) && matches!(event.payload["outcome"].as_str(), Some("fast_forwarded" | "up_to_date" | "ahead"))
+                })
+            };
+            let landed = target_holds(root, &target, head) || pulled();
             (!landed).then(|| "merged, not pulled".to_string())
         }
     }

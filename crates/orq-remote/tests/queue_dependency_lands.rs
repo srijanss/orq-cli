@@ -321,6 +321,31 @@ fn a_dependency_whose_run_cannot_be_read_holds_its_dependent() {
     assert_eq!(entry_b(&s)["reason"], "waiting for DEP-A (its run cannot be read)");
 }
 
+/// The squash-merged head is never on the target, and a pull that found no remote to pull from
+/// brought nothing in: no sign the merge reached the local target.
+#[test]
+fn a_squash_merged_dependency_whose_pull_found_no_remote_has_not_landed() {
+    let s = setup("dep-lands-no-remote", Delivery::Review);
+    run_a(&s, "run-1-DEP-A");
+    let head = deliver_a(&s, "run-1-DEP-A", ProviderState::Merged);
+    event(&RunStore::new(&s.roots.state), "run-1-DEP-A", "target.pulled", json!({"outcome": "no_remote", "target": "main", "review": "!12"}));
+    round(&s);
+    assert!(started(&s).is_empty(), "the target does not hold {head}");
+    assert_eq!(entry_b(&s)["reason"], "waiting for DEP-A (merged, not pulled)");
+}
+
+/// The pull a refresh made after an earlier MR of the run merged says nothing of the newest MR's merge.
+#[test]
+fn a_pull_after_an_earlier_mr_merged_is_no_sign_the_newest_mr_landed() {
+    let s = setup("dep-lands-stale-pull", Delivery::Review);
+    run_a(&s, "run-1-DEP-A");
+    let head = deliver_a(&s, "run-1-DEP-A", ProviderState::Merged);
+    event(&RunStore::new(&s.roots.state), "run-1-DEP-A", "target.pulled", json!({"outcome": "up_to_date", "target": "main", "review": "!11"}));
+    round(&s);
+    assert!(started(&s).is_empty(), "the target does not hold {head}");
+    assert_eq!(entry_b(&s)["reason"], "waiting for DEP-A (merged, not pulled)");
+}
+
 /// A manual Start is never refused for an unlanded dependency: someone is there to judge it, so the
 /// Start popup is told the same reason the queue page shows, as a warning.
 #[test]
