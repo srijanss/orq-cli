@@ -171,6 +171,31 @@ fn escape_cancel_and_close_leave_the_edit_popup_unsaved_and_give_edit_the_focus_
     }
 }
 
+#[test]
+fn tab_stays_in_the_edit_popup_and_another_items_edit_starts_from_that_items_text() {
+    const CLOSE: &str = ".feature-modal [data-modal-close]";
+    const CANCEL: &str = ".feature-modal [data-cancel]";
+    let selectors = [CLOSE, CANCEL];
+    let steps = vec![
+        json!({"click": "[data-todo-item=\"7\"] [data-todo-edit]"}),
+        json!({"focus": CANCEL}),
+        json!({"keydown": "Tab"}),
+        json!({"keydown": "Tab", "shift": true}),
+    ];
+    let Some(out) = run_with("/dashboard", vec![projects()], vec![todos(vec![item(8, "two"), item(7, "one")])], steps, &selectors) else { return };
+    let all = frames(&out);
+    assert!(focused(&all[4], CLOSE), "Tab from the last control wraps to Close: {out}");
+    assert!(focused(&all[5], CANCEL), "Shift+Tab from Close wraps to Cancel: {out}");
+
+    let steps = vec![
+        json!({"click": "[data-todo-item=\"7\"] [data-todo-edit]"}),
+        json!({"set": ".feature-modal [data-todo-name]", "value": "typed for one"}),
+        json!({"click": "[data-todo-item=\"8\"] [data-todo-edit]"}),
+    ];
+    let Some(out) = run_with("/dashboard", vec![projects()], vec![todos(vec![item(8, "two"), item(7, "one")])], steps, &selectors) else { return };
+    assert_eq!(name_values(frames(&out).last().unwrap()), ["two"], "item 8's own name, not item 7's typing: {out}");
+}
+
 const PLAN_PICKER: &str = ".feature-modal .project-switcher[data-plan-project][data-value=\"\"] .project-switcher-text.muted";
 const MOVE_PICKER: &str = ".feature-modal .project-switcher[data-add-target][data-value=\"\"] .project-switcher-text.muted";
 

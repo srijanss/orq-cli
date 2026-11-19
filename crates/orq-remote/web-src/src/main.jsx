@@ -1004,6 +1004,26 @@ function TodoEditDialog({ item, token, onSignedOut, onClose, onSaved }) {
     if (why === null) onSaved();
     else setNote(why);
   };
+  // Tab and Shift+Tab wrap around inside the popup, so the page under it is out of reach.
+  useEffect(() => {
+    const keepFocus = (event) => {
+      if (event.key !== "Tab" || box.current === null) return;
+      const stops = [...box.current.querySelectorAll("button, input, textarea, select, a[href]")].filter((el) => !el.disabled && el.tabIndex >= 0);
+      if (stops.length === 0) return;
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const at = document.activeElement;
+      if (event.shiftKey && (at === first || !box.current.contains(at))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (at === last || !box.current.contains(at))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepFocus);
+    return () => document.removeEventListener("keydown", keepFocus);
+  }, []);
   return (
     <div className="feature-modal" data-feature-modal data-todo-edit-dialog onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <div className="feature-modal-box" ref={box} role="dialog" aria-modal="true" aria-labelledby="todo-edit-title">
@@ -1061,7 +1081,7 @@ function TodoList({ todo, token, onSignedOut, onChanged, onMove, onDraft }) {
     <section className="todo" data-todo>
       <h2 className="section-title">Todos</h2>
       {body}
-      {editing !== null ? <TodoEditDialog item={editing} token={token} onSignedOut={onSignedOut} onClose={closeEdit} onSaved={() => { closeEdit(); onChanged(); }} /> : null}
+      {editing !== null ? <TodoEditDialog key={editing.id} item={editing} token={token} onSignedOut={onSignedOut} onClose={closeEdit} onSaved={() => { closeEdit(); onChanged(); }} /> : null}
     </section>
   );
 }
