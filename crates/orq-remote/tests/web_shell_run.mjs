@@ -38,6 +38,13 @@ Object.defineProperty(window.HTMLElement.prototype, "scrollHeight", {
   configurable: true,
   get() { return this.hasAttribute("data-tab-drawer") ? drawerHeight : 0; },
 });
+// `rects` lays out the elements a selector matches: {selector: {top, bottom, left, right}}; others measure zero.
+const rects = scenario.rects || {};
+window.Element.prototype.getBoundingClientRect = function () {
+  const selector = Object.keys(rects).find((sel) => this.matches(sel));
+  const rect = { top: 0, bottom: 0, left: 0, right: 0, ...(selector ? rects[selector] : {}) };
+  return { ...rect, x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
+};
 // Pointer capture as a browser does it: once an element captures the finger, its moves and its lift go to that
 // element, and so does the click that follows the lift; the capture ends with the lift. A touch finger is
 // captured by the element it went down on; when another element takes the capture, the one that had it gets

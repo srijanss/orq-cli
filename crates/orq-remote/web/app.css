@@ -273,10 +273,12 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .tabbar a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
   /* Past five sections the bar itself slides up: it gains 0.75rem at its top for the grab line, and the sections
      past the tab row open below it as further rows of the bar, on the tab row's five columns. The handle's 44px
-     strip starts at the bar's top and runs under the tabs, which paint over it and so keep their taps. */
+     strip starts at the bar's top and runs under the tabs, which paint over it and so keep their taps; a drag
+     from anywhere in the strip, over a tab too, still pulls the bar, so the browser must not take it as a scroll. */
   .tabbar[data-handle] { padding-top: 1.125rem; }
   .tabbar[data-open] { z-index: 7; border-radius: 1rem 1rem 0 0; }
   .tabbar > a { position: relative; }
+  .tabbar[data-handle] > a { touch-action: none; }
   .tabbar-handle { position: absolute; left: 50%; top: 0; width: 5rem; height: 2.75rem; margin-left: -2.5rem; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
   .tabbar-handle::before { content: ""; position: absolute; left: 50%; top: 0.4375rem; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--sidebar-muted); }
   .tabbar-all { flex: 0 0 100%; overflow: hidden; }

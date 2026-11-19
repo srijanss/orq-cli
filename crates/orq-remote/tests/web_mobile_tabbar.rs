@@ -227,6 +227,48 @@ fn the_bar_follows_a_drag_and_opens_when_let_go_past_a_third() {
     assert_eq!((settled["height"].as_str(), settled["transition"].as_str()), (Some("300px"), Some("height 200ms ease-out")), "{out}");
 }
 
+/// The middle tab, under the lower part of the handle's 44px strip (laid out by `rects`: the handle's box is 0..44
+/// from the bar's top at 600, across x 50..150).
+const MIDDLE: &str = "nav.tabbar > a[href=\"/s2\"]";
+
+fn laid_out(steps: Value) -> Option<Value> {
+    let rects = json!({HANDLE: {"top": 600, "bottom": 644, "left": 50, "right": 150}});
+    shell(json!({"tabbar": sections(7), "path": "/s0", "rects": rects, "probe": [DRAWER], "steps": steps}))
+}
+
+#[test]
+fn a_drag_from_the_handles_strip_where_a_tab_paints_over_it_still_pulls_the_bar_up() {
+    let steps = json!([{"pointer": "down", "at": MIDDLE, "y": 630}, {"pointer": "move", "at": MIDDLE, "y": 510}, {"wait": 150}, {"pointer": "up", "at": MIDDLE, "y": 510, "thenClick": true}]);
+    let Some(out) = laid_out(steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(probed(&frames[2], DRAWER)[0]["height"], "120px", "it follows the finger: {out}");
+    let last = frames.last().unwrap();
+    assert!(drawer_open(last), "{out}");
+    assert_eq!(last["path"], "/s0", "the drag is not the tab's tap: {out}");
+}
+
+#[test]
+fn with_a_handle_a_touch_drag_on_a_tab_is_the_bars_not_a_page_scroll() {
+    let css = css();
+    assert!(rule(phone(&css), ".tabbar[data-handle] > a {").contains("touch-action: none"), "the browser would take the drag as a scroll and cancel it");
+}
+
+#[test]
+fn a_tap_in_the_handles_strip_on_a_tab_is_still_the_tabs_tap() {
+    let Some(out) = laid_out(json!([{"tap": MIDDLE, "y": 630}])) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["path"], "/s2", "{out}");
+}
+
+#[test]
+fn a_drag_starting_on_a_tab_below_the_handles_strip_is_no_drag() {
+    let steps = json!([{"pointer": "down", "at": MIDDLE, "y": 660}, {"pointer": "move", "at": MIDDLE, "y": 540}, {"wait": 150}, {"pointer": "up", "at": MIDDLE, "y": 540}]);
+    let Some(out) = laid_out(steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(probed(&frames[2], DRAWER)[0]["height"], "0px", "{out}");
+    assert!(!drawer_open(frames.last().unwrap()), "{out}");
+}
+
 #[test]
 fn a_short_slow_drag_falls_back_closed() {
     let Some(out) = seven(slow_drag(600, 540), false) else { return };

@@ -224,10 +224,16 @@ export function TabBar({ entries, path }) {
   // How much of the drawer shows with the finger at `y`.
   const showing = (current, y) => Math.min(current.height, Math.max(0, current.from + current.startY - y));
 
+  const inHandleStrip = (event) => {
+    const box = handle.current?.getBoundingClientRect();
+    return !!box && event.clientY >= box.top && event.clientY < box.bottom && event.clientX >= box.left && event.clientX < box.right;
+  };
+
   const onPointerDown = (event) => {
     if (!overflows) return;
-    // The handle, or the bar's own empty strip; a press on a tab stays a tap.
-    if (!handle.current?.contains(event.target) && event.target !== bar.current) return;
+    // The handle's whole 44px strip, the tabs that paint over its lower part included, or the bar's own empty
+    // strip. A press there that doesn't move stays a tap on whatever it landed on.
+    if (!handle.current?.contains(event.target) && event.target !== bar.current && !inHandleStrip(event)) return;
     const height = open ? full : measure();
     drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false, samples: [{ y: event.clientY, t: now() }] };
   };
