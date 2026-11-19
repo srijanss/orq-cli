@@ -539,7 +539,7 @@ fn restart_control(roots: &orq_core::storage::StorageRoots) -> RestartControl {
             restart_target(&exe, &target_installed)
         }),
     )
-    .managed_by_systemd(started_by_systemd())
+    .managed_by_systemd(own_unit().is_some())
 }
 
 /// The runs a restart waits for, by id.
@@ -833,13 +833,9 @@ fn unit_binary(unit: &str) -> Option<String> {
     None
 }
 
-/// Whether systemd started this process: it sets `INVOCATION_ID` for every service, and `NOTIFY_SOCKET` for
-/// one that reports to it.
-fn started_by_systemd() -> bool {
-    ["INVOCATION_ID", "NOTIFY_SOCKET"].iter().any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
-}
-
-/// The unit this server runs under: `orq serve install`'s, when systemd started it from that unit.
+/// The unit this server runs under: `orq serve install`'s, when systemd started it from that unit. That unit
+/// restarts it, so this is what makes it managed. `INVOCATION_ID` or `NOTIFY_SOCKET` alone is not enough: a
+/// shell under some other unit (a terminal's) passes them on to whatever it starts.
 fn own_unit() -> Option<String> {
     let unit = std::env::var("ORQ_SYSTEMD_UNIT").ok().filter(|unit| unit == UNIT)?;
     std::env::var_os("INVOCATION_ID").filter(|id| !id.is_empty()).map(|_| unit)

@@ -280,18 +280,26 @@ fn settings(addr: &str) -> serde_json::Value {
 }
 
 #[test]
-fn settings_says_whether_systemd_manages_the_server() {
+fn settings_says_the_server_is_managed_only_when_the_installed_unit_started_it() {
     let world = World::new("settings");
     let (_by_hand, addr) = world.serve_by_hand();
     let server = &settings(&addr)["server"];
     assert_eq!(server["managed_by_systemd"], false, "{server}");
     assert_eq!(server["supervision"], "Not managed: stops on reboot", "{server}");
-    for env in [("INVOCATION_ID", "0123abcd"), ("NOTIFY_SOCKET", "/run/user/1000/systemd/notify")] {
-        let (_managed, addr) = world.serve_with(&[env]);
+    // A shell under some other unit (a terminal's, say) passes its systemd variables on to what it starts;
+    // nothing restarts that server, so it is not managed.
+    let inherited: [&[(&str, &str)]; 3] = [&[("INVOCATION_ID", "0123abcd")], &[("NOTIFY_SOCKET", "/run/user/1000/systemd/notify")], &[("ORQ_SYSTEMD_UNIT", "orq-serve.service")]];
+    for env in inherited {
+        let (_inherited, addr) = world.serve_with(env);
         let server = &settings(&addr)["server"];
-        assert_eq!(server["managed_by_systemd"], true, "{env:?}: {server}");
-        assert_eq!(server["supervision"], "Managed by systemd (restarts automatically)", "{env:?}: {server}");
+        assert_eq!(server["managed_by_systemd"], false, "{env:?}: {server}");
+        assert_eq!(server["supervision"], "Not managed: stops on reboot", "{env:?}: {server}");
     }
+    // Only the unit `orq serve install` writes, which restarts it, makes it managed.
+    let (_managed, addr) = world.serve_with(&[("INVOCATION_ID", "0123abcd"), ("ORQ_SYSTEMD_UNIT", "orq-serve.service")]);
+    let server = &settings(&addr)["server"];
+    assert_eq!(server["managed_by_systemd"], true, "{server}");
+    assert_eq!(server["supervision"], "Managed by systemd (restarts automatically)", "{server}");
 }
 
 #[test]
