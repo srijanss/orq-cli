@@ -530,6 +530,22 @@ fn a_worktree_path_with_a_pattern_character_fails_the_refresh_with_its_reason() 
     }
 }
 
+/// A backslash escapes the character after it in a pattern, so a rule naming it would not name the
+/// worktree: such a path is refused like the other pattern characters.
+#[test]
+fn a_worktree_path_with_a_backslash_fails_the_refresh_with_its_reason() {
+    let (_repo, worktree) = checkout("permissions-backslash-path");
+    let odd = worktree.parent().unwrap().join("odd\\1");
+    fs::create_dir_all(&odd).unwrap();
+    git(&odd, &["init", "--quiet"]);
+
+    let why = refresh_run_permissions(&odd, &[], Path::new("/logs/r"), "").expect_err("the path can't be written as a rule");
+
+    assert!(why.contains("odd\\1") && why.contains("'\\\\'"), "{why}");
+    let allow = allowed(&odd);
+    assert!(!allow.iter().any(|rule| rule.contains("odd\\1")), "{allow:?}");
+}
+
 /// What git ignores is checked like what it does not track: an ignored script, repository or link to
 /// a folder, deep in an ignored folder, takes the built-in rule out as an untracked one would.
 #[test]

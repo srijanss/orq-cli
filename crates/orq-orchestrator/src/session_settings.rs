@@ -622,8 +622,9 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     (notes, Some(unrevoked), Vec::new())
 }
 
-/// Characters a permission rule's path reads as a pattern rather than as themselves.
-const PATTERN_CHARACTERS: [char; 8] = ['*', '?', '[', ']', '{', '}', '(', ')'];
+/// Characters a permission rule's path reads as a pattern rather than as themselves; a backslash
+/// escapes the character after it.
+const PATTERN_CHARACTERS: [char; 9] = ['*', '?', '[', ']', '{', '}', '(', ')', '\\'];
 
 /// The rule letting the session edit the worktree and nothing else: absolute, by the worktree's
 /// canonical path, as a `./` rule is read from the session's current folder, which a `cd` moves.
