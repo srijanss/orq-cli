@@ -759,7 +759,12 @@ fn unlanded_of<'f>(store: Option<&Store>, runs: &RunStore, git: &orq_git::Projec
 fn landing(store: Option<&Store>, runs: &RunStore, root: &Path, run: &str) -> Option<String> {
     let mut run = run.to_string();
     for _ in 0..CONTINUATIONS_FOLLOWED {
-        let Ok(events) = runs.events(&run) else { return None };
+        // A run that cannot be read gives no sign its work landed.
+        let events = match runs.events(&run) {
+            Ok(events) => events,
+            Err(orq_orchestrator::StoreError::NotFound(_)) => return Some("discarded".to_string()),
+            Err(_) => return Some("its run cannot be read".to_string()),
+        };
         let summary = orq_orchestrator::summarize_live_run(&events);
         if let Some(next) = summary.resumed_as {
             run = next;

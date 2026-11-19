@@ -298,6 +298,29 @@ fn a_dependency_delivered_for_review_with_no_mr_recorded_holds_its_dependent_unt
     assert_eq!(started(&s), ["DEP-B"], "merged into the target here");
 }
 
+/// A run that cannot be read gives no sign its work landed: the run a failed one was resumed as, since
+/// discarded, holds the dependent with that reason, and so do events that cannot be read.
+#[test]
+fn a_dependency_whose_run_cannot_be_read_holds_its_dependent() {
+    let s = setup("dep-lands-unreadable", Delivery::MergeLocal);
+    run_a(&s, "run-1-DEP-A");
+    end_run(&s, "run-1-DEP-A", "failed");
+    event(&RunStore::new(&s.roots.state), "run-1-DEP-A", "run.resumed", json!({"resumed_as": "run-2-DEP-A"}));
+    round(&s);
+    assert!(started(&s).is_empty(), "the run it was resumed as is gone");
+    assert_eq!(entry_b(&s)["reason"], "waiting for DEP-A (discarded)");
+
+    let s = setup("dep-lands-corrupt", Delivery::MergeLocal);
+    run_a(&s, "run-1-DEP-A");
+    end_run(&s, "run-1-DEP-A", "merged");
+    let events = s.roots.state.join("runs").join("run-1-DEP-A").join("events.jsonl");
+    assert!(events.is_file(), "{}", events.display());
+    std::fs::write(&events, "not json\n").unwrap();
+    round(&s);
+    assert!(started(&s).is_empty(), "events that cannot be read are no sign it landed");
+    assert_eq!(entry_b(&s)["reason"], "waiting for DEP-A (its run cannot be read)");
+}
+
 /// A manual Start is never refused for an unlanded dependency: someone is there to judge it, so the
 /// Start popup is told the same reason the queue page shows, as a warning.
 #[test]
