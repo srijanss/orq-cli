@@ -39,9 +39,18 @@ Object.defineProperty(window.HTMLElement.prototype, "scrollHeight", {
   get() { return this.hasAttribute("data-tab-drawer") ? drawerHeight : 0; },
 });
 // Pointer capture as a browser does it: once an element captures the finger, its moves and its lift go to that
-// element, and so does the click that follows the lift; the capture ends with the lift.
+// element, and so does the click that follows the lift; the capture ends with the lift. A touch finger is
+// captured by the element it went down on; when another element takes the capture, the one that had it gets
+// a bubbling lostpointercapture first, as a browser sends it.
 let captured = null;
-window.Element.prototype.setPointerCapture = function () { captured = this; };
+window.Element.prototype.setPointerCapture = function (pointerId) {
+  const previous = captured;
+  captured = this;
+  if (previous && previous !== this) {
+    const Pointer = window.PointerEvent || window.MouseEvent;
+    previous.dispatchEvent(new Pointer("lostpointercapture", { bubbles: true, pointerId }));
+  }
+};
 window.Element.prototype.releasePointerCapture = function () { if (captured === this) captured = null; };
 window.Element.prototype.hasPointerCapture = function () { return captured === this; };
 
@@ -117,6 +126,7 @@ try {
       let lifted = null;
       for (const type of types) {
         const target = send(type, y, over);
+        if (type === "down" && step.touch) captured = target;
         if (type === "up" || type === "cancel" || type === "lostcapture") {
           lifted = type === "up" ? target : null;
           captured = null;

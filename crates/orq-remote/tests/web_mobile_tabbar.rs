@@ -164,6 +164,19 @@ fn losing_the_finger_mid_drag_falls_back_and_the_next_tap_still_opens_it() {
 }
 
 #[test]
+fn a_touch_drag_from_the_handle_keeps_going_when_the_bar_takes_the_finger() {
+    // A touch finger is captured by the handle it lands on; the bar taking it over sends the handle a
+    // lostpointercapture that bubbles to the bar. That hand-over is not the finger being lost.
+    let steps = json!([
+        {"pointer": "down", "at": HANDLE, "y": 600, "touch": true}, {"pointer": "move", "at": HANDLE, "y": 480}, {"wait": 150},
+        {"pointer": "up", "at": HANDLE, "y": 480}
+    ]);
+    let Some(out) = seven(steps, false) else { return };
+    assert_eq!(probed(&out["frames"][2], DRAWER)[0]["height"], "120px", "it follows the finger: {out}");
+    assert!(drawer_open(out["frames"].as_array().unwrap().last().unwrap()), "40% of the open height opens it: {out}");
+}
+
+#[test]
 fn an_open_drawer_takes_its_new_height_when_the_window_resizes() {
     // Crossing 600px wide moves the grid from five a row to four, so it grows.
     let Some(out) = seven(json!([{"click": HANDLE}, {"resize": 380}]), false) else { return };

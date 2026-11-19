@@ -268,6 +268,11 @@ export function TabBar({ entries, path }) {
     drag.current = null;
     setPull(null);
   };
+  // Only the bar itself losing the finger ends the drag: on touch the handle holds the finger from the press,
+  // and the bar taking it over sends the handle a lostpointercapture that bubbles up here.
+  const onLostPointerCapture = (event) => {
+    if (event.target === event.currentTarget) onPointerCancel();
+  };
 
   const height = pull !== null ? pull : open ? full : 0;
   const transition = pull !== null || reduced ? "none" : SETTLE;
@@ -275,7 +280,7 @@ export function TabBar({ entries, path }) {
   return (
     <>
       {open ? <div className="tabbar-backdrop" data-tab-backdrop aria-hidden="true" onClick={() => setOpenOn(null)} /> : null}
-      <nav className="tabbar" aria-label="Sections" ref={bar} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onLostPointerCapture={onPointerCancel}>
+      <nav className="tabbar" aria-label="Sections" ref={bar} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onLostPointerCapture={onLostPointerCapture}>
         {overflows ? (
           <>
             <button type="button" ref={handle} className="tabbar-handle" data-tab-handle aria-label="Show all sections" aria-expanded={open ? "true" : "false"} aria-controls="tabbar-all" onClick={() => {
