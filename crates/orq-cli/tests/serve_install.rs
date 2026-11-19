@@ -10,6 +10,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+/// How install and status look at the unit.
+const SHOW: &str = "systemctl --user show orq-serve.service -p UnitFileState -p ActiveState -p NRestarts\n";
 const TOKEN: &str = "install-token-0123456789abcdef01234567";
 
 /// A fresh root with a repository, a token file, an installed orq and stand-in system tools.
@@ -52,6 +54,16 @@ impl World {
         let calls = self.root.join("calls");
         fs::write(&path, format!("#!/bin/sh\necho \"{tool} $*\" >> '{}'\n{answer}\n", calls.display())).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Makes the stand-in `systemctl` say the unit is enabled and running.
+    fn healthy(&self) {
+        self.answer("systemctl", "case \"$*\" in *show*) printf 'UnitFileState=enabled\\nActiveState=active\\nNRestarts=0\\n';; esac");
+    }
+
+    /// Each `systemctl` call the stand-in saw, one per line.
+    fn systemctl_calls(&self) -> String {
+        self.calls().lines().filter(|line| line.starts_with("systemctl ")).map(|line| format!("{line}\n")).collect()
     }
 
     /// Each call the stand-in tools saw, one per line.
@@ -131,11 +143,12 @@ fn an_identical_reinstall_changes_nothing_and_new_flags_rewrite_the_unit_and_res
     let world = World::new("again");
     ok(&world.install("127.0.0.1:7999"));
     let first = world.unit();
+    world.healthy();
     world.forget_calls();
     let out = ok(&world.install("127.0.0.1:7999"));
     assert!(out.contains("already installed"), "{out}");
     assert_eq!(world.unit(), first);
-    assert!(!world.calls().contains("systemctl"), "an identical install calls nothing: {}", world.calls());
+    assert_eq!(world.systemctl_calls(), SHOW, "an identical install of a running unit only looks at it");
     world.forget_calls();
     ok(&world.install("127.0.0.1:7998"));
     assert!(world.unit().contains("\"--listen\" \"127.0.0.1:7998\""), "{}", world.unit());
@@ -307,4 +320,19 @@ fn the_units_own_server_on_the_address_does_not_hold_up_a_reinstall() {
     let (server, addr) = other.serve_with(&[("INVOCATION_ID", "0123abcd"), ("ORQ_SYSTEMD_UNIT", "something-else.service")]);
     let out = other.install(&addr);
     assert!(!out.status.success() && text(&out.stderr).contains(&format!("pid {}", server.0.id())), "{}", text(&out.stderr));
+}
+
+#[test]
+fn an_identical_install_after_a_failed_one_enables_and_starts_the_unit() {
+    let world = World::new("recover");
+    world.answer("systemctl", "case \"$*\" in *enable*) echo 'Failed to enable unit' >&2; exit 1;; esac");
+    let failed = world.install("127.0.0.1:7999");
+    assert!(!failed.status.success(), "{}", text(&failed.stdout));
+    assert!(text(&failed.stderr).contains("Failed to enable unit"), "{}", text(&failed.stderr));
+    // The unit is written but disabled and stopped: installing again finishes the job.
+    world.answer("systemctl", "case \"$*\" in *show*) printf 'UnitFileState=disabled\\nActiveState=inactive\\nNRestarts=0\\n';; esac");
+    world.forget_calls();
+    let out = ok(&world.install("127.0.0.1:7999"));
+    assert!(!out.contains("already installed"), "{out}");
+    assert_eq!(world.systemctl_calls(), format!("{SHOW}systemctl --user daemon-reload\nsystemctl --user enable --now orq-serve.service\n"));
 }

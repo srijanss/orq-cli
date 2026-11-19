@@ -692,18 +692,24 @@ fn install_command(args: &[OsString]) -> ExitCode {
         Ok(before) => before,
         Err(code) => return code,
     };
-    if before.as_deref() == Some(unit.as_str()) {
+    let unchanged = before.as_deref() == Some(unit.as_str());
+    // An unchanged unit that is enabled and running is left alone; one an earlier install could not enable or
+    // start, or that was stopped since, is enabled and started.
+    if unchanged && unit_state().is_ok_and(|state| state.running()) {
         println!("orq serve: already installed ({}), nothing changed", path.display());
+    } else if unchanged {
+        if let Err(why) = systemctl_each(&[&["daemon-reload"], &["enable", "--now", UNIT]]) {
+            return fail(why);
+        }
+        println!("orq serve: {} was installed but not running; enabled and started it", path.display());
     } else {
         if let Err(err) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, &unit)) {
             return fail(format!("cannot write {}: {:?}", path.display(), err.kind()));
         }
         // A new unit is enabled and started; a changed one is restarted, so the server runs with the new flags.
         let calls: &[&[&str]] = if before.is_none() { &[&["daemon-reload"], &["enable", "--now", UNIT]] } else { &[&["daemon-reload"], &["enable", UNIT], &["restart", UNIT]] };
-        for call in calls {
-            if let Err(why) = systemctl(call) {
-                return fail(why);
-            }
+        if let Err(why) = systemctl_each(calls) {
+            return fail(why);
         }
         let done = if before.is_none() { "installed" } else { "updated" };
         println!("orq serve: {done} {} and started it", path.display());
@@ -755,13 +761,11 @@ fn status_command() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     println!("unit: {}", path.display());
-    match systemctl(&["show", UNIT, "-p", "UnitFileState", "-p", "ActiveState", "-p", "NRestarts"]) {
-        Ok(shown) => {
-            let field = |name: &str| shown.lines().find_map(|line| line.strip_prefix(name).and_then(|rest| rest.strip_prefix('='))).unwrap_or("unknown").to_string();
-            let (enabled, active) = (field("UnitFileState"), field("ActiveState"));
-            println!("enabled: {}", if enabled == "enabled" { "yes".to_string() } else { format!("no ({enabled})") });
-            println!("active: {}", if active == "active" { "yes".to_string() } else { format!("no ({active})") });
-            println!("restarts: {}", field("NRestarts"));
+    match unit_state() {
+        Ok(state) => {
+            println!("enabled: {}", if state.enabled == "enabled" { "yes".to_string() } else { format!("no ({})", state.enabled) });
+            println!("active: {}", if state.active == "active" { "yes".to_string() } else { format!("no ({})", state.active) });
+            println!("restarts: {}", state.restarts);
         }
         Err(why) => println!("enabled, active, restarts: unknown ({why})"),
     }
@@ -777,6 +781,27 @@ fn status_command() -> ExitCode {
         Err(why) => println!("last journal lines: unknown ({why})"),
     }
     ExitCode::SUCCESS
+}
+
+/// What systemd says of the unit; a field it did not give is `unknown`.
+struct UnitState {
+    enabled: String,
+    active: String,
+    restarts: String,
+}
+
+impl UnitState {
+    /// Enabled, so it starts at boot, and running now.
+    fn running(&self) -> bool {
+        self.enabled == "enabled" && self.active == "active"
+    }
+}
+
+/// Asks systemd whether the unit is enabled and active and how often it restarted.
+fn unit_state() -> Result<UnitState, String> {
+    let shown = systemctl(&["show", UNIT, "-p", "UnitFileState", "-p", "ActiveState", "-p", "NRestarts"])?;
+    let field = |name: &str| shown.lines().find_map(|line| line.strip_prefix(name).and_then(|rest| rest.strip_prefix('='))).filter(|value| !value.is_empty()).unwrap_or("unknown").to_string();
+    Ok(UnitState { enabled: field("UnitFileState"), active: field("ActiveState"), restarts: field("NRestarts") })
 }
 
 /// The binary a unit written by [`unit_text`] runs: the first word of its `ExecStart`, unquoted.
@@ -895,6 +920,11 @@ fn systemctl(args: &[&str]) -> Result<String, String> {
     let mut all = vec!["--user"];
     all.extend_from_slice(args);
     system_call("systemctl", &all)
+}
+
+/// Each `systemctl --user` call in turn, stopping at the first that fails.
+fn systemctl_each(calls: &[&[&str]]) -> Result<(), String> {
+    calls.iter().try_for_each(|call| systemctl(call).map(|_| ()))
 }
 
 /// Runs `program` with `args`, bounded by [`SYSTEM_CALL_TIMEOUT`]; its standard output when it succeeds, else
