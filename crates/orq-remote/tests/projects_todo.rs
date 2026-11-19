@@ -151,6 +151,15 @@ fn with_remote_actions_off_the_list_reads_but_nothing_changes() {
 }
 
 #[test]
+fn with_remote_actions_off_an_add_creates_no_database() {
+    let s = setup("todo-off-no-db");
+    std::fs::write(s.roots.config_file(), "remote_actions = false\n").unwrap();
+    assert_eq!(post(&s, "/api/todo", json!({"name": "two"})).0, 404);
+    assert!(!s.roots.database().exists(), "nothing was created");
+    assert_eq!(audited(&s)[0], ("todo.add".into(), "".into(), "refused".into(), "two: remote actions are off".into()));
+}
+
+#[test]
 fn a_move_saves_a_draft_through_the_editors_path_and_only_then_removes_the_item() {
     let s = setup("todo-move");
     let alpha = git_repo(&s.scan, "alpha");

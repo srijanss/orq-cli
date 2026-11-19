@@ -1266,12 +1266,15 @@ fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, ta
             return error(404, "not found");
         }
     };
-    // Only an existing database holds items; an add creates it.
-    let store = if id.is_some() && !roots.database().exists() {
+    // Only an existing database holds items; an add creates it, but only with actions on. With them off the store
+    // is read only to name the item in the refusal, and a store that cannot be read is no reason to say otherwise.
+    let actions = remote_actions_on(roots);
+    let store = if (id.is_some() || !actions) && !roots.database().exists() {
         None
     } else {
         match Store::open(&roots.database()) {
             Ok(store) => Some(store),
+            Err(_) if !actions => None,
             Err(_) => {
                 audit(Outcome::Refused, failed);
                 return error(500, failed);
@@ -1281,6 +1284,7 @@ fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, ta
     let item = match (id, &store) {
         (Some(id), Some(store)) => match store.todo(id) {
             Ok(item) => item,
+            Err(_) if !actions => None,
             Err(_) => {
                 audit(Outcome::Refused, failed);
                 return error(500, failed);
@@ -1294,7 +1298,7 @@ fn change_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, ta
         _ => None,
     };
     let named = |why: &str| label.as_deref().map_or_else(|| why.to_string(), |label| format!("{label}: {why}"));
-    if !remote_actions_on(roots) {
+    if !actions {
         audit(Outcome::Refused, &named("remote actions are off"));
         return error(404, "not found");
     }
