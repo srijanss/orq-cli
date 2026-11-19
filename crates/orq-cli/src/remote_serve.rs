@@ -309,7 +309,7 @@ fn run(args: &[OsString]) -> ExitCode {
         project_id: crate::pipeline::project_id(&project),
         project_name: project.name.clone(),
     });
-    let reviews = orq_remote::review_refresh::ReviewRefresher::new(state_roots.clone(), std::sync::Arc::new(ProviderLook { roots: state_roots.clone() }));
+    let reviews = orq_remote::review_refresh::ReviewRefresher::new(state_roots.clone(), std::sync::Arc::new(ProviderLook { roots: state_roots.clone(), projects: projects.clone() }));
     let queued = projects.clone();
     let options = orq_remote::ServerOptions { projects: Some(projects), auth: auth.clone(), reviews: Some(reviews.clone()) };
     let started = orq_remote::Server::start_with(listener, state, options);
@@ -406,13 +406,18 @@ fn wait_for_stop(restart: &RestartControl) -> Stop {
 
 /// Looks at a run's review at its provider with `review::refresh_lifecycle`. A look that cannot be made is
 /// kept on the review as its last error, so it shows unverified and waits for the next round.
+/// A look that finds the MR merged pulls the project's target, through `projects`.
 struct ProviderLook {
     roots: orq_core::storage::StorageRoots,
+    projects: std::sync::Arc<orq_remote::projects::StoreProjects>,
 }
 
 impl orq_remote::review_refresh::ReviewObserver for ProviderLook {
     fn refresh(&self, run_id: &str) {
-        let Err(err) = crate::review::refresh_lifecycle(&self.roots, run_id) else { return };
+        let Err(err) = crate::review::refresh_lifecycle(&self.roots, run_id) else {
+            self.projects.review_looked_at(run_id);
+            return;
+        };
         let Ok(store) = orq_core::store::Store::open(&self.roots.database()) else { return };
         let latest = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().filter(|l| l.provider != orq_core::review_lifecycle::LOCAL_PROVIDER).last());
         if let Some(latest) = latest {

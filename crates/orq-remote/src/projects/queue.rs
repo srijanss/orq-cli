@@ -298,7 +298,7 @@ impl StoreProjects {
                 None => 'start: {
                     // A project whose runs end in an MR has its target pulled first, so the run starts
                     // from what was merged on the forge; a target that cannot be brought level holds it.
-                    if settings.pull_target_before_runs && settings.delivery != orq_core::project_settings::Delivery::MergeLocal {
+                    if pulls_target(&settings) {
                         let target = project_target(root);
                         let outcome = orq_git::pull_target(root, PULL_REMOTE, &target);
                         // A forge out of reach for a moment is tried again next round; only a few
@@ -436,6 +436,78 @@ impl StoreProjects {
         }
     }
 
+    /// What the review refresh does once it has looked at `run_id`'s review: the first time it sees the
+    /// MR merged, in a project whose runs end in an MR and that pulls its target, the target is pulled,
+    /// fast-forward only. The run records `target.pulled`, the audit log `project.pull`, and a pull that
+    /// could not bring the target level is shown on the project until one does.
+    pub fn review_looked_at(&self, run_id: &str) {
+        let runs = RunStore::new(&self.roots.state);
+        let Ok(record) = runs.load(run_id) else { return };
+        if runs.events(run_id).map_or(true, |events| events.iter().any(|event| event.kind == TARGET_PULLED_EVENT)) {
+            return;
+        }
+        let Ok(store) = Store::open_read_only(&self.roots.database()) else { return };
+        let latest = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().filter(|l| l.provider != orq_core::review_lifecycle::LOCAL_PROVIDER).last());
+        let Some(review) = latest.filter(|review| review.state == orq_core::review_lifecycle::ProviderState::Merged) else { return };
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| {
+            orq_git::resolve_project(&project.path).is_ok_and(|git| orq_git::project_id(&git) == record.project_id)
+        }) else {
+            return;
+        };
+        let Ok(Some((git, root))) = self.settings_key(&project.id) else { return };
+        let Ok(settings) = self.settings_of_git(&git) else { return };
+        if !pulls_target(&settings) {
+            return;
+        }
+        let target = project_target(&root);
+        let outcome = orq_git::pull_target(&root, PULL_REMOTE, &target);
+        let message = orq_core::redact::redact(&outcome.describe(PULL_REMOTE, &target));
+        let mut payload = json!({"outcome": outcome.kind(), "target": target, "message": message, "review": review_ref(&review)});
+        if let orq_git::PullOutcome::FastForwarded { from, to } = &outcome {
+            payload["from"] = json!(from);
+            payload["to"] = json!(to);
+        }
+        let event = orq_orchestrator::Event {
+            schema_version: 1,
+            event_id: format!("{run_id}-target-pulled"),
+            run_id: run_id.to_string(),
+            project_id: record.project_id.clone(),
+            feature_id: record.feature_id.clone(),
+            kind: TARGET_PULLED_EVENT.to_string(),
+            stage: None,
+            attempt: 1,
+            occurred_at: utc_now(),
+            payload,
+        };
+        if let Err(error) = runs.append_event(&event) {
+            eprintln!("orq: cannot record that {run_id}'s target was pulled: {error:?}");
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+        let attempt = orq_core::remote_audit::Attempt { identity: "orq serve", action: "project.pull", project: &project.id, run: Some(run_id), outcome: orq_core::remote_audit::Outcome::Allowed, reason: Some(&message) };
+        if let Err(error) = orq_core::remote_audit::record(&self.roots, &attempt, now) {
+            eprintln!("orq: cannot audit the pull of {}'s target: {error}", project.id);
+        }
+        let warning = PullWarning::of(&self.roots, &git);
+        match outcome {
+            orq_git::PullOutcome::FastForwarded { .. } | orq_git::PullOutcome::UpToDate | orq_git::PullOutcome::Ahead { .. } => warning.clear(),
+            _ => warning.set(&format!("{target} not updated after {} merged: {message}", review_ref(&review))),
+        }
+    }
+
+    /// Pulls project `id`'s target again, as a person asked: what came of it, and whether the warning
+    /// a merge left is gone. `None` for an unknown project.
+    pub(super) fn pull_target_of(&self, id: &str) -> Result<Option<Value>, String> {
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
+        let target = project_target(&root);
+        let outcome = orq_git::pull_target(&root, PULL_REMOTE, &target);
+        let warning = PullWarning::of(&self.roots, &git);
+        if outcome.may_start() {
+            warning.clear();
+        }
+        let message = orq_core::redact::redact(&outcome.describe(PULL_REMOTE, &target));
+        Ok(Some(json!({"outcome": outcome.kind(), "message": message, "target_pull_warning": warning.read()})))
+    }
+
     /// Project `id`'s queue as the web shows it; `None` when there is no such project.
     pub(super) fn queue_answer(&self, id: &str) -> Result<Option<Value>, String> {
         let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
@@ -454,7 +526,11 @@ impl StoreProjects {
                 entry.feature == *feature && matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) && entry.run.as_deref().is_some_and(|run| self.being_accepted(run).is_some())
             })
         });
-        Ok(Some(queue_json_with(&queue, &ledger, &review)))
+        let mut answer = queue_json_with(&queue, &ledger, &review);
+        if let Some(warning) = PullWarning::of(&self.roots, &git).read() {
+            answer["target_pull_warning"] = json!(warning);
+        }
+        Ok(Some(answer))
     }
 
     fn read_queue(&self, root: &Path) -> Result<RunQueue, String> {
@@ -526,7 +602,15 @@ impl StoreProjects {
 /// dashboard card; without orq.db, none.
 /// With `wait` (the project waits for each run's review), it names the feature whose review the
 /// queue waits for, read from `runs` without asking git.
-pub(super) fn queue_summary(store: Option<&Store>, runs: &RunStore, git: &orq_git::Project, wait: bool) -> Result<Value, String> {
+pub(super) fn queue_summary(roots: &orq_core::storage::StorageRoots, store: Option<&Store>, runs: &RunStore, git: &orq_git::Project, wait: bool) -> Result<Value, String> {
+    let mut summary = queue_counts(store, runs, git, wait)?;
+    if let Some(warning) = PullWarning::of(roots, git).read() {
+        summary["target_pull_warning"] = json!(warning);
+    }
+    Ok(summary)
+}
+
+fn queue_counts(store: Option<&Store>, runs: &RunStore, git: &orq_git::Project, wait: bool) -> Result<Value, String> {
     let root = orq_git::main_checkout_root(git).unwrap_or_else(|| git.root.clone());
     let queue = store.map(|store| store.queue(&root)).transpose().map_err(|error| error.to_string())?.unwrap_or_default();
     let waiting_for_review = store.filter(|_| wait).and_then(|store| {
@@ -786,6 +870,63 @@ fn action_applies(runs: &RunStore, git: &orq_git::Project, action: &QueueAction)
 
 /// The remote a project's target is pulled from: the one its runs push to.
 const PULL_REMOTE: &str = "origin";
+
+/// The run event that says the project's target was pulled after the run's MR merged.
+pub const TARGET_PULLED_EVENT: &str = "target.pulled";
+
+/// Whether a project with `settings` has its target pulled after a merge and before its runs: its
+/// runs end in an MR, and the setting is on.
+fn pulls_target(settings: &orq_core::project_settings::ProjectSettings) -> bool {
+    settings.pull_target_before_runs && settings.delivery != orq_core::project_settings::Delivery::MergeLocal
+}
+
+/// How a review is named on its forge: GitLab's `!12`, anyone else's `#12`.
+fn review_ref(review: &orq_core::review_lifecycle::ReviewLifecycle) -> String {
+    let sign = if review.provider == "gitlab" { '!' } else { '#' };
+    format!("{sign}{}", review.review_id)
+}
+
+/// The current UTC time as RFC 3339, without a date-time dependency.
+fn utc_now() -> String {
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let (days, rem) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// What a project shows after a merge whose pull could not bring its target level, kept in a file
+/// under the state root until a pull does.
+struct PullWarning(std::path::PathBuf);
+
+impl PullWarning {
+    fn of(roots: &orq_core::storage::StorageRoots, git: &orq_git::Project) -> Self {
+        Self(roots.state.join("target-pull").join(orq_git::project_id(git)))
+    }
+
+    fn read(&self) -> Option<String> {
+        std::fs::read_to_string(&self.0).ok().map(|text| orq_core::redact::redact(text.trim())).filter(|text| !text.is_empty())
+    }
+
+    fn set(&self, warning: &str) {
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&self.0, warning);
+    }
+
+    fn clear(&self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 /// How many queue rounds in a row the target may fail to fetch before the queue pauses.
 const FETCH_FAILURES_BEFORE_PAUSE: u32 = 3;

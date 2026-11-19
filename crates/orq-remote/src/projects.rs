@@ -1255,6 +1255,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         self.change_queue_of(id, change)
     }
 
+    fn pull_project_target(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        self.pull_target_of(id)
+    }
+
     fn queue_wish(&self, id: &str, feature: &str) -> Result<Option<bool>, String> {
         self.queue_wish_of(id, feature)
     }
@@ -1906,7 +1910,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .map(|project| match counts(&project, reviews.as_ref(), &active).and_then(|counts| {
                 let settings = self.settings_of_git(&counts.git)?;
                 let blocked = start_blocked(&counts.git, &settings, &counts.active, &machine)?.map(|why| orq_core::redact::redact(&why));
-                let queue = queue::queue_summary(reviews.as_ref(), &runs, &counts.git, settings.queue_wait_for_review)?;
+                let queue = queue::queue_summary(&self.roots, reviews.as_ref(), &runs, &counts.git, settings.queue_wait_for_review)?;
                 Ok((counts, settings.max_active_runs, blocked, queue))
             }) {
                 Ok((counts, max_active_runs, start_blocked, queue)) => json!({"id": project.id, "name": project.name, "available": true, "features": counts.features, "active_runs": counts.active.len(), "max_active_runs": max_active_runs, "start_blocked": start_blocked, "queue": queue, "reviews_waiting": counts.reviews_waiting, "failed_runs": counts.failed_runs, "failed_window_hours": FAILED_WINDOW_HOURS}),

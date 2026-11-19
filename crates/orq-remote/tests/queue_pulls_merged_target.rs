@@ -11,6 +11,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use orq_core::project_settings::{Delivery, ProjectSettings};
+use orq_core::review_lifecycle::{ProviderState, ReviewLifecycle};
 use orq_core::remote_inbox::{handle_with_body, RemoteConfig, Request};
 use orq_core::storage::StorageRoots;
 use orq_core::store::Store;
@@ -336,6 +337,107 @@ fn a_checkout_on_another_branch_has_the_target_moved_under_it_and_starts() {
     assert_eq!(git(&s.repo, &["symbolic-ref", "--short", "HEAD"]), "side");
     assert_eq!(std::fs::read_to_string(s.repo.join("README")).unwrap(), "edited on side\n", "the files are left alone");
     assert!(!s.repo.join("merged-mr.txt").exists());
+}
+
+/// What the review refresh saved about `run`'s MR, !12: `state` at the provider.
+fn mr(s: &Setup, run: &str, state: ProviderState) {
+    let mut lifecycle = ReviewLifecycle::associate("gitlab", "12", "https://gitlab.example/alpha/-/merge_requests/12", &"b".repeat(40));
+    lifecycle.state = state;
+    lifecycle.observed = true;
+    Store::open(&s.roots.database()).unwrap().save_lifecycle(run, &lifecycle).unwrap();
+}
+
+fn events_of(s: &Setup, run: &str, kind: &str) -> Vec<Value> {
+    RunStore::new(&s.roots.state).events(run).unwrap().into_iter().filter(|event| event.kind == kind).map(|event| event.payload).collect()
+}
+
+/// The dashboard card of project alpha.
+fn card(s: &Setup) -> Value {
+    let (status, body) = send(s, "GET", "/api/projects", b"");
+    assert_eq!(status, 200, "{body}");
+    body["projects"].as_array().unwrap().iter().find(|project| project["id"] == "alpha").cloned().unwrap()
+}
+
+#[test]
+fn the_refresh_seeing_the_mr_merged_pulls_the_target_before_any_start_and_records_it() {
+    let s = setup("pull-on-merge", Delivery::Review, |_| {});
+    round(&s);
+    assert_eq!(started(&s), ["COM-01"]);
+    let merged = merge_on_origin(&s, "merged-mr");
+    mr(&s, "run-1-COM-01", ProviderState::Merged);
+
+    provider(&s).review_looked_at("run-1-COM-01");
+    assert_eq!(git(&s.repo, &["rev-parse", "refs/heads/main"]), merged, "pulled before any round");
+    let pulled = events_of(&s, "run-1-COM-01", "target.pulled");
+    assert_eq!(pulled.len(), 1, "{pulled:?}");
+    assert_eq!(pulled[0]["outcome"], "fast_forwarded");
+    assert_eq!(pulled[0]["to"], merged.as_str());
+    let audit = orq_core::remote_audit::read(&s.roots, 10).unwrap();
+    let entry = audit.iter().find(|entry| entry["action"] == "project.pull").expect("an audit entry");
+    assert_eq!(entry["identity"], "orq serve");
+    assert_eq!(entry["outcome"], "allowed");
+    assert!(card(&s)["queue"].get("target_pull_warning").is_none());
+
+    provider(&s).review_looked_at("run-1-COM-01");
+    assert_eq!(events_of(&s, "run-1-COM-01", "target.pulled").len(), 1, "one merge is pulled once");
+}
+
+#[test]
+fn an_open_mr_or_a_merge_local_project_pulls_nothing_on_a_look() {
+    let s = setup("pull-on-open", Delivery::Review, |_| {});
+    round(&s);
+    let before = git(&s.repo, &["rev-parse", "refs/heads/main"]);
+    merge_on_origin(&s, "other");
+    mr(&s, "run-1-COM-01", ProviderState::Open);
+    provider(&s).review_looked_at("run-1-COM-01");
+    assert_eq!(git(&s.repo, &["rev-parse", "refs/heads/main"]), before);
+    assert!(events_of(&s, "run-1-COM-01", "target.pulled").is_empty());
+}
+
+#[test]
+fn a_merge_that_cannot_be_pulled_warns_on_the_card_and_page_until_a_retry_pulls_it() {
+    let s = setup("pull-on-merge-diverged", Delivery::Review, |_| {});
+    round(&s);
+    std::fs::write(s.repo.join("local.txt"), "local\n").unwrap();
+    git(&s.repo, &["add", "local.txt"]);
+    git(&s.repo, &["commit", "-q", "-m", "local only"]);
+    let merged = merge_on_origin(&s, "merged-mr");
+    mr(&s, "run-1-COM-01", ProviderState::Merged);
+    provider(&s).review_looked_at("run-1-COM-01");
+
+    let pulled = events_of(&s, "run-1-COM-01", "target.pulled");
+    assert_eq!(pulled[0]["outcome"], "diverged");
+    let warning = "main not updated after !12 merged: main has 1 commit not on origin and origin has 1 not here";
+    assert_eq!(card(&s)["queue"]["target_pull_warning"], warning);
+    assert_eq!(queue(&s)["target_pull_warning"], warning);
+
+    // Still diverged: the retry says so and the warning stays.
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/pull", b"");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["outcome"], "diverged");
+    assert_eq!(queue(&s)["target_pull_warning"], warning);
+
+    git(&s.repo, &["reset", "-q", "--hard", "HEAD~1"]);
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/pull", b"");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["outcome"], "fast_forwarded");
+    assert_eq!(git(&s.repo, &["rev-parse", "refs/heads/main"]), merged);
+    assert!(queue(&s).get("target_pull_warning").is_none());
+    assert!(card(&s)["queue"].get("target_pull_warning").is_none());
+    let audit = orq_core::remote_audit::read(&s.roots, 10).unwrap();
+    assert_eq!(audit[0]["action"], "project.pull");
+    assert_eq!(audit[0]["identity"], "web");
+}
+
+#[test]
+fn a_retry_needs_remote_actions_and_a_known_project() {
+    let s = setup("pull-retry-off", Delivery::Review, |_| {});
+    assert_eq!(send(&s, "POST", "/api/projects/nobody/pull", b"").0, 404);
+    std::fs::write(s.roots.config_file(), "remote_actions = false\n").unwrap();
+    assert_eq!(send(&s, "POST", "/api/projects/alpha/pull", b"").0, 404);
+    let audit = orq_core::remote_audit::read(&s.roots, 1).unwrap();
+    assert_eq!(audit[0]["action"], "project.pull");
+    assert_eq!(audit[0]["outcome"], "refused");
 }
 
 #[test]

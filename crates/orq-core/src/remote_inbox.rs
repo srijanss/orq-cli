@@ -313,6 +313,13 @@ pub trait ProjectsProvider {
         Ok(RunControlOutcome::Unknown)
     }
 
+    /// Pulls project `id`'s target from its remote, fast-forward only, as a person asked from the web:
+    /// what came of it (`outcome`, `message`, and whether the warning it had is gone). `None` when there
+    /// is no such project, as a provider that cannot pull says.
+    fn pull_project_target(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// Records that the paused run `run` of project `id` continues `role` ("implementer" or "reviewer") on the
     /// model profile `profile` when it resumes (`Done(run)`), or why not. A provider that cannot does not know the run.
     fn switch_model(&self, _id: &str, _run: &str, _role: &str, _profile: &str) -> Result<RunControlOutcome, String> {
@@ -1871,6 +1878,38 @@ fn queue_target(path: &str) -> Option<(&str, &str)> {
     })
 }
 
+/// Pulls a project's target branch again, as the Retry after a merge that could not be pulled asks:
+/// only with actions on, and every attempt audited as `project.pull`.
+fn pull_project_target(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "project.pull", project: id, run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &[]) {
+        audit(Outcome::Refused, "bad request body");
+        return refusal;
+    }
+    match provider.map(|provider| provider.pull_project_target(id)) {
+        Some(Ok(Some(pulled))) => {
+            audit(Outcome::Allowed, pulled.get("message").and_then(Value::as_str).unwrap_or_default());
+            reply(200, pulled)
+        }
+        Some(Err(why)) => {
+            audit(Outcome::Refused, &why);
+            error(500, "the target could not be pulled")
+        }
+        _ => {
+            audit(Outcome::Refused, "no such project");
+            error(404, "not found")
+        }
+    }
+}
+
 /// Adds to, removes from, reorders, pauses or resumes a project's run queue: only with actions on,
 /// and every attempt audited as `queue.<action>`.
 fn change_queue(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, leaf: &str, body: &[u8]) -> Response {
@@ -2392,6 +2431,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, leaf)) = (request.method == "POST").then(|| queue_target(path)).flatten() {
         return change_queue(roots, provider, id, leaf, body);
+    }
+    if let Some(id) = (request.method == "POST").then(|| project_target(path, "pull")).flatten() {
+        return pull_project_target(roots, provider, id, body);
     }
     if let Some(target) = (request.method == "POST").then(|| todo_target(path)).flatten() {
         return change_todo(roots, provider, target, body);
