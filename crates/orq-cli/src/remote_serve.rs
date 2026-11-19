@@ -13,9 +13,13 @@ const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
 /// `orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now]`: the same server with nothing to set up. The
 /// command itself is the opt-in, so the run settings need not enable remote control, a missing
 /// token is created, and the repository defaults to the current directory.
+/// `orq serve restart|install|status|uninstall` are its subcommands.
 pub fn serve_plain(args: &[OsString]) -> ExitCode {
     match args.first().and_then(|word| word.to_str()) {
         Some("restart") => restart_command(&args[1..]),
+        Some("install") => install_command(&args[1..]),
+        Some("uninstall") if args.len() == 1 => uninstall_command(),
+        Some("status") if args.len() == 1 => status_command(),
         _ => run(args),
     }
 }
@@ -84,6 +88,8 @@ struct LiveServer {
     pid: u32,
     exe: PathBuf,
     listen: String,
+    /// The systemd unit it runs under, when `orq serve install`'s unit started it.
+    unit: Option<String>,
 }
 
 /// Where each running server keeps a file naming it, locked for as long as it runs.
@@ -119,7 +125,7 @@ fn live_servers(roots: &orq_core::storage::StorageRoots) -> Vec<LiveServer> {
         if pid != own_pid as u64 {
             continue;
         }
-        live.push(LiveServer { pid: own_pid as u32, exe: PathBuf::from(exe), listen: info["listen"].as_str().unwrap_or_default().to_string() });
+        live.push(LiveServer { pid: own_pid as u32, exe: PathBuf::from(exe), listen: info["listen"].as_str().unwrap_or_default().to_string(), unit: info["unit"].as_str().map(str::to_string) });
     }
     live
 }
@@ -138,7 +144,7 @@ fn announce_server(roots: &orq_core::storage::StorageRoots, listen: &str) -> Opt
         return None;
     }
     let exe = std::env::current_exe().ok()?;
-    let info = serde_json::json!({ "pid": std::process::id(), "exe": exe, "listen": listen, "version": format!("orq {BUILD}") });
+    let info = serde_json::json!({ "pid": std::process::id(), "exe": exe, "listen": listen, "version": format!("orq {BUILD}"), "unit": own_unit() });
     file.set_len(0).ok()?;
     file.write_all(info.to_string().as_bytes()).ok()?;
     Some((path, file))
@@ -179,46 +185,69 @@ pub(crate) const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("OR
 /// What `orq remote serve`, which was removed, says instead of starting anything.
 pub const REMOTE_SERVE_REMOVED: &str = "use `orq serve` (same flags)";
 
-fn run(args: &[OsString]) -> ExitCode {
-    let mut repo = None;
-    let mut listen = String::from(DEFAULT_LISTEN);
-    let mut passkey_host = None;
-    let mut loopback_token = true;
-    let mut upgrade_now = false;
-    let mut words = args.iter();
-    while let Some(word) = words.next() {
-        match word.to_str() {
-            Some("--repo") => match words.next() {
-                Some(path) if repo.is_none() => repo = Some(PathBuf::from(path)),
-                _ => return usage_error(),
-            },
-            Some("--listen") => match words.next().and_then(|a| a.to_str()) {
-                Some(address) => listen = address.to_string(),
-                None => return usage_error(),
-            },
-            Some("--passkey-host") => match words.next().and_then(|a| a.to_str()) {
-                Some(host) if passkey_host.is_none() => passkey_host = Some(host.to_string()),
-                _ => return usage_error(),
-            },
-            Some("--no-loopback-token") if loopback_token => loopback_token = false,
-            Some("--upgrade-now") if !upgrade_now => upgrade_now = true,
-            _ => return usage_error(),
+/// The flags `orq serve` and `orq serve install` share.
+struct ServeFlags {
+    repo: Option<PathBuf>,
+    listen: String,
+    passkey_host: Option<String>,
+    loopback_token: bool,
+    upgrade_now: bool,
+}
+
+impl ServeFlags {
+    /// Reads the flags, or the exit code of a usage error; `--upgrade-now` only when `upgrade` allows it.
+    fn parse(args: &[OsString], upgrade: bool) -> Result<ServeFlags, ExitCode> {
+        let mut flags = ServeFlags { repo: None, listen: String::from(DEFAULT_LISTEN), passkey_host: None, loopback_token: true, upgrade_now: false };
+        let mut words = args.iter();
+        while let Some(word) = words.next() {
+            match word.to_str() {
+                Some("--repo") => match words.next() {
+                    Some(path) if flags.repo.is_none() => flags.repo = Some(PathBuf::from(path)),
+                    _ => return Err(usage_error()),
+                },
+                Some("--listen") => match words.next().and_then(|a| a.to_str()) {
+                    Some(address) => flags.listen = address.to_string(),
+                    None => return Err(usage_error()),
+                },
+                Some("--passkey-host") => match words.next().and_then(|a| a.to_str()) {
+                    Some(host) if flags.passkey_host.is_none() => flags.passkey_host = Some(host.to_string()),
+                    _ => return Err(usage_error()),
+                },
+                Some("--no-loopback-token") if flags.loopback_token => flags.loopback_token = false,
+                Some("--upgrade-now") if upgrade && !flags.upgrade_now => flags.upgrade_now = true,
+                _ => return Err(usage_error()),
+            }
+        }
+        if !flags.loopback_token && flags.passkey_host.is_none() {
+            return Err(fail("--no-loopback-token only applies together with --passkey-host"));
+        }
+        Ok(flags)
+    }
+
+    /// The repository: the one given, or the current directory.
+    fn repo(&self) -> Result<PathBuf, ExitCode> {
+        match &self.repo {
+            Some(repo) => Ok(repo.clone()),
+            None => std::env::current_dir().map_err(|err| fail(format!("cannot read the current directory: {:?}", err.kind()))),
         }
     }
-    if !loopback_token && passkey_host.is_none() {
-        return fail("--no-loopback-token only applies together with --passkey-host");
-    }
+}
+
+fn run(args: &[OsString]) -> ExitCode {
+    let flags = match ServeFlags::parse(args, true) {
+        Ok(flags) => flags,
+        Err(code) => return code,
+    };
+    let ServeFlags { listen, passkey_host, loopback_token, upgrade_now, .. } = &flags;
+    let (listen, upgrade_now) = (listen.clone(), *upgrade_now);
     let auth = match passkey_host.as_deref().map(orq_core::passkey_register::PasskeyHost::from_setting) {
-        Some(Ok(host)) => Some(std::sync::Arc::new(orq_core::passkey_routes::PasskeyAuth::new(host).with_loopback_token(loopback_token))),
+        Some(Ok(host)) => Some(std::sync::Arc::new(orq_core::passkey_routes::PasskeyAuth::new(host).with_loopback_token(*loopback_token))),
         Some(Err(reason)) => return fail(reason),
         None => None,
     };
-    let repo = match repo {
-        Some(repo) => repo,
-        None => match std::env::current_dir() {
-            Ok(dir) => dir,
-            Err(err) => return fail(format!("cannot read the current directory: {:?}", err.kind())),
-        },
+    let repo = match flags.repo() {
+        Ok(repo) => repo,
+        Err(code) => return code,
     };
     // The run settings are still read, so a broken one is reported here as before; `remote_control`
     // is Claude Remote Control for sessions and has no say over serving the web.
@@ -510,6 +539,7 @@ fn restart_control(roots: &orq_core::storage::StorageRoots) -> RestartControl {
             restart_target(&exe, &target_installed)
         }),
     )
+    .managed_by_systemd(started_by_systemd())
 }
 
 /// The runs a restart waits for, by id.
@@ -528,6 +558,8 @@ pub(crate) struct RestartControl {
     target: RestartTarget,
     pending: std::sync::atomic::AtomicBool,
     now: std::sync::atomic::AtomicBool,
+    /// Whether systemd started this server, so it is started again after a crash or a reboot.
+    managed: bool,
 }
 
 impl RestartControl {
@@ -540,7 +572,14 @@ impl RestartControl {
             target,
             pending: Default::default(),
             now: Default::default(),
+            managed: false,
         }
+    }
+
+    /// Says systemd started this server when `managed`.
+    pub(crate) fn managed_by_systemd(mut self, managed: bool) -> Self {
+        self.managed = managed;
+        self
     }
 
     /// The installed orq's version, read again only when the file changed; `None` when there is none.
@@ -585,6 +624,8 @@ impl orq_core::remote_inbox::ServerControl for RestartControl {
             "installed": installed,
             "restart_pending": pending,
             "waiting_for": waiting_for,
+            "managed_by_systemd": self.managed,
+            "supervision": if self.managed { "Managed by systemd (restarts automatically)" } else { "Not managed: stops on reboot" },
         })
     }
 
@@ -603,6 +644,316 @@ impl orq_core::remote_inbox::ServerControl for RestartControl {
     fn restart_pending(&self) -> bool {
         self.pending.load(std::sync::atomic::Ordering::SeqCst)
     }
+}
+
+/// The systemd user unit `orq serve install` writes.
+const UNIT: &str = "orq-serve.service";
+
+/// `orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]]`: writes
+/// the systemd user unit that runs `orq serve` with these flags and restarts it after a crash or a reboot, then
+/// enables and starts it. Linger, which keeps it running with no session open, is only named, never turned on.
+fn install_command(args: &[OsString]) -> ExitCode {
+    let flags = match ServeFlags::parse(args, false) {
+        Ok(flags) => flags,
+        Err(code) => return code,
+    };
+    let repo = match flags.repo().and_then(|repo| repo.canonicalize().map_err(|err| fail(format!("cannot find the repository {}: {:?}", repo.display(), err.kind())))) {
+        Ok(repo) => repo,
+        Err(code) => return code,
+    };
+    let binary = match std::env::current_exe() {
+        Ok(exe) => match restart_target(&exe, &installed_binary()) {
+            Ok(binary) => binary,
+            Err(why) => return fail(format!("cannot install orq serve: {why}")),
+        },
+        Err(err) => return fail(format!("cannot find the running orq: {:?}", err.kind())),
+    };
+    let roots = match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
+        Ok(roots) => roots,
+        Err(err) => return fail(format!("cannot locate the Orq directories: {err}")),
+    };
+    // A server started by hand on the address would keep the unit's from starting; it is named, never stopped.
+    if let Some(server) = live_servers(&roots).into_iter().find(|server| server.unit.as_deref() != Some(UNIT) && same_address(&server.listen, &flags.listen)) {
+        return fail(format!("orq serve (pid {}) already listens on {}, not under systemd; stop it first (kill {}), then install again", server.pid, server.listen, server.pid));
+    }
+    let path = match unit_path() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let mut words: Vec<String> = vec![binary.display().to_string(), "serve".into(), "--repo".into(), repo.display().to_string(), "--listen".into(), flags.listen.clone()];
+    if let Some(host) = &flags.passkey_host {
+        words.extend(["--passkey-host".into(), host.clone()]);
+        if !flags.loopback_token {
+            words.push("--no-loopback-token".into());
+        }
+    }
+    let unit = unit_text(&words);
+    let before = match read_unit(&path) {
+        Ok(before) => before,
+        Err(code) => return code,
+    };
+    if before.as_deref() == Some(unit.as_str()) {
+        println!("orq serve: already installed ({}), nothing changed", path.display());
+    } else {
+        if let Err(err) = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, &unit)) {
+            return fail(format!("cannot write {}: {:?}", path.display(), err.kind()));
+        }
+        // A new unit is enabled and started; a changed one is restarted, so the server runs with the new flags.
+        let calls: &[&[&str]] = if before.is_none() { &[&["daemon-reload"], &["enable", "--now", UNIT]] } else { &[&["daemon-reload"], &["enable", UNIT], &["restart", UNIT]] };
+        for call in calls {
+            if let Err(why) = systemctl(call) {
+                return fail(why);
+            }
+        }
+        let done = if before.is_none() { "installed" } else { "updated" };
+        println!("orq serve: {done} {} and started it", path.display());
+    }
+    if !linger_on() {
+        println!("it stops when you log out; to keep it running, run: loginctl enable-linger {}", user_name());
+    }
+    ExitCode::SUCCESS
+}
+
+/// `orq serve uninstall`: stops and disables the unit and removes its file. Logs, the token and the runs stay.
+fn uninstall_command() -> ExitCode {
+    let path = match unit_path() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    if !path.exists() {
+        println!("orq serve: not installed (no {})", path.display());
+        return ExitCode::SUCCESS;
+    }
+    // Stopped first, so a failure leaves the file for another try.
+    if let Err(why) = systemctl(&["disable", "--now", UNIT]) {
+        return fail(why);
+    }
+    if let Err(err) = std::fs::remove_file(&path) {
+        return fail(format!("cannot remove {}: {:?}", path.display(), err.kind()));
+    }
+    if let Err(why) = systemctl(&["daemon-reload"]) {
+        return fail(why);
+    }
+    println!("orq serve: stopped and removed {}", path.display());
+    ExitCode::SUCCESS
+}
+
+/// `orq serve status`: whether the unit is installed, enabled and active, how often it restarted, linger, the
+/// binary it runs and its last 5 journal lines. What cannot be asked is shown as unknown, with why.
+fn status_command() -> ExitCode {
+    let path = match unit_path() {
+        Ok(path) => path,
+        Err(code) => return code,
+    };
+    let unit = match read_unit(&path) {
+        Ok(unit) => unit,
+        Err(code) => return code,
+    };
+    let Some(unit) = unit else {
+        println!("unit: not installed ({} is missing; `orq serve install` writes it)", path.display());
+        println!("linger: {}", if linger_on() { "yes" } else { "no" });
+        return ExitCode::SUCCESS;
+    };
+    println!("unit: {}", path.display());
+    match systemctl(&["show", UNIT, "-p", "UnitFileState", "-p", "ActiveState", "-p", "NRestarts"]) {
+        Ok(shown) => {
+            let field = |name: &str| shown.lines().find_map(|line| line.strip_prefix(name).and_then(|rest| rest.strip_prefix('='))).unwrap_or("unknown").to_string();
+            let (enabled, active) = (field("UnitFileState"), field("ActiveState"));
+            println!("enabled: {}", if enabled == "enabled" { "yes".to_string() } else { format!("no ({enabled})") });
+            println!("active: {}", if active == "active" { "yes".to_string() } else { format!("no ({active})") });
+            println!("restarts: {}", field("NRestarts"));
+        }
+        Err(why) => println!("enabled, active, restarts: unknown ({why})"),
+    }
+    println!("linger: {}", if linger_on() { "yes" } else { "no" });
+    println!("binary: {}", unit_binary(&unit).unwrap_or_else(|| "unknown (no ExecStart in the unit)".into()));
+    match system_call("journalctl", &["--user", "-u", UNIT, "-n", "5", "--no-pager"]) {
+        Ok(lines) => {
+            println!("last journal lines:");
+            for line in lines.lines() {
+                println!("  {line}");
+            }
+        }
+        Err(why) => println!("last journal lines: unknown ({why})"),
+    }
+    ExitCode::SUCCESS
+}
+
+/// The binary a unit written by [`unit_text`] runs: the first word of its `ExecStart`, unquoted.
+fn unit_binary(unit: &str) -> Option<String> {
+    let exec = unit.lines().find_map(|line| line.strip_prefix("ExecStart="))?;
+    let mut chars = exec.strip_prefix('"')?.chars();
+    let mut word = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(word),
+            '\\' => match chars.next()? {
+                'n' => word.push('\n'),
+                escaped => word.push(escaped),
+            },
+            '%' | '$' => {
+                chars.next();
+                word.push(c);
+            }
+            c => word.push(c),
+        }
+    }
+    None
+}
+
+/// Whether systemd started this process: it sets `INVOCATION_ID` for every service, and `NOTIFY_SOCKET` for
+/// one that reports to it.
+fn started_by_systemd() -> bool {
+    ["INVOCATION_ID", "NOTIFY_SOCKET"].iter().any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// The unit this server runs under: `orq serve install`'s, when systemd started it from that unit.
+fn own_unit() -> Option<String> {
+    let unit = std::env::var("ORQ_SYSTEMD_UNIT").ok().filter(|unit| unit == UNIT)?;
+    std::env::var_os("INVOCATION_ID").filter(|id| !id.is_empty()).map(|_| unit)
+}
+
+/// Whether a server listening on `listening` holds `wanted`: the same port, on the same address or with
+/// either one every address. An address that does not resolve holds nothing.
+fn same_address(listening: &str, wanted: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let resolve = |address: &str| address.to_socket_addrs().map(|all| all.collect::<Vec<_>>()).unwrap_or_default();
+    let (held, asked) = (resolve(listening), resolve(wanted));
+    held.iter().any(|held| asked.iter().any(|asked| held.port() == asked.port() && (held.ip() == asked.ip() || held.ip().is_unspecified() || asked.ip().is_unspecified())))
+}
+
+/// The unit file: `$XDG_CONFIG_HOME/systemd/user/orq-serve.service`, or under `~/.config`; a failure without either.
+fn unit_path() -> Result<PathBuf, ExitCode> {
+    let absolute = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|path| path.is_absolute());
+    let Some(config) = absolute("XDG_CONFIG_HOME").or_else(|| absolute("HOME").map(|home| home.join(".config"))) else {
+        return Err(fail("cannot locate the systemd user directory: neither XDG_CONFIG_HOME nor HOME is an absolute path"));
+    };
+    Ok(config.join("systemd/user").join(UNIT))
+}
+
+/// The unit file's text, `None` when there is none.
+fn read_unit(path: &std::path::Path) -> Result<Option<String>, ExitCode> {
+    match std::fs::read_to_string(path) {
+        Ok(unit) => Ok(Some(unit)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(fail(format!("cannot read {}: {:?}", path.display(), err.kind()))),
+    }
+}
+
+/// The unit that runs `exec`, the binary and its arguments. It restarts after any exit, at most 10 times in 10
+/// minutes; it stops with SIGTERM, which lets the server finish what is in flight. Only the server is stopped
+/// (`KillMode=process`): the runs it started go on, as they do when a hand-started server stops.
+fn unit_text(exec: &[String]) -> String {
+    let exec_start = exec.iter().map(|word| unit_quote(word)).collect::<Vec<_>>().join(" ");
+    format!(
+        "# Written by `orq serve install`; `orq serve uninstall` removes it.\n\
+         [Unit]\n\
+         Description=orq serve (the Orq web server)\n\
+         StartLimitIntervalSec=600\n\
+         StartLimitBurst=10\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStart={exec_start}\n\
+         Environment=ORQ_SYSTEMD_UNIT={UNIT}\n\
+         Restart=always\n\
+         RestartSec=5\n\
+         KillSignal=SIGTERM\n\
+         KillMode=process\n\
+         TimeoutStopSec=30\n\
+         StandardOutput=journal\n\
+         StandardError=journal\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n"
+    )
+}
+
+/// One word of a unit's command line in double quotes, so spaces and quotes stay in it and `%` and `$` are
+/// not expanded.
+fn unit_quote(word: &str) -> String {
+    let mut quoted = String::from("\"");
+    for c in word.chars() {
+        match c {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+            '\n' => quoted.push_str("\\n"),
+            '%' => quoted.push_str("%%"),
+            '$' => quoted.push_str("$$"),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// How long a call to `systemctl`, `loginctl` or `journalctl` may take before it is given up on.
+const SYSTEM_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `systemctl --user <args>`; its output, or why it failed.
+fn systemctl(args: &[&str]) -> Result<String, String> {
+    let mut all = vec!["--user"];
+    all.extend_from_slice(args);
+    system_call("systemctl", &all)
+}
+
+/// Runs `program` with `args`, bounded by [`SYSTEM_CALL_TIMEOUT`]; its standard output when it succeeds, else
+/// why not, with what it said on standard error.
+fn system_call(program: &str, args: &[&str]) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let shown = format!("{program} {}", args.join(" "));
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot run `{shown}`: {:?}", err.kind()))?;
+    let read = |stream: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut stream) = stream {
+                let _ = stream.read_to_string(&mut text);
+            }
+            let _ = tx.send(text);
+        });
+        rx
+    };
+    let out = read(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let err = read(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let deadline = std::time::Instant::now() + SYSTEM_CALL_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("`{shown}` did not finish within {} seconds", SYSTEM_CALL_TIMEOUT.as_secs()));
+            }
+        }
+    };
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    let stdout = out.recv_timeout(left).unwrap_or_default();
+    let stderr = err.recv_timeout(left).unwrap_or_default();
+    if status.success() {
+        Ok(stdout)
+    } else {
+        Err(format!("`{shown}` failed ({status}): {}", stderr.trim()))
+    }
+}
+
+/// This user's name for `loginctl`: `$USER`, else the user id.
+fn user_name() -> String {
+    // SAFETY: getuid cannot fail.
+    std::env::var("USER").ok().filter(|name| !name.is_empty()).unwrap_or_else(|| unsafe { libc::getuid() }.to_string())
+}
+
+/// Whether linger is on for this user, so the unit runs with no session open; unknown counts as off.
+fn linger_on() -> bool {
+    system_call("loginctl", &["show-user", &user_name(), "-p", "Linger"]).is_ok_and(|out| out.trim() == "Linger=yes")
 }
 
 #[cfg(test)]

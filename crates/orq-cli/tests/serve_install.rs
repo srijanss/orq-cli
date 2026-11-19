@@ -1,0 +1,310 @@
+//! `orq serve install` puts `orq serve` under a systemd user unit, `orq-serve.service`, that restarts it after a
+//! crash or a reboot; `orq serve status` says how the unit is doing and `orq serve uninstall` takes it away.
+//!
+//! `XDG_CONFIG_HOME` is a temp dir, so the unit lands under it, and stand-in `systemctl`, `loginctl` and
+//! `journalctl` on the PATH note each call and answer with what the test gives them. The orq under test is a
+//! build under `target/`, so the unit runs the installed orq, a stand-in named by `ORQ_INSTALLED_BINARY`.
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+const TOKEN: &str = "install-token-0123456789abcdef01234567";
+
+/// A fresh root with a repository, a token file, an installed orq and stand-in system tools.
+struct World {
+    root: PathBuf,
+    repo: PathBuf,
+    installed: PathBuf,
+}
+
+impl World {
+    fn new(tag: &str) -> World {
+        let root = orq_test_support::process_temp_dir().join(format!("orq-serve-install-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // A space in each path, so the unit has to quote them.
+        let repo = root.join("my repo");
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git").arg("-C").arg(&repo).args(["init", "-q", "-b", "main"]).output().unwrap().status.success());
+        let config = root.join("config/orq");
+        fs::create_dir_all(&config).unwrap();
+        let token = config.join("remote-token");
+        fs::write(&token, TOKEN).unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+        let bin = root.join("installed bin");
+        fs::create_dir_all(&bin).unwrap();
+        let installed = bin.join("orq");
+        fs::write(&installed, "#!/bin/sh\necho 'orq 9.9.9 (fffffff 2030-01-01T00:00:00Z)'\n").unwrap();
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o755)).unwrap();
+        let world = World { root, repo, installed };
+        world.answer("systemctl", "");
+        world.answer("loginctl", "echo Linger=yes");
+        world.answer("journalctl", "");
+        world
+    }
+
+    /// Makes the stand-in `tool` note each call and then run `answer`, a shell command.
+    fn answer(&self, tool: &str, answer: &str) {
+        let fake = self.root.join("fakebin");
+        fs::create_dir_all(&fake).unwrap();
+        let path = fake.join(tool);
+        let calls = self.root.join("calls");
+        fs::write(&path, format!("#!/bin/sh\necho \"{tool} $*\" >> '{}'\n{answer}\n", calls.display())).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Each call the stand-in tools saw, one per line.
+    fn calls(&self) -> String {
+        fs::read_to_string(self.root.join("calls")).unwrap_or_default()
+    }
+
+    fn forget_calls(&self) {
+        let _ = fs::remove_file(self.root.join("calls"));
+    }
+
+    fn unit_path(&self) -> PathBuf {
+        self.root.join("config/systemd/user/orq-serve.service")
+    }
+
+    fn unit(&self) -> String {
+        fs::read_to_string(self.unit_path()).unwrap()
+    }
+
+    fn command(&self) -> Command {
+        let mut command = orq_test_support::sandboxed_command(std::path::Path::new(env!("CARGO_BIN_EXE_orq")));
+        for (name, dir) in [("XDG_STATE_HOME", "state"), ("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"), ("HOME", "home")] {
+            command.env(name, self.root.join(dir));
+        }
+        let path = format!("{}:{}", self.root.join("fakebin").display(), std::env::var("PATH").unwrap_or_default());
+        command.env("PATH", path).env("USER", "tester").env("ORQ_INSTALLED_BINARY", &self.installed).env_remove("INVOCATION_ID").env_remove("NOTIFY_SOCKET");
+        command
+    }
+
+    /// `orq serve <args>` in this world.
+    fn serve(&self, args: &[&str]) -> Output {
+        self.command().arg("serve").args(args).output().unwrap()
+    }
+
+    fn install(&self, listen: &str) -> Output {
+        let repo = self.repo.display().to_string();
+        self.serve(&["install", "--repo", &repo, "--listen", listen])
+    }
+}
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn ok(output: &Output) -> String {
+    assert!(output.status.success(), "stdout: {}\nstderr: {}", text(&output.stdout), text(&output.stderr));
+    text(&output.stdout)
+}
+
+#[test]
+fn install_writes_a_unit_that_restarts_the_installed_orq_and_enables_it() {
+    let world = World::new("unit");
+    ok(&world.install("127.0.0.1:7999"));
+    let unit = world.unit();
+    let exec = format!("ExecStart=\"{}\" \"serve\" \"--repo\" \"{}\" \"--listen\" \"127.0.0.1:7999\"\n", world.installed.display(), world.repo.display());
+    assert!(unit.contains(&exec), "ExecStart runs the installed orq, never a target/ build, with each word quoted:\n{unit}");
+    for line in ["Restart=always\n", "RestartSec=5\n", "StartLimitIntervalSec=600\n", "StartLimitBurst=10\n", "StandardOutput=journal\n", "KillSignal=SIGTERM\n", "TimeoutStopSec=30\n", "WantedBy=default.target\n"] {
+        assert!(unit.contains(line), "{line:?} missing:\n{unit}");
+    }
+    assert_eq!(world.calls(), "systemctl --user daemon-reload\nsystemctl --user enable --now orq-serve.service\nloginctl show-user tester -p Linger\n");
+}
+
+#[test]
+fn without_linger_install_names_the_command_to_turn_it_on_and_never_runs_it() {
+    let world = World::new("linger");
+    world.answer("loginctl", "echo Linger=no");
+    let out = ok(&world.install("127.0.0.1:7999"));
+    assert!(out.contains("loginctl enable-linger tester"), "{out}");
+    assert!(!world.calls().contains("enable-linger"), "{}", world.calls());
+    let with = World::new("linger-on");
+    let out = ok(&with.install("127.0.0.1:7999"));
+    assert!(!out.contains("enable-linger"), "linger already on needs no hint: {out}");
+}
+
+#[test]
+fn an_identical_reinstall_changes_nothing_and_new_flags_rewrite_the_unit_and_restart_it() {
+    let world = World::new("again");
+    ok(&world.install("127.0.0.1:7999"));
+    let first = world.unit();
+    world.forget_calls();
+    let out = ok(&world.install("127.0.0.1:7999"));
+    assert!(out.contains("already installed"), "{out}");
+    assert_eq!(world.unit(), first);
+    assert!(!world.calls().contains("systemctl"), "an identical install calls nothing: {}", world.calls());
+    world.forget_calls();
+    ok(&world.install("127.0.0.1:7998"));
+    assert!(world.unit().contains("\"--listen\" \"127.0.0.1:7998\""), "{}", world.unit());
+    assert!(world.calls().starts_with("systemctl --user daemon-reload\nsystemctl --user enable orq-serve.service\nsystemctl --user restart orq-serve.service\n"), "{}", world.calls());
+}
+
+/// An `orq serve` started by hand, killed and reaped when the test ends.
+struct HandStarted(std::process::Child);
+
+impl Drop for HandStarted {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl World {
+    /// Starts `orq serve` by hand, outside any unit, and returns it with the address it listens on.
+    fn serve_by_hand(&self) -> (HandStarted, String) {
+        self.serve_with(&[])
+    }
+
+    /// Starts `orq serve` with `env` set, and returns it with the address it listens on.
+    fn serve_with(&self, env: &[(&str, &str)]) -> (HandStarted, String) {
+        use std::io::BufRead;
+        let mut command = self.command();
+        command.envs(env.iter().copied());
+        let mut child = command.arg("serve").arg("--repo").arg(&self.repo).args(["--listen", "127.0.0.1:0"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let running = HandStarted(child);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(addr) = line.split("http://").nth(1) {
+                    let _ = tx.send(addr.trim().to_string());
+                }
+            }
+        });
+        let addr = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("the server did not announce its address");
+        // The server names itself in its file just after the address line.
+        let file = self.root.join(format!("state/orq/serve/{}.json", running.0.id()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !fs::read_to_string(&file).is_ok_and(|text| text.contains(&addr)) {
+            assert!(std::time::Instant::now() < deadline, "the server never wrote {}", file.display());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        (running, addr)
+    }
+}
+
+#[test]
+fn install_refuses_while_an_orq_serve_started_by_hand_listens_there_and_names_its_pid() {
+    let world = World::new("busy");
+    let (server, addr) = world.serve_by_hand();
+    let out = world.install(&addr);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    let err = text(&out.stderr);
+    assert!(err.contains(&format!("pid {}", server.0.id())) && err.contains(&addr), "{err}");
+    assert!(!world.unit_path().exists(), "nothing is written before the address is free");
+    assert!(!world.calls().contains("systemctl"), "{}", world.calls());
+    // It was not stopped.
+    let mut server = server;
+    assert!(server.0.try_wait().unwrap().is_none(), "install never stops the server");
+    // Any address on the same port is the same one to a server listening on all of them.
+    let port = addr.rsplit(':').next().unwrap();
+    assert!(!world.install(&format!("0.0.0.0:{port}")).status.success());
+    assert!(world.install("127.0.0.1:7999").status.success(), "another port is free");
+}
+
+#[test]
+fn uninstall_stops_and_disables_the_unit_and_removes_its_file_but_not_logs_or_data() {
+    let world = World::new("uninstall");
+    ok(&world.install("127.0.0.1:7999"));
+    let state = world.root.join("state/orq");
+    fs::create_dir_all(&state).unwrap();
+    fs::write(state.join("serve.log"), "kept").unwrap();
+    world.forget_calls();
+    let out = ok(&world.serve(&["uninstall"]));
+    assert!(!world.unit_path().exists(), "{out}");
+    assert_eq!(world.calls(), "systemctl --user disable --now orq-serve.service\nsystemctl --user daemon-reload\n");
+    assert_eq!(fs::read_to_string(state.join("serve.log")).unwrap(), "kept");
+    assert!(world.root.join("config/orq/remote-token").exists());
+    world.forget_calls();
+    let again = world.serve(&["uninstall"]);
+    assert!(again.status.success() && text(&again.stdout).contains("not installed"), "{}", text(&again.stdout));
+    assert_eq!(world.calls(), "", "nothing to stop when there is no unit");
+}
+
+#[test]
+fn status_says_whether_the_unit_is_installed_enabled_and_active_its_restarts_linger_binary_and_last_journal_lines() {
+    let world = World::new("status");
+    let out = ok(&world.serve(&["status"]));
+    assert!(out.contains("unit: not installed"), "{out}");
+    assert!(out.contains("linger: yes"), "{out}");
+    ok(&world.install("127.0.0.1:7999"));
+    world.answer("systemctl", "case \"$*\" in *show*) printf 'UnitFileState=enabled\\nActiveState=active\\nNRestarts=3\\n';; esac");
+    world.answer("loginctl", "echo Linger=no");
+    world.answer("journalctl", "printf 'one\\ntwo\\nthree\\nfour\\nfive\\n'");
+    world.forget_calls();
+    let out = ok(&world.serve(&["status"]));
+    for line in [
+        format!("unit: {}", world.unit_path().display()),
+        "enabled: yes".into(),
+        "active: yes".into(),
+        "restarts: 3".into(),
+        "linger: no".into(),
+        format!("binary: {}", world.installed.display()),
+        "one\n".into(),
+        "five\n".into(),
+    ] {
+        assert!(out.contains(&line), "{line:?} missing:\n{out}");
+    }
+    let calls = world.calls();
+    assert!(calls.contains("systemctl --user show orq-serve.service -p UnitFileState -p ActiveState -p NRestarts\n"), "{calls}");
+    assert!(calls.contains("journalctl --user -u orq-serve.service -n 5 --no-pager\n"), "{calls}");
+}
+
+/// `GET /api/settings` with the bearer token; the JSON body.
+fn settings(addr: &str) -> serde_json::Value {
+    use std::io::{Read, Write};
+    let wait = std::time::Duration::from_secs(15);
+    let mut stream = std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), wait).unwrap();
+    stream.set_read_timeout(Some(wait)).unwrap();
+    write!(stream, "GET /api/settings HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n").unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    serde_json::from_str(reply.split_once("\r\n\r\n").unwrap().1).unwrap()
+}
+
+#[test]
+fn settings_says_whether_systemd_manages_the_server() {
+    let world = World::new("settings");
+    let (_by_hand, addr) = world.serve_by_hand();
+    let server = &settings(&addr)["server"];
+    assert_eq!(server["managed_by_systemd"], false, "{server}");
+    assert_eq!(server["supervision"], "Not managed: stops on reboot", "{server}");
+    for env in [("INVOCATION_ID", "0123abcd"), ("NOTIFY_SOCKET", "/run/user/1000/systemd/notify")] {
+        let (_managed, addr) = world.serve_with(&[env]);
+        let server = &settings(&addr)["server"];
+        assert_eq!(server["managed_by_systemd"], true, "{env:?}: {server}");
+        assert_eq!(server["supervision"], "Managed by systemd (restarts automatically)", "{env:?}: {server}");
+    }
+}
+
+#[test]
+fn quotes_percent_and_dollar_signs_in_paths_are_escaped_in_the_unit_and_read_back_by_status() {
+    let mut world = World::new("escapes");
+    let odd = world.root.join("odd \"bin\" 100% $HOME \\ dir");
+    fs::create_dir_all(&odd).unwrap();
+    let installed = odd.join("orq");
+    fs::copy(&world.installed, &installed).unwrap();
+    world.installed = installed;
+    ok(&world.install("127.0.0.1:7999"));
+    let unit = world.unit();
+    let escaped = format!("ExecStart=\"{}/odd \\\"bin\\\" 100%% $$HOME \\\\ dir/orq\" \"serve\"", world.root.display());
+    assert!(unit.contains(&escaped), "{escaped}\n{unit}");
+    let out = ok(&world.serve(&["status"]));
+    assert!(out.contains(&format!("binary: {}\n", world.installed.display())), "{out}");
+}
+
+#[test]
+fn the_units_own_server_on_the_address_does_not_hold_up_a_reinstall() {
+    let world = World::new("own");
+    let (_unit_server, addr) = world.serve_with(&[("INVOCATION_ID", "0123abcd"), ("ORQ_SYSTEMD_UNIT", "orq-serve.service")]);
+    ok(&world.install(&addr));
+    // Another unit's server is not this unit's.
+    let other = World::new("other-unit");
+    let (server, addr) = other.serve_with(&[("INVOCATION_ID", "0123abcd"), ("ORQ_SYSTEMD_UNIT", "something-else.service")]);
+    let out = other.install(&addr);
+    assert!(!out.status.success() && text(&out.stderr).contains(&format!("pid {}", server.0.id())), "{}", text(&out.stderr));
+}

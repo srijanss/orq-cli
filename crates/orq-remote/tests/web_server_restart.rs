@@ -70,6 +70,16 @@ fn settings_shows_both_builds_and_says_when_a_newer_one_is_installed() {
 }
 
 #[test]
+fn settings_says_whether_systemd_restarts_the_server() {
+    for text in ["Managed by systemd (restarts automatically)", "Not managed: stops on reboot"] {
+        let mut reply = settings(false, false, 0);
+        reply["json"]["server"]["supervision"] = json!(text);
+        let Some(out) = as_session(json!([reply]), json!([])) else { return };
+        assert!(says(last(&out), text), "{out}");
+    }
+}
+
+#[test]
 fn restart_when_idle_asks_first_then_asks_the_server_and_shows_it_pending() {
     let responses = json!([settings(true, false, 0), {"status": 202, "json": {"restart_pending": true, "waiting_for": 1}}, settings(true, true, 1)]);
     let steps = json!([{"click": "[data-restart-server]"}, {"click": "[data-confirm]"}]);

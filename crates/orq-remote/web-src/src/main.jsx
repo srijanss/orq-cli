@@ -981,6 +981,7 @@ function parseServer(server) {
     newer: server.newer_installed === true,
     pending: server.restart_pending === true,
     waiting: typeof server.waiting_for === "number" ? server.waiting_for : 0,
+    supervision: typeof server.supervision === "string" ? server.supervision : null,
   };
 }
 
@@ -1023,6 +1024,7 @@ function ServerCard({ server, on, token, onSignedOut, onChanged }) {
       <dl className="settings-fields">
         <div className="settings-row"><dt>Running</dt><dd>{server.running}</dd></div>
         <div className="settings-row"><dt>Installed</dt><dd>{server.installed ?? <span className="muted">No installed orq found</span>}</dd></div>
+        {server.supervision !== null ? <div className="settings-row" data-supervision><dt>Restarts</dt><dd>{server.supervision}</dd></div> : null}
       </dl>
       {server.newer ? <p className="settings-block" role="status" data-newer-installed>A newer orq is installed</p> : null}
       {server.pending ? (
