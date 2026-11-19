@@ -209,8 +209,14 @@ export function TabBar({ entries, path }) {
       const next = event.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at === -1 || at === stops.length - 1 ? 0 : at + 1);
       stops[next].focus();
     };
+    // A resize can reflow the grid (five a row from 600px wide, four below), so the open height follows it.
+    const onResize = () => setFull(measure());
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
   }, [open]);
 
   // How much of the drawer shows with the finger at `y`.

@@ -132,6 +132,14 @@ fn a_finger_tapping_the_handle_opens_and_closes_it_as_a_browser_sends_the_tap() 
 }
 
 #[test]
+fn an_open_drawer_takes_its_new_height_when_the_window_resizes() {
+    // Crossing 600px wide moves the grid from five a row to four, so it grows.
+    let Some(out) = seven(json!([{"click": HANDLE}, {"resize": 380}]), false) else { return };
+    assert_eq!(probed(&out["frames"][1], DRAWER)[0]["height"], "300px", "{out}");
+    assert_eq!(probed(&out["frames"][2], DRAWER)[0]["height"], "380px", "nothing is clipped: {out}");
+}
+
+#[test]
 fn the_bar_follows_a_drag_and_opens_when_let_go_past_a_third() {
     let Some(out) = seven(slow_drag(600, 480), false) else { return };
     let moving = &probed(&out["frames"][2], DRAWER)[0];

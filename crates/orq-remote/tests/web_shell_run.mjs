@@ -30,8 +30,9 @@ window.matchMedia = (query) => ({
   addEventListener: (_, listener) => phoneListeners.add(listener),
   removeEventListener: (_, listener) => phoneListeners.delete(listener),
 });
-// jsdom has no layout: the tab bar's drawer of all sections measures `drawerHeight` (300) when open.
-const drawerHeight = scenario.drawerHeight ?? 300;
+// jsdom has no layout: the tab bar's drawer of all sections measures `drawerHeight` (300) when open; a
+// `{resize: height}` step changes that and resizes the window.
+let drawerHeight = scenario.drawerHeight ?? 300;
 Object.defineProperty(window.HTMLElement.prototype, "scrollHeight", {
   configurable: true,
   get() { return this.hasAttribute("data-tab-drawer") ? drawerHeight : 0; },
@@ -119,6 +120,9 @@ try {
         }
       }
       if (lifted && (step.tap || step.click)) lifted.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    } else if (step.resize !== undefined) {
+      drawerHeight = step.resize;
+      window.dispatchEvent(new window.Event("resize"));
     } else if (step.wait !== undefined) {
       await new Promise((resolve) => setTimeout(resolve, step.wait));
     } else if (step.press) {
