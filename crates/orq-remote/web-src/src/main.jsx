@@ -4477,29 +4477,26 @@ function undeclaredFiles(events) {
   return [...new Set(files)];
 }
 
-// The steps whose list of out-of-scope files is open, by run and step, kept while the page lives so new
-// events (which redraw the steps) never close a list someone opened; a reload starts them closed.
-const openUndeclared = new Set();
+// Whether each step detail was opened or closed, by run, step and kind, kept while the page lives so new
+// events (which redraw the steps) never close a detail someone opened; a reload starts them as they start.
+const shownDetails = new Map();
 
-// One closed line counting the files a step changed outside its features' files; opening it lists them.
-function UndeclaredFiles({ place, files }) {
-  const [open, setOpen] = useState(() => openUndeclared.has(place));
+// One closed line under a step, with a chevron, that opens its detail in place. Its button is marked
+// data-step-<kind>-toggle. `startOpen` is how it starts until someone opens or closes it.
+function StepDetail({ place, kind, label, startOpen = false, children }) {
+  const key = place + "\n" + kind;
+  const [open, setOpen] = useState(() => (shownDetails.has(key) ? shownDetails.get(key) : startOpen));
   const toggle = () => {
-    if (open) openUndeclared.delete(place);
-    else openUndeclared.add(place);
+    shownDetails.set(key, !open);
     setOpen(!open);
   };
   return (
-    <div className="run-step-undeclared">
-      <button type="button" className="link-button run-step-undeclared-toggle" data-step-undeclared-toggle aria-expanded={open ? "true" : "false"} onClick={toggle}>
+    <div className="run-step-undeclared run-step-detail">
+      <button type="button" className="link-button run-step-undeclared-toggle" {...{ ["data-step-" + kind + "-toggle"]: "" }} aria-expanded={open ? "true" : "false"} onClick={toggle}>
         <Icon name={open ? "chevronDown" : "chevronRight"} size={14} />
-        <span>{"Changed outside its features' files: " + files.length + (files.length === 1 ? " file" : " files")}</span>
+        <span>{label}</span>
       </button>
-      {open ? (
-        <ul className="run-step-undeclared-list">
-          {files.map((file) => <li key={file} data-step-undeclared>{file}</li>)}
-        </ul>
-      ) : null}
+      {open ? children : null}
     </div>
   );
 }
@@ -4515,6 +4512,8 @@ function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
         const flaky = flakyNote(step);
         const took = stepDuration(step.events);
         const undeclared = undeclaredFiles(step.events);
+        const flakyList = flakyTests(step.events);
+        const place = runId + "\n" + step.events[0].event_id;
         const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
         const failure = kind === "failed" ? latestFailure(step.events) : null;
         const failedLog = failure === null ? null : failure.log;
@@ -4526,10 +4525,22 @@ function RunSteps({ runId, events, rounds, running, ended = false, onLogs }) {
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
             {note === null ? null : <p className="run-cleanup-note field-hint muted">{note}</p>}
             {flaky === null ? null : <p className="run-flaky-note field-hint muted">{flaky}</p>}
-            {flakyTests(step.events).map((test, n) => (
-              <p key={"flaky" + n} className="run-step-flaky field-hint muted" data-step-flaky>{"Flaky: " + test.name + (Number.isInteger(test.retry) ? " (passed on retry " + test.retry + ")" : " (passed on a retry)")}</p>
-            ))}
-            {undeclared.length > 0 ? <UndeclaredFiles place={runId + "\n" + step.events[0].event_id} files={undeclared} /> : null}
+            {flakyList.length > 0 ? (
+              <StepDetail place={place} kind="flaky" label={"Flaky tests: " + flakyList.length}>
+                <ul className="run-step-undeclared-list">
+                  {flakyList.map((test, n) => (
+                    <li key={"flaky" + n} data-step-flaky>{"Flaky: " + test.name + (Number.isInteger(test.retry) ? " (passed on retry " + test.retry + ")" : " (passed on a retry)")}</li>
+                  ))}
+                </ul>
+              </StepDetail>
+            ) : null}
+            {undeclared.length > 0 ? (
+              <StepDetail place={place} kind="undeclared" label={"Changed outside its features' files: " + undeclared.length + (undeclared.length === 1 ? " file" : " files")}>
+                <ul className="run-step-undeclared-list">
+                  {undeclared.map((file) => <li key={file} data-step-undeclared>{file}</li>)}
+                </ul>
+              </StepDetail>
+            ) : null}
             {kind === "failed" ? (
               <p className="run-step-failure">
                 <Icon name="alert" size={14} />
