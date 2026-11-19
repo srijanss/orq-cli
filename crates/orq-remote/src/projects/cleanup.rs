@@ -541,6 +541,16 @@ fn delete_branch(root: &Path, record: &RunRecord, remote: &str, target: &str) ->
         Ok(out) => return Step::failed(stderr(&out)),
         Err(why) => return Step::failed(why),
     }
+    // update-ref does not refuse a branch some checkout has as its HEAD, so that is checked here.
+    match git(root, &["worktree", "list", "--porcelain"]) {
+        Ok(out) if out.status.success() => {
+            if String::from_utf8_lossy(&out.stdout).lines().any(|line| line.strip_prefix("branch ") == Some(branch.as_str())) {
+                return Step::skipped(format!("{} is checked out in another worktree", record.branch));
+            }
+        }
+        Ok(out) => return Step::failed(stderr(&out)),
+        Err(why) => return Step::failed(why),
+    }
     // Compare-and-swap on the tip that was checked: a branch moved meanwhile is left alone.
     match git(root, &["update-ref", "-d", &branch, &tip]) {
         Ok(out) if out.status.success() => Step::done(None),

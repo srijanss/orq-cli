@@ -495,6 +495,24 @@ fn a_branch_with_commits_not_on_the_target_is_not_deleted() {
 }
 
 #[test]
+fn a_branch_checked_out_in_another_checkout_is_not_deleted() {
+    let s = setup("cleanup-checked-out", |_| {});
+    merge_on_forge(&s);
+    mr(&s, ProviderState::Merged);
+    // The run's worktree is gone, and someone has the branch checked out in a worktree of their own.
+    git(&s.repo, &["worktree", "remove", s.worktree.to_str().unwrap()]);
+    git(&s.repo, &["fetch", "-q", "origin"]);
+    let elsewhere = s.base.join("elsewhere");
+    git(&s.repo, &["worktree", "add", "-q", elsewhere.to_str().unwrap(), &format!("orq/{RUN}")]);
+    let answer = clean_up(&s);
+    assert_eq!(step(&answer, "delete_branch")["state"], "skipped", "{answer}");
+    let reason = step(&answer, "delete_branch")["reason"].as_str().unwrap();
+    assert!(reason.contains("checked out"), "{reason}");
+    assert!(branch_exists(&s), "the branch is kept");
+    assert_eq!(git(&elsewhere, &["symbolic-ref", "--short", "HEAD"]), format!("orq/{RUN}"), "that checkout keeps its branch");
+}
+
+#[test]
 fn a_main_checkout_on_another_branch_is_not_fast_forwarded() {
     let s = setup("cleanup-other-branch", |_| {});
     merge_on_forge(&s);
