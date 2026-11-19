@@ -191,11 +191,30 @@ impl LoadedLedger {
     /// The whole resulting array is validated before the atomic save; a file
     /// changed since load is a conflict. Returns the entry as saved.
     pub fn edit_fields(&self, feature_name: &str, edits: &FieldEdits) -> Result<FeatureEntry, EditFieldsError> {
-        let current = self
-            .entries
-            .iter()
+        let edited = self.edited_fields(feature_name, edits)?;
+        let entries = parse_ledger_bytes(&self.path, edited.as_bytes()).map_err(|_| EditFieldsError::Malformed)?;
+        let saved = entries
+            .into_iter()
             .find(|e| e.feature_name == feature_name)
-            .ok_or(EditFieldsError::UnknownFeature)?;
+            .ok_or(EditFieldsError::Malformed)?;
+        let nothing = edits.description.is_none()
+            && edits.depends_on.is_none()
+            && edits.test_file.is_none()
+            && edits.target_files.is_none()
+            && edits.parallelizable.is_none();
+        if !nothing {
+            self.save(&edited).map_err(EditFieldsError::Save)?;
+        }
+        Ok(saved)
+    }
+
+    /// The ledger text [`edit_fields`](Self::edit_fields) would save, validated but not saved; the text it was
+    /// loaded from when there is nothing to change. Saving it with [`save`](Self::save), and later saving the
+    /// loaded text over a ledger loaded from it, undoes the edit only if nothing else changed the file between.
+    pub fn edited_fields(&self, feature_name: &str, edits: &FieldEdits) -> Result<String, EditFieldsError> {
+        if !self.entries.iter().any(|e| e.feature_name == feature_name) {
+            return Err(EditFieldsError::UnknownFeature);
+        }
         let json = |value: serde_json::Value| value.to_string();
         let mut members: Vec<(&str, String)> = Vec::new();
         if let Some(v) = &edits.description {
@@ -213,22 +232,17 @@ impl LoadedLedger {
         if let Some(v) = edits.parallelizable {
             members.push(("parallelizable", json(v.into())));
         }
-        if members.is_empty() {
-            return Ok(current.clone());
-        }
         let text = std::str::from_utf8(&self.bytes).map_err(|_| EditFieldsError::Malformed)?;
+        if members.is_empty() {
+            return Ok(text.to_string());
+        }
         let edited = crate::edit::set_entry_fields(text, feature_name, &members).map_err(|e| match e {
             crate::EditError::UnknownFeature => EditFieldsError::UnknownFeature,
             crate::EditError::Malformed => EditFieldsError::Malformed,
         })?;
         let entries = parse_ledger_bytes(&self.path, edited.as_bytes()).map_err(|_| EditFieldsError::Malformed)?;
         validate_entries(&entries).map_err(EditFieldsError::Invalid)?;
-        let saved = entries
-            .into_iter()
-            .find(|e| e.feature_name == feature_name)
-            .ok_or(EditFieldsError::Malformed)?;
-        self.save(&edited).map_err(EditFieldsError::Save)?;
-        Ok(saved)
+        Ok(edited)
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {

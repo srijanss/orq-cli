@@ -229,16 +229,17 @@ impl StoreProjects {
             let Some(marker) = orq_orchestrator::plan_marker(&store, run).map_err(|error| format!("{error:?}"))? else { return refused("the proposal could not be read") };
             let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
             let ledger = orq_features::ledger_path(&git);
-            let before = read_ledger_bytes(&ledger)?;
-            if let Some(why) = replace_draft(&ledger, &feature, &requested["current"], &marker)? {
-                return refused(&why);
+            match replace_draft(&ledger, &feature, &requested["current"], &marker)? {
+                Err(why) => return refused(&why),
+                Ok(texts) => replaced_in = Some((ledger, texts)),
             }
-            replaced_in = before.map(|bytes| (ledger, bytes));
         }
         let kind = if replace { PLAN_REPLACED } else { PLAN_DISCARDED };
         if let Err(error) = orq_orchestrator::record_plan_event(&store, run, kind, json!({ "feature": feature })) {
-            if let Some((ledger, before)) = replaced_in {
-                std::fs::write(&ledger, before).map_err(|put| format!("{error}; and {feature} could not be put back: {put}"))?;
+            if let Some((ledger, (before, after))) = replaced_in {
+                // Put back only over the text Replace saved, under the ledger's lock: an edit made since is kept.
+                let replaced = orq_features::LoadedLedger::from_bytes(&ledger, after.into_bytes()).map_err(|put| format!("{error}; and {feature} could not be put back: {put:?}"))?;
+                replaced.save(&before).map_err(|put| format!("{error}; and {feature} kept Claude's text, since the ledger changed meanwhile: {put:?}"))?;
             }
             return Err(error.to_string());
         }
@@ -246,20 +247,22 @@ impl StoreProjects {
     }
 }
 
-/// Saves `marker`'s text over draft `feature`, when the draft is still as the run read it; why not otherwise.
-fn replace_draft(ledger: &Path, feature: &str, read: &Value, marker: &PlanMarker) -> Result<Option<String>, String> {
+/// Saves `marker`'s text over draft `feature`, when the draft is still as the run read it, and returns the
+/// ledger's text before and after; why not otherwise.
+fn replace_draft(ledger: &Path, feature: &str, read: &Value, marker: &PlanMarker) -> Result<Result<(String, String), String>, String> {
     use orq_features::EditFieldsError;
-    let Some(bytes) = read_ledger_bytes(ledger)? else { return Ok(Some(format!("{feature} is no longer in the ledger"))) };
+    let Some(bytes) = read_ledger_bytes(ledger)? else { return Ok(Err(format!("{feature} is no longer in the ledger"))) };
+    let before = String::from_utf8(bytes.clone()).map_err(|error| error.to_string())?;
     let loaded = orq_features::LoadedLedger::from_bytes(ledger, bytes).map_err(|error| format!("{error:?}"))?;
-    let Some(entry) = loaded.entries().iter().find(|entry| entry.feature_name == feature) else { return Ok(Some(format!("{feature} is no longer in the ledger"))) };
+    let Some(entry) = loaded.entries().iter().find(|entry| entry.feature_name == feature) else { return Ok(Err(format!("{feature} is no longer in the ledger"))) };
     if !is_draft(entry) {
-        return Ok(Some(format!("{feature} is no longer a draft; nothing was replaced")));
+        return Ok(Err(format!("{feature} is no longer a draft; nothing was replaced")));
     }
     if &draft_fields(entry) != read {
-        return Ok(Some(format!("{feature} changed since Claude read it; nothing was replaced")));
+        return Ok(Err(format!("{feature} changed since Claude read it; nothing was replaced")));
     }
     if let Some(problem) = marker_problem(marker, feature, loaded.entries()) {
-        return Ok(Some(problem));
+        return Ok(Err(problem));
     }
     let edits = orq_features::FieldEdits {
         description: Some(marker.description.clone()),
@@ -268,11 +271,14 @@ fn replace_draft(ledger: &Path, feature: &str, read: &Value, marker: &PlanMarker
         test_file: Some(marker.test_file.clone().unwrap_or_default()),
         target_files: Some(marker.target_files.clone()),
     };
-    match loaded.edit_fields(feature, &edits) {
-        Ok(_) => Ok(None),
-        Err(EditFieldsError::Invalid(why)) => Ok(Some(why.to_string())),
-        Err(EditFieldsError::Save(_)) => Ok(Some("the ledger changed while it was being saved; nothing was replaced".to_string())),
-        Err(error) => Err(format!("{error:?}")),
+    let after = match loaded.edited_fields(feature, &edits) {
+        Ok(after) => after,
+        Err(EditFieldsError::Invalid(why)) => return Ok(Err(why.to_string())),
+        Err(error) => return Err(format!("{error:?}")),
+    };
+    match loaded.save(&after) {
+        Ok(()) => Ok(Ok((before, after))),
+        Err(_) => Ok(Err("the ledger changed while it was being saved; nothing was replaced".to_string())),
     }
 }
 

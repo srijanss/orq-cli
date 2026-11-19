@@ -301,6 +301,30 @@ fn a_replace_whose_choice_cannot_be_recorded_puts_the_draft_back() {
 }
 
 #[test]
+fn putting_a_replaced_draft_back_never_overwrites_an_edit_made_since() {
+    let s = setup("plan-put-back");
+    let alpha = git_repo(&s.scan, "alpha");
+    let path = alpha.join(".tdd-features.json");
+    let before = "[\n  {\"featureName\": \"other\", \"status\": \"draft\"},\n  {\"featureName\": \"dark-mode\", \"description\": \"old text\", \"status\": \"draft\"}\n]\n";
+    std::fs::write(&path, before).unwrap();
+    let loaded = orq_features::LoadedLedger::load(&path).unwrap();
+    let edits = orq_features::FieldEdits { description: Some("new text".into()), ..Default::default() };
+    let after = loaded.edited_fields("dark-mode", &edits).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "the edit is only computed");
+    loaded.save(&after).unwrap();
+
+    let replaced = orq_features::LoadedLedger::from_bytes(&path, after.clone().into_bytes()).unwrap();
+    let elsewhere = after.replace("\"featureName\": \"other\", \"status\": \"draft\"", "\"featureName\": \"other\", \"description\": \"edited meanwhile\", \"status\": \"draft\"");
+    std::fs::write(&path, &elsewhere).unwrap();
+    assert!(replaced.save(before).is_err(), "putting back over a changed ledger is a conflict");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), elsewhere, "the edit made since is kept");
+
+    std::fs::write(&path, &after).unwrap();
+    replaced.save(before).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "an untouched ledger is put back byte for byte");
+}
+
+#[test]
 fn the_planning_run_is_listed_in_runs_with_its_kind_and_audited() {
     let s = setup("plan-runs");
     git_repo(&s.scan, "alpha");
