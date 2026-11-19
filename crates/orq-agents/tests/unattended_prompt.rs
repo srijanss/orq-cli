@@ -46,6 +46,38 @@ fn an_unattended_claude_session_runs_in_print_mode_without_remote_control_and_is
     assert!(!prompt.contains("AskUserQuestion"), "{prompt}");
 }
 
+/// The follow-up name the unattended paragraph gives, filled in with `feature`, `finding` and `hash`.
+fn followup_pattern_filled(prompt: &str, feature: &str, finding: &str, hash: &str) -> String {
+    let start = prompt.find("review-followup-").expect("the prompt names follow-ups");
+    let pattern: String = prompt[start..].chars().take_while(|c| *c != ')').collect();
+    pattern.replace("<feature>", feature).replace("<finding id>", finding).replace("<hash>", hash)
+}
+
+#[test]
+fn an_unattended_session_names_its_followups_as_orq_writes_them_with_a_hash_suffix() {
+    let argv = argv(&request("claude", true));
+    let prompt = argv.last().unwrap();
+
+    assert!(prompt.contains("(review-followup-<feature>-<finding id>-<hash>)"), "{prompt}");
+
+    // orq's followup_name writes `review-followup-<feature>-<finding id>-<12 hex digits>`.
+    let written = "review-followup-COM-01-off-by-one-0123456789ab";
+    let filled = followup_pattern_filled(prompt, "COM-01", "off-by-one", "0123456789ab");
+    assert_eq!(filled, written, "{prompt}");
+    let hash = written.rsplit('-').next().unwrap();
+    assert_eq!(hash.len(), 12);
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[test]
+fn an_attended_session_has_no_unattended_paragraph() {
+    let mut attended = request("claude", false);
+    attended.attended = true;
+    let prompt = argv(&attended).last().unwrap().clone();
+    assert!(!prompt.contains("Nobody is watching this session"), "{prompt}");
+    assert!(!prompt.contains("review-followup-"), "{prompt}");
+}
+
 #[test]
 fn an_unattended_pi_session_runs_in_print_mode_and_an_attended_or_ordinary_one_does_not() {
     let unattended = argv(&request("pi", true));
