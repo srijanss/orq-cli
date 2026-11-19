@@ -132,6 +132,38 @@ fn a_finger_tapping_the_handle_opens_and_closes_it_as_a_browser_sends_the_tap() 
 }
 
 #[test]
+fn a_drag_and_the_click_after_it_leave_the_drawer_open_and_the_next_tap_still_closes_it() {
+    let steps = json!([
+        {"pointer": "down", "at": HANDLE, "y": 600}, {"pointer": "move", "at": HANDLE, "y": 480}, {"wait": 150},
+        {"pointer": "up", "at": HANDLE, "y": 480, "thenClick": true}, {"wait": 350}, {"tap": HANDLE}
+    ]);
+    let Some(out) = seven(steps, false) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert!(drawer_open(&frames[4]), "the drag's own click does not toggle it back: {out}");
+    assert!(!drawer_open(frames.last().unwrap()), "a later tap still works: {out}");
+}
+
+#[test]
+fn a_cancelled_drag_falls_back_and_the_next_tap_still_opens_it() {
+    let steps = json!([{"pointer": "down", "at": HANDLE, "y": 600}, {"pointer": "move", "at": HANDLE, "y": 480}, {"pointer": "cancel", "at": HANDLE, "y": 480}, {"wait": 350}, {"tap": HANDLE}]);
+    let Some(out) = seven(steps, false) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert!(!drawer_open(&frames[3]), "{out}");
+    assert_eq!(probed(&frames[3], DRAWER)[0]["height"], "0px", "{out}");
+    assert!(drawer_open(frames.last().unwrap()), "{out}");
+}
+
+#[test]
+fn losing_the_finger_mid_drag_falls_back_and_the_next_tap_still_opens_it() {
+    let steps = json!([{"pointer": "down", "at": HANDLE, "y": 600}, {"pointer": "move", "at": HANDLE, "y": 480}, {"pointer": "lostcapture", "at": HANDLE, "y": 480}, {"wait": 350}, {"tap": HANDLE}]);
+    let Some(out) = seven(steps, false) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert!(!drawer_open(&frames[3]), "{out}");
+    assert_eq!(probed(&frames[3], DRAWER)[0]["height"], "0px", "no drawer is left half pulled: {out}");
+    assert!(drawer_open(frames.last().unwrap()), "{out}");
+}
+
+#[test]
 fn an_open_drawer_takes_its_new_height_when_the_window_resizes() {
     // Crossing 600px wide moves the grid from five a row to four, so it grows.
     let Some(out) = seven(json!([{"click": HANDLE}, {"resize": 380}]), false) else { return };

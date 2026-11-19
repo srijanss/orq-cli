@@ -1,7 +1,8 @@
 // Mounts the app shell in jsdom and plays steps against it, printing a snapshot after each.
 // Usage: node web_shell_run.mjs '<{projectId, hash, steps}>'
 // steps: {click: selector} | {press: "Escape"|"Tab", shift?: bool} | {go: "/path"}
-//      | {pointer: "down"|"move"|"up"|"cancel", at: selector, y: number, click?: bool} | {tap: selector} | {wait: ms}
+//      | {pointer: "down"|"move"|"up"|"cancel"|"lostcapture", at: selector, y: number, thenClick?: bool} | {tap: selector}
+//      | {wait: ms} | {resize: drawerHeight}
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,12 +101,14 @@ try {
       window.document.querySelector(step.click).dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     } else if (step.pointer || step.tap) {
       // A finger going down, moving, lifting or cancelled at height `y` over the element `at` (or the element
-      // that captured it). `click: true` on a lift, and every `tap` (a down and a lift in place), also send the
+      // that captured it). `thenClick: true` on a lift, and every `tap` (a down and a lift in place), also send the
       // click a browser sends after the lift, to the captured element if there is one.
       const Pointer = window.PointerEvent || window.MouseEvent;
+      // "lostcapture" is the capturing element losing the finger (another element took it, or it left the page).
       const send = (type, y, over) => {
         const target = type === "down" ? over : captured || over;
-        target.dispatchEvent(new Pointer("pointer" + type, { bubbles: true, cancelable: true, clientX: 100, clientY: y, pointerId: 1 }));
+        const name = type === "lostcapture" ? "lostpointercapture" : "pointer" + type;
+        target.dispatchEvent(new Pointer(name, { bubbles: true, cancelable: true, clientX: 100, clientY: y, pointerId: 1 }));
         return target;
       };
       const over = window.document.querySelector(step.tap || step.at);
@@ -114,12 +117,12 @@ try {
       let lifted = null;
       for (const type of types) {
         const target = send(type, y, over);
-        if (type === "up" || type === "cancel") {
+        if (type === "up" || type === "cancel" || type === "lostcapture") {
           lifted = type === "up" ? target : null;
           captured = null;
         }
       }
-      if (lifted && (step.tap || step.click)) lifted.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+      if (lifted && (step.tap || step.thenClick)) lifted.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     } else if (step.resize !== undefined) {
       drawerHeight = step.resize;
       window.dispatchEvent(new window.Event("resize"));

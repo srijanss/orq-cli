@@ -261,7 +261,10 @@ export function TabBar({ entries, path }) {
     setOpenOn(opens ? path : null);
   };
 
+  // A cancelled drag, or one whose finger the bar lost (the lift releases it too, after the drag has ended),
+  // falls back to where it started.
   const onPointerCancel = () => {
+    if (!drag.current) return;
     drag.current = null;
     setPull(null);
   };
@@ -272,7 +275,7 @@ export function TabBar({ entries, path }) {
   return (
     <>
       {open ? <div className="tabbar-backdrop" data-tab-backdrop aria-hidden="true" onClick={() => setOpenOn(null)} /> : null}
-      <nav className="tabbar" aria-label="Sections" ref={bar} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel}>
+      <nav className="tabbar" aria-label="Sections" ref={bar} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onLostPointerCapture={onPointerCancel}>
         {overflows ? (
           <>
             <button type="button" ref={handle} className="tabbar-handle" data-tab-handle aria-label="Show all sections" aria-expanded={open ? "true" : "false"} aria-controls="tabbar-all" onClick={() => {
