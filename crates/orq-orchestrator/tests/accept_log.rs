@@ -133,6 +133,35 @@ fn the_reason_is_never_a_pass_line_and_without_test_names_says_how_the_step_ende
     assert!(reason.ends_with("exited with status 101"), "{reason}");
 }
 
+const TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+const KEY_BODY: &str = "MIIEowIBAAKCAQEAsecretkeybody";
+
+#[test]
+fn secrets_in_the_command_and_its_output_are_kept_out_of_the_accept_log_and_its_event() {
+    let (_repo, root, store) = failed_run("secrets");
+    let script = format!(
+        "export GITHUB_TOKEN={TOKEN}; \
+         echo '        FAIL [   0.010s] (1/1) suite auth'; \
+         echo '──── STDERR:             suite auth'; \
+         echo \"sent GITHUB_TOKEN=$GITHUB_TOKEN\"; \
+         echo '-----BEGIN RSA PRIVATE KEY-----'; \
+         echo '{KEY_BODY}'; \
+         echo '-----END RSA PRIVATE KEY-----'; \
+         echo 'login failed'; exit 100"
+    );
+
+    accept_run_by(&store, "run-1", "web", &|dir: &Path| run_steps(dir, &[vec!["sh".into(), "-c".into(), script.clone()]])).unwrap_err();
+
+    let text = std::fs::read_to_string(root.join("logs").join("run-1").join("accept-1.log")).unwrap();
+    assert!(text.contains("login failed"), "{text}");
+    assert!(!text.contains(TOKEN) && !text.contains(KEY_BODY), "{text}");
+    let failed = last_event(&store);
+    let payload = failed.payload.to_string();
+    assert_eq!(failed.payload["failed_tests"][0]["name"], "suite auth");
+    assert!(payload.contains("login failed"), "{payload}");
+    assert!(!payload.contains(TOKEN) && !payload.contains(KEY_BODY), "{payload}");
+}
+
 #[test]
 fn a_test_that_failed_a_try_but_passed_on_retry_is_not_listed() {
     let (_repo, _root, store) = failed_run("retry");
