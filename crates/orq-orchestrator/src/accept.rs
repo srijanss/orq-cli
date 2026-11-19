@@ -168,7 +168,16 @@ fn check_accepted(store: &RunStore, run_id: &str) -> Result<crate::store::RunRec
     Ok(record)
 }
 
-/// An accept, or with `merge_only` the merge of a run accepted before: the tests of an accept run first.
+/// The head the accept that ended run `run_id` tested: the one its `run.accept_started` recorded, if any.
+fn accepted_head(store: &RunStore, run_id: &str) -> Option<String> {
+    let events = store.events(run_id).ok()?;
+    let ended = events.iter().rposition(|event| event.kind == "run.completed")?;
+    let started = events[..ended].iter().rev().find(|event| event.kind == "run.accept_started")?;
+    started.payload.get("head").and_then(|head| head.as_str()).map(str::to_string)
+}
+
+/// An accept, or with `merge_only` the merge of a run accepted before: the tests of an accept run first, and
+/// those of a merge when the head is not the one its accept tested.
 fn accept_or_merge(
     store: &RunStore,
     run_id: &str,
@@ -190,7 +199,9 @@ fn accept_or_merge(
     let log = open_accept_log(store, run_id);
     let outcome = {
         let _teeing = log.as_ref().map(|(_, file)| StepLog::tee_into(file));
-        let tested = if merge_only { Ok(()) } else { test_and_confirm(run_id, &record, &head_before, tests) };
+        // A run accepted before is merged untested only at the head its accept tested.
+        let tested_before = merge_only && accepted_head(store, run_id).as_deref() == Some(head_before.trim());
+        let tested = if tested_before { Ok(()) } else { test_and_confirm(run_id, &record, &head_before, tests) };
         tested.and_then(|()| match record.delivery {
             orq_core::project_settings::Delivery::MergeLocal => land(store, run_id, &record, tests),
             _ => Ok(Delivered::ReviewReady),

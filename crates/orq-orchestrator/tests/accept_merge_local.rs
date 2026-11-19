@@ -190,7 +190,8 @@ fn a_dirty_checkout_of_the_target_ends_the_accept_blocked() {
 fn a_merge_local_run_accepted_before_it_merged_on_accept_can_be_merged() {
     let w = world("accepted-before", Delivery::MergeLocal);
     // How an accept ended a merge-local run before accepting merged it.
-    w.store.append_event(&event("run.accept_started", serde_json::json!({ "by": "web" }))).unwrap();
+    let accepted = git(&w.worktree, &["rev-parse", "HEAD"]);
+    w.store.append_event(&event("run.accept_started", serde_json::json!({ "by": "web", "head": accepted }))).unwrap();
     w.store.append_event(&event("run.completed", serde_json::json!({ "ending": "review_ready", "note": "accepted: tests passed", "by": "web" }))).unwrap();
     let events = w.store.events("run-1").unwrap();
     let record = w.store.load("run-1").unwrap();
@@ -214,6 +215,25 @@ fn a_merge_local_run_accepted_before_it_merged_on_accept_can_be_merged() {
     assert_eq!(payloads(&w.store, "ledger.completed_by_run"), vec![serde_json::json!({ "features": ["COM-02"] })]);
     assert_eq!(payloads(&w.store, "run.completed").pop().unwrap()["ending"], "merged");
     assert!(!merge_after_accept_pending(&record, &w.store.events("run-1").unwrap()), "a merged run has nothing left to merge");
+}
+
+#[test]
+fn a_commit_made_after_the_accept_is_tested_before_the_accepted_run_is_merged() {
+    let w = world("committed-after", Delivery::MergeLocal);
+    let accepted = git(&w.worktree, &["rev-parse", "HEAD"]);
+    w.store.append_event(&event("run.accept_started", serde_json::json!({ "by": "web", "head": accepted }))).unwrap();
+    w.store.append_event(&event("run.completed", serde_json::json!({ "ending": "review_ready", "note": "accepted: tests passed", "by": "web" }))).unwrap();
+    fs::write(w.worktree.join("later.txt"), "later\n").unwrap();
+    git(&w.worktree, &["add", "."]);
+    git(&w.worktree, &["commit", "-q", "-m", "after the accept"]);
+    let main = git(&w.repo, &["rev-parse", "main"]);
+
+    let err = merge_accepted_run(&w.store, "run-1", "web", &|_: &Path| Err("later.txt breaks a test".to_string()), &no_ledger).unwrap_err();
+
+    assert!(err.contains("later.txt breaks a test"), "the head the accept never tested is tested: {err}");
+    assert_eq!(git(&w.repo, &["rev-parse", "main"]), main, "main is untouched");
+    assert!(w.worktree.exists());
+    assert!(payloads(&w.store, "merge.completed").is_empty());
 }
 
 #[test]

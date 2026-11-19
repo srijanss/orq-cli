@@ -344,7 +344,7 @@ fn a_merge_local_run_accepted_before_accepting_merged_shows_it_waits_to_merge_an
     let worktree = merge_local_run(&s, "run-acc", "COM-00", "needs_review");
     let store = RunStore::new(&s.roots.state);
     // How an accept ended a merge-local run before accepting merged it.
-    event(&store, "run-acc", "run.accept_started", json!({"by": "web"}));
+    event(&store, "run-acc", "run.accept_started", json!({"by": "web", "head": git(&worktree, &["rev-parse", "HEAD"])}));
     event(&store, "run-acc", "run.completed", json!({"ending": "review_ready", "note": "accepted: tests passed", "by": "web"}));
     let run = |s: &Setup| send(s, "GET", "/api/projects/alpha/runs/run-acc", b"").1["run"].clone();
     assert_eq!(run(&s)["merge_pending"], true, "{}", run(&s));
