@@ -430,6 +430,7 @@ pub struct StoreProjects {
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
     accept_tests: AcceptTests,
     accepting: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    queue_round_settled: Option<QueueRoundSettled>,
     backfilled: std::sync::Once,
     report_builder: Option<ReportBuilder>,
     server: Option<std::sync::Arc<dyn orq_core::remote_inbox::ServerControl>>,
@@ -491,6 +492,10 @@ pub fn missing_report(roots: &orq_core::storage::StorageRoots, store: &orq_core:
 /// Runs the tests of a run's worktree when it is accepted; the error is what failed.
 pub type AcceptTests = std::sync::Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 
+/// Called by a queue round once it has settled its entries and before it counts slots; for tests that end
+/// an accept partway through a round.
+pub type QueueRoundSettled = std::sync::Arc<dyn Fn(&StoreProjects) + Send + Sync>;
+
 /// The redacted text of the log file last paged through, so the next page of an unchanged file is
 /// cut from it instead of reading and redacting the file again.
 struct LogSnapshot {
@@ -517,6 +522,7 @@ impl StoreProjects {
             log_snapshot: Default::default(),
             accept_tests: std::sync::Arc::new(|worktree: &Path| orq_orchestrator::run_worktree_tests(worktree, None)),
             accepting: Default::default(),
+            queue_round_settled: None,
             backfilled: std::sync::Once::new(),
             report_builder: None,
             server: None,
@@ -651,6 +657,17 @@ impl StoreProjects {
     pub fn with_accept_tests(mut self, tests: AcceptTests) -> Self {
         self.accept_tests = tests;
         self
+    }
+
+    /// Calls `hook` in each queue round once it has settled its entries, before it counts slots.
+    pub fn with_queue_round_settled(mut self, hook: QueueRoundSettled) -> Self {
+        self.queue_round_settled = Some(hook);
+        self
+    }
+
+    /// Whether this server is running the tests of an accept of `run`.
+    pub fn is_being_accepted(&self, run: &str) -> bool {
+        self.being_accepted(run).is_some()
     }
 
     /// Lets this provider start runs through `launcher`; without one it says it cannot.

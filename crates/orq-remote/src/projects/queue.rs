@@ -122,6 +122,9 @@ impl StoreProjects {
         let runs = RunStore::new(&self.roots.state);
         let failed = |e: std::io::Error| e.to_string();
         let mut in_review = false;
+        // The queued Accepts this round read as going, as (run, entry): each holds its slot for the whole
+        // round, though its tests end partway through, and what they ended with is acted on next round.
+        let mut accepts_going = Vec::new();
         for entry in store.queue(root).map_err(failed)?.entries {
             let Some(run) = &entry.run else { continue };
             let mut run = run.clone();
@@ -144,6 +147,7 @@ impl StoreProjects {
                 run = next;
             }
             match settled {
+                Settled::Going if matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) => accepts_going.push((run, entry.feature.clone())),
                 Settled::Going => {}
                 Settled::InReview(_) => in_review = true,
                 Settled::Done => drop(store.queue_remove(root, &entry.feature).map_err(failed)?),
@@ -169,6 +173,9 @@ impl StoreProjects {
                     }
                 }
             }
+        }
+        if let Some(hook) = &self.queue_round_settled {
+            hook(self);
         }
         let queue = store.queue(root).map_err(failed)?;
         if queue.paused.is_some() || round.restart_pending || in_review {
@@ -210,8 +217,14 @@ impl StoreProjects {
                 Some(action) if action.kind != QueueKind::Accept => !orq_orchestrator::resume_takes_a_slot(&runs, &action.run)?,
                 _ => false,
             };
-            // A queued Accept holds a slot while its tests run, though an accepting run holds none.
-            let accepting = self.queued_accepts_going(&now, &runs);
+            // A queued Accept holds a slot while its tests run, though an accepting run holds none; one
+            // this round read as going holds it until the round ends.
+            let mut accepting = accepts_going.clone();
+            for going in self.queued_accepts_going(&now, &runs) {
+                if !accepting.iter().any(|(run, _)| *run == going.0) {
+                    accepting.push(going);
+                }
+            }
             let active = match keeps_slot {
                 true => Vec::new(),
                 false => {
@@ -228,7 +241,8 @@ impl StoreProjects {
                 Some(_) => {
                     // Every project's queued Accepts that are running their tests hold a machine slot.
                     let mut all = runs.active_machine_runs().map_err(|error| format!("{error:?}"))?;
-                    for going in self.machine_queued_accepts_going(store, &runs)? {
+                    let held = accepts_going.iter().map(|(run, _)| (orq_git::project_id(git), run.clone()));
+                    for going in held.chain(self.machine_queued_accepts_going(store, &runs)?) {
                         if !all.iter().any(|(_, run)| *run == going.1) {
                             all.push(going);
                         }

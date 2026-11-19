@@ -60,9 +60,17 @@ struct Setup {
     accept_outcomes: Arc<Mutex<Vec<Result<(), String>>>>,
 }
 
+/// What an accept's tests end with, taken in turn.
+type AcceptOutcomes = Arc<Mutex<Vec<Result<(), String>>>>;
+
 /// A project `alpha` with approved features COM-01 and COM-02 and COM-00 in progress, at most one run
 /// active, and `settings` changed further by `change`. Nothing is queued yet.
 fn setup(label: &str, change: impl FnOnce(&mut ProjectSettings)) -> Setup {
+    setup_with(label, change, |projects, _| projects)
+}
+
+/// [`setup`], with the provider changed further by `extra`, which is given the accepts' outcomes.
+fn setup_with(label: &str, change: impl FnOnce(&mut ProjectSettings), extra: impl FnOnce(StoreProjects, AcceptOutcomes) -> StoreProjects) -> Setup {
     let base = web_deps::private_temp_dir(label);
     let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
     roots.create_all().unwrap();
@@ -94,7 +102,7 @@ fn setup(label: &str, change: impl FnOnce(&mut ProjectSettings)) -> Setup {
         }
         std::thread::sleep(Duration::from_millis(10));
     });
-    let projects = StoreProjects::new(roots.clone(), scan).with_launcher(launcher.clone()).with_accept_tests(tests);
+    let projects = extra(StoreProjects::new(roots.clone(), scan).with_launcher(launcher.clone()).with_accept_tests(tests), accept_outcomes.clone());
     Setup { roots, launcher, repo, projects, accept_outcomes }
 }
 
@@ -444,25 +452,80 @@ fn an_answer_with_control_characters_is_refused_before_anything_is_resumed_or_qu
     assert_eq!(status, 202, "new lines and tabs are fine");
 }
 
+/// Queues an Accept of a needs-review run and then COM-01, lets the accept's tests fail, and checks the
+/// queue paused with COM-01 never started (`stop`), or COM-01 started (not `stop`).
+fn a_failed_queued_accept(label: &str, stop: bool) {
+    let s = setup(label, |settings| settings.queue_stop_on_failure = stop);
+    worktree_run(&s, "run-nr", "COM-00", "needs_review");
+    add(&s, json!({"action": "accept", "run": "run-nr"}));
+    add(&s, json!({"features": ["COM-01"]}));
+    round(&s);
+    assert_eq!(states(&s), triples(&[("accept", "run-nr", "running"), ("start", "COM-01", "next")]), "stop {stop}");
+
+    finish_accept(&s, "run-nr", Err("3 tests failed".to_string()));
+    if stop {
+        assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "next")]));
+        let paused = queue(&s)["paused"].as_str().unwrap().to_string();
+        assert!(paused.starts_with("the run run-nr of Accept run-nr failed: its accept failed: ") && paused.contains("3 tests failed"), "{paused}");
+        assert_eq!(started(&s), Vec::<String>::new(), "nothing starts while the queue is paused");
+    } else {
+        assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "running")]), "the next one starts");
+        assert_eq!(queue(&s)["paused"], Value::Null);
+        assert_eq!(started(&s), ["COM-01"]);
+    }
+}
+
 #[test]
 fn a_queued_accept_whose_tests_fail_is_marked_failed_and_pauses_the_queue_only_when_stop_on_failure_is_on() {
+    a_failed_queued_accept("qra-accept-fail-stop", true);
+    a_failed_queued_accept("qra-accept-fail-go", false);
+}
+
+#[test]
+fn a_failed_queued_accept_pauses_the_queue_before_anything_starts_fifty_times_in_a_row() {
+    for _ in 0..50 {
+        a_failed_queued_accept("qra-accept-fail-50", true);
+    }
+}
+
+#[test]
+fn an_accept_read_as_going_keeps_its_slot_for_the_whole_round_though_it_fails_partway_through() {
     for stop in [true, false] {
-        let s = setup(if stop { "qra-accept-fail-stop" } else { "qra-accept-fail-go" }, |settings| settings.queue_stop_on_failure = stop);
+        // Set to the run whose accept the next round ends once it has settled its entries.
+        let end_in_round: Arc<Mutex<Option<String>>> = Arc::default();
+        let hook_end = end_in_round.clone();
+        let s = setup_with(
+            if stop { "qra-accept-mid-stop" } else { "qra-accept-mid-go" },
+            |settings| settings.queue_stop_on_failure = stop,
+            move |projects, outcomes| {
+                projects.with_queue_round_settled(Arc::new(move |projects: &StoreProjects| {
+                    let Some(run) = hook_end.lock().unwrap().take() else { return };
+                    outcomes.lock().unwrap().push(Err("3 tests failed".to_string()));
+                    let until = Instant::now() + Duration::from_secs(5);
+                    while projects.is_being_accepted(&run) {
+                        assert!(Instant::now() < until, "the accept of {run} did not end");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }))
+            },
+        );
         worktree_run(&s, "run-nr", "COM-00", "needs_review");
         add(&s, json!({"action": "accept", "run": "run-nr"}));
         add(&s, json!({"features": ["COM-01"]}));
         round(&s);
         assert_eq!(states(&s), triples(&[("accept", "run-nr", "running"), ("start", "COM-01", "next")]), "stop {stop}");
 
-        finish_accept(&s, "run-nr", Err("3 tests failed".to_string()));
+        *end_in_round.lock().unwrap() = Some("run-nr".to_string());
+        round(&s);
+        assert_eq!(started(&s), Vec::<String>::new(), "stop {stop}: the accept read as going holds its slot for that whole round");
+
+        round(&s);
         if stop {
             assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "next")]));
-            let paused = queue(&s)["paused"].as_str().unwrap().to_string();
-            assert!(paused.starts_with("the run run-nr of Accept run-nr failed: its accept failed: ") && paused.contains("3 tests failed"), "{paused}");
-            assert_eq!(started(&s), Vec::<String>::new(), "nothing starts while the queue is paused");
+            assert!(queue(&s)["paused"].as_str().is_some_and(|why| why.contains("3 tests failed")), "{}", queue(&s)["paused"]);
+            assert_eq!(started(&s), Vec::<String>::new(), "COM-01 never starts");
         } else {
-            assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "running")]), "the next one starts");
-            assert_eq!(queue(&s)["paused"], Value::Null);
+            assert_eq!(states(&s), triples(&[("accept", "run-nr", "failed"), ("start", "COM-01", "running")]), "the next round starts COM-01");
             assert_eq!(started(&s), ["COM-01"]);
         }
     }
