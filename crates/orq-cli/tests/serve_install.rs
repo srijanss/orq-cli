@@ -424,6 +424,22 @@ fn settings_warns_of_a_missing_harness_only_when_the_unit_runs_the_server() {
 }
 
 #[test]
+fn settings_stops_warning_once_the_missing_harness_is_put_on_the_servers_path() {
+    let world = World::new("settingsfresh");
+    let tools = world.root.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let path = world.shell_path(&[tools.to_str().unwrap()]);
+    let (_managed, addr) = world.serve_with(&[("PATH", &path), ("INVOCATION_ID", "0123abcd"), ("ORQ_SYSTEMD_UNIT", "orq-serve.service")]);
+    let claude = format!("runs will fail: claude is not on the PATH the service gets ({path})");
+    let server = &settings(&addr)["server"];
+    assert!(server["harness_warnings"].as_array().unwrap().contains(&serde_json::json!(claude)), "{server}");
+    fs::write(tools.join("claude"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(tools.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    let server = &settings(&addr)["server"];
+    assert!(!server["harness_warnings"].as_array().unwrap().contains(&serde_json::json!(claude)), "claude is there now: {server}");
+}
+
+#[test]
 fn quotes_percent_and_dollar_signs_in_paths_are_escaped_in_the_unit_and_read_back_by_status() {
     let mut world = World::new("escapes");
     let odd = world.root.join("odd \"bin\" 100% $HOME \\ dir");

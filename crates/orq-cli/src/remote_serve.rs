@@ -285,7 +285,9 @@ fn run(args: &[OsString]) -> ExitCode {
     let mut control = restart_control(&roots);
     if own_unit().is_some() {
         // Under the unit, this server's PATH is the one runs get: say which harness it cannot find.
-        control = control.harness_warnings(harness_warnings(&project.root, &std::env::var("PATH").unwrap_or_default()));
+        // Asked afresh each time Settings loads, so installing the harness or changing the models shows at once.
+        let (repo, path) = (project.root.clone(), std::env::var("PATH").unwrap_or_default());
+        control = control.harness_warnings(Box::new(move || harness_warnings(&repo, &path)));
     }
     let restart = std::sync::Arc::new(control);
     let listen_key = listen.clone();
@@ -551,6 +553,8 @@ fn restart_control(roots: &orq_core::storage::StorageRoots) -> RestartControl {
 type ActiveRuns = Box<dyn Fn() -> Vec<String> + Send + Sync>;
 /// The binary a restart would start, or why there is none.
 type RestartTarget = Box<dyn Fn() -> Result<PathBuf, String> + Send + Sync>;
+/// What runs started by the server would fail on now.
+type HarnessWarnings = Box<dyn Fn() -> Vec<String> + Send + Sync>;
 
 /// The server's own controls: its build and the installed one's, and a restart that waits until no
 /// run is active (or one asked for now, which waits for nothing).
@@ -566,7 +570,7 @@ pub(crate) struct RestartControl {
     /// Whether systemd started this server, so it is started again after a crash or a reboot.
     managed: bool,
     /// What runs started by this server will fail on: a harness missing from its PATH.
-    harness_warnings: Vec<String>,
+    harness_warnings: HarnessWarnings,
 }
 
 impl RestartControl {
@@ -580,12 +584,12 @@ impl RestartControl {
             pending: Default::default(),
             now: Default::default(),
             managed: false,
-            harness_warnings: Vec::new(),
+            harness_warnings: Box::new(Vec::new),
         }
     }
 
-    /// Says what runs started by this server will fail on.
-    pub(crate) fn harness_warnings(mut self, warnings: Vec<String>) -> Self {
+    /// Says how to find what runs started by this server will fail on.
+    pub(crate) fn harness_warnings(mut self, warnings: HarnessWarnings) -> Self {
         self.harness_warnings = warnings;
         self
     }
@@ -640,7 +644,7 @@ impl orq_core::remote_inbox::ServerControl for RestartControl {
             "waiting_for": waiting_for,
             "managed_by_systemd": self.managed,
             "supervision": if self.managed { "Managed by systemd (restarts automatically)" } else { "Not managed: stops on reboot" },
-            "harness_warnings": self.harness_warnings,
+            "harness_warnings": (self.harness_warnings)(),
         })
     }
 
