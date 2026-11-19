@@ -837,6 +837,9 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null }
       ) : (
         <em>Unavailable</em>
       )}
+      {typeof project.queue?.target_pull_warning === "string" ? (
+        <p className="error-text" role="note" data-card-target-pull><Icon name="alert" size={16} />{project.queue.target_pull_warning}</p>
+      ) : null}
     </li>
   );
 }
@@ -3119,6 +3122,34 @@ function QueueView({ data, control, projectId }) {
     setNote(text);
     setPhase("idle");
   };
+  // Pulls the project's target again after a merge left it behind; the warning is what the pull answers.
+  const pull = async () => {
+    setPhase("sending");
+    setNote("");
+    let text = "The target could not be pulled.";
+    try {
+      const response = await actionRequest(controlPath(control, "pull"), control.token, {});
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const reply = await jsonOrNull(response);
+      if (response.ok && reply !== null) {
+        const warning = typeof reply.target_pull_warning === "string" ? reply.target_pull_warning : null;
+        setQueue({ ...queue, target_pull_warning: warning });
+        setNote(warning === null && typeof reply.message === "string" ? reply.message : "");
+        setPhase("idle");
+        return;
+      }
+      if (response.status === 403) text = "Not allowed.";
+      else if (reply !== null && typeof reply.error === "string") text = reply.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("idle");
+  };
+  const pullWarning = typeof queue.target_pull_warning === "string" ? queue.target_pull_warning : null;
   const names = queue.entries.map((entry) => entry.feature);
   const rails = queueRails(queue.entries);
   const reorder = (from, to) => {
@@ -3127,6 +3158,12 @@ function QueueView({ data, control, projectId }) {
   };
   return (
     <section className="card queue-section" data-queue-section>
+      {pullWarning !== null ? (
+        <div className="queue-pull-warning" role="note" data-target-pull-warning>
+          <p className="error-text"><Icon name="alert" size={16} />{pullWarning}</p>
+          {control !== null ? <button type="button" data-target-pull-retry disabled={busy} onClick={pull}><Icon name="rotate" size={16} />Retry</button> : null}
+        </div>
+      ) : null}
       {queue.paused !== null ? (
         <QueuePausedBanner reason={queue.paused}>
           {control !== null ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button> : null}
@@ -4651,6 +4688,23 @@ function SetAsideNotes({ events }) {
   );
 }
 
+// A start that could not pull the run's target, on its timeline: why, and that it began from the local one.
+function TargetPullNotes({ events, target }) {
+  const warned = events.filter((event) => event.target_pull && typeof event.target_pull === "object" && typeof event.target_pull.message === "string");
+  if (warned.length === 0) return null;
+  const branch = typeof target === "string" && target !== "" ? target : "the target";
+  return (
+    <div className="target-pull-notes">
+      {warned.map((event) => (
+        <p key={event.event_id} className="error-text" role="note" data-run-target-pull>
+          <Icon name="alert" size={16} />
+          {branch + " was not pulled before this run started: " + event.target_pull.message + ". It started from the local " + branch + "."}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 // The MCP servers the run set up: each one's version and where it came from, and what went wrong.
 function McpSetup({ mcp }) {
   const servers = Array.isArray(mcp.servers) ? mcp.servers : [];
@@ -4957,6 +5011,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
     <>
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
         <SetAsideNotes events={all} />
+        <TargetPullNotes events={all} target={run.target_branch} />
         {all.length === 0 ? <p>No events recorded.</p> : <RunSteps runId={run.run_id} events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} failedRun={run.state === "failed"} onLogs={openLog} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
@@ -5359,9 +5414,12 @@ function parseProjectSettings(data) {
     && limit(settings.max_active_runs, ACTIVE_RUNS_RANGE) && limit(settings.min_free_disk_gb, FREE_DISK_RANGE)
     && (settings.queue_hours === undefined || settings.queue_hours === null || typeof settings.queue_hours === "string")
     && (settings.queue_stop_on_failure === undefined || typeof settings.queue_stop_on_failure === "boolean")
-    && (settings.queue_wait_for_review === undefined || typeof settings.queue_wait_for_review === "boolean");
-  // Waiting for each run's review is on unless the server says it is off, as its default is.
-  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true, queue_wait_for_review: settings.queue_wait_for_review !== false } : null;
+    && (settings.queue_wait_for_review === undefined || typeof settings.queue_wait_for_review === "boolean")
+    && (settings.pull_target_before_runs === undefined || typeof settings.pull_target_before_runs === "boolean")
+    && (settings.target_branch === undefined || typeof settings.target_branch === "string");
+  // Waiting for each run's review, and pulling the target, are on unless the server says they are off, as their defaults are.
+  const target = typeof settings?.target_branch === "string" && settings.target_branch !== "" ? settings.target_branch : "the target";
+  return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true, queue_wait_for_review: settings.queue_wait_for_review !== false, pull_target_before_runs: settings.pull_target_before_runs !== false, target_branch: target } : null;
 }
 
 // The limits a project may put on starting a run, as the server checks them; empty is no limit.
@@ -5514,7 +5572,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, waitForReview: settings.queue_wait_for_review, revision: settings.revision });
+      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, waitForReview: settings.queue_wait_for_review, pullTarget: settings.pull_target_before_runs, revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -5527,7 +5585,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
     setConflict(false);
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, queue_wait_for_review: draft.waitForReview, revision: draft.revision });
+      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, queue_wait_for_review: draft.waitForReview, pull_target_before_runs: draft.pullTarget, revision: draft.revision });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -5607,6 +5665,14 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           </label>
         ) : (
           <SettingsRow label="Wait for each run's review (and MR) before the next" editing={false} value={<span data-project-queue-wait>{settings.queue_wait_for_review ? "Waits until it is merged, accepted or discarded" : "Starts the next as the run limit allows"}</span>} />
+        )}
+        {editing ? (
+          <label className="settings-row settings-check">
+            <input type="checkbox" data-pull-target-before-runs checked={draft.pullTarget} disabled={phase !== "editing"} onChange={(event) => setDraft({ ...draft, pullTarget: event.target.checked })} />
+            <span>{"Pull " + settings.target_branch + " after an MR merges and before each run"}</span>
+          </label>
+        ) : (
+          <SettingsRow label={"Pull " + settings.target_branch + " after an MR merges and before each run"} editing={false} value={<span data-project-pull-target>{settings.pull_target_before_runs ? "Fast-forwards " + settings.target_branch + " first" : "Leaves " + settings.target_branch + " as it is"}</span>} />
         )}
       </section>
       {phase === "editing" ? (

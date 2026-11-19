@@ -867,6 +867,7 @@ impl StoreProjects {
             "queue_stop_on_failure": stored.settings.queue_stop_on_failure,
             "queue_wait_for_review": stored.settings.queue_wait_for_review,
             "pull_target_before_runs": stored.settings.pull_target_before_runs,
+            "target_branch": queue::project_target(&git.root),
             "revision": stored.revision,
         })
     }
@@ -1861,6 +1862,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if event.kind == "session.undeclared_files" {
                     listed["undeclared_files"] = undeclared_files_shown(&event.payload);
                 }
+                if event.kind == "target.pull_warning" {
+                    listed["target_pull"] = target_pull_shown(&event.payload);
+                }
                 if event.kind.ends_with(".failed") {
                     if let Some(failure) = failure_shown(&events, start + n, &logs_dir) {
                         listed["failure"] = failure;
@@ -1977,6 +1981,13 @@ fn flaky_tests_shown(payload: &serde_json::Value) -> serde_json::Value {
 fn undeclared_files_shown(payload: &serde_json::Value) -> serde_json::Value {
     let files: Vec<_> = payload.get("files").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|file| Some(orq_core::redact::redact(file.as_str()?))).collect();
     serde_json::json!(files)
+}
+
+/// What the run page shows of a `target.pull_warning` event: why the start could not pull its target,
+/// its message redacted. Anything else the payload holds is left out.
+fn target_pull_shown(payload: &serde_json::Value) -> serde_json::Value {
+    let text = |key: &str| payload.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    serde_json::json!({ "outcome": text("outcome"), "message": orq_core::redact::redact(&text("message")) })
 }
 
 /// How many lines a failure's excerpt holds at most.

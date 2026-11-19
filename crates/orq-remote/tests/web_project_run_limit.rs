@@ -162,7 +162,7 @@ fn settings_show_both_limits_edit_offers_no_limit_and_save_sends_both() {
     let sent = posts(&out);
     assert_eq!(sent.len(), 1, "{out}");
     let body: Value = serde_json::from_str(sent[0]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(body, json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": 20, "queue_hours": null, "queue_stop_on_failure": false, "queue_wait_for_review": true, "revision": 3}));
+    assert_eq!(body, json!({"implementer": null, "reviewer": null, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": 20, "queue_hours": null, "queue_stop_on_failure": false, "queue_wait_for_review": true, "pull_target_before_runs": true, "revision": 3}));
     let after = texts(last(&out));
     assert!(after.iter().any(|t| t == "No limit") && after.iter().any(|t| t == "20 GB"), "{after:?}");
 }

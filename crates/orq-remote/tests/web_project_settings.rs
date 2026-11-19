@@ -124,7 +124,7 @@ fn edit_resets_a_role_to_the_machine_default_picks_another_and_save_asks_then_se
     assert_eq!(sent.len(), 1, "{out}");
     assert_eq!(sent[0]["url"], "/api/projects/alpha/settings");
     assert_eq!(sent[0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
-    assert_eq!(body(&sent[0]), json!({"implementer": null, "reviewer": {"harness": "pi", "model": "kimi", "effort": null}, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "queue_hours": null, "queue_stop_on_failure": false, "queue_wait_for_review": true, "revision": 3}));
+    assert_eq!(body(&sent[0]), json!({"implementer": null, "reviewer": {"harness": "pi", "model": "kimi", "effort": null}, "delivery": "review", "max_active_runs": null, "min_free_disk_gb": null, "queue_hours": null, "queue_stop_on_failure": false, "queue_wait_for_review": true, "pull_target_before_runs": true, "revision": 3}));
     let reads = out["requests"].as_array().unwrap().iter().filter(|r| r["url"] == "/api/projects/alpha/settings" && r["method"] == "GET").count();
     assert_eq!(reads, 2, "the settings are read again after a save: {out}");
     let frame = last(&out);
@@ -202,7 +202,7 @@ fn edit_keeps_a_project_agent_whose_harness_or_model_is_not_offered_so_saving_th
     assert_eq!(sent.len(), 1, "{out}");
     assert_eq!(
         body(&sent[0]),
-        json!({"implementer": {"harness": "claude", "model": "haiku", "effort": "medium"}, "reviewer": {"harness": "codex", "model": "gpt", "effort": null}, "delivery": "merge_local", "max_active_runs": null, "min_free_disk_gb": null, "queue_hours": null, "queue_stop_on_failure": false, "queue_wait_for_review": true, "revision": 3})
+        json!({"implementer": {"harness": "claude", "model": "haiku", "effort": "medium"}, "reviewer": {"harness": "codex", "model": "gpt", "effort": null}, "delivery": "merge_local", "max_active_runs": null, "min_free_disk_gb": null, "queue_hours": null, "queue_stop_on_failure": false, "queue_wait_for_review": true, "pull_target_before_runs": true, "revision": 3})
     );
 }
 

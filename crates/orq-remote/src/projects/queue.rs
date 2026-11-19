@@ -957,7 +957,7 @@ impl FetchFailures {
 
 /// The branch project `root`'s runs target: its configured base branch, else the remote's default,
 /// else `main`, as `orq run` picks it.
-fn project_target(root: &Path) -> String {
+pub(super) fn project_target(root: &Path) -> String {
     let configured = orq_orchestrator::load_run_settings(root, &|name| std::env::var(name).ok()).ok().and_then(|settings| settings.base_branch);
     configured.unwrap_or_else(|| {
         std::process::Command::new("git")

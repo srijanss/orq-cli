@@ -323,6 +323,30 @@ fn pulling_is_on_by_default_and_saved_off_from_the_settings() {
     assert_eq!(project_settings(&s)["pull_target_before_runs"], false, "a refused save writes nothing");
 }
 
+/// The settings name the target the setting pulls, so the page can say "Pull main ...".
+#[test]
+fn the_settings_name_the_target_branch_they_pull() {
+    let s = setup("pull-target-named", Delivery::Review, |_| {});
+    assert_eq!(project_settings(&s)["target_branch"], "main");
+}
+
+/// A start that could not pull its target shows why on its run page: the warning's outcome and its
+/// message, redacted, and nothing else of the payload.
+#[test]
+fn a_run_whose_start_could_not_pull_shows_the_warning_on_its_timeline() {
+    let s = setup("pull-run-warning", Delivery::Review, |_| {});
+    seed_run(&s.roots.state, &s.repo, "run-7-COM-01", "COM-01");
+    let message = "main could not be fetched from origin: https://orq:s3cr3t-token@127.0.0.1:9/alpha.git refused";
+    event(&RunStore::new(&s.roots.state), "run-7-COM-01", "target.pull_warning", json!({"outcome": "fetch_failed", "target": "main", "message": message, "extra": "kept out"}));
+    let (status, body) = send(&s, "GET", "/api/projects/alpha/runs/run-7-COM-01", b"");
+    assert_eq!(status, 200, "{body}");
+    let warning = body["events"].as_array().unwrap().iter().find(|event| event["kind"] == "target.pull_warning").cloned().unwrap_or_else(|| panic!("{body}"));
+    assert_eq!(warning["target_pull"]["outcome"], "fetch_failed", "{warning}");
+    let shown = warning["target_pull"]["message"].as_str().unwrap();
+    assert!(shown.starts_with("main could not be fetched from origin") && !shown.contains("s3cr3t-token"), "{shown}");
+    assert!(warning["target_pull"].get("extra").is_none(), "{warning}");
+}
+
 #[test]
 fn a_checkout_on_another_branch_has_the_target_moved_under_it_and_starts() {
     let s = setup("pull-other-branch", Delivery::Review, |_| {});
