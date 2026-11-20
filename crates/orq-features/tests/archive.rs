@@ -206,6 +206,22 @@ fn archiving_waits_for_the_ledger_lock_and_writes_nothing_when_it_stays_held() {
     assert!(!archive_path(&data, "proj").exists());
 }
 
+/// A batch that adds a feature named like an archived one makes that name live: a draft depending on it keeps it.
+#[test]
+fn a_batch_reintroducing_an_archived_name_keeps_the_dependency_on_it() {
+    let dir = dir("batch-live");
+    let ledger = write_ledger(&dir, &[entry("p", "pending", &[])]);
+    let loaded = orq_features::LoadedLedger::load(&ledger).unwrap().with_archive(names(&["old"]));
+    let mut again = orq_features::FeatureDraft::new("old");
+    again.description = Some("back again".into());
+    let mut needs = orq_features::FeatureDraft::new("needs-old");
+    needs.depends_on = Some(vec!["old".into()]);
+
+    let saved = loaded.append_many(&[again, needs]).unwrap();
+
+    assert_eq!(saved[1].depends_on, vec!["old"]);
+}
+
 #[test]
 fn saving_drops_archived_dependencies_and_says_so_while_a_live_name_wins() {
     let dir = dir("save-drops");

@@ -186,9 +186,14 @@ impl LoadedLedger {
         let mut candidate = self.entries.clone();
         let mut new_entries = Vec::with_capacity(drafts.len());
         let mut entry_jsons = Vec::with_capacity(drafts.len());
+        // A name the batch itself adds is live, so a draft depending on it keeps that dependency.
+        let batch: std::collections::HashSet<&str> = drafts.iter().map(|draft| draft.feature_name.as_str()).collect();
         for draft in drafts {
             let mut draft = draft.clone();
-            draft.depends_on = draft.depends_on.as_ref().map(|deps| self.without_archived(deps));
+            draft.depends_on = draft
+                .depends_on
+                .as_ref()
+                .map(|deps| deps.iter().filter(|name| batch.contains(name.as_str()) || !self.is_archived_dependency(name)).cloned().collect());
             let entry_json = draft.to_json();
             let entry = parse_ledger(&format!("[{entry_json}]"))
                 .ok()
