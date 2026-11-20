@@ -440,6 +440,28 @@ mod tests {
         assert_eq!(elapsed.get(), Duration::from_millis(1));
     }
 
+    /// A writer that changes the ledger after it was loaded wins: the save is a conflict, its bytes stay, and the
+    /// prelude (the archive append) never runs.
+    #[cfg(unix)]
+    #[test]
+    fn save_after_a_concurrent_change_conflicts_keeps_the_other_writers_bytes_and_skips_the_prelude() {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-save-after-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".tdd-features.json");
+        std::fs::write(&path, "[]").unwrap();
+        let archive = dir.join("archive.json");
+        std::fs::write(&archive, "[\"kept\"]").unwrap();
+        let loaded = LoadedLedger::load(&path).unwrap();
+        std::fs::write(&path, "[ ]").unwrap();
+
+        let result = loaded.save_after("[1]", &|| std::fs::write(&archive, "[\"overwritten\"]"));
+
+        assert!(matches!(result, Err(SaveError::Conflict)), "{result:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[ ]");
+        assert_eq!(std::fs::read_to_string(&archive).unwrap(), "[\"kept\"]");
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_failing_write_is_an_io_error_not_a_conflict() {
