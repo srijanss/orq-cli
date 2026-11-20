@@ -50,6 +50,26 @@ pub fn vapid_key_file(roots: &StorageRoots) -> PathBuf {
 
 /// The server's VAPID signing key, made on first use.
 pub(crate) fn vapid_key(roots: &StorageRoots) -> Result<SigningKey> {
+    vapid_key_with(roots, &RealFs)
+}
+
+/// The file operations that put a new key in place, apart so a test can make each one fail.
+trait ScratchOps {
+    fn write(&self, out: &mut std::fs::File, contents: &[u8]) -> Result<()> {
+        out.write_all(contents)
+    }
+    fn sync(&self, out: &std::fs::File) -> Result<()> {
+        out.sync_all()
+    }
+    fn link(&self, scratch: &std::path::Path, file: &std::path::Path) -> Result<()> {
+        std::fs::hard_link(scratch, file)
+    }
+}
+
+struct RealFs;
+impl ScratchOps for RealFs {}
+
+fn vapid_key_with(roots: &StorageRoots, ops: &dyn ScratchOps) -> Result<SigningKey> {
     let file = vapid_key_file(roots);
     for _ in 0..2 {
         match std::fs::read_to_string(&file) {
@@ -61,7 +81,7 @@ pub(crate) fn vapid_key(roots: &StorageRoots) -> Result<SigningKey> {
             Err(error) => return Err(error),
         }
         let key = SigningKey::random(&mut OsRng);
-        if publish_new(&file, base64url_encode(&key.to_bytes()).as_bytes())? {
+        if publish_new(&file, base64url_encode(&key.to_bytes()).as_bytes(), ops)? {
             return Ok(key);
         }
     }
@@ -70,14 +90,14 @@ pub(crate) fn vapid_key(roots: &StorageRoots) -> Result<SigningKey> {
 
 /// Puts `contents` at `file` only if nothing is there yet, never showing a half-written file: it is written in
 /// full to a private scratch file first, then linked into place. `false` when another first use got there first.
-fn publish_new(file: &std::path::Path, contents: &[u8]) -> Result<bool> {
+fn publish_new(file: &std::path::Path, contents: &[u8], ops: &dyn ScratchOps) -> Result<bool> {
     use p256::elliptic_curve::rand_core::RngCore;
     let scratch = file.with_extension(format!("{}-{:016x}.tmp", std::process::id(), OsRng.next_u64()));
     let written = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&scratch).and_then(|mut out| {
-        out.write_all(contents)?;
-        out.sync_all()
+        ops.write(&mut out, contents)?;
+        ops.sync(&out)
     });
-    let linked = written.and_then(|()| std::fs::hard_link(&scratch, file));
+    let linked = written.and_then(|()| ops.link(&scratch, file));
     let _ = std::fs::remove_file(&scratch);
     match linked {
         Ok(()) => Ok(true),
@@ -631,4 +651,80 @@ fn is_project_id(id: &str) -> bool {
 pub fn vapid_public_key(roots: &StorageRoots) -> Result<String> {
     let key = vapid_key(roots)?;
     Ok(base64url_encode(key.verifying_key().to_encoded_point(false).as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Step {
+        Write,
+        Sync,
+        Link,
+    }
+
+    /// Real file operations, except that `fail` breaks: a write stops halfway, a sync or link is refused.
+    struct Faulty {
+        fail: Step,
+        reached: RefCell<Vec<Step>>,
+    }
+
+    impl Faulty {
+        fn injected(&self, step: Step) -> Result<()> {
+            self.reached.borrow_mut().push(step);
+            if step == self.fail { Err(Error::other(format!("injected {step:?} failure"))) } else { Ok(()) }
+        }
+    }
+
+    impl ScratchOps for Faulty {
+        fn write(&self, out: &mut std::fs::File, contents: &[u8]) -> Result<()> {
+            if self.fail == Step::Write {
+                out.write_all(&contents[..contents.len() / 2])?;
+            } else {
+                out.write_all(contents)?;
+            }
+            self.injected(Step::Write)
+        }
+        fn sync(&self, out: &std::fs::File) -> Result<()> {
+            out.sync_all()?;
+            self.injected(Step::Sync)
+        }
+        fn link(&self, scratch: &Path, file: &Path) -> Result<()> {
+            self.injected(Step::Link)?;
+            std::fs::hard_link(scratch, file)
+        }
+    }
+
+    fn roots(label: &str) -> StorageRoots {
+        let base = std::env::temp_dir().join(format!("orq-web-push-unit-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+        roots.create_all().unwrap();
+        roots
+    }
+
+    fn left(roots: &StorageRoots) -> Vec<std::ffi::OsString> {
+        std::fs::read_dir(&roots.config).unwrap().map(|e| e.unwrap().file_name()).collect()
+    }
+
+    #[test]
+    fn a_failed_write_sync_or_link_reaches_the_caller_leaves_nothing_behind_and_a_later_use_makes_the_key() {
+        for fail in [Step::Write, Step::Sync, Step::Link] {
+            let roots = roots(&format!("{fail:?}"));
+            let faulty = Faulty { fail, reached: RefCell::new(Vec::new()) };
+
+            let error = vapid_key_with(&roots, &faulty).expect_err("the failure reaches the caller");
+            assert_eq!(error.to_string(), format!("injected {fail:?} failure"));
+            assert_eq!(faulty.reached.borrow().last(), Some(&fail), "the failing step was reached and nothing ran after it");
+            assert_eq!(left(&roots), Vec::<std::ffi::OsString>::new(), "{fail:?}: no key and no scratch file");
+
+            let key = vapid_key(&roots).expect("a later use makes the key");
+            assert_eq!(vapid_key(&roots).unwrap(), key, "{fail:?}: the key made later is the one kept");
+            assert_eq!(left(&roots), vec![std::ffi::OsString::from("vapid-key")], "{fail:?}: only the key is left");
+            let _ = std::fs::remove_dir_all(roots.config.parent().unwrap());
+        }
+    }
 }
