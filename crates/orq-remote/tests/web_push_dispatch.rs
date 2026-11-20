@@ -775,6 +775,28 @@ fn push_text_gives_each_kinds_title_body_and_page_to_a_signed_in_session_and_404
     }
 }
 
+#[test]
+fn an_event_half_written_when_the_watch_begins_is_sent_once_it_is_whole() {
+    use std::io::Write;
+    let s = setup("dispatch-partial", false);
+    let projects = provider(&s);
+    seed_run(&s, "run-1", "COM-01");
+    event(&s, "run-1", "stage.started", json!({}));
+    let record = RunStore::new(&s.roots.state).load("run-1").unwrap();
+    let asked = Event { schema_version: 1, event_id: "run-1-asked".into(), run_id: "run-1".into(), project_id: record.project_id, feature_id: record.feature_id, kind: "run.needs_input".into(), stage: None, attempt: 1, occurred_at: "2026-11-20T10:00:00Z".into(), payload: json!({}) };
+    let line = format!("{}\n", serde_json::to_string(&asked).unwrap());
+    let (head, tail) = line.split_at(line.len() / 2);
+    let file = s.roots.state.join("runs").join("run-1").join("events.jsonl");
+    let mut events = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+    events.write_all(head.as_bytes()).unwrap();
+    // The server starts while the run is part way through the line.
+    let mut watch = orq_remote::web_push::RunWatch::new(&s.roots);
+    events.write_all(tail.as_bytes()).unwrap();
+    drop(events);
+    assert_eq!(look(&projects, &mut watch), vec![1]);
+    assert_eq!(s.device.decrypt(&s.service.bodies()[0])["event"], "run-1-asked");
+}
+
 /// The kinds the device was sent, in the order sent.
 fn kinds_sent(s: &Setup) -> Vec<String> {
     s.service

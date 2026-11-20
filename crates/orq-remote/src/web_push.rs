@@ -373,6 +373,28 @@ pub fn push_text(kind: &str, stale: bool, subject: &str, detail: Option<&str>, p
     PushText { title, body, path: page.path() }
 }
 
+/// How many bytes of `file` are whole lines: up to and with its last newline, so a line still being written
+/// is read in full once it ends. Read back from the end a block at a time; 0 when there is none.
+fn whole_lines_len(file: &std::path::Path) -> u64 {
+    use std::io::{Read, Seek, SeekFrom};
+    const BLOCK: u64 = 64 * 1024;
+    let Ok(mut f) = std::fs::File::open(file) else { return 0 };
+    let Ok(mut end) = f.metadata().map(|meta| meta.len()) else { return 0 };
+    let mut block = Vec::new();
+    while end > 0 {
+        let start = end.saturating_sub(BLOCK);
+        block.clear();
+        if f.seek(SeekFrom::Start(start)).is_err() || (&mut f).take(end - start).read_to_end(&mut block).is_err() {
+            return 0;
+        }
+        if let Some(at) = block.iter().rposition(|b| *b == b'\n') {
+            return start + at as u64 + 1;
+        }
+        end = start;
+    }
+    0
+}
+
 /// Follows every run's `events.jsonl` from where it was when the watch began, reading only what was appended.
 pub struct RunWatch {
     runs: std::path::PathBuf,
@@ -385,7 +407,7 @@ impl RunWatch {
     pub fn new(roots: &StorageRoots) -> RunWatch {
         let mut watch = RunWatch { runs: roots.state.join("runs"), read: Default::default() };
         for run in orq_orchestrator::RunStore::new(&roots.state).run_ids().unwrap_or_default() {
-            let len = std::fs::metadata(watch.events_file(&run)).map_or(0, |meta| meta.len());
+            let len = whole_lines_len(&watch.events_file(&run));
             watch.read.insert(run, len);
         }
         watch
