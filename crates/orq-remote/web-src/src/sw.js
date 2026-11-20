@@ -1,4 +1,5 @@
-// The service worker: it keeps the app shell so the installed app opens offline, and nothing else.
+// The service worker: it keeps the app shell so the installed app opens offline, and shows push
+// notifications (see "push" below); it caches nothing else.
 // Data (/api), sign-in (/auth), anything but a GET and other origins always go to the network.
 // A new release installs beside the old one and waits; the page offers it, and only the person's
 // Reload sends "skip-waiting". The build replaces __ORQ_SHELL_VERSION__ with a hash of the shell.
@@ -179,6 +180,99 @@ async function cachedOrError(path, cacheName) {
 async function whole() {
   const hits = await quietly(() => Promise.all(SHELL.map((path) => caches.match(path, { cacheName: CACHE }))));
   return hits && hits.every(Boolean) ? hits[0] : undefined;
+}
+
+// A push carries only {kind, project, run, event}; its words come from the server, asked with the signed-in
+// session, so nothing about a run is ever handed to the push service.
+self.addEventListener("push", (event) => {
+  event.waitUntil(notify(pushData(event)));
+});
+
+function pushData(event) {
+  try {
+    const data = event.data && event.data.json();
+    return data && typeof data === "object" ? data : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+// The tag is "<run or project>:<kind>", so a repeat about the same run (or queue) replaces the one shown.
+async function notify(push) {
+  const text = await pushText(push);
+  const tag = `${field(push, "run") || field(push, "project")}:${field(push, "kind")}`;
+  const path = ownPath(text.path) || fallbackPath(push);
+  await self.registration.showNotification(text.title, { body: text.body, tag, data: { path } });
+}
+
+const field = (push, name) => (typeof push[name] === "string" ? push[name] : "");
+
+// A path on this server only: anything that would leave orq is no path at all.
+function ownPath(path) {
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//")) return "";
+  try {
+    const url = new URL(path, self.location.origin);
+    return url.origin === self.location.origin ? url.pathname + url.search + url.hash : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+// Without the server's words: a queue's news opens the project's Queue page, a run's opens the run.
+function fallbackPath(push) {
+  const [kind, project, run] = [field(push, "kind"), field(push, "project"), field(push, "run")];
+  if (project && kind.startsWith("queue_")) return `/projects/${encodeURIComponent(project)}/queue`;
+  if (project && run) return `/projects/${encodeURIComponent(project)}/orchestrations/${encodeURIComponent(run)}`;
+  return "/";
+}
+
+// A click takes an open orq window to the page, focused; with none open, it opens one there.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const path = ownPath(event.notification.data && event.notification.data.path) || "/";
+  event.waitUntil(openPage(path));
+});
+
+async function openPage(path) {
+  const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const page = open.find((client) => quietOrigin(client.url) === self.location.origin);
+  if (page) {
+    try {
+      const focused = await page.focus();
+      await (focused || page).navigate(path);
+      return;
+    } catch (error) {
+      // A page this worker does not control cannot be navigated; a new window opens instead.
+    }
+  }
+  await self.clients.openWindow(path);
+}
+
+function quietOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch (error) {
+    return "";
+  }
+}
+
+// The server's words for the push's event, or a generic text that names nothing when they cannot be had.
+// The test push Settings sends is about no event, so it is never asked about.
+async function pushText(push) {
+  if (push.kind === "test") return { title: "orq: notifications work on this device", body: "" };
+  const query = new URLSearchParams();
+  for (const name of ["project", "run", "event"]) {
+    if (field(push, name)) query.set(name, field(push, name));
+  }
+  try {
+    const reply = await fetch("/api/push/text?" + query, { credentials: "same-origin" });
+    if (!reply.ok) throw new Error("no words");
+    const text = await reply.json();
+    if (typeof text.title !== "string" || !text.title) throw new Error("no words");
+    return { title: text.title, body: typeof text.body === "string" ? text.body : "", path: text.path };
+  } catch (error) {
+    return { title: "orq: a run needs attention", body: "" };
+  }
 }
 
 // Cache storage can fail; that counts as nothing cached.
