@@ -5636,6 +5636,9 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
                 {onLogs ? <button type="button" className="link-button" data-step-logs onClick={() => onLogs(failedLog)}>See the logs</button> : null}
               </p>
             ) : null}
+            {kind === "failed" && failure !== null && ALREADY_COMPLETED.test(failure.reason ?? "") ? (
+              <p className="run-step-note muted" data-step-completed-note>The feature was already marked completed in the ledger, so the session could not start it again. Resume puts it back to pending and the session carries on under the same name.</p>
+            ) : null}
             {failure === null ? null : <StepFailedTests place={place} tests={failure.failed.tests} more={failure.failed.more} />}
             {failedLog !== null && failedLog.excerpt !== "" ? (
               <StepDetail place={place} kind="excerpt" label="Log lines at the error" startOpen={at === failedOn}>
@@ -5650,6 +5653,9 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
     </ol>
   );
 }
+
+// A failure whose reason says the feature was already marked 'completed' (the session's init_feature was refused).
+const ALREADY_COMPLETED = /already marked ['"]?completed['"]?/i;
 
 const RUN_TABS = [["timeline", "Timeline"], ["logs", "Logs"], ["events", "Events"]];
 

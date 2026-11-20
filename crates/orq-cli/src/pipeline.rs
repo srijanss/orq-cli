@@ -1044,6 +1044,74 @@ fn ledger_statuses(ledger: &Path, session: &str) -> Option<Vec<(String, orq_feat
     }
 }
 
+/// The phase and depth of the feature the worktree's `.tdd-state.json` has open, none when no feature
+/// is open or the file is missing, unreadable, or its phase is not a plain word.
+fn open_tdd_state(worktree: &Path) -> Option<(String, usize)> {
+    let text = std::fs::read_to_string(worktree.join(".tdd-state.json")).ok()?;
+    let state: serde_json::Value = serde_json::from_str(&text).ok()?;
+    state.get("featureName")?.as_str()?;
+    let stack = state.get("stack").and_then(|s| s.as_array()).map_or(&[][..], |s| s.as_slice());
+    let phase = state.get("phase").and_then(|p| p.as_str()).or_else(|| stack.last()?.get("phase")?.as_str())?;
+    let plain = !phase.is_empty() && phase.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    plain.then(|| (phase.to_string(), stack.len().max(1)))
+}
+
+/// Each of `features` in the ledger with the files it declares, none when the ledger cannot be read.
+fn ledger_target_files(ledger: &Path, features: &[String]) -> Option<Vec<(String, Vec<String>)>> {
+    let entries = orq_features::load_ledger(ledger).ok()?;
+    Some(entries.into_iter().filter(|e| features.contains(&e.feature_name)).map(|e| (e.feature_name, e.target_files)).collect())
+}
+
+/// After a session: a declared file (from `before`) a TDD tool dropped from a feature's `targetFiles`
+/// is put back, the files the session added kept, and `ledger.target_files_restored {feature, restored}`
+/// is recorded. Best effort: a failure is said and changes nothing else about the run.
+fn restore_target_files(store: &RunStore, record: &RunRecord, ledger: &Path, before: Option<&[(String, Vec<String>)]>) {
+    let Some(before) = before else { return };
+    for (feature, declared) in before {
+        for _ in 0..5 {
+            let Ok(loaded) = orq_features::LoadedLedger::load(ledger) else { break };
+            let Some(entry) = loaded.entries().iter().find(|e| &e.feature_name == feature) else { break };
+            let restored: Vec<String> = declared.iter().filter(|f| !entry.target_files.contains(f)).cloned().collect();
+            if restored.is_empty() {
+                break;
+            }
+            let mut files = declared.clone();
+            files.extend(entry.target_files.iter().filter(|f| !declared.contains(f)).cloned());
+            let edits = orq_features::FieldEdits { target_files: Some(files), ..Default::default() };
+            match loaded.edit_fields(feature, &edits) {
+                Ok(_) => {
+                    record_ledger_event(store, record, "ledger.target_files_restored", serde_json::json!({ "feature": feature, "restored": restored }));
+                    break;
+                }
+                Err(orq_features::EditFieldsError::Save(orq_features::SaveError::Conflict)) => continue,
+                Err(err) => {
+                    eprintln!("orq: cannot put the files {feature} declared back in the ledger: {err}");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Appends a ledger event with `payload`; a failure is said.
+fn record_ledger_event(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) {
+    let event = orq_orchestrator::Event {
+        schema_version: 1,
+        event_id: format!("{}-{}-{}", record.run_id, kind.replace('.', "-"), store.events(&record.run_id).map_or(0, |e| e.len())),
+        run_id: record.run_id.clone(),
+        project_id: record.project_id.clone(),
+        feature_id: record.feature_id.clone(),
+        kind: kind.to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: crate::review::utc_now(),
+        payload,
+    };
+    if let Err(err) = store.append_event(&event) {
+        eprintln!("orq: {}: cannot record {kind}: {err:?}", record.run_id);
+    }
+}
+
 /// The event naming the run's features a session marked `completed`, with the head it left.
 pub(crate) const SESSION_COMPLETED: &str = "ledger.session_completed";
 
@@ -1979,7 +2047,13 @@ fn stages(
             // A resumed session carries on with the features the run it resumes started; a review asked
             // for again reviews instead.
             let continued_log = resumed_from.filter(|_| review_again.is_none()).map(|_| short_log(worktree, &record.base_sha));
-            let continuing = resumed_from.zip(continued_log.as_deref()).map(|(from, log)| orq_agents::Continuing { run: &from.run_id, base: &record.base_sha, log });
+            let open_tdd = continued_log.as_ref().and_then(|_| open_tdd_state(worktree));
+            let continuing = resumed_from.zip(continued_log.as_deref()).map(|(from, log)| orq_agents::Continuing {
+                run: &from.run_id,
+                base: &record.base_sha,
+                log,
+                open_feature: open_tdd.as_ref().map(|(phase, depth)| orq_agents::OpenFeature { phase, depth: *depth }),
+            });
             // The session is told the features' files, and on a resumed run those already changed outside them.
             let (declared_files, undeclared_files) = session_files(store, record, &orq_features::ledger_path(options.project), options.features, resumed_from.map(|from| from.run_id.as_str()));
             let args = adapter
@@ -2015,7 +2089,9 @@ fn stages(
                 exit_marker: marker.map(std::path::Path::new),
             };
             let before = ledger_statuses(&orq_features::ledger_path(options.project), "the implement session");
+            let files_before = ledger_target_files(&orq_features::ledger_path(options.project), options.features);
             let outcome = run_implement_stage(store, run_id, &session)?;
+            restore_target_files(store, record, &orq_features::ledger_path(options.project), files_before.as_deref());
             record_session_completed(store, record, &orq_features::ledger_path(options.project), options.features, before.as_deref());
             record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "implement");
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "implement_and_review");
