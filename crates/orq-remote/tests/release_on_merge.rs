@@ -415,6 +415,29 @@ fn a_merge_with_a_huge_stat_and_diff_gives_the_agent_a_bounded_prompt() {
 }
 
 #[test]
+fn a_failing_release_command_refuses_the_release_and_leaves_no_worktree_branch_or_commit() {
+    let s = setup("failing-command", answering("patch"), "auto");
+    let after = format!("echo after >> {marks}/order", marks = s.marks.display());
+    std::fs::write(
+        s.repo.join(".orq/run.toml"),
+        format!("[release]\nrelease_on_merge = \"auto\"\ncommands = [[\"sh\", \"-c\", \"echo half > Cargo.lock; exit 1\"]]\n\n[after_merge]\ncommands = [[\"sh\", \"-c\", \"{after}\"]]\n"),
+    )
+    .unwrap();
+    let (run, merged) = merged_with(&s, "fix: the thing");
+    let refused = wait_for(&s, &run, "release.refused").expect("the refusal was recorded");
+    assert!(refused.payload["why"].as_str().unwrap().contains("failed"), "{}", refused.payload);
+    assert!(events_of(&s, &run, "release.created").is_empty());
+    assert_eq!(git(&s.repo, &["rev-parse", "HEAD"]), merged, "the merge is as it was");
+    assert!(version_of(&s).contains("version = \"0.1.2\""));
+    assert_eq!(git(&s.repo, &["status", "--porcelain", "--untracked-files=no"]), "");
+    assert_eq!(git(&s.repo, &["branch", "--list", "release/*"]), "");
+    assert_eq!(git(&s.repo, &["worktree", "list", "--porcelain"]).matches("worktree ").count(), 1);
+    assert!(!s.repo.join("Cargo.lock").exists(), "what the command wrote stayed in the release worktree");
+    wait_for(&s, &run, "after_merge.commands").expect("the after-merge commands still ran");
+    assert_eq!(std::fs::read_to_string(s.marks.join("order")).unwrap().lines().count(), 1);
+}
+
+#[test]
 fn a_release_that_is_off_or_a_review_delivery_does_nothing() {
     for (off, delivery) in [(true, Delivery::MergeLocal), (false, Delivery::Review)] {
         let agent = answering("patch");
