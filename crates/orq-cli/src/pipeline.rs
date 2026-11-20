@@ -377,7 +377,13 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
         } else {
             orq_orchestrator::plan_group_resume_fixing(store, repo, &project_id(options.project), &members, options.fix_conflicts)
         };
-        Some(planned.map_err(other)?)
+        let planned = planned.map_err(other)?;
+        // An answer is for the session: a resume that inherits the finished one refuses it rather than dropping it.
+        let same_harness = planned.from.profiles.get("implementer").map(|p| &p.harness) == Some(&options.implementer.harness);
+        if same_harness {
+            orq_orchestrator::check_answer_reaches_session(&planned, options.answer).map_err(other)?;
+        }
+        Some(planned)
     } else {
         None
     };
@@ -657,15 +663,21 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         }
     }
     // The stopped run handed its branch and worktree to this run; it no longer holds them nor offers actions of its own.
-    if let Some(from) = resumed.as_ref().map(|r| &r.from) {
-        if let Err(err) = orq_orchestrator::supersede_resumed(&store, from, &run_id) {
-            eprintln!("orq: cannot mark {} as resumed: {err:?}", from.run_id);
-        }
-    }
     // A new harness continues the work from the handoff, so only an implementer on the same harness skips its finished session.
     let inherited = resumed.as_ref().filter(|r| {
         r.skip_implement && r.from.profiles.get("implementer").map(|p| &p.harness) == record.profiles.get("implementer").map(|p| &p.harness)
     });
+    if let Some(plan) = resumed.as_ref() {
+        // Whether the session was started or inherited, and why, goes on the stopped run's `run.resumed`.
+        let (session, why) = match inherited {
+            Some(plan) => plan.session(),
+            None if plan.skip_implement => ("started", "the implementer's harness changed, so the new one starts from the handoff".to_string()),
+            None => plan.session(),
+        };
+        if let Err(err) = orq_orchestrator::supersede_resumed_with_session(&store, &plan.from, &run_id, session, &why) {
+            eprintln!("orq: cannot mark {} as resumed: {err:?}", plan.from.run_id);
+        }
+    }
     // Carried over first thing: a run resumed again after failing early must still skip the agent.
     if let Some(from) = inherited.map(|r| r.from.run_id.as_str()) {
         if let Err(err) = orq_orchestrator::record_inherited_implement(&store, &record, from) {

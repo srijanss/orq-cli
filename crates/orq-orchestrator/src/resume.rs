@@ -28,6 +28,31 @@ pub struct ResumePlan {
     pub finished_by_hand: Option<String>,
     /// The run blocked on a rebase conflict that is still in progress, which the resume finishes.
     pub mid_rebase: bool,
+    /// Why the session is started or inherited, as `run.resumed` records it.
+    pub session_why: String,
+}
+
+impl ResumePlan {
+    /// Whether the resumed run starts its own session or inherits the finished one, and why.
+    pub fn session(&self) -> (&'static str, String) {
+        (if self.skip_implement { "inherited" } else { "started" }, self.session_why.clone())
+    }
+}
+
+/// An answer given with a resume must reach a session: a resume that inherits the finished session
+/// refuses it rather than dropping it.
+pub fn check_answer_reaches_session(plan: &ResumePlan, answer: Option<&str>) -> Result<(), String> {
+    if plan.skip_implement && answer.is_some_and(|a| !a.trim().is_empty()) {
+        return Err("this run's session already finished cleanly; an answer cannot reach it".to_string());
+    }
+    Ok(())
+}
+
+/// Whether a run's ending reason says the review (or the session's own report) stopped it.
+fn review_stopped(reason: &str) -> bool {
+    reason.contains("the review escalated")
+        || reason.contains("the review could not be finished")
+        || reason.starts_with("the implement session reported a problem")
 }
 
 const GROUP_EVENT: &str = "run.grouped";
@@ -83,11 +108,34 @@ pub fn supersede_resumed(
     from: &RunRecord,
     new_run_id: &str,
 ) -> Result<(), StoreError> {
+    supersede_resumed_payload(store, from, new_run_id, serde_json::json!({ "resumed_as": new_run_id }))
+}
+
+/// [`supersede_resumed`], recording whether the new run `started` its session or `inherited` the
+/// finished one, and why.
+pub fn supersede_resumed_with_session(
+    store: &RunStore,
+    from: &RunRecord,
+    new_run_id: &str,
+    session: &str,
+    why: &str,
+) -> Result<(), StoreError> {
+    supersede_resumed_payload(
+        store,
+        from,
+        new_run_id,
+        serde_json::json!({ "resumed_as": new_run_id, "session": session, "why": why }),
+    )
+}
+
+fn supersede_resumed_payload(
+    store: &RunStore,
+    from: &RunRecord,
+    new_run_id: &str,
+    resumed: serde_json::Value,
+) -> Result<(), StoreError> {
     for (kind, payload) in [
-        (
-            "run.resumed",
-            serde_json::json!({ "resumed_as": new_run_id }),
-        ),
+        ("run.resumed", resumed),
         (
             "run.completed",
             serde_json::json!({ "ending": "resumed", "reason": format!("continued as {new_run_id}") }),
@@ -446,7 +494,24 @@ fn plan(
         }
         _ => None,
     };
-    let skip_implement = implement_finished(&events);
+    // A run its review stopped did not finish its session's work: the session runs again, and the
+    // review it asks for covers what comes after the head that escalated.
+    let summary = summarize_run(&events);
+    let stopped_by_review = matches!(summary.phase, RunPhase::Blocked | RunPhase::Failed)
+        && summary.reason.as_deref().is_some_and(review_stopped);
+    let mut review_again = review_again;
+    if stopped_by_review && review_again.is_none() {
+        review_again = crate::review_escalation::escalated_review(&from.worktree, &from.base_sha)
+            .map_err(|e| format!("{}: cannot read the review ledger: {e}", from.run_id))?;
+    }
+    let skip_implement = implement_finished(&events) && !stopped_by_review;
+    let session_why = if stopped_by_review {
+        format!("the run ended because of its review: {}", summary.reason.as_deref().unwrap_or_default())
+    } else if skip_implement {
+        "the session already finished cleanly".to_string()
+    } else {
+        "the session had not finished".to_string()
+    };
     Ok(ResumePlan {
         from,
         skip_implement,
@@ -454,6 +519,7 @@ fn plan(
         review_again,
         finished_by_hand,
         mid_rebase,
+        session_why,
     })
 }
 
