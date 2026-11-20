@@ -901,6 +901,38 @@ fn a_folder_whose_gitignore_is_not_just_a_plain_star_keeps_the_worktree() {
 }
 
 #[test]
+fn a_star_followed_by_whitespace_git_keeps_in_the_pattern_is_not_a_self_ignore() {
+    // Git drops only unescaped trailing ASCII spaces; anything else after the star is part of the
+    // pattern, which then matches only names ending in it, not the notes.
+    for (tag, text) in [
+        ("nbsp", "*\u{a0}\n"),
+        ("tab", "*\t\n"),
+        ("carriage-return", "*\r\n"),
+        ("escaped-space", "*\\ \n"),
+    ] {
+        let w =
+            world_with_ignored_notes(&format!("star-and-{tag}"), |p| fs::write(p, text).unwrap());
+
+        let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+        assert!(
+            matches!(outcome, CleanupOutcome::Kept { .. }),
+            "{tag}: {outcome:?}"
+        );
+        assert!(w.worktree.join(".cache/notes.txt").exists(), "{tag}");
+    }
+}
+
+#[test]
+fn a_star_followed_by_plain_spaces_is_still_a_self_ignore() {
+    let w = world_with_ignored_notes("star-and-spaces", |p| fs::write(p, "*   \n").unwrap());
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+}
+
+#[test]
 fn a_self_ignore_of_exactly_four_kib_still_counts() {
     let w = world_with_ignored_notes("self-ignore-at-limit", |p| {
         let comments = "# padding\n".repeat(409);

@@ -507,9 +507,11 @@ fn is_self_ignore(gitignore: &Path) -> bool {
     let Ok(text) = std::str::from_utf8(&text) else {
         return false;
     };
+    // Git drops only unescaped trailing ASCII spaces from a pattern: any other character after the
+    // star (a tab, a carriage return, a non-breaking space) narrows it to names ending in that.
     let mut patterns = text
-        .lines()
-        .map(|line| line.trim_end_matches('\r').trim_end())
+        .split('\n')
+        .map(|line| line.trim_end_matches(' '))
         .filter(|line| !line.is_empty() && !line.starts_with('#'));
     patterns.next() == Some("*") && patterns.next().is_none()
 }
