@@ -52,22 +52,38 @@ pub fn vapid_key_file(roots: &StorageRoots) -> PathBuf {
 pub(crate) fn vapid_key(roots: &StorageRoots) -> Result<SigningKey> {
     let file = vapid_key_file(roots);
     for _ in 0..2 {
-        if let Ok(text) = std::fs::read_to_string(&file) {
-            let bytes = base64url_decode(text.trim()).ok_or_else(|| Error::new(ErrorKind::InvalidData, "the VAPID key file is not readable"))?;
-            return SigningKey::from_slice(&bytes).map_err(|_| Error::new(ErrorKind::InvalidData, "the VAPID key file does not hold a key"));
-        }
-        let key = SigningKey::random(&mut OsRng);
-        // create_new, so two first uses never write different keys; the loser reads the winner's.
-        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&file) {
-            Ok(mut out) => {
-                out.write_all(base64url_encode(&key.to_bytes()).as_bytes())?;
-                return Ok(key);
+        match std::fs::read_to_string(&file) {
+            Ok(text) => {
+                let bytes = base64url_decode(text.trim()).ok_or_else(|| Error::new(ErrorKind::InvalidData, "the VAPID key file is not readable"))?;
+                return SigningKey::from_slice(&bytes).map_err(|_| Error::new(ErrorKind::InvalidData, "the VAPID key file does not hold a key"));
             }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+        let key = SigningKey::random(&mut OsRng);
+        if publish_new(&file, base64url_encode(&key.to_bytes()).as_bytes())? {
+            return Ok(key);
+        }
     }
-    Err(Error::new(ErrorKind::Other, "the VAPID key file could not be made"))
+    Err(Error::other("the VAPID key file could not be made"))
+}
+
+/// Puts `contents` at `file` only if nothing is there yet, never showing a half-written file: it is written in
+/// full to a private scratch file first, then linked into place. `false` when another first use got there first.
+fn publish_new(file: &std::path::Path, contents: &[u8]) -> Result<bool> {
+    use p256::elliptic_curve::rand_core::RngCore;
+    let scratch = file.with_extension(format!("{}-{:016x}.tmp", std::process::id(), OsRng.next_u64()));
+    let written = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&scratch).and_then(|mut out| {
+        out.write_all(contents)?;
+        out.sync_all()
+    });
+    let linked = written.and_then(|()| std::fs::hard_link(&scratch, file));
+    let _ = std::fs::remove_file(&scratch);
+    match linked {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// How long one push may take, connecting included.

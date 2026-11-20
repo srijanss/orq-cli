@@ -192,7 +192,29 @@ fn the_vapid_key_file_is_private_and_only_the_public_key_is_served() {
     assert!(!stored.trim().is_empty() && !public.contains(stored.trim()));
 }
 
-const TOKEN: &str = "web-push-test-token-0123456789abcdef";
+#[test]
+fn first_uses_at_once_all_get_the_one_key_that_was_kept() {
+    for round in 0..20 {
+        let roots = roots(&format!("push-vapid-race-{round}"));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (roots, start) = (roots.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    orq_remote::web_push::vapid_public_key(&roots)
+                })
+            })
+            .collect();
+        let keys: Vec<String> = threads.into_iter().map(|t| t.join().unwrap().expect("a first use never sees a half-written key")).collect();
+        assert!(keys.iter().all(|k| *k == keys[0]), "one key for everyone: {keys:?}");
+        assert_eq!(orq_remote::web_push::vapid_public_key(&roots).unwrap(), keys[0], "the key kept is the one handed out");
+        let left: Vec<_> = std::fs::read_dir(&roots.config).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("vapid-key")], "no scratch files are left behind");
+    }
+}
+
+const TOKEN: &str ="web-push-test-token-0123456789abcdef";
 
 struct NoProjects;
 impl orq_core::remote_inbox::ProjectsProvider for NoProjects {
