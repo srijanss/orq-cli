@@ -998,7 +998,8 @@ function PushConfirm({ state, target, projectId, busy, onConfirm, onCancel }) {
   );
 }
 
-function ProjectCard({ project, selected = false, pinned = false, onPin = null, push = null }) {
+// `mute`, when this page may see the push settings: {muted, onToggle}, for the card's Mute notifications / Unmute.
+function ProjectCard({ project, selected = false, pinned = false, onPin = null, push = null, mute = null }) {
   const base = "/projects/" + encodeURIComponent(project.id) + "/";
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
@@ -1007,6 +1008,18 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null, 
         {project.name}
         <Icon name="chevronRight" />
       </button>
+      {mute !== null ? (
+        <MoreMenu label={"More for " + project.name}>
+          <button type="button" role="menuitem" data-push-mute={project.id} onClick={mute.onToggle}>
+            {mute.muted ? "Unmute" : "Mute notifications"}
+          </button>
+        </MoreMenu>
+      ) : null}
+      {mute !== null && mute.muted ? (
+        <span className="badge" data-push-muted={project.id}>
+          Notifications muted
+        </span>
+      ) : null}
       {onPin !== null ? (
         <button type="button" className="pin-button" data-pin={project.id} aria-pressed={pinned ? "true" : "false"} aria-label={(pinned ? "Unpin " : "Pin ") + project.name} title={pinned ? "Unpin" : "Pin to the top"} onClick={onPin}>
           <Icon name="pin" size={18} />
@@ -1509,6 +1522,19 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
     setNotice(text);
     reread();
   };
+  const mutes = usePushMutes(token);
+  const muteOf = (project) => {
+    if (mutes.muted === null) return null;
+    const muted = mutes.muted.includes(project.id);
+    return {
+      muted,
+      onToggle: async () => {
+        setNotice("");
+        const refused = await mutes.change(project.id, !muted);
+        if (refused !== null) setNotice(refused);
+      },
+    };
+  };
   const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
   const toggle = (id) => {
     const next = pins.includes(id) ? pins.filter((pin) => pin !== id) : [...pins, id];
@@ -1517,7 +1543,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
   };
   const pinned = projects.filter((project) => pins.includes(project.id));
   const rest = projects.filter((project) => !pins.includes(project.id));
-  const card = (project) => <ProjectCard key={project.id} project={project} selected={project.id === lastProject} pinned={pins.includes(project.id)} onPin={() => toggle(project.id)} push={{ token, projectId: project.id, onSignedOut }} />;
+  const card = (project) => <ProjectCard key={project.id} project={project} selected={project.id === lastProject} pinned={pins.includes(project.id)} onPin={() => toggle(project.id)} push={{ token, projectId: project.id, onSignedOut }} mute={muteOf(project)} />;
   return (
     <>
       <div className="stats">
@@ -1836,6 +1862,244 @@ function PasskeysCard({ onSignOut = null }) {
         ))}
       </ul>
       {passkeysAvailable() && <EnrolPasskey token={null} another onDone={load} />}
+    </section>
+  );
+}
+
+// Web push. Every /api/push route needs a passkey session (or the token where it stands in for one); a
+// change carries the session's CSRF token. Resolves { status, ok, data } with the reply's JSON (or null).
+async function pushRequest(token, method, tail, body) {
+  const headers = token === SESSION ? {} : { Authorization: "Bearer " + token };
+  if (method !== "GET" && token === SESSION) {
+    const status = await authStatus();
+    if (status !== null && typeof status.csrf === "string") headers["X-CSRF-Token"] = status.csrf;
+  }
+  const options = { method, headers, cache: "no-store", referrerPolicy: "no-referrer" };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch("/api/push/" + tail, options);
+  return { status: response.status, ok: response.ok, data: await jsonOrNull(response) };
+}
+
+// The server's reason for a refusal when it gave one, otherwise `fallback`.
+function pushRefusal(reply, fallback) {
+  const data = reply && reply.data;
+  return data !== null && typeof data === "object" && typeof data.error === "string" && data.error !== "" ? data.error : fallback;
+}
+
+const PUSH_UNSUPPORTED = "This browser cannot show notifications from this page.";
+const PUSH_DENIED = "Notifications are blocked for this site. Allow them in the browser's site settings, then try again.";
+const PUSH_FAILED = "Notifications could not be turned on for this device.";
+const PUSH_KIND_LABELS = { needs_input: "Needs your input", failed: "Failed", stalled: "Stalled", review: "Review ready or out of date", merged: "MR merged", finished: "Finished", started: "Started", queue_paused: "Queue paused", queue_finished: "Queue finished", restarted: "Orq restarted" };
+
+function pushSupported() {
+  return window.isSecureContext === true && !!navigator.serviceWorker && typeof window.PushManager === "function" && !!window.Notification;
+}
+
+// A short name for this device from its user agent, such as "Firefox on Linux"; never the agent itself.
+function deviceLabel(agent) {
+  const ua = String(agent || "");
+  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\/|FxiOS\//.test(ua) ? "Firefox" : /OPR\//.test(ua) ? "Opera" : /Chrome\/|CriOS\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "A browser";
+  const system = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /CrOS/.test(ua) ? "ChromeOS" : /Macintosh|Mac OS X/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : null;
+  return system === null ? browser : browser + " on " + system;
+}
+
+// The bytes of a base64url text, as pushManager.subscribe takes the server's key.
+function keyBytes(text) {
+  const base = text.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base + "=".repeat((4 - (base.length % 4)) % 4));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+// Asks the browser to show notifications, subscribes with the server's key and sends the subscription.
+// Resolves null when this device is subscribed, otherwise the reason it is not; nothing is sent unless the
+// browser can and may show notifications.
+async function enablePush(token) {
+  if (!pushSupported()) return PUSH_UNSUPPORTED;
+  let permission = "denied";
+  try {
+    permission = await window.Notification.requestPermission();
+  } catch (refused) {
+    permission = "denied";
+  }
+  if (permission !== "granted") return PUSH_DENIED;
+  try {
+    const key = await pushRequest(token, "GET", "key");
+    if (!key.ok || key.data === null || typeof key.data.public_key !== "string") return pushRefusal(key, PUSH_FAILED);
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key.data.public_key) })).toJSON();
+    const stored = await pushRequest(token, "POST", "subscriptions", { endpoint: subscription.endpoint, keys: subscription.keys, label: deviceLabel(navigator.userAgent) });
+    return stored.ok ? null : pushRefusal(stored, PUSH_FAILED);
+  } catch (failed) {
+    return PUSH_FAILED;
+  }
+}
+
+// The projects muted, read once the page opens: { muted, change }. `muted` is null while unread or when this
+// page may not see the push settings; change(id, mute) resolves null once done and read again, otherwise
+// the reason it was not.
+function usePushMutes(token) {
+  const [muted, setMuted] = useState(null);
+  const load = useCallback(async () => {
+    try {
+      const reply = await pushRequest(token, "GET", "mutes");
+      setMuted(reply.ok && reply.data !== null && Array.isArray(reply.data.muted) ? reply.data.muted.filter((id) => typeof id === "string") : null);
+    } catch (unreachable) {
+      setMuted(null);
+    }
+  }, [token]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  const change = async (projectId, mute) => {
+    const fallback = mute ? "The project could not be muted." : "The project could not be unmuted.";
+    try {
+      const reply = await pushRequest(token, mute ? "PUT" : "DELETE", "mutes/" + encodeURIComponent(projectId));
+      if (!reply.ok) return pushRefusal(reply, fallback);
+      await load();
+      return null;
+    } catch (unreachable) {
+      return fallback;
+    }
+  };
+  return { muted, change };
+}
+
+const isPushDevice = (device) => device !== null && typeof device === "object" && Number.isInteger(device.id) && typeof device.label === "string";
+const isPushKind = (kind) => kind !== null && typeof kind === "object" && typeof kind.kind === "string" && typeof kind.enabled === "boolean";
+
+// One subscribed device: Send test shows "Sent" or the push service's error beside it, Remove forgets it.
+function PushDevice({ device, token, onRemoved }) {
+  const [result, setResult] = useState(null);
+  const [sending, setSending] = useState(false);
+  const test = async () => {
+    setSending(true);
+    setResult(null);
+    try {
+      const reply = await pushRequest(token, "POST", "subscriptions/" + device.id + "/test");
+      if (reply.ok && reply.data !== null && reply.data.sent === true) setResult("Sent");
+      else if (reply.ok && reply.data !== null && typeof reply.data.error === "string") setResult(reply.data.error);
+      else setResult(pushRefusal(reply, "The test could not be sent."));
+    } catch (unreachable) {
+      setResult("The test could not be sent.");
+    }
+    setSending(false);
+  };
+  const remove = async () => {
+    setSending(true);
+    try {
+      const reply = await pushRequest(token, "DELETE", "subscriptions/" + device.id);
+      setSending(false);
+      if (reply.ok) onRemoved();
+      else setResult(pushRefusal(reply, "The device could not be removed."));
+    } catch (unreachable) {
+      setSending(false);
+      setResult("The device could not be removed.");
+    }
+  };
+  return (
+    <li className="settings-row" data-push-device={device.id}>
+      <strong>{device.label}</strong>{" "}
+      <button type="button" data-push-test={device.id} disabled={sending} onClick={test}>
+        Send test
+      </button>
+      <button type="button" className="danger-button" data-push-remove={device.id} disabled={sending} onClick={remove}>
+        Remove
+      </button>
+      {result !== null && <span role="status" data-push-result={device.id}>{result}</span>}
+    </li>
+  );
+}
+
+// Settings, "Notifications on this device": Enable, the subscribed devices, and a switch per kind. Not shown
+// when the server does not let this page see the push settings (no passkey session).
+function PushCard({ token }) {
+  const [devices, setDevices] = useState(null);
+  const [kinds, setKinds] = useState(null);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try {
+      const reply = await pushRequest(token, "GET", "subscriptions");
+      if (reply.status === 401 || reply.status === 403 || reply.status === 404) setDevices("off");
+      else setDevices(reply.ok && reply.data !== null && Array.isArray(reply.data.subscriptions) ? reply.data.subscriptions.filter(isPushDevice) : "failed");
+    } catch (unreachable) {
+      setDevices("failed");
+    }
+  };
+  const loadKinds = async () => {
+    try {
+      const reply = await pushRequest(token, "GET", "kinds");
+      setKinds(reply.ok && reply.data !== null && Array.isArray(reply.data.kinds) ? reply.data.kinds.filter(isPushKind) : "failed");
+    } catch (unreachable) {
+      setKinds("failed");
+    }
+  };
+  useEffect(() => {
+    load();
+    loadKinds();
+  }, []);
+  if (devices === null || devices === "off") return null;
+  const enable = async () => {
+    setBusy(true);
+    setNote("");
+    const refused = await enablePush(token);
+    setBusy(false);
+    setNote(refused === null ? "Notifications are on for this device." : refused);
+    if (refused === null) load();
+  };
+  const switchKind = async (kind, on) => {
+    setBusy(true);
+    setNote("");
+    try {
+      const reply = await pushRequest(token, "PUT", "kinds", { [kind]: on });
+      if (reply.ok && reply.data !== null && Array.isArray(reply.data.kinds)) setKinds(reply.data.kinds.filter(isPushKind));
+      else setNote(pushRefusal(reply, "The notification could not be switched."));
+    } catch (unreachable) {
+      setNote("The notification could not be switched.");
+    }
+    setBusy(false);
+  };
+  return (
+    <section className="card settings-card push-settings" data-push-settings>
+      <SettingsHead icon="alert">Notifications on this device</SettingsHead>
+      <div className="settings-row">
+        <span>Notify this device of runs that need you</span>
+        <button type="button" className="primary-button" data-push-enable disabled={busy} onClick={enable}>
+          Enable
+        </button>
+      </div>
+      {note !== "" && <p role="status" data-push-note>{note}</p>}
+      {devices === "failed" ? (
+        <>
+          <p role="alert">The devices could not be listed.</p>
+          <button type="button" onClick={load}>
+            Try again
+          </button>
+        </>
+      ) : (
+        <ul className="settings-fields push-devices">
+          {devices.length === 0 ? <li className="settings-row muted">No device is subscribed yet.</li> : null}
+          {devices.map((device) => (
+            <PushDevice key={device.id} device={device} token={token} onRemoved={load} />
+          ))}
+        </ul>
+      )}
+      {kinds === "failed" ? <p role="alert">The notification kinds could not be read.</p> : null}
+      {Array.isArray(kinds) ? (
+        <ul className="settings-fields push-kinds">
+          {kinds.map((kind) => (
+            <li key={kind.kind} className="settings-row">
+              <label>
+                <input type="checkbox" role="switch" data-push-kind={kind.kind} checked={kind.enabled} disabled={busy} onChange={() => switchKind(kind.kind, !kind.enabled)} />{" "}
+                {PUSH_KIND_LABELS[kind.kind] || kind.kind}
+              </label>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
 }
@@ -6579,6 +6843,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
         <div className="settings-page">
           {/* The passkeys are read before the settings; their card is placed lower by the stylesheet. */}
           <PasskeysCard onSignOut={onSignOut} />
+          <PushCard key={"push " + reloads} token={token} />
           <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} token={token} onSignedOut={onSignedOut} onChanged={() => setReloads(reloads + 1)} />} onSignedOut={onSignedOut} />
           <section className="card settings-card settings-audit">
             <SettingsHead icon="doc">Activity</SettingsHead>

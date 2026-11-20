@@ -186,8 +186,9 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie).await;
     // An action's body is read up to the cap. One over it is handed on as too long rather than refused
     // here, so the handler still checks the token and answers 404 while actions are off.
-    // Only a POST is an action, so no other request waits on a body.
-    let body = if method != "POST" || !path.starts_with("/api/") {
+    // Only a POST is an action, so no other request waits on a body; a push setting is also changed by a PUT.
+    let takes_body = method == "POST" || (method == "PUT" && path.starts_with("/api/push/"));
+    let body = if !takes_body || !path.starts_with("/api/") {
         Vec::new()
     } else {
         match tokio::time::timeout(ACTION_BODY_DEADLINE, read_action_body(body, remote_inbox::action_body_cap(&path))).await {

@@ -168,7 +168,52 @@ if (scenario.service_worker) {
     },
   });
 }
+// A scenario may give `user_agent`, what navigator.userAgent says.
+if (typeof scenario.user_agent === "string") Object.defineProperty(window.navigator, "userAgent", { value: scenario.user_agent, configurable: true });
+// A scenario may give `push`: {permission, subscription, supported}. A browser with web push (unless `supported`
+// is false): Notification.requestPermission() answers `permission`, and the service worker's pushManager
+// subscribes with `subscription` (what its toJSON() gives). `pushed` in the output lists the permission asks
+// and the subscribe options, the key as an array of bytes.
+const pushed = { asked: 0, subscribed: [] };
+if (scenario.push) {
+  const spec = scenario.push;
+  Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+  if (spec.supported !== false) {
+    window.Notification = { permission: "default", requestPermission: () => { pushed.asked += 1; window.Notification.permission = spec.permission; return Promise.resolve(spec.permission); } };
+    window.PushManager = function PushManager() {};
+    const registration = {
+      waiting: null,
+      installing: null,
+      addEventListener: () => {},
+      pushManager: {
+        getSubscription: () => Promise.resolve(null),
+        subscribe: (options) => {
+          pushed.subscribed.push({ userVisibleOnly: options.userVisibleOnly, applicationServerKey: [...new Uint8Array(options.applicationServerKey)] });
+          return Promise.resolve({ endpoint: spec.subscription.endpoint, toJSON: () => spec.subscription });
+        },
+      },
+    };
+    Object.defineProperty(window.navigator, "serviceWorker", {
+      configurable: true,
+      value: { controller: null, ready: Promise.resolve(registration), register: () => Promise.resolve(registration), addEventListener: () => {} },
+    });
+  }
+}
+// The /api/push routes are answered from `push_replies`, apart from `responses`, so they never shift them:
+// it maps "METHOD /path" to a reply ({status, json}, or bare JSON for a 200). A list of replies answers in
+// turn, the last one again once the rest are used. Anything else is a 404.
+const pushRequests = [];
 window.fetch = (url, options = {}) => {
+  if (String(url).startsWith("/api/push/")) {
+    const method = options.method || "GET";
+    pushRequests.push({ url, method, headers: options.headers || {}, body: options.body === undefined ? null : JSON.parse(options.body) });
+    const replies = (scenario.push_replies || {})[method + " " + String(url)];
+    let next = Array.isArray(replies) ? (replies.length > 1 ? replies.shift() : replies[0]) : replies;
+    if (next === "reject") return Promise.reject(new Error("offline"));
+    if (next === undefined || next === null) next = { status: 404, json: { error: "not found" } };
+    else if (typeof next.status !== "number") next = { status: 200, json: next };
+    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
+  }
   if (String(url).startsWith("/auth/")) {
     authRequests.push({ url, method: options.method || "GET", headers: options.headers || {}, body: options.body === undefined ? null : JSON.parse(options.body) });
     // `auth_failures` maps an /auth path to an HTTP status it answers with, to {status, json} for a
@@ -452,7 +497,7 @@ const all = (tag) => [...page().querySelectorAll(tag)];
   if (pageErrors.length > 0) {
     throw new Error("the page raised " + pageErrors.length + " error(s):\n" + pageErrors.join("\n"));
   }
-  process.stdout.write(JSON.stringify({ requests, authRequests, storageRequests, todoRequests, frames, downloads: saved, worker }));
+  process.stdout.write(JSON.stringify({ requests, authRequests, storageRequests, todoRequests, pushRequests, pushed, frames, downloads: saved, worker }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);

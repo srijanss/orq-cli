@@ -574,8 +574,57 @@ pub fn route(roots: &StorageRoots, method: &str, path: &str, body: &[u8]) -> (u1
                 Err(failure) => failure,
             }
         }
+        ("GET", "kinds") => match open().and_then(|store| kinds_reply(&store).map_err(|_| refuse(500, "the notification kinds could not be read"))) {
+            Ok(reply) => (200, reply),
+            Err(failure) => failure,
+        },
+        ("PUT", "kinds") => {
+            let Ok(serde_json::Value::Object(request)) = serde_json::from_slice::<serde_json::Value>(body) else { return refuse(400, "the request body is not a JSON object") };
+            let mut changes = Vec::with_capacity(request.len());
+            for (kind, on) in &request {
+                let (Some(kind), Some(on)) = (KINDS.iter().find(|k| *k == kind), on.as_bool()) else { return refuse(400, "each entry must be a notification kind switched true or false") };
+                changes.push((*kind, on));
+            }
+            let changed = open().and_then(|store| {
+                changes.iter().try_for_each(|(kind, on)| store.set_push_kind(kind, *on)).and_then(|()| kinds_reply(&store)).map_err(|_| refuse(500, "the notification kinds could not be saved"))
+            });
+            match changed {
+                Ok(reply) => (200, reply),
+                Err(failure) => failure,
+            }
+        }
+        ("GET", "mutes") => match open().and_then(|store| store.push_muted_projects().map_err(|_| refuse(500, "the muted projects could not be read"))) {
+            Ok(muted) => (200, json!({ "muted": muted })),
+            Err(failure) => failure,
+        },
+        (method @ ("PUT" | "DELETE"), project) if project.starts_with("mutes/") => {
+            let project = &project["mutes/".len()..];
+            if !is_project_id(project) {
+                return refuse(400, "that is not a project id");
+            }
+            let muted = method == "PUT";
+            match open().and_then(|store| store.set_push_project_muted(project, muted).map_err(|_| refuse(500, "the project could not be muted or unmuted"))) {
+                Ok(()) => (200, json!({ "project": project, "muted": muted })),
+                Err(failure) => failure,
+            }
+        }
         _ => refuse(404, "not found"),
     }
+}
+
+/// Every kind, in Settings' order, with whether it is on: its choice, or its default when never chosen.
+fn kinds_reply(store: &orq_core::store::Store) -> Result<serde_json::Value> {
+    let choices = store.push_kind_choices()?;
+    let kinds = KINDS.iter().map(|kind| {
+        let enabled = choices.iter().find(|(chosen, _)| chosen == kind).map_or(!OFF_BY_DEFAULT.contains(kind), |(_, on)| *on);
+        serde_json::json!({ "kind": kind, "enabled": enabled })
+    });
+    Ok(serde_json::json!({ "kinds": kinds.collect::<Vec<_>>() }))
+}
+
+/// A project id as orq makes them: letters, digits, `-`, `_` and `.`, at most 128 characters.
+fn is_project_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id != "." && id != ".." && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 /// The public half, as a browser's `applicationServerKey` takes it: the uncompressed point, base64url.
