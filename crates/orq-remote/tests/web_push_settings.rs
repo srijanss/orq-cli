@@ -337,3 +337,32 @@ fn a_kind_switched_off_and_a_muted_project_show_as_such_after_reload() {
     assert_eq!((deletes.len(), deletes[0]["url"].as_str()), (1, Some("/api/push/mutes/beta")), "{out}");
     assert_eq!(count(&frames[1], "[data-push-muted]"), 0, "{out}");
 }
+
+#[test]
+fn a_kind_switch_or_mute_that_fails_keeps_what_was_shown_says_why_and_can_be_tried_again() {
+    // Settings: a refused save, then no answer, then a save that takes.
+    let refused = json!({"status": 500, "json": {"error": "the notification kinds could not be saved"}});
+    let replies = json!({"PUT /api/push/kinds": [refused, "reject", kinds(&["started", "failed"])]});
+    let click = json!({"click": "[data-push-kind=\"failed\"]"});
+    let Some(out) = settings_page(json!({"permission": "granted", "subscription": {}}), replies, json!([click, click, click])) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[1], FAILED_ON), 1, "still on: {out}");
+    assert!(shown(&frames[1]).iter().any(|t| t == "the notification kinds could not be saved"), "{out}");
+    assert_eq!(count(&frames[2], FAILED_ON), 1, "still on: {out}");
+    assert!(shown(&frames[2]).iter().any(|t| t == "The notification could not be switched."), "{out}");
+    assert_eq!(count(&frames[3], FAILED_ON), 0, "the third try takes: {out}");
+    assert_eq!(sent(&out, "PUT").len(), 3, "{out}");
+
+    // Dashboard: no answer, then a refused mute, then one that takes.
+    let refused = json!({"status": 500, "json": {"error": "the project could not be muted"}});
+    let replies = json!({"GET /api/push/mutes": [{"muted": []}, {"muted": ["beta"]}], "PUT /api/push/mutes/beta": ["reject", refused, {"project": "beta", "muted": true}]});
+    let click = json!({"click": "[data-push-mute=\"beta\"]"});
+    let Some(out) = dashboard_page(replies, json!([click, click, click])) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[1], "[data-push-muted]"), 0, "not shown as muted: {out}");
+    assert!(shown(&frames[1]).iter().any(|t| t == "The project could not be muted."), "{out}");
+    assert_eq!(count(&frames[2], "[data-push-muted]"), 0, "not shown as muted: {out}");
+    assert!(shown(&frames[2]).iter().any(|t| t == "the project could not be muted"), "{out}");
+    assert_eq!(count(&frames[3], BETA_MUTED), 1, "the third try takes: {out}");
+    assert_eq!(sent(&out, "PUT").len(), 3, "{out}");
+}
