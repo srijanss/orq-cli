@@ -275,3 +275,14 @@ fn resume_after_escalation_run_resumed_records_whether_the_session_was_started_o
     assert!(!inherited["why"].as_str().unwrap().is_empty());
     let _ = &w.record;
 }
+
+#[test]
+fn resume_after_escalation_a_session_problem_resumes_even_when_the_review_ledger_is_unreadable() {
+    let w = world("unreadable-ledger", "failed", "the implement session reported a problem: the tests hang", false);
+    fs::write(w.worktree.join(".tdd-review-rounds.json"), "not json").unwrap();
+
+    let plan = plan_resume(&w.store, &w.repo, "repo-1", "F").expect("an unrelated session problem still resumes");
+
+    assert!(!plan.skip_implement);
+    assert!(plan.review_again.is_none());
+}
