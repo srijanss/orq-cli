@@ -45,6 +45,8 @@ struct LogSummary {
     modified: Option<std::time::SystemTime>,
     state: &'static str,
     ending: Option<&'static str>,
+    /// Why a blocked or failed run ended, as its `run.completed` said (redacted).
+    ending_reason: Option<String>,
     resumed_as: Option<String>,
     resumed_from: Option<String>,
     dirty_files: Option<Vec<String>>,
@@ -85,6 +87,7 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             modified: stat.and_then(|(_, modified)| modified),
             state: listed_state(&summary),
             ending: delivered_ending(&events, summary.phase),
+            ending_reason: ending_reason(&events, &summary),
             resumed_as: handed_over_to(&summary),
             resumed_from: resumed_from(&events),
             dirty_files: dirty_files(&events, summary.phase),
@@ -117,6 +120,86 @@ fn delivered_ending(events: &[orq_orchestrator::Event], phase: orq_orchestrator:
         Some("merged") => Some("merged"),
         _ => None,
     }
+}
+
+/// Why a blocked or failed run ended: the `reason` of its last `run.completed`, redacted, when that ended it
+/// `blocked` or `failed` and the run still is. `None` for any other run, a run a resume took over among them.
+fn ending_reason(events: &[orq_orchestrator::Event], summary: &orq_orchestrator::RunSummary) -> Option<String> {
+    use orq_orchestrator::RunPhase;
+    if handed_over_to(summary).is_some() || !matches!(summary.phase, RunPhase::Blocked | RunPhase::Failed) {
+        return None;
+    }
+    let completed = events.iter().rev().find(|event| event.kind == "run.completed")?;
+    if !matches!(completed.payload.get("ending").and_then(|ending| ending.as_str()), Some("blocked" | "failed")) {
+        return None;
+    }
+    let reason = completed.payload.get("reason")?.as_str()?.trim();
+    (!reason.is_empty()).then(|| orq_core::redact::redact(reason))
+}
+
+/// What comes before the findings an escalated review left open and an unattended run would not leave for later.
+const NOT_LEFT_FOR_LATER: &str = "finding for later: ";
+
+/// The findings a review escalation's reason names, each `{id, severity, category}` as `id (severity, category)`
+/// gives them, with `file` and `line` when the worktree's review findings give them. Empty for any other reason.
+fn ending_findings(reason: &str, worktree: &Path) -> Vec<serde_json::Value> {
+    let Some((_, mut rest)) = reason.split_once(NOT_LEFT_FOR_LATER) else { return Vec::new() };
+    let mut named = Vec::new();
+    while let Some((id, after)) = rest.split_once(" (") {
+        let Some((inside, tail)) = after.split_once(')') else { break };
+        let valid = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !valid {
+            break;
+        }
+        let (severity, category) = match inside.split_once(", ") {
+            Some((severity, category)) => (severity, Some(category)),
+            None => (inside, None),
+        };
+        let mut finding = serde_json::json!({"id": id, "severity": severity});
+        if let Some(category) = category {
+            finding["category"] = category.into();
+        }
+        named.push(finding);
+        match tail.strip_prefix(", ") {
+            Some(next) => rest = next,
+            None => break,
+        }
+    }
+    if named.is_empty() {
+        return named;
+    }
+    let ledger = read_review_findings(worktree);
+    let recorded: Vec<&serde_json::Value> = ledger.as_ref().and_then(|l| l.as_object()).into_iter().flat_map(|scopes| scopes.values()).filter_map(|v| v.as_array()).flatten().collect();
+    for finding in &mut named {
+        let found = recorded.iter().find(|entry| entry.get("id") == finding.get("id") && entry.get("file").and_then(|v| v.as_str()).is_some_and(|file| !file.is_empty()));
+        if let Some(entry) = found {
+            finding["file"] = orq_core::redact::redact(entry["file"].as_str().unwrap_or_default()).into();
+            if let Some(line) = entry.get("line").and_then(|v| v.as_u64()) {
+                finding["line"] = line.into();
+            }
+        }
+    }
+    named
+}
+
+/// The largest review findings file read; a ledger is a few kilobytes.
+const MAX_FINDINGS_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The review findings the session left in `worktree`, or `None` when there are none or they cannot be read. The
+/// file is opened without following a link and without waiting on a pipe, and judged by the handle.
+fn read_review_findings(worktree: &Path) -> Option<serde_json::Value> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(worktree.join(".tdd-review-findings.json")).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_FINDINGS_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_FINDINGS_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// The state a run is listed in: a run a resume took over ended `resumed`, never completed.
@@ -279,6 +362,9 @@ fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     let mut row = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": log.state, "stage": log.stage, "started_at": log.started, "updated_at": log.updated, "delivery": record.delivery.as_str(), "ending": log.ending});
     add_resume_links(&mut row, log.resumed_as.as_ref(), log.resumed_from.as_ref());
     add_dirty_files(&mut row, log.dirty_files.as_deref());
+    if let Some(reason) = &log.ending_reason {
+        row["ending_reason"] = reason.as_str().into();
+    }
     // Said only of a run the queue started unattended; any other run is attended.
     if log.unattended {
         row["unattended"] = true.into();
@@ -2107,6 +2193,13 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let mut shown = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, listed_state(&summary)), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)});
         add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
         add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
+        if let Some(reason) = ending_reason(&events, &summary) {
+            let findings = ending_findings(&reason, &record.worktree);
+            if !findings.is_empty() {
+                shown["ending_findings"] = serde_json::json!(findings);
+            }
+            shown["ending_reason"] = reason.into();
+        }
         add_accept(&mut shown, &events, &summary, &logs_dir);
         // A merge-local run accepted before an accept merged it, whose work its target lacks (the page's Merge).
         if orq_orchestrator::merge_after_accept_pending(&record, &events) && !orq_orchestrator::work_is_on_target(&project.path, &record) {

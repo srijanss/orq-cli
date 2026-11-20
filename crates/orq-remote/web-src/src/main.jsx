@@ -3768,13 +3768,27 @@ function queueRails(entries) {
   return entries.map((entry, index) => (index === entries.length - 1 ? null : index < running ? "passed" : "ahead"));
 }
 
+// A pause reason that names its run ("the run <run> ..."): the run id and what comes after it, or null.
+const PAUSED_BY_RUN = /^the run (\S+)([\s\S]*)$/;
+
 // A paused queue's banner at the top of its card, in the waiting colours: the pause icon, "Paused" and
-// why, and whatever action (Resume) is given beside it.
-function QueuePausedBanner({ reason, children = null }) {
+// why, with the run it names linked to that run's page, and whatever action (Resume) is given beside it.
+function QueuePausedBanner({ reason, projectId, children = null }) {
+  const named = typeof projectId === "string" ? PAUSED_BY_RUN.exec(reason) : null;
+  const run = named !== null && RUN_ID.test(named[1]) ? named[1] : null;
+  const href = run === null ? null : runHref(projectId, run);
   return (
     <div className="banner waiting-banner queue-paused" data-queue-paused>
       <Icon name="pause" size={16} />
-      <p className="queue-paused-text">{"Paused: " + reason}</p>
+      {href === null ? (
+        <p className="queue-paused-text">{"Paused: " + reason}</p>
+      ) : (
+        <p className="queue-paused-text">
+          {"Paused: the run "}
+          <a href={href} data-queue-paused-run={run} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>{run}</a>
+          {named[2]}
+        </p>
+      )}
       {children}
     </div>
   );
@@ -3884,7 +3898,7 @@ function QueueView({ data, control, projectId, push = null }) {
       ) : null}
       <Unpushed unpushed={queue.unpushed ?? null} subjects push={push} />
       {queue.paused !== null ? (
-        <QueuePausedBanner reason={queue.paused}>
+        <QueuePausedBanner reason={queue.paused} projectId={projectId}>
           {control !== null ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button> : null}
         </QueuePausedBanner>
       ) : (
@@ -5042,6 +5056,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                   <td>
                     <RunState state={run.state} />
                     {endingOf(run) === null ? null : <div className="run-ending muted" data-run-ending>{endingOf(run)}</div>}
+                    <EndingFirst run={run} />
                     {run.unattended === true ? <div className="run-ending muted" data-run-unattended>Unattended (queue)</div> : null}
                     {run.kind === "plan" ? <div className="run-ending feature-state state-draft" data-run-plan>Draft with Claude</div> : null}
                     <DirtyCheckout run={run} />
@@ -5176,6 +5191,62 @@ function FailedTests({ tests, more }) {
       ))}
       {more > 0 ? <li className="field-hint muted" data-failed-tests-more>{"and " + more + " more"}</li> : null}
     </ul>
+  );
+}
+
+// Why a blocked or failed run ended, as the server gives it, or null for any other run or a reason of another shape.
+function endingReasonOf(run) {
+  if (!["blocked", "failed"].includes(run.state)) return null;
+  return typeof run.ending_reason === "string" && run.ending_reason !== "" ? run.ending_reason : null;
+}
+
+// The findings an escalated review left open, as the ending names them: each `id (severity, category)`, then its
+// file:line when the server found one. Entries of another shape are left out.
+function endingFindingsOf(run) {
+  const list = Array.isArray(run.ending_findings) ? run.ending_findings : [];
+  const text = (value) => typeof value === "string" && value !== "";
+  return list
+    .filter((f) => f !== null && typeof f === "object" && text(f.id) && text(f.severity))
+    .map((f) => {
+      const named = f.id + " (" + f.severity + (text(f.category) ? ", " + f.category : "") + ")";
+      const place = text(f.file) ? " " + f.file + (Number.isInteger(f.line) && f.line >= 1 ? ":" + f.line : "") : "";
+      return named + place;
+    });
+}
+
+// The first sentence of a text: up to the first full stop, question or exclamation mark followed by a space or the
+// end, so a dot inside a file name does not end it; the whole text when it has none.
+function firstSentence(text) {
+  const found = /^[\s\S]*?[.!?](?=\s|$)/.exec(text);
+  return (found === null ? text : found[0]).trim();
+}
+
+// Under a blocked or failed run's pill in the list: the first sentence of why it ended, on one line, the whole
+// reason on hover.
+function EndingFirst({ run }) {
+  const reason = endingReasonOf(run);
+  if (reason === null) return null;
+  return <div className="run-ending error-text" data-ending-first title={reason} style={{ maxWidth: "24rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{firstSentence(reason)}</div>;
+}
+
+// At the top of a blocked or failed run's summary: why it ended, in the error style, with the findings an escalated
+// review left open one per line. Not shown when a step's failure already says the same.
+function EndingReason({ run, events }) {
+  const reason = endingReasonOf(run);
+  if (reason === null || events.some((event) => failureOf(event)?.reason === reason)) return null;
+  const findings = endingFindingsOf(run);
+  return (
+    <div className="banner error-banner ending-reason" role="alert" data-ending-reason>
+      <Icon name="alert" size={18} />
+      <div>
+        <strong>{reason}</strong>
+        {findings.length === 0 ? null : (
+          <ul className="ending-findings">
+            {findings.map((line, at) => <li key={at} data-ending-finding>{line}</li>)}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -5466,7 +5537,7 @@ function QueueGroup({ project, queue }) {
         {queue !== null ? <span className="muted queue-group-count">{queue.entries.length + " queued"}</span> : null}
       </div>
       {queue === null ? <p className="error-text" data-queue-group-error>The queue could not be read.</p> : null}
-      {queue !== null && queue.paused !== null ? <QueuePausedBanner reason={queue.paused} /> : null}
+      {queue !== null && queue.paused !== null ? <QueuePausedBanner reason={queue.paused} projectId={project.id} /> : null}
       {queue !== null && queue.paused === null ? <QueueReviewWait queue={queue} /> : null}
       {queue !== null && queue.entries.length > 0 ? (
         <ol className="queue-list">
@@ -6079,6 +6150,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
             <h2>{run.feature}</h2>
             <RunState state={run.state} />
           </div>
+          <EndingReason run={run} events={events} />
           <DirtyCheckout run={run} />
           <AcceptNotes run={run} runPath={runPath} />
           <MissingReport run={run} control={control} />
