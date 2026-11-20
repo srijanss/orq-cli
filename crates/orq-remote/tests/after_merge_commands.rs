@@ -625,6 +625,19 @@ fn the_value_after_a_credential_flag_is_redacted_whatever_it_looks_like() {
 }
 
 #[test]
+fn the_value_after_a_private_key_flag_is_redacted() {
+    let s = setup("redacted-private-key", None);
+    write_run_toml(&s, "[after_merge]\ncommands = [[\"true\", \"--private-key\", \"plainkey1\", \"--private_key\", \"plainkey2\", \"--privatekey\", \"plainkey3\"]]\n");
+    let (run, _) = merged_run(&s);
+    round(&s);
+    let done = wait_for(&s, &run, "after_merge.commands").expect("recorded");
+    let shown = done.payload.to_string();
+    for secret in ["plainkey1", "plainkey2", "plainkey3"] {
+        assert!(!shown.contains(secret), "{shown}");
+    }
+}
+
+#[test]
 fn after_merge_commands_are_argv_lists_and_a_bad_shape_names_its_key() {
     use orq_core::project_settings::AfterMergeCommands;
     assert_eq!(

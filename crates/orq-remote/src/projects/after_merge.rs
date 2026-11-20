@@ -224,7 +224,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
 /// Whether `word` is a flag (`--name`, not `--name=value`) that names a credential, so the word after it is one.
 fn credential_flag(word: &str) -> bool {
     let name = word.to_ascii_lowercase();
-    name.starts_with('-') && !name.contains('=') && ["password", "passwd", "token", "secret", "api-key", "api_key", "apikey", "credential", "auth"].iter().any(|part| name.contains(part))
+    name.starts_with('-') && !name.contains('=') && ["password", "passwd", "token", "secret", "api-key", "api_key", "apikey", "credential", "auth", "private-key", "private_key", "privatekey"].iter().any(|part| name.contains(part))
 }
 
 /// `argv` as an event may hold it: the value after a credential flag is replaced whatever it looks like,
