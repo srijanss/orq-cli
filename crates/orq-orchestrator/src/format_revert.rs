@@ -116,12 +116,17 @@ fn uncommitted(worktree: &Path, paths: &[String]) -> Result<BTreeSet<String>, St
     let mut args = vec!["status", "--porcelain", "-z", "--untracked-files=no", "--"];
     args.extend(paths.iter().map(String::as_str));
     let status = git(worktree, &args)?;
-    Ok(text(&status)?
-        .split('\0')
-        .filter_map(|entry| entry.get(3..))
-        .filter(|path| !path.is_empty())
-        .map(str::to_string)
-        .collect())
+    let mut fields = text(&status)?.split('\0');
+    let mut dirty = BTreeSet::new();
+    // Each record is `XY <path>`; a rename or copy is followed by the path it came from, bare.
+    while let Some(entry) = fields.next() {
+        let (Some(code), Some(path)) = (entry.get(..2), entry.get(3..)) else { continue };
+        dirty.insert(path.to_string());
+        if code.contains(['R', 'C']) {
+            dirty.extend(fields.next().map(str::to_string));
+        }
+    }
+    Ok(dirty)
 }
 
 /// The Rust edition of the crate holding `path`: the `edition` of the nearest `Cargo.toml` at HEAD

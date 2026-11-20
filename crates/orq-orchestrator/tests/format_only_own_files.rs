@@ -166,6 +166,37 @@ fn formatting_with_a_nested_crates_own_rustfmt_config_is_undone() {
     assert_eq!(git(&record.worktree, &["show", "HEAD:sub/src/b.rs"]), UNTIDY.trim_end());
 }
 
+/// Runs the check on a run whose only change reformats `src/other.rs`, after `dirty` has left
+/// uncommitted changes to it; asserts nothing was put back and the uncommitted state is untouched.
+fn assert_dirty_file_left_alone(tag: &str, dirty: impl Fn(&Path)) {
+    let (_repo, store, record) = run_with(tag, &[("src/other.rs", UNTIDY)], &[("src/other.rs", TIDY)]);
+    let worktree = &record.worktree;
+    dirty(worktree);
+    let head = git(worktree, &["rev-parse", "HEAD"]);
+    let status = git(worktree, &["status", "--porcelain", "--untracked-files=no"]);
+
+    let reverted = undo_formatting_outside(&store, &record, &record.base_sha, &declared(&[]), "implement_and_review").unwrap();
+
+    assert!(reverted.is_empty(), "{reverted:?}");
+    assert_eq!(git(worktree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(worktree, &["status", "--porcelain", "--untracked-files=no"]), status);
+    assert!(reverted_events(&store).is_empty());
+}
+
+#[test]
+fn a_reformatted_file_with_uncommitted_changes_is_left_alone() {
+    assert_dirty_file_left_alone("fmt-dirty-unstaged", |worktree| {
+        fs::write(worktree.join("src/other.rs"), "pub fn wip() {}\n").unwrap();
+    });
+    assert_dirty_file_left_alone("fmt-dirty-staged", |worktree| {
+        fs::write(worktree.join("src/other.rs"), "pub fn wip() {}\n").unwrap();
+        git(worktree, &["add", "src/other.rs"]);
+    });
+    assert_dirty_file_left_alone("fmt-dirty-renamed", |worktree| {
+        git(worktree, &["mv", "src/other.rs", "src/moved.rs"]);
+    });
+}
+
 #[test]
 fn a_commit_that_fails_leaves_the_worktree_and_index_as_they_were() {
     let (_repo, store, record) = run_with("fmt-commit-fails", &[("src/other.rs", UNTIDY)], &[("src/other.rs", TIDY)]);
