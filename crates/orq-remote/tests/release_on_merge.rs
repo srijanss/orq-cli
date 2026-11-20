@@ -340,6 +340,22 @@ fn a_dirty_checkout_or_a_moved_target_is_refused_and_leaves_the_merge_and_no_wor
 }
 
 #[test]
+fn a_version_file_that_is_a_symlink_is_refused_and_what_it_points_at_is_untouched() {
+    let s = setup("symlink", answering("patch"), "auto");
+    let outside = s.marks.join("external.toml");
+    std::fs::write(&outside, "[package]\nversion = \"0.1.2\"\n").unwrap();
+    std::os::unix::fs::symlink(&outside, s.repo.join("link.toml")).unwrap();
+    git(&s.repo, &["add", "link.toml"]);
+    git(&s.repo, &["commit", "-q", "-m", "chore: link"]);
+    std::fs::write(s.repo.join(".orq/run.toml"), "[release]\nrelease_on_merge = \"auto\"\nversion_file = \"link.toml\"\nversion_key = \"package.version\"\n").unwrap();
+    let (run, _) = merged_with(&s, "fix: the thing");
+    let refused = wait_for(&s, &run, "release.refused").expect("the refusal was recorded");
+    assert!(refused.payload["why"].as_str().unwrap().contains("symlink"), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "[package]\nversion = \"0.1.2\"\n");
+    assert_eq!(git(&s.repo, &["branch", "--list", "release/*"]), "");
+}
+
+#[test]
 fn a_release_that_is_off_or_a_review_delivery_does_nothing() {
     for (off, delivery) in [(true, Delivery::MergeLocal), (false, Delivery::Review)] {
         let agent = answering("patch");
@@ -361,6 +377,11 @@ fn the_queue_starts_nothing_until_the_release_landed() {
     round(&s);
     assert_eq!(s.launcher.started.lock().unwrap().len(), 1, "COM-02 waited for the release");
     wait_for(&s, &run, "release.created").expect("the release landed");
-    round(&s);
+    // The gate lifts a moment after the release is recorded, so the rounds that follow may still wait.
+    let until = Instant::now() + Duration::from_secs(10);
+    while s.launcher.started.lock().unwrap().len() < 2 && Instant::now() < until {
+        round(&s);
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!(s.launcher.started.lock().unwrap().as_slice(), ["COM-01", "COM-02"]);
 }

@@ -109,6 +109,18 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Fails when `file` or a directory on its way under `base` is a symlink, which could lead a write out of `base`.
+fn without_symlinks(base: &Path, file: &Path) -> Result<(), String> {
+    let mut at = base.to_path_buf();
+    for part in file.components() {
+        at.push(part);
+        if std::fs::symlink_metadata(&at).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(format!("the version file {} is or lies behind a symlink", file.display()));
+        }
+    }
+    Ok(())
+}
+
 fn parse_version(version: &str) -> Result<(u64, u64, u64), String> {
     let parts: Vec<Option<u64>> = version.split('.').map(|part| part.parse().ok()).collect();
     match parts.as_slice() {
@@ -155,6 +167,7 @@ pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) 
     if file.is_absolute() || file.components().any(|part| !matches!(part, Component::Normal(_))) {
         return Err(format!("the version file {} is not a path inside the project", settings.version_file));
     }
+    without_symlinks(root, file)?;
     let current = std::fs::read_to_string(root.join(file)).map_err(|error| format!("{} cannot be read: {}", settings.version_file, error.kind()))?;
     let from = version_in(&settings.version_file, &current, &settings.version_key)?;
     let (major, minor, patch) = parse_version(&from)?;
@@ -189,6 +202,7 @@ pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) 
     let worktree_arg = worktree.to_string_lossy().into_owned();
     run_git(root, &["worktree", "add", "-q", "-b", &branch, &worktree_arg, merge.merged])?;
     let made = (|| {
+        without_symlinks(&worktree, file)?;
         let path = worktree.join(file);
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{} cannot be read: {}", settings.version_file, error.kind()))?;
         let bumped = with_version(&settings.version_file, &text, &settings.version_key, &version)?;
