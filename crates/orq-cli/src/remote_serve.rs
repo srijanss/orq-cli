@@ -249,10 +249,11 @@ fn run(args: &[OsString]) -> ExitCode {
         Ok(repo) => repo,
         Err(code) => return code,
     };
-    // The run settings are still read, so a broken one is reported here as before; `remote_control`
-    // is Claude Remote Control for sessions and has no say over serving the web.
+    // A project's broken run settings never stop the server: the error is logged here, and each run or
+    // queue start of that project is refused with it while the file stays broken. `remote_control` is
+    // Claude Remote Control for sessions and has no say over serving the web.
     if let Err(err) = orq_orchestrator::load_run_settings(&repo, &|name| std::env::var(name).ok()) {
-        return fail(format!("cannot read the run settings: {err}"));
+        eprintln!("orq: cannot read the run settings: {err}");
     }
     let roots = match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
         Ok(roots) => roots,

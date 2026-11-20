@@ -370,6 +370,24 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
             read_rebase_table(item, label, &mut layer)?;
             continue;
         }
+        if key == "release" || key == "after_merge" {
+            // Read by the project's merge steps; checked here with their parsers so every reader of the
+            // file agrees, and a bad value names the same key everywhere.
+            if item.as_value().is_some_and(|value| !value.is_inline_table()) {
+                let reason = match key {
+                    "after_merge" => "after_merge must be a table: a plain after_merge value cannot sit beside the [after_merge] table of commands".to_string(),
+                    _ => "release must be a table".to_string(),
+                };
+                return Err(invalid(label, reason));
+            }
+            let checked = if key == "release" {
+                orq_core::project_settings::ReleaseSettings::parse(&text).map(|_| ())
+            } else {
+                orq_core::project_settings::AfterMergeCommands::parse(&text).map(|_| ())
+            };
+            checked.map_err(|reason| invalid(label, reason))?;
+            continue;
+        }
         let value = item
             .as_value()
             .ok_or_else(|| invalid(label, format!("{key} must be a plain value")))?;

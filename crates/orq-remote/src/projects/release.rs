@@ -184,6 +184,15 @@ fn one_line(text: &str) -> String {
     redact(&text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
+/// The project's name for a release subject: the package name the version file (when TOML) gives, else
+/// the folder the project lives in.
+fn project_name(root: &Path, file: &str, text: &str) -> String {
+    let named = version_in(file, text, "package.name").or_else(|_| version_in(file, text, "workspace.package.name")).ok();
+    let folder = root.file_name().map(|name| name.to_string_lossy().into_owned());
+    let name = named.filter(|name| !one_line(name).is_empty()).or(folder).unwrap_or_else(|| "project".to_string());
+    one_line(&name)
+}
+
 /// The description of `feature` in the project's ledger, if it has one.
 fn described(root: &Path, feature: &str) -> String {
     let Ok(text) = std::fs::read_to_string(root.join(".tdd-features.json")) else { return String::new() };
@@ -273,7 +282,7 @@ pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) 
         }
         run_git(&worktree, &["add", "-A"])?;
         let message = format!("level: {level}\nreason: {reason}\nfeature: {}\nrun: {}", one_line(merge.feature), merge.run);
-        let subject = format!("chore(release): {} {version}", one_line(merge.feature));
+        let subject = format!("chore(release): {} {version}", project_name(root, &settings.version_file, &current));
         let configured = run_git(&worktree, &["config", "user.email"]).is_ok_and(|email| !email.trim().is_empty());
         let mut commit = vec!["-c", "user.name=orq", "-c", "user.email=orq@localhost", "commit", "-q", "-m", &subject, "-m", &message];
         if configured {

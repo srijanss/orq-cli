@@ -255,7 +255,9 @@ fn a_patch_release_bumps_the_version_in_a_commit_fast_forwarded_into_main() {
     assert_eq!(created.payload["decided_by"], "claude");
     assert!(version_of(&s).contains("version = \"0.1.3\""));
     assert_eq!(git(&s.repo, &["rev-parse", "HEAD~1"]), merged);
-    assert_eq!(git(&s.repo, &["show", "-s", "--format=%s", "HEAD"]), "chore(release): COM-01 0.1.3");
+    // Named for the project (its folder, as the version file names no package), not the feature.
+    assert_eq!(git(&s.repo, &["show", "-s", "--format=%s", "HEAD"]), "chore(release): alpha 0.1.3");
+    assert!(git(&s.repo, &["show", "-s", "--format=%b", "HEAD"]).contains("feature: COM-01"));
     let body = git(&s.repo, &["show", "-s", "--format=%b", "HEAD"]);
     for line in ["level: patch", "reason: because patch", "feature: COM-01", &format!("run: {run}")] {
         assert!(body.lines().any(|l| l == line), "{line} in {body}");

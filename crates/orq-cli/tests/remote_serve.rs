@@ -173,6 +173,17 @@ fn remote_control_off_does_not_stop_the_server() {
 }
 
 #[test]
+fn a_broken_run_toml_does_not_stop_the_server_and_its_error_is_logged() {
+    let (root, repo) = setup("broken-settings", true);
+    fs::write(repo.join(".orq/run.toml"), "[foo]\nbar = 1\n").unwrap();
+    let mut server = start(&root, &repo, Repo::Flag);
+    assert!(get(&server.addr, Some(TOKEN)).starts_with("HTTP/1.1 200"));
+    let output = server.output();
+    assert!(output.contains("cannot read the run settings") && output.contains("foo"), "the error is logged: {output:?}");
+    server.stop_with("-INT");
+}
+
+#[test]
 fn the_removed_remote_serve_points_to_orq_serve_and_binds_nothing() {
     let (root, repo) = setup("removed", true);
     let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
