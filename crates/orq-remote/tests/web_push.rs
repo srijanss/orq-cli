@@ -146,6 +146,16 @@ fn a_push_is_encrypted_for_the_device_and_signed_with_the_servers_key() {
     assert!(!String::from_utf8_lossy(&request.body).contains("needs_input"));
 }
 
+#[test]
+fn an_endpoint_with_curl_glob_characters_is_one_literal_request() {
+    let roots = roots("push-glob");
+    let (service, device) = (FakePush::start(), Device::new());
+    let subscription = device.subscription(service.endpoint("{a,b}[1-2]"));
+    let _ = orq_remote::web_push::send(&roots, &subscription, b"{}");
+    let paths: Vec<String> = service.requests().into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, vec!["/push/{a,b}[1-2]".to_string()], "the endpoint is taken literally, never expanded");
+}
+
 fn b64(text: &str) -> Vec<u8> {
     orq_remote::web_push::base64url_decode(text).expect("base64url")
 }

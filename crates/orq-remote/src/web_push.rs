@@ -168,7 +168,8 @@ pub fn send(roots: &StorageRoots, subscription: &Subscription, payload: &[u8]) -
     let body = encrypt(subscription, payload).map_err(SendError::Failed)?;
     let authorization = vapid_authorization(roots, &origin).map_err(|error| SendError::Failed(format!("the server's push key could not be read: {error}")))?;
     let mut curl = Command::new("curl")
-        .args(["--silent", "--show-error", "--max-time", &SEND_TIMEOUT_SECS.to_string(), "--proto", "=http,https", "--request", "POST", "--output", "/dev/null", "--write-out", "%{http_code}"])
+        // --globoff: an endpoint is one literal URL, never a curl pattern that fans out into many requests.
+        .args(["--silent", "--show-error", "--globoff", "--max-time", &SEND_TIMEOUT_SECS.to_string(), "--proto", "=http,https", "--request", "POST", "--output", "/dev/null", "--write-out", "%{http_code}"])
         .args(["--header", "Content-Encoding: aes128gcm", "--header", "Content-Type: application/octet-stream", "--header", "TTL: 3600", "--header", "Urgency: high"])
         .args(["--header", &format!("Authorization: {authorization}"), "--data-binary", "@-", "--url", &subscription.endpoint])
         .stdin(Stdio::piped())
