@@ -417,6 +417,40 @@ function providerName(href) {
   return host === "github.com" ? "GitHub" : host === "gitlab.com" ? "GitLab" : host;
 }
 
+// The structured risks, open ones first by severity, then the fixed ones; a stable sort keeps the
+// report's own order within a severity. Anything but an array of objects is not cards.
+function sortedRisks(items) {
+  const open = (item) => (item.fixed === true ? 1 : 0);
+  return items.map((item, index) => ({ item, index })).sort((a, b) => open(a.item) - open(b.item) || riskRank(String(a.item.severity).toLowerCase()) - riskRank(String(b.item.severity).toLowerCase()) || a.index - b.index).map((entry) => entry.item);
+}
+
+function hasRiskCards(report) {
+  return Array.isArray(report.risk_items) && report.risk_items.length > 0 && report.risk_items.every((item) => item !== null && typeof item === "object");
+}
+
+function RiskCard({ item }) {
+  const severity = String(item.severity).trim().toLowerCase();
+  const fixed = item.fixed === true;
+  const href = safeHttpsLink(item.link);
+  const place = typeof item.file === "string" && item.file !== "" ? item.file + (Number.isInteger(item.line) ? ":" + item.line : "") : null;
+  return (
+    <li className={"risk-card" + (fixed ? " risk-card-fixed" : "")} data-risk-card>
+      <div className="risk-card-head">
+        <span className={"badge badge-risk-" + (severity === "critical" ? "high" : severity)} data-risk-severity>{severity}</span>
+        <span className="risk-card-state" data-risk-state>{fixed ? "Fixed" : "Open"}</span>
+        {typeof item.category === "string" && item.category !== "" ? <span className="risk-card-category" data-risk-category>{item.category}</span> : null}
+        {place === null ? null : href !== null ? (
+          <a className="risk-card-place" data-risk-place href={href} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer"><code>{place}</code></a>
+        ) : (
+          <code className="risk-card-place" data-risk-place>{place}</code>
+        )}
+      </div>
+      <div className="risk-card-claim"><Markdown text={String(item.claim)} /></div>
+      {typeof item.reasoning === "string" && item.reasoning !== "" ? <div className="risk-card-reasoning"><Markdown text={item.reasoning} /></div> : null}
+    </li>
+  );
+}
+
 // The report beside (or, on a phone, instead of) the list. The row it was opened from, when the
 // list has it, gives the feature, status and risk the report itself does not carry.
 // actions: where the report's actions are posted and how they are sent, or null for none.
@@ -463,11 +497,19 @@ function Detail({ report, row = null, listPath = "/reviews", actions = null }) {
             <span>{title}</span>
             <span className="review-count">{"(" + report[key].length + ")"}</span>
           </summary>
-          <ul>
-            {(report[key].length === 0 ? ["none recorded"] : report[key]).map((line, index) => (
-              <li key={index}>{line}</li>
-            ))}
-          </ul>
+          {key === "risks" && hasRiskCards(report) ? (
+            <ul className="risk-cards">
+              {sortedRisks(report.risk_items).map((item, index) => (
+                <RiskCard key={index} item={item} />
+              ))}
+            </ul>
+          ) : (
+            <ul>
+              {(report[key].length === 0 ? ["none recorded"] : report[key]).map((line, index) => (
+                <li key={index}>{line}</li>
+              ))}
+            </ul>
+          )}
         </details>
       ))}
       {href !== null && (
@@ -3717,6 +3759,32 @@ function DependsPicker({ others, chosen, onToggle }) {
 // popup to its host: Cancel calls onClose, a save calls onFinished(doneText), and `target` (a path and the body
 // for the fields) sends it somewhere other than the ledger, such as a Todo item's move. `blocked` holds Save back
 // with its reason; `extra` sits above the buttons.
+// The description keeps its line breaks. The box grows with the text up to a limit, then scrolls; Preview
+// shows the same text as Markdown. The text itself is never changed by either view.
+const DESCRIPTION_MIN_ROWS = 3;
+const DESCRIPTION_MAX_ROWS = 12;
+
+function DescriptionField({ value, onChange }) {
+  const [preview, setPreview] = useState(false);
+  const rows = Math.min(DESCRIPTION_MAX_ROWS, Math.max(DESCRIPTION_MIN_ROWS, String(value).split("\n").length));
+  return (
+    <div className="field field-wide description-field">
+      <div className="description-head">
+        <label htmlFor="feature-description" className="field-label">Description</label>
+        <span className="description-switch" role="group" aria-label="Description view">
+          <button type="button" className="description-tab" data-description-write aria-pressed={!preview} onClick={() => setPreview(false)}>Write</button>
+          <button type="button" className="description-tab" data-description-preview aria-pressed={preview} onClick={() => setPreview(true)}>Preview</button>
+        </span>
+      </div>
+      {preview ? (
+        <div className="description-rendered" data-description-rendered>{String(value).trim() === "" ? <p className="muted">Nothing to preview.</p> : <Markdown text={String(value)} />}</div>
+      ) : (
+        <textarea id="feature-description" className="description-input" data-field-description rows={rows} value={value} onChange={onChange} />
+      )}
+    </div>
+  );
+}
+
 function FeatureEditor({ name = null, features, control, embedded = false, initial = null, target = null, doneText = null, onFinished = null, onClose = null, onSending = null, blocked = null, extra = null }) {
   const adding = name === null;
   const [phase, setPhase] = useState(embedded ? "editing" : "idle");
@@ -3835,7 +3903,7 @@ function FeatureEditor({ name = null, features, control, embedded = false, initi
               {adding ? <span id="feature-name-saved-as" className="field-hint muted" data-saved-as={savedAs === null ? undefined : ""} aria-live="polite">{savedAs}</span> : null}
             </label>
           ) : null}
-          <label className="field field-wide"><span className="field-label">Description</span><input type="text" data-field-description value={draft.description} onChange={set("description")} /></label>
+          <DescriptionField value={draft.description} onChange={set("description")} />
           <label className="field"><span className="field-label">Test file</span><input type="text" data-field-test-file value={draft.test_file} autoComplete="off" spellCheck={false} onChange={set("test_file")} /></label>
           <label className="field"><span className="field-label">Target files</span><input type="text" data-field-target-files value={draft.target_files} autoComplete="off" spellCheck={false} placeholder="src/a.rs, src/b.rs" onChange={set("target_files")} /></label>
           <label className="field"><span className="field-label">Parallelizable</span><select data-field-parallelizable value={draft.parallelizable} onChange={set("parallelizable")}><option value="">Not set</option><option value="yes">Yes</option><option value="no">No</option></select></label>

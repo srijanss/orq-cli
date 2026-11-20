@@ -74,6 +74,16 @@ fn an_authorised_peer_lists_reviews_and_reads_one_report() {
 }
 
 #[test]
+fn one_report_carries_its_risk_items_beside_the_risk_lines() {
+    let roots = roots("risk-items");
+    seed(&roots, "https://github.com/o/r/pull/7");
+    let (status, body) = get(&roots, "/api/reviews/run-1", lan(), Some(&bearer()));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["risk_items"].as_array().unwrap().len(), body["risks"].as_array().unwrap().len());
+    assert_eq!(body["risk_items"][0], json!({"severity": "high", "file": "src/a.rs", "line": 4, "claim": "token logged", "category": null, "reasoning": null, "fixed": false, "link": null}));
+}
+
+#[test]
 fn a_missing_or_wrong_token_is_refused_and_an_unset_token_refuses_everyone() {
     let roots = roots("auth");
     seed(&roots, "https://github.com/o/r/pull/7");

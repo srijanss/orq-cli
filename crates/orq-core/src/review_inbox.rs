@@ -41,6 +41,57 @@ pub struct InboxDetail {
     pub rounds: Vec<String>,
     /// As on [`InboxRow`].
     pub generated_at: Option<String>,
+    /// The same risks as `risks`, in the same order, with their parts apart.
+    pub risk_items: Vec<RiskItem>,
+}
+
+/// One risk of a report with its parts apart; a part the report leaves out is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiskItem {
+    pub severity: String,
+    pub file: Option<String>,
+    pub line: Option<u64>,
+    pub claim: String,
+    pub category: Option<String>,
+    pub reasoning: Option<String>,
+    /// The report marks it `unresolved: false`.
+    pub fixed: bool,
+    /// A plain `https` permalink, or `None`.
+    pub link: Option<String>,
+}
+
+impl RiskItem {
+    pub fn to_json(&self) -> Value {
+        serde_json::json!({
+            "severity": self.severity,
+            "file": self.file,
+            "line": self.line,
+            "claim": self.claim,
+            "category": self.category,
+            "reasoning": self.reasoning,
+            "fixed": self.fixed,
+            "link": self.link,
+        })
+    }
+
+    fn from_report(risk: &Value) -> RiskItem {
+        let own = |key: &str| risk[key].as_str().map(str::to_string);
+        RiskItem {
+            severity: text(&risk["severity"]),
+            file: own("file"),
+            line: risk["line"].as_u64(),
+            claim: text(&risk["claim"]),
+            category: own("category"),
+            reasoning: own("reasoning"),
+            fixed: risk["unresolved"] == false,
+            link: safe_link(risk),
+        }
+    }
+}
+
+/// The risk's `link` when it is a plain `https` address without whitespace or control characters.
+fn safe_link(risk: &Value) -> Option<String> {
+    risk["link"].as_str().filter(|l| l.starts_with("https://") && !l.chars().any(|c| c.is_control() || c.is_whitespace())).map(str::to_string)
 }
 
 /// Every stored review, newest report per run. `current_project_id` names the
@@ -336,12 +387,7 @@ pub fn detail_at(roots: &StorageRoots, run_id: &str, head_sha: &str) -> Result<I
 /// a plain `https` address is dropped.
 pub fn detail_with_links(roots: &StorageRoots, run_id: &str) -> Result<(InboxDetail, Vec<Option<String>>), String> {
     let report = report_where(roots, run_id, |_| true)?;
-    let links = report["risks"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|r| r["link"].as_str().filter(|l| l.starts_with("https://") && !l.chars().any(|c| c.is_control() || c.is_whitespace())).map(str::to_string))
-        .collect();
+    let links = report["risks"].as_array().into_iter().flatten().map(safe_link).collect();
     Ok((sections(&report), links))
 }
 
@@ -486,6 +532,7 @@ fn sections(report: &Value) -> InboxDetail {
             format!("round {}: {summary} ({} findings, {} unresolved)", text(&r["round"]), text(&r["findings"]), text(&r["unresolved"]))
         })
         .collect();
-    InboxDetail { summary, risks, files, tests, rounds, generated_at: generated_at(report) }
+    let risk_items = report["risks"].as_array().into_iter().flatten().map(RiskItem::from_report).collect();
+    InboxDetail { summary, risks, files, tests, rounds, generated_at: generated_at(report), risk_items }
 }
 

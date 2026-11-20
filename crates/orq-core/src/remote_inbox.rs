@@ -3208,7 +3208,7 @@ fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Respon
         Err(why) if only_project.is_some() => return error(500, &why),
         Err(_) => return error(404, "no review report for this run"),
     };
-    let InboxDetail { summary, risks, files, tests, rounds, generated_at } = match review_inbox::detail_at(roots, run_id, &f.head) {
+    let InboxDetail { summary, risks, files, tests, rounds, generated_at, risk_items } = match review_inbox::detail_at(roots, run_id, &f.head) {
         Ok(detail) => detail,
         Err(_) => return error(404, "no review report for this run"),
     };
@@ -3219,7 +3219,7 @@ fn one(roots: &StorageRoots, run_id: &str, only_project: Option<&str>) -> Respon
             "generated_at": generated_at,
             "run_id": run_id, "reported_head_sha": f.head, "observed_head_sha": f.observed, "stale": f.stale, "link": f.link,
             "freshness": f.freshness, "link_allowed": f.link.is_some(), "reviewed_head_sha": f.head, "provider_head_sha": f.provider_head, "checked_at": f.checked_at,
-            "summary": summary, "risks": risks, "files": files, "tests": tests, "rounds": rounds,
+            "summary": summary, "risks": risks, "risk_items": risk_items.iter().map(review_inbox::RiskItem::to_json).collect::<Vec<_>>(), "files": files, "tests": tests, "rounds": rounds,
             "status": status, "merged_locally": f.merged_locally,
         }),
     )
