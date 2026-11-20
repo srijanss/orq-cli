@@ -2961,7 +2961,11 @@ function blockedOf(control) {
 // float: in a run table's row on a wide screen, the question floats in a panel anchored to the button (see
 // FloatingQuestion) so the row keeps its size; on a phone it opens in the row as everywhere else.
 // With `answers`, its question carries a field for an answer the resumed session is given; a blank one is not sent.
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null, float = false, body: sent = {}, answers = false }) {
+// With a `decision` the run stopped at, the question shows it above the field, and a blank answer asks once more
+// before the action is sent.
+const REASK_DECISION = "Resume without answering? The session will stop at the same decision.";
+
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null, float = false, body: sent = {}, answers = false, decision = null }) {
   const [phase, setPhase] = useState(asking && blocked === null ? "asking" : "idle");
   const floating = float && !usePhone();
   const button = useRef(null);
@@ -2972,15 +2976,29 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
   const [run, setRun] = useState("");
   const [asked, setAsked] = useState(typeof question === "string" ? question : "");
   const [answer, setAnswer] = useState("");
+  // Set once a blank answer to a decision was confirmed: the question asks again, and the next confirm sends.
+  const [warned, setWarned] = useState(false);
   const field = answers ? (
-    <label className="field">
-      <span>Answer for the session (optional)</span>
-      <input type="text" data-answer value={answer} maxLength={8000} onChange={(event) => setAnswer(event.target.value)} />
-    </label>
+    <>
+      {decision !== null ? <p className="confirm-decision" data-decision>{decision}</p> : null}
+      <label className="field">
+        <span>{decision !== null ? "Your answer to the decision" : "Answer for the session (optional)"}</span>
+        <textarea data-answer rows={decision !== null ? 4 : 2} value={answer} maxLength={8000} onChange={(event) => setAnswer(event.target.value)} />
+      </label>
+    </>
   ) : null;
+  const posed = warned ? REASK_DECISION : asked;
+  const confirm = () => {
+    if (answers && decision !== null && !warned && answer.trim() === "") {
+      setWarned(true);
+      return;
+    }
+    send();
+  };
   const ask = async () => {
     setNote("");
     setHidden(false);
+    setWarned(false);
     if (check === undefined) {
       setPhase("asking");
       return;
@@ -3011,8 +3029,9 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
   const send = async () => {
     setPhase("sending");
     let text = "The action could not be completed.";
+    const answered = answer.trim() !== "";
     try {
-      const response = await actionRequest(path, token, answer.trim() === "" ? sent : { ...sent, answer: answer.trim() });
+      const response = await actionRequest(path, token, answered ? { ...sent, answer: answer.trim() } : sent);
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -3021,7 +3040,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
       if (response.ok) {
         // Done for good: the control stays closed while the list is read again, so the same action cannot be sent twice.
         const started = body !== null && typeof body.run === "string" ? body.run : "";
-        setNote(done(started, body ?? {}));
+        setNote(done(started, body ?? {}, answered));
         setRun(started);
         setPhase("done");
         onDone();
@@ -3046,7 +3065,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
         {phase === "sending" ? <span role="status" className="sr-only">Sending…</span> : null}
         {open && !hidden ? (
           <FloatingQuestion anchor={button} busy={phase === "sending"} onClose={phase === "sending" ? () => setHidden(true) : cancel}>
-            <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} busy={phase === "sending"} onConfirm={send} onCancel={cancel}>{field}</Confirm>
+            <Confirm question={posed} answer={"Yes, " + label.toLowerCase()} tone={tone} busy={phase === "sending"} onConfirm={confirm} onCancel={cancel}>{field}</Confirm>
           </FloatingQuestion>
         ) : null}
         {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
@@ -3059,7 +3078,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
       {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
       {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
-      {phase === "asking" ? <Confirm question={asked} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={send} onCancel={cancel}>{field}</Confirm> : null}
+      {phase === "asking" ? <Confirm question={posed} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={confirm} onCancel={cancel}>{field}</Confirm> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
       {note !== "" ? <span role="status" className={phase === "done" ? "run-action-note" : "run-action-note error-text"}>{note}</span> : null}
       {phase === "done" && opensIn !== null ? <OpenRun projectId={opensIn} run={run} /> : null}
@@ -4981,6 +5000,18 @@ function ResumeLinks({ run, listPath }) {
   return parts.length === 0 ? null : <p className="feature-detail-sub run-detail-sub run-resume-links">{parts}</p>;
 }
 
+// The answer the person who resumed this run gave its session, as the server shows it (redacted), as plain
+// text; null when it was given none.
+function ResumeAnswer({ run }) {
+  if (typeof run.answer !== "string" || run.answer === "") return null;
+  return (
+    <div className="feature-detail-sub run-detail-sub run-answer" data-run-answer>
+      <span className="muted">Answered when resumed:</span>
+      <p className="run-answer-text" style={{ whiteSpace: "pre-wrap", margin: 0 }}>{run.answer}</p>
+    </div>
+  );
+}
+
 // The runs as a table, the server's order (newest first) or grouped by state when asked. Search,
 // state and stage narrow it; the count beside the Run header follows them.
 const RUNS_PER_PAGE = 10;
@@ -5275,13 +5306,26 @@ function MissingReport({ run, control }) {
 // Set aside my changes and merge, on a run blocked by uncommitted changes to its files, asks first.
 // The run's row and its detail header show the same ones. In a row (menu) the first stays in sight, Pause or
 // Resume, and the rest sit behind a ⋯ button; on a phone the CSS shows them all in the row instead.
+// What a resume's done note says: whether an answer went with it (null for a Review again, which takes none),
+// then the run that carries on, when the server named one.
+function resumedNote(next, answered) {
+  const how = answered === null ? "Resumed" : answered ? "Resumed with your answer" : "Resumed without an answer";
+  return next === "" ? how + "." : how + " as run " + next + ".";
+}
+
+// The decision a blocked run stopped at, as its ending reason "needs a decision: ..." says it, or null.
+function decisionOf(run) {
+  const reason = endingReasonOf(run);
+  return run.state === "blocked" && reason !== null && reason.startsWith("needs a decision:") ? reason : null;
+}
+
 function RowActions({ run, control, menu = false }) {
   if (control === null || !RUN_ID.test(run.run_id)) return null;
   // Its tests are running in the worktree: nothing may change the run under them, so nothing is offered.
   if (run.state === "accepting") return <span className="run-actions muted" data-accept-busy>{"Accept, Review again, Resume and Discard wait: an accept is running"}</span>;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" icon="pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
   const runPath = (tail) => controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/" + tail);
-  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" answers={run.state !== "needs_review"} label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Resumed." : "Resumed as run " + next + ".")} /> : null;
+  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" answers={run.state !== "needs_review"} decision={decisionOf(run)} label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next, reply, answered) => resumedNote(next, run.state === "needs_review" ? null : answered)} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "?" + (run.kind === "plan" ? " Claude stops drafting." : " Its process ends and it can be resumed later.")} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
   // A Draft with Claude run has no worktree or branch to pause, resume, accept or discard: it can only be stopped.
   if (run.kind === "plan") return stop === null ? null : <span className="run-actions">{stop}</span>;
@@ -6158,6 +6202,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           <CleanupCard run={run} control={control} />
           {run.delivery === "merge_local" && follow !== null && projectId !== null ?<Unpushed unpushed={run.unpushed ?? null} push={{ token: follow.token, projectId, onSignedOut: follow.onSignedOut }} /> : null}
           <ResumeLinks run={run} listPath={listPath} />
+          <ResumeAnswer run={run} />
           {run.kind === "plan" ? <PlanProposal plan={run.plan === undefined ? null : run.plan} projectId={projectId} apiRun={follow === null ? null : follow.base} control={control} /> : null}
           {validTime(run.started_at) === null && delivery === null ? null : (
             <p className="feature-detail-sub run-detail-sub">

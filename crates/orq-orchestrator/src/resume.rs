@@ -151,6 +151,24 @@ pub fn supersede_resumed_with_session(
     )
 }
 
+/// [`supersede_resumed_with_session`], also recording whether the resume went with an answer for
+/// the session: `answer: true|false`, never the text.
+pub fn supersede_resumed_answered(
+    store: &RunStore,
+    from: &RunRecord,
+    new_run_id: &str,
+    session: &str,
+    why: &str,
+    answered: bool,
+) -> Result<(), StoreError> {
+    supersede_resumed_payload(
+        store,
+        from,
+        new_run_id,
+        serde_json::json!({ "resumed_as": new_run_id, "session": session, "why": why, "answer": answered }),
+    )
+}
+
 fn supersede_resumed_payload(
     store: &RunStore,
     from: &RunRecord,

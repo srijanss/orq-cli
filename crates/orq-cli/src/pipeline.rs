@@ -577,14 +577,23 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     orq_orchestrator::end_children_with_this_process();
     // Every run names its owner process (detached or not), so a killed one can be told from a live
     // one. Only a detached run has a runner log to name.
-    let recorded = if options.run_id.is_some() {
-        let log = root.join("logs").join(&run_id).join("runner.log");
-        record_launch(&store, &run_id, std::process::id(), &log)
-    } else {
-        orq_orchestrator::record_owner(&store, &run_id, std::process::id())
+    // A resumed run's launch says whether the resume went with an answer for its session (never the text).
+    let answer = options.answer.map(str::trim).filter(|answer| !answer.is_empty());
+    let runner_log = options.run_id.is_some().then(|| root.join("logs").join(&run_id).join("runner.log"));
+    let recorded = match (&resumed, &runner_log) {
+        (Some(_), log) => orq_orchestrator::record_resumed_launch(&store, &run_id, std::process::id(), log.as_deref(), answer.is_some()),
+        (None, Some(log)) => record_launch(&store, &run_id, std::process::id(), log),
+        (None, None) => orq_orchestrator::record_owner(&store, &run_id, std::process::id()),
     };
     if let Err(err) = recorded {
         eprintln!("orq: cannot record the launch of {run_id}: {err}");
+    }
+    // The answer itself is kept in the run's logs, for its page to show.
+    if let Some(answer) = answer.filter(|_| resumed.is_some()) {
+        let logs = root.join("logs").join(&run_id);
+        if let Err(err) = std::fs::create_dir_all(&logs).and_then(|()| std::fs::write(logs.join(orq_orchestrator::RESUME_ANSWER_LOG), answer)) {
+            eprintln!("orq: cannot keep the answer {run_id} was resumed with: {err}");
+        }
     }
     if let Some(outcome) = &not_pulled {
         if let Some(note) = record_pull_warning(&store, &record, outcome) {
@@ -674,7 +683,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
             None if plan.skip_implement => ("started", "the implementer's harness changed, so the new one starts from the handoff".to_string()),
             None => plan.session(),
         };
-        if let Err(err) = orq_orchestrator::supersede_resumed_with_session(&store, &plan.from, &run_id, session, &why) {
+        if let Err(err) = orq_orchestrator::supersede_resumed_answered(&store, &plan.from, &run_id, session, &why, answer.is_some()) {
             eprintln!("orq: cannot mark {} as resumed: {err:?}", plan.from.run_id);
         }
     }

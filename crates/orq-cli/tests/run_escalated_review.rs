@@ -297,6 +297,42 @@ fn a_resume_with_an_answer_puts_the_answer_in_the_resumed_session_s_prompt() {
     assert!(second.contains("\n\nThe person who resumed this run answered:\nuse the v2 endpoint"), "{second}");
 }
 
+/// Every event of `run`, in order.
+fn events_of(w: &World, run: &str) -> Vec<serde_json::Value> {
+    let text = std::fs::read_to_string(w.state.join("orq/runs").join(run).join("events.jsonl")).unwrap();
+    text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+}
+
+/// The run that was resumed and the run that carries it on, after one resume.
+fn resumed_and_next(w: &World) -> (String, String) {
+    let runs: Vec<String> = std::fs::read_dir(w.state.join("orq/runs")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let from = runs.iter().find(|run| events_of(w, run).iter().any(|e| e["type"] == "run.resumed")).expect("a run.resumed").clone();
+    let next = runs.into_iter().find(|run| *run != from).unwrap();
+    (from, next)
+}
+
+#[test]
+fn a_resume_records_whether_it_went_with_an_answer_and_keeps_the_answer_in_the_new_run_s_logs() {
+    let (w, _, resumed) = resume_failed("answer-recorded", |_| {}, &["--answer", "  use the v2 endpoint\nnot v1 "]);
+    let (from, next) = resumed_and_next(&w);
+    let stderr = text(&resumed.stderr);
+    let resumed_event = events_of(&w, &from).into_iter().find(|e| e["type"] == "run.resumed").unwrap();
+    assert_eq!(resumed_event["payload"]["answer"], serde_json::json!(true), "{resumed_event} {stderr}");
+    let first = events_of(&w, &next).into_iter().next().unwrap();
+    assert_eq!(first["payload"]["answer"], serde_json::json!(true), "the new run's first event: {first}");
+    assert!(!first.to_string().contains("v2 endpoint") && !resumed_event.to_string().contains("v2 endpoint"), "never the text");
+    let kept = std::fs::read_to_string(w.state.join("orq/logs").join(&next).join("resume-answer.log")).unwrap();
+    assert_eq!(kept, "use the v2 endpoint\nnot v1");
+
+    let (w, _, _) = resume_failed("answer-none", |_| {}, &[]);
+    let (from, next) = resumed_and_next(&w);
+    let resumed_event = events_of(&w, &from).into_iter().find(|e| e["type"] == "run.resumed").unwrap();
+    assert_eq!(resumed_event["payload"]["answer"], serde_json::json!(false), "{resumed_event}");
+    assert_eq!(events_of(&w, &next)[0]["payload"]["answer"], serde_json::json!(false));
+    assert!(!w.state.join("orq/logs").join(&next).join("resume-answer.log").exists());
+}
+
 #[test]
 fn a_resume_with_an_answer_too_long_is_refused_before_the_run_is_resumed() {
     let long = "x".repeat(8001);

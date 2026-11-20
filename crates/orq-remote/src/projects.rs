@@ -242,6 +242,23 @@ fn resumed_from(events: &[orq_orchestrator::Event]) -> Option<String> {
     })
 }
 
+/// The answer the person who resumed this run gave its session, redacted: kept in the run's logs, and shown only
+/// when its `run.launched` says it was resumed with one. `None` for a run given none, or whose answer cannot be read.
+fn resume_answer(events: &[orq_orchestrator::Event], logs_dir: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    // An answer is at most 8000 characters, each at most four bytes.
+    const MOST: u64 = 4 * 8000;
+    let launched = events.iter().find(|event| event.kind == "run.launched")?;
+    if launched.payload.get("answer").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let (_, file) = open_run_log_with(&logs_dir.join(orq_orchestrator::RESUME_ANSWER_LOG), logs_dir, || {})?;
+    let mut bytes = Vec::new();
+    file.take(MOST).read_to_end(&mut bytes).ok()?;
+    let answer = String::from_utf8_lossy(&bytes);
+    (!answer.trim().is_empty()).then(|| orq_core::redact::redact(&answer))
+}
+
 /// Adds `resumed_as` and `resumed_from` to a run's JSON, each only when the run has one.
 fn add_resume_links(row: &mut serde_json::Value, resumed_as: Option<&String>, resumed_from: Option<&String>) {
     if let Some(id) = resumed_as {
@@ -2205,6 +2222,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let review_rounds = events.iter().filter(|event| is_review(event)).fold(0, advance);
         let mut shown = serde_json::json!({"run_id": record.run_id, "feature": record.feature_id, "target_branch": record.target_branch, "state": shown_state(&project.path, &record, listed_state(&summary)), "stage": summary.stage, "started_at": events.first().map(|event| &event.occurred_at), "updated_at": events.last().map(|event| &event.occurred_at), "delivery": record.delivery.as_str(), "ending": delivered_ending(&events, summary.phase)});
         add_resume_links(&mut shown, handed_over_to(&summary).as_ref(), resumed_from(&events).as_ref());
+        if let Some(answer) = resume_answer(&events, &logs_dir) {
+            shown["answer"] = answer.into();
+        }
         add_dirty_files(&mut shown, dirty_files(&events, summary.phase).as_deref());
         if let Some(reason) = ending_reason(&events, &summary) {
             let findings = ending_findings(&reason, &record.worktree);

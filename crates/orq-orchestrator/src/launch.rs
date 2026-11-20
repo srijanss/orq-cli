@@ -12,16 +12,37 @@ pub fn record_launch(
     pid: u32,
     log: &Path,
 ) -> Result<(), StoreError> {
-    record(store, run_id, pid, Some(log))
+    record(store, run_id, pid, Some(log), None)
 }
 
 /// Record `run.launched` for a run that owns its terminal: the owner's process id and start time,
 /// and no log, because its output goes to the launcher's own streams.
 pub fn record_owner(store: &RunStore, run_id: &str, pid: u32) -> Result<(), StoreError> {
-    record(store, run_id, pid, None)
+    record(store, run_id, pid, None, None)
 }
 
-fn record(store: &RunStore, run_id: &str, pid: u32, log: Option<&Path>) -> Result<(), StoreError> {
+/// The file in a resumed run's logs that holds the answer the person who resumed it gave its session.
+pub const RESUME_ANSWER_LOG: &str = "resume-answer.log";
+
+/// Record `run.launched` for a resumed run as [`record_launch`] (with `log`) or [`record_owner`]
+/// (without) do, saying whether the resume went with an answer: `answer: true|false`, never the text.
+pub fn record_resumed_launch(
+    store: &RunStore,
+    run_id: &str,
+    pid: u32,
+    log: Option<&Path>,
+    answered: bool,
+) -> Result<(), StoreError> {
+    record(store, run_id, pid, log, Some(answered))
+}
+
+fn record(
+    store: &RunStore,
+    run_id: &str,
+    pid: u32,
+    log: Option<&Path>,
+    answered: Option<bool>,
+) -> Result<(), StoreError> {
     let record = store.load(run_id)?;
     let mut payload = serde_json::json!({
         "pid": pid,
@@ -32,6 +53,9 @@ fn record(store: &RunStore, run_id: &str, pid: u32, log: Option<&Path>) -> Resul
     });
     if let Some(log) = log {
         payload["log"] = serde_json::Value::String(log.to_string_lossy().into_owned());
+    }
+    if let Some(answered) = answered {
+        payload["answer"] = serde_json::Value::Bool(answered);
     }
     store.append_event(&Event {
         schema_version: 1,

@@ -94,7 +94,10 @@ pub use kept_worktrees::{
     delete_kept_worktree, list_kept_worktrees, ChangeKind, ChangedFile, DeleteRefusal,
     DeletedWorktree, KeptWorktree, RunIndex,
 };
-pub use launch::{record_launch, record_owner, record_upgraded_under_runs};
+pub use launch::{
+    record_launch, record_owner, record_resumed_launch, record_upgraded_under_runs,
+    RESUME_ANSWER_LOG,
+};
 pub use ledger_events::record_ledger_features;
 pub use local_files::{carry_local_files, LocalFiles};
 pub use mcp_setup::{
@@ -128,7 +131,8 @@ pub use resume::{
     newest_run_of, newest_runs_of, plan_group_resume, plan_group_resume_fixing,
     plan_group_resume_reviewing_again, plan_group_resume_with, plan_resume, rebased_onto,
     record_group, record_inherited_implement, resumable_members, resume_check, resume_takes_a_slot,
-    run_members, supersede_resumed, supersede_resumed_with_session, ResumePlan,
+    run_members, supersede_resumed, supersede_resumed_answered, supersede_resumed_with_session,
+    ResumePlan,
 };
 pub use retention_facts::{collect_run_facts, collect_run_facts_for, parse_rfc3339};
 pub use review_draft::{
