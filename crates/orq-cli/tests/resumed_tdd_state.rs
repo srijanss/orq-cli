@@ -115,7 +115,7 @@ fn a_resumed_session_is_told_the_feature_is_still_open_in_the_tdd_state() {
     let w = world("open");
     let ledger_path = w.repo.root().join(".tdd-features.json").display().to_string();
     let prompt_file = w.base.join("prompt.txt");
-    let open_state = r#"{"featureName":"COM-01","stack":[{"testFile":"tests/feature_test.rs","targetFiles":[],"phase":"implement"},{"testFile":"tests/inner.rs","targetFiles":["src/feature.rs"],"phase":"verify_red"}],"phase":"verify_red"}"#;
+    let open_state = r#"{"featureName":"fix-the-finding","stack":[{"testFile":"tests/feature_test.rs","targetFiles":[],"phase":"implement"},{"testFile":"tests/inner.rs","targetFiles":["src/feature.rs"],"phase":"verify_red"}],"phase":"verify_red"}"#;
     let script = format!(
         "case \"$*\" in\n*'This run continues'*) printf '%s' \"$*\" > '{}';;\n*) printf '%s' '{open_state}' > .tdd-state.json;;\nesac\nsed -i -E 's/\"status\": \"[a-z_]+\"/\"status\": \"in_progress\"/' '{ledger_path}'",
         prompt_file.display()
@@ -130,7 +130,7 @@ fn a_resumed_session_is_told_the_feature_is_still_open_in_the_tdd_state() {
 
     assert!(text(&resumed.stdout).contains("state: review_ready"), "{}\n{}", text(&resumed.stdout), text(&resumed.stderr));
     let prompt = std::fs::read_to_string(&prompt_file).unwrap();
-    assert!(prompt.contains("still open in the TDD state: phase verify_red, depth 2."), "{prompt}");
+    assert!(prompt.contains("The feature fix-the-finding is still open in the TDD state: phase verify_red, depth 2."), "the feature the state names, not the run's: {prompt}");
 }
 
 /// A session whose TDD tool leaves the entry without the files it declared gets them back, and adds
@@ -153,6 +153,19 @@ fn a_session_that_drops_the_declared_target_files_gets_them_put_back_with_its_ow
     let ledger: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(w.repo.root().join(".tdd-features.json")).unwrap()).unwrap();
     assert_eq!(ledger[0]["targetFiles"], serde_json::json!(["src/feature.rs", "src/added.rs"]));
     assert_eq!(payloads_of(&w, "ledger.target_files_restored"), vec![serde_json::json!({"feature": "COM-01", "restored": ["src/feature.rs"]})]);
+}
+
+/// A ledger a session leaves unreadable cannot get its files back: that is said, and no restoration is recorded.
+#[test]
+fn a_ledger_that_cannot_be_read_after_the_session_says_the_declared_files_were_not_put_back() {
+    let w = world("unreadable");
+    let script = format!("printf 'not json' > '{}'", w.repo.root().join(".tdd-features.json").display());
+    let agent = FakeAgent::builder().write_file("src/feature.rs", "done\n").commit("feat: add the feature").build();
+
+    let output = run(&w, path_with(&w, &agent, &script));
+
+    assert!(text(&output.stderr).contains("cannot read the feature ledger to put back the files its features declared"), "{}", text(&output.stderr));
+    assert_eq!(payloads_of(&w, "ledger.target_files_restored"), Vec::<serde_json::Value>::new());
 }
 
 /// A session that keeps every declared file changes nothing and records nothing.

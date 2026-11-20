@@ -1044,16 +1044,17 @@ fn ledger_statuses(ledger: &Path, session: &str) -> Option<Vec<(String, orq_feat
     }
 }
 
-/// The phase and depth of the feature the worktree's `.tdd-state.json` has open, none when no feature
-/// is open or the file is missing, unreadable, or its phase is not a plain word.
-fn open_tdd_state(worktree: &Path) -> Option<(String, usize)> {
+/// The name, phase and depth of the feature the worktree's `.tdd-state.json` has open (not always the
+/// run's own: it may be a review-finding feature), none when no feature is open or the file is missing,
+/// unreadable, or its phase is not a plain word.
+fn open_tdd_state(worktree: &Path) -> Option<(String, String, usize)> {
     let text = std::fs::read_to_string(worktree.join(".tdd-state.json")).ok()?;
     let state: serde_json::Value = serde_json::from_str(&text).ok()?;
-    state.get("featureName")?.as_str()?;
+    let name = state.get("featureName")?.as_str()?;
     let stack = state.get("stack").and_then(|s| s.as_array()).map_or(&[][..], |s| s.as_slice());
     let phase = state.get("phase").and_then(|p| p.as_str()).or_else(|| stack.last()?.get("phase")?.as_str())?;
     let plain = !phase.is_empty() && phase.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    plain.then(|| (phase.to_string(), stack.len().max(1)))
+    plain.then(|| (name.to_string(), phase.to_string(), stack.len().max(1)))
 }
 
 /// Each of `features` in the ledger with the files it declares, none when the ledger cannot be read.
@@ -1067,27 +1068,32 @@ fn ledger_target_files(ledger: &Path, features: &[String]) -> Option<Vec<(String
 /// is recorded. Best effort: a failure is said and changes nothing else about the run.
 fn restore_target_files(store: &RunStore, record: &RunRecord, ledger: &Path, before: Option<&[(String, Vec<String>)]>) {
     let Some(before) = before else { return };
-    for (feature, declared) in before {
-        for _ in 0..5 {
-            let Ok(loaded) = orq_features::LoadedLedger::load(ledger) else { break };
-            let Some(entry) = loaded.entries().iter().find(|e| &e.feature_name == feature) else { break };
-            let restored: Vec<String> = declared.iter().filter(|f| !entry.target_files.contains(f)).cloned().collect();
-            if restored.is_empty() {
-                break;
+    // One load serves the whole check; it is repeated only after a save or a conflict made it stale.
+    let mut conflicts = 0;
+    loop {
+        let loaded = match orq_features::LoadedLedger::load(ledger) {
+            Ok(loaded) => loaded,
+            Err(orq_features::LedgerError::Missing { .. }) => return,
+            Err(err) => {
+                eprintln!("orq: cannot read the feature ledger to put back the files its features declared: {err:?}");
+                return;
             }
+        };
+        let dropped = before.iter().find_map(|(feature, declared)| {
+            let entry = loaded.entries().iter().find(|e| &e.feature_name == feature)?;
+            let restored: Vec<String> = declared.iter().filter(|f| !entry.target_files.contains(f)).cloned().collect();
             let mut files = declared.clone();
             files.extend(entry.target_files.iter().filter(|f| !declared.contains(f)).cloned());
-            let edits = orq_features::FieldEdits { target_files: Some(files), ..Default::default() };
-            match loaded.edit_fields(feature, &edits) {
-                Ok(_) => {
-                    record_ledger_event(store, record, "ledger.target_files_restored", serde_json::json!({ "feature": feature, "restored": restored }));
-                    break;
-                }
-                Err(orq_features::EditFieldsError::Save(orq_features::SaveError::Conflict)) => continue,
-                Err(err) => {
-                    eprintln!("orq: cannot put the files {feature} declared back in the ledger: {err}");
-                    break;
-                }
+            (!restored.is_empty()).then_some((feature, restored, files))
+        });
+        let Some((feature, restored, files)) = dropped else { return };
+        let edits = orq_features::FieldEdits { target_files: Some(files), ..Default::default() };
+        match loaded.edit_fields(feature, &edits) {
+            Ok(_) => record_ledger_event(store, record, "ledger.target_files_restored", serde_json::json!({ "feature": feature, "restored": restored })),
+            Err(orq_features::EditFieldsError::Save(orq_features::SaveError::Conflict)) if conflicts < 5 => conflicts += 1,
+            Err(err) => {
+                eprintln!("orq: cannot put the files {feature} declared back in the ledger: {err}");
+                return;
             }
         }
     }
@@ -2052,7 +2058,7 @@ fn stages(
                 run: &from.run_id,
                 base: &record.base_sha,
                 log,
-                open_feature: open_tdd.as_ref().map(|(phase, depth)| orq_agents::OpenFeature { phase, depth: *depth }),
+                open_feature: open_tdd.as_ref().map(|(name, phase, depth)| orq_agents::OpenFeature { name, phase, depth: *depth }),
             });
             // The session is told the features' files, and on a resumed run those already changed outside them.
             let (declared_files, undeclared_files) = session_files(store, record, &orq_features::ledger_path(options.project), options.features, resumed_from.map(|from| from.run_id.as_str()));

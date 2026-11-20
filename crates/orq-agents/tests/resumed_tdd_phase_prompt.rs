@@ -38,11 +38,21 @@ fn continuing(open_feature: Option<OpenFeature<'static>>) -> Continuing<'static>
 
 #[test]
 fn a_resumed_prompt_with_an_open_tdd_state_names_the_phase_and_depth_and_says_to_carry_on() {
-    let text = prompt(Some(continuing(Some(OpenFeature { phase: "implement", depth: 2 }))), false);
+    let text = prompt(Some(continuing(Some(OpenFeature { name: "COM-01", phase: "implement", depth: 2 }))), false);
 
     assert!(text.contains("The feature COM-01 is still open in the TDD state: phase implement, depth 2."), "{text}");
     assert!(text.contains("Carry on from there: finish the open cycles, and only then complete the feature."), "{text}");
     assert!(text.contains("Never complete a feature to get a review started."), "{text}");
+}
+
+/// The open state belongs to the feature it names, which need not be the run's own: a session that
+/// stopped inside a review-finding feature is told that one is open, never that the run's feature is.
+#[test]
+fn a_resumed_prompt_names_the_feature_that_is_open_not_the_runs_feature() {
+    let text = prompt(Some(continuing(Some(OpenFeature { name: "fix-the-finding", phase: "red", depth: 1 }))), false);
+
+    assert!(text.contains("The feature fix-the-finding is still open in the TDD state: phase red, depth 1."), "{text}");
+    assert!(!text.contains("The feature COM-01 is still open"), "{text}");
 }
 
 #[test]

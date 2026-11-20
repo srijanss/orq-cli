@@ -106,9 +106,11 @@ pub struct Continuing<'a> {
     pub open_feature: Option<OpenFeature<'a>>,
 }
 
-/// Where the TDD state of a resumed worktree stands: the run's feature is open at this phase and depth.
+/// Where the TDD state of a resumed worktree stands: the feature `name` is open at this phase and depth.
+/// It need not be the run's own feature: a session may have stopped inside a review-finding feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFeature<'a> {
+    pub name: &'a str,
     pub phase: &'a str,
     pub depth: usize,
 }
@@ -539,9 +541,11 @@ fn continuing_wording(features: &[&str], continuing: &Continuing<'_>) -> Result<
         quoted = quoted.join(", "),
     );
     if let Some(open) = &continuing.open_feature {
+        plain("open feature name", open.name)?;
         plain("open feature phase", open.phase)?;
         wording.push_str(&format!(
-            "\n\nThe feature {names} is still open in the TDD state: phase {phase}, depth {depth}. Carry on from there: finish the open cycles, and only then complete the feature. Never complete a feature to get a review started.",
+            "\n\nThe feature {name} is still open in the TDD state: phase {phase}, depth {depth}. Carry on from there: finish the open cycles, and only then complete the feature. Never complete a feature to get a review started.",
+            name = open.name,
             phase = open.phase,
             depth = open.depth,
         ));
