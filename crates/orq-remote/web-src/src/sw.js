@@ -264,16 +264,25 @@ async function pushText(push) {
   for (const name of ["project", "run", "event"]) {
     if (field(push, name)) query.set(name, field(push, name));
   }
+  // A server that never finishes answering is given up on, so the browser never stops the worker first
+  // with nothing shown.
+  const abort = new AbortController();
+  const deadline = setTimeout(() => abort.abort(), WORDS_WAIT);
   try {
-    const reply = await fetch("/api/push/text?" + query, { credentials: "same-origin" });
+    const reply = await fetch("/api/push/text?" + query, { credentials: "same-origin", signal: abort.signal });
     if (!reply.ok) throw new Error("no words");
     const text = await reply.json();
     if (typeof text.title !== "string" || !text.title) throw new Error("no words");
     return { title: text.title, body: typeof text.body === "string" ? text.body : "", path: text.path };
   } catch (error) {
     return { title: "orq: a run needs attention", body: "" };
+  } finally {
+    clearTimeout(deadline);
   }
 }
+
+// How long a push waits for its words, in milliseconds.
+const WORDS_WAIT = 8 * 1000;
 
 // Cache storage can fail; that counts as nothing cached.
 async function quietly(task) {

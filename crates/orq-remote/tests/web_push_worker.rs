@@ -17,14 +17,28 @@ import vm from "node:vm";
 const code = readFileSync(process.env.ORQ_SW, "utf8");
 const scenario = JSON.parse(process.env.ORQ_SCENARIO);
 const ORIGIN = "https://box.example.ts.net";
-const out = { shown: [], fetched: [], focused: [], navigated: [], opened: [] };
+const out = { shown: [], fetched: [], focused: [], navigated: [], opened: [], timers: [] };
 const visible = new Map();
 let reply;
+const aborted = () => new DOMException("The operation was aborted.", "AbortError");
+// "hang": the server never answers; "hangBody": it answers 200 and never finishes the body. Either only
+// ends when the worker aborts the request.
 const fetch = async (request, init = {}) => {
   const url = new URL(typeof request === "string" ? request : request.url, ORIGIN);
   out.fetched.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), credentials: init.credentials ?? "same-origin" });
   if (reply === "offline") throw new TypeError("Failed to fetch");
+  const signal = init.signal;
+  if (reply === "hang") return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(aborted())));
+  if (reply === "hangBody") {
+    const body = new ReadableStream({ start: (controller) => { controller.enqueue(new TextEncoder().encode("{")); signal?.addEventListener("abort", () => controller.error(aborted())); } });
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  }
   return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status, headers: { "content-type": "application/json" } });
+};
+// With `fastTimers`, a timer fires at once (its delay is still recorded), so a deadline is reached without waiting.
+const timers = {
+  setTimeout: (task, ms) => { out.timers.push(ms); return setTimeout(task, scenario.fastTimers ? 0 : ms); },
+  clearTimeout: (id) => clearTimeout(id),
 };
 const windows = (scenario.click?.windows ?? []).map((page, index) => ({
   id: "w" + index,
@@ -35,7 +49,7 @@ const windows = (scenario.click?.windows ?? []).map((page, index) => ({
 }));
 const listeners = {};
 const context = {
-  fetch, URL, URLSearchParams, Response, Request, Headers, Promise, console, encodeURIComponent,
+  fetch, URL, URLSearchParams, Response, Request, Headers, Promise, console, encodeURIComponent, AbortController, DOMException, ...timers,
   location: new URL("/sw.js", ORIGIN),
   caches: { open: async () => ({}), keys: async () => [], match: async () => undefined },
   registration: {
@@ -115,6 +129,17 @@ fn a_push_whose_words_cannot_be_fetched_shows_the_generic_text_and_names_nothing
         assert_eq!(shown[0]["title"], json!("orq: a run needs attention"), "{reply}: {out}");
         let text = shown[0]["title"].to_string() + &shown[0]["options"]["body"].to_string();
         assert!(!text.contains("secret") && !text.contains("needs_input"), "{reply}: nothing is named: {out}");
+    }
+}
+
+#[test]
+fn a_server_that_never_finishes_answering_still_gets_the_generic_text_shown_within_a_deadline() {
+    let data = json!({"kind": "failed", "project": "orq", "run": "run-7", "event": "e-1"});
+    for reply in ["hang", "hangBody"] {
+        let Some(out) = run(json!({"fastTimers": true, "pushes": [{"data": data, "reply": reply}]})) else { return };
+        assert_eq!(out["shown"][0]["title"], json!("orq: a run needs attention"), "{reply}: {out}");
+        let deadline = out["timers"][0].as_u64().unwrap_or(u64::MAX);
+        assert!(deadline <= 10_000, "{reply}: the words are waited for at most ten seconds: {out}");
     }
 }
 
