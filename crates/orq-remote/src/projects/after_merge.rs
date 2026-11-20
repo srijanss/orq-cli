@@ -221,8 +221,27 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Whether `word` is a flag (`--name`, not `--name=value`) that names a credential, so the word after it is one.
+fn credential_flag(word: &str) -> bool {
+    let name = word.to_ascii_lowercase();
+    name.starts_with('-') && !name.contains('=') && ["password", "passwd", "token", "secret", "api-key", "api_key", "apikey", "credential", "auth"].iter().any(|part| name.contains(part))
+}
+
+/// `argv` as an event may hold it: the value after a credential flag is replaced whatever it looks like,
+/// and every other word is redacted on its own.
 fn shown(argv: &[String]) -> Vec<String> {
-    argv.iter().map(|word| redact(word)).collect()
+    let mut previous_names_credential = false;
+    argv.iter()
+        .map(|word| {
+            let masked = previous_names_credential;
+            previous_names_credential = credential_flag(word);
+            if masked {
+                "[redacted]".to_string()
+            } else {
+                redact(word)
+            }
+        })
+        .collect()
 }
 
 /// Runs each argv in `root` in order, stopping at the first that fails or cannot start; what each did

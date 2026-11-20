@@ -577,6 +577,21 @@ fn the_argv_in_the_event_is_redacted() {
 }
 
 #[test]
+fn the_value_after_a_credential_flag_is_redacted_whatever_it_looks_like() {
+    let s = setup("redacted-flags", None);
+    write_run_toml(&s, "[after_merge]\ncommands = [[\"true\", \"--password\", \"plainvalue1\", \"--api-key\", \"plainvalue2\", \"--TOKEN\", \"plainvalue3\", \"--name\", \"keepme\"]]\n");
+    let (run, _) = merged_run(&s);
+    round(&s);
+    let done = wait_for(&s, &run, "after_merge.commands").expect("recorded");
+    let shown = done.payload.to_string();
+    for secret in ["plainvalue1", "plainvalue2", "plainvalue3"] {
+        assert!(!shown.contains(secret), "{shown}");
+    }
+    assert!(shown.contains("--password") && shown.contains("--api-key"), "the flags stay: {shown}");
+    assert!(shown.contains("keepme"), "an ordinary flag's value stays: {shown}");
+}
+
+#[test]
 fn after_merge_commands_are_argv_lists_and_a_bad_shape_names_its_key() {
     use orq_core::project_settings::AfterMergeCommands;
     assert_eq!(
