@@ -193,6 +193,18 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// The features archived out of project `id`'s ledger as `{"archived": [entry...]}`, `None` when there
+    /// is no such project.
+    fn archived_features(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    /// Archives project `id`'s old completed features (a dry run only counts them); the reply is the
+    /// counts as JSON.
+    fn archive_features(&self, _id: &str, _dry_run: bool) -> Result<ArchiveOutcome, String> {
+        Ok(ArchiveOutcome::Unknown)
+    }
+
     /// Why project `id`'s settings refuse a run start now (its run limit or disk floor), `None` when
     /// a start may go or there is no such project.
     fn start_blocked(&self, _id: &str) -> Result<Option<String>, String> {
@@ -580,6 +592,16 @@ pub enum TargetPushResult {
     /// Why nothing was pushed; safe to show.
     Refused(String),
     /// There is no such project.
+    Unknown,
+}
+
+/// How a request to archive a project's completed features ended.
+pub enum ArchiveOutcome {
+    /// Archived (or counted, on a dry run): the counts as the reply.
+    Done(Value),
+    /// Left alone, in words fit to show (a run is active).
+    Refused(String),
+    /// No such project or ledger.
     Unknown,
 }
 
@@ -1146,6 +1168,55 @@ fn promote_feature(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>
         }
         _ => {
             refused("no such project or feature");
+            error(404, "not found")
+        }
+    }
+}
+
+/// Archives (or, with `dry_run`, counts) a project's old completed features for the web, if actions are on,
+/// and leaves an audit line for the attempt as features.archive.
+fn archive_features(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let failed = "the features could not be archived";
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "features.archive", project: id, run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &["dry_run"]) {
+        audit(Outcome::Refused, "bad request body");
+        return refusal;
+    }
+    let dry_run = match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(fields)) => match fields.get("dry_run") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(flag)) => *flag,
+            _ => {
+                audit(Outcome::Refused, "bad request body");
+                return error(400, "the request body is not one this action takes");
+            }
+        },
+        _ => false,
+    };
+    match provider.map(|provider| provider.archive_features(id, dry_run)) {
+        Some(Ok(ArchiveOutcome::Done(counts))) => {
+            audit(Outcome::Allowed, if dry_run { "dry run" } else { "archived" });
+            reply(200, counts)
+        }
+        Some(Ok(ArchiveOutcome::Refused(why))) => {
+            audit(Outcome::Refused, &why);
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, failed);
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, "no such project");
             error(404, "not found")
         }
     }
@@ -2767,6 +2838,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some((id, feature)) = feature_target(path, "queue-wish").filter(|_| matches!(request.method, "GET" | "HEAD" | "POST")) {
         return queue_wish(roots, provider, id, feature, request.method, body);
     }
+    if let Some(id) = (request.method == "POST").then(|| project_target(path, "features/archive")).flatten() {
+        return archive_features(roots, provider, id, body);
+    }
     if let Some((id, feature)) = (request.method == "POST").then(|| feature_target(path, "promote")).flatten() {
         return promote_feature(roots, provider, id, feature, body);
     }
@@ -2909,6 +2983,14 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return match provider.map(|provider| (provider.settings(), provider.server())) {
             Some((Ok(Some(settings)), server)) => reply(200, json!({ "settings": settings, "server": server.map(|server| server.status()) })),
             Some((Err(why), _)) => error(500, &why),
+            _ => error(404, "not found"),
+        };
+    }
+    if let Some(id) = project_target(path, "features/archived") {
+        // A read like the features list: there with actions off, and its failure names no path.
+        return match provider.map(|provider| provider.archived_features(id)) {
+            Some(Ok(Some(archived))) => reply(200, archived),
+            Some(Err(_)) => error(500, "the archive could not be read"),
             _ => error(404, "not found"),
         };
     }

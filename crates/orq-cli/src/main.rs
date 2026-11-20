@@ -19,7 +19,7 @@ mod worktree;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -34,6 +34,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         (Some("project"), Some("inspect")) => project_inspect(&args[2..]),
+        (Some("features"), Some("archive")) => features_archive(&args[2..]),
         (Some("features"), _) => features(&args[1..]),
         (Some("models"), _) => models(&args[1..]),
         (Some("runs"), _) => runs(&args[1..]),
@@ -175,6 +176,50 @@ fn features(args: &[OsString]) -> ExitCode {
     };
     let list: Vec<serde_json::Value> = entries.iter().map(entry_json).collect();
     println!("{}", serde_json::Value::Array(list));
+    ExitCode::SUCCESS
+}
+
+/// `orq features archive --repo <path> [--keep <N>] [--dry-run]`: moves completed features except the
+/// newest N (default 100) to the project's archive under the data directory.
+fn features_archive(args: &[OsString]) -> ExitCode {
+    let (mut repo, mut keep, mut dry_run) = (None, 100usize, false);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.to_str() {
+            Some("--repo") => repo = rest.next().map(PathBuf::from),
+            Some("--keep") => match rest.next().and_then(|v| v.to_str()).and_then(|v| v.parse().ok()) {
+                Some(n) => keep = n,
+                None => return usage_error(),
+            },
+            Some("--dry-run") => dry_run = true,
+            _ => return usage_error(),
+        }
+    }
+    let Some(repo) = repo else { return usage_error() };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let roots = match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
+        Ok(roots) => roots,
+        Err(err) => return fail(format!("cannot locate the Orq data directory: {err}")),
+    };
+    let project_id = pipeline::project_id(&project);
+    let active = match orq_orchestrator::RunStore::new(&roots.state).active_project_runs(&project_id) {
+        Ok(active) => active.len(),
+        Err(err) => return fail(format!("cannot read the runs: {err:?}")),
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let stamp = orq_core::storage::readable_utc(now);
+    let plan = match orq_features::archive::archive_ledger(&orq_features::ledger_path(&project), &roots.data, &project_id, keep, dry_run, active, &stamp) {
+        Ok(plan) => plan,
+        Err(err) => return fail(err),
+    };
+    let verb = if dry_run { "would archive" } else { "archived" };
+    println!("{verb} {} completed or abandoned feature(s), keeping the newest {keep} completed", plan.archived.len());
+    for (feature, names) in &plan.stripped {
+        println!("{} dependsOn drops: {}", printable(feature), names.iter().map(|n| printable(n)).collect::<Vec<_>>().join(", "));
+    }
     ExitCode::SUCCESS
 }
 
@@ -409,19 +454,24 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
     } else {
         None
     };
+    // Completed features moved to the archive still count as completed dependencies.
+    let archived = match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
+        Ok(roots) => orq_features::archive::archived_completed_names(&roots.data, &pipeline::project_id(&project)),
+        Err(_) => Default::default(),
+    };
     // The features of the run, in the order to do them: dependencies first for a group.
     let features: Vec<String> = match &group {
         Some(ids) => match free.as_ref().map_or_else(
-            || orq_features::order_run_group(&ledger, ids),
-            |free| orq_features::order_resume_group(&ledger, ids, free),
+            || orq_features::order_run_group_with_archive(&ledger, ids, &archived),
+            |free| orq_features::order_resume_group_with_archive(&ledger, ids, free, &archived),
         ) {
             Ok(ordered) => ordered.into_iter().map(|entry| entry.feature_name.clone()).collect(),
             Err(err) => return refuse(resuming, &format!("the group may not start a run: {}", printable(&err.to_string())), EXIT_INELIGIBLE),
         },
         None => {
             let eligible = match &free {
-                Some(free) => orq_features::check_resume_eligibility(&ledger, feature, free),
-                None => orq_features::check_run_eligibility(&ledger, feature),
+                Some(free) => orq_features::check_resume_eligibility_with_archive(&ledger, feature, free, &archived),
+                None => orq_features::check_run_eligibility_with_archive(&ledger, feature, &archived),
             };
             if let Err(err) = eligible {
                 return refuse(resuming, &format!("feature {} may not start a run: {}", printable(feature), printable(&err.to_string())), EXIT_INELIGIBLE);
@@ -1004,6 +1054,14 @@ fn saved_entry_json(entry: &orq_features::FeatureEntry) -> serde_json::Value {
     json
 }
 
+/// The names of the project's archived completed features; none when the data directory cannot be located.
+fn project_archived_names(project: &orq_git::Project) -> std::collections::HashSet<String> {
+    match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
+        Ok(roots) => orq_features::archive::archived_completed_names(&roots.data, &pipeline::project_id(project)),
+        Err(_) => Default::default(),
+    }
+}
+
 /// `orq feature add --repo <path> --name <name> [...]`: appends a draft and
 /// prints it. Never starts an agent, worktree or run.
 fn feature_add(args: &[OsString]) -> ExitCode {
@@ -1026,6 +1084,10 @@ fn feature_add(args: &[OsString]) -> ExitCode {
         Ok(loaded) => loaded,
         Err(err) => return fail(ledger_error_text(&err)),
     };
+    let loaded = loaded.with_archive(project_archived_names(&project));
+    for note in loaded.archived_dependency_notes(flags.depends_on.as_deref().unwrap_or_default()) {
+        eprintln!("{note}");
+    }
     let draft = orq_features::FeatureDraft {
         feature_name: name,
         description: flags.description,
@@ -1060,6 +1122,10 @@ fn feature_edit(args: &[OsString]) -> ExitCode {
         Ok(loaded) => loaded,
         Err(err) => return fail(ledger_error_text(&err)),
     };
+    let loaded = loaded.with_archive(project_archived_names(&project));
+    for note in loaded.archived_dependency_notes(flags.depends_on.as_deref().unwrap_or_default()) {
+        eprintln!("{note}");
+    }
     let edits = orq_features::FieldEdits {
         description: flags.description,
         depends_on: flags.depends_on,
@@ -1071,6 +1137,9 @@ fn feature_edit(args: &[OsString]) -> ExitCode {
         Ok(entry) => {
             println!("{}", saved_entry_json(&entry));
             ExitCode::SUCCESS
+        }
+        Err(orq_features::EditFieldsError::UnknownFeature) if loaded.is_archived(&name) => {
+            fail(format!("{name} is archived and completed: it is read-only"))
         }
         Err(orq_features::EditFieldsError::UnknownFeature) => fail(format!("no feature named {name:?}")),
         Err(err) => fail(err),

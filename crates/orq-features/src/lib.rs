@@ -242,6 +242,8 @@ pub use edit::{set_entry_status, set_entry_statuses, EditError};
 mod write;
 pub use write::write_ledger_atomic;
 
+pub mod archive;
+
 mod save;
 pub use save::{AppendError, EditFieldsError, FieldEdits, LoadedLedger, SaveError};
 
@@ -286,7 +288,7 @@ mod reopen;
 pub use reopen::{close_features, complete_run_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features, restore_completed_features};
 
 mod validate;
-pub use validate::{feature_name_problem, validate_entries, ValidationError};
+pub use validate::{archived_dependency_notes, drop_archived_dependencies, feature_name_problem, validate_entries, validate_entries_with_archive, ValidationError};
 
 mod spec_file;
 pub use spec_file::{resolve_spec_file, spec_file_candidates, spec_file_choices, SpecFileError};
@@ -310,7 +312,7 @@ mod model_profiles;
 pub use model_profiles::{load_model_profiles, FieldProblem, ModelProfile, ModelProfiles, ModelProfilesError};
 
 mod eligibility;
-pub use eligibility::{check_resume_eligibility, check_run_eligibility, order_resume_group, order_run_group, GroupRefusal, Ineligible, UnmetDependency};
+pub use eligibility::{check_resume_eligibility, check_resume_eligibility_with_archive, check_run_eligibility, check_run_eligibility_with_archive, order_resume_group, order_resume_group_with_archive, order_run_group, order_run_group_with_archive, GroupRefusal, Ineligible, UnmetDependency};
 
 mod launch_request;
 pub use launch_request::LaunchRequest;

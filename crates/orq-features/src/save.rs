@@ -16,6 +16,8 @@ pub struct LoadedLedger {
     entries: Vec<FeatureEntry>,
     /// The file did not exist when loaded, so a save must find it still absent.
     is_new: bool,
+    /// Completed features moved to the archive: a `dependsOn` naming one is dropped on save.
+    archived: std::collections::HashSet<String>,
 }
 
 /// Why a feature could not be appended.
@@ -113,7 +115,37 @@ impl LoadedLedger {
     /// the file still holds exactly these bytes, so a caller that checked them saves against what it checked.
     pub fn from_bytes(path: &Path, bytes: Vec<u8>) -> Result<Self, LedgerError> {
         let entries = parse_ledger_bytes(path, &bytes)?;
-        Ok(Self { path: path.to_path_buf(), bytes, entries, is_new: false })
+        Ok(Self { path: path.to_path_buf(), bytes, entries, is_new: false, archived: Default::default() })
+    }
+
+    /// This ledger with the names of the project's archived completed features: a save accepts a `dependsOn`
+    /// naming one, and drops it from what it writes.
+    pub fn with_archive(mut self, archived: std::collections::HashSet<String>) -> Self {
+        self.archived = archived;
+        self
+    }
+
+    /// The notes a save of `depends_on` would give: each name that is archived (and not a feature of the
+    /// ledger) is "<name> is archived and completed: not needed".
+    pub fn archived_dependency_notes(&self, depends_on: &[String]) -> Vec<String> {
+        depends_on
+            .iter()
+            .filter(|name| self.is_archived_dependency(name))
+            .map(|name| format!("{name} is archived and completed: not needed"))
+            .collect()
+    }
+
+    /// Whether `name` is an archived completed feature that the ledger no longer holds.
+    pub fn is_archived(&self, name: &str) -> bool {
+        self.is_archived_dependency(name)
+    }
+
+    fn is_archived_dependency(&self, name: &str) -> bool {
+        self.archived.contains(name) && !self.entries.iter().any(|entry| entry.feature_name == name)
+    }
+
+    fn without_archived(&self, depends_on: &[String]) -> Vec<String> {
+        depends_on.iter().filter(|name| !self.is_archived_dependency(name)).cloned().collect()
     }
 
     /// Like [`load`](Self::load), but a missing file is a valid empty ledger
@@ -129,7 +161,7 @@ impl LoadedLedger {
     /// The snapshot of a ledger observed as missing, without reading the path
     /// again: a file that exists by the time of a save is a conflict.
     pub fn absent(path: &Path) -> Self {
-        Self { path: path.to_path_buf(), bytes: Vec::new(), entries: Vec::new(), is_new: true }
+        Self { path: path.to_path_buf(), bytes: Vec::new(), entries: Vec::new(), is_new: true, archived: Default::default() }
     }
 
     /// Whether the file was absent when loaded.
@@ -155,6 +187,8 @@ impl LoadedLedger {
         let mut new_entries = Vec::with_capacity(drafts.len());
         let mut entry_jsons = Vec::with_capacity(drafts.len());
         for draft in drafts {
+            let mut draft = draft.clone();
+            draft.depends_on = draft.depends_on.as_ref().map(|deps| self.without_archived(deps));
             let entry_json = draft.to_json();
             let entry = parse_ledger(&format!("[{entry_json}]"))
                 .ok()
@@ -221,7 +255,7 @@ impl LoadedLedger {
             members.push(("description", json(v.as_str().into())));
         }
         if let Some(v) = &edits.depends_on {
-            members.push(("dependsOn", json(serde_json::json!(v))));
+            members.push(("dependsOn", json(serde_json::json!(self.without_archived(v)))));
         }
         if let Some(v) = &edits.test_file {
             members.push(("testFile", json(v.as_str().into())));

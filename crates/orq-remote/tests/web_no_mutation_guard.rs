@@ -1,7 +1,7 @@
 //! The page offers exactly sixteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, clean up a merged run, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and a GitHub project's Push <target> of the sha it showed, never forced,
 //! and the Settings server card's restart when idle and its cancel, the Todo list's add, edit, delete and move,
-//! and a draft's queue wish, and no other merge, nor any approve,
+//! and a draft's queue wish, and the Archive completed action (a dry run, then the archive), and no other merge, nor any approve,
 //! restart or edit control or request.
 
 fn code() -> String {
@@ -81,6 +81,12 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let promoted = paths("PromoteMarked");
     assert_eq!(promoted.len(), 1, "{promoted:?}");
     assert!(promoted[0].starts_with("\"features/\"") && promoted[0].contains("+ \"/promote\")"), "{}", promoted[0]);
+    // Archive completed posts a dry run, then the real archive, to the project's one archive route; nothing else.
+    let archive = paths("ArchiveCompleted");
+    assert_eq!(archive, ["\"features/archive\")"], "{archive:?}");
+    let archive_body = code.split("function ArchiveCompleted(").nth(1).unwrap().split("\nfunction ").next().unwrap();
+    let archive_sent: Vec<&str> = archive_body.split("actionRequest(").skip(1).map(|tail| tail.split(';').next().unwrap()).collect();
+    assert_eq!(archive_sent, ["path, control.token, { dry_run: dry })"], "the archive request is built once and sends only dry_run");
     // Start marked posts the chosen profiles to each marked feature's start route; nothing else.
     let started = paths("StartMarked");
     assert_eq!(started.len(), 1, "{started:?}");
@@ -139,7 +145,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
     let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
     assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 24, "the definition, the seven run actions with their own path, a merged run's clean up, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 25, "the definition, archive completed,the seven run actions with their own path, a merged run's clean up, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

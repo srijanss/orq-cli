@@ -79,6 +79,12 @@ fn invisible(c: char) -> bool {
 /// Validates a whole candidate array: unique names, every dependency present,
 /// no self-dependency, no cycle.
 pub fn validate_entries(entries: &[FeatureEntry]) -> Result<(), ValidationError> {
+    validate_entries_with_archive(entries, &HashSet::new())
+}
+
+/// As [`validate_entries`], but a dependency naming a completed feature in `archived` is accepted
+/// (it is dropped on save, see [`drop_archived_dependencies`]).
+pub fn validate_entries_with_archive(entries: &[FeatureEntry], archived: &HashSet<String>) -> Result<(), ValidationError> {
     let mut seen = HashSet::new();
     for entry in entries {
         if entry.feature_name.trim().is_empty() {
@@ -93,7 +99,7 @@ pub fn validate_entries(entries: &[FeatureEntry]) -> Result<(), ValidationError>
             if dep == &entry.feature_name {
                 return Err(ValidationError::SelfDependency { feature: dep.clone() });
             }
-            if !seen.contains(dep.as_str()) {
+            if !seen.contains(dep.as_str()) && !archived.contains(dep.as_str()) {
                 return Err(ValidationError::MissingDependency {
                     feature: entry.feature_name.clone(),
                     missing: dep.clone(),
@@ -102,6 +108,30 @@ pub fn validate_entries(entries: &[FeatureEntry]) -> Result<(), ValidationError>
         }
     }
     find_cycle(entries).map_or(Ok(()), |features| Err(ValidationError::Cycle { features }))
+}
+
+/// For each entry, a note per dependency that names an archived feature (and no live one):
+/// "<name> is archived and completed: not needed".
+pub fn archived_dependency_notes(entries: &[FeatureEntry], archived: &HashSet<String>) -> Vec<(String, String)> {
+    let live: HashSet<&str> = entries.iter().map(|e| e.feature_name.as_str()).collect();
+    entries
+        .iter()
+        .flat_map(|e| {
+            e.depends_on
+                .iter()
+                .filter(|d| archived.contains(d.as_str()) && !live.contains(d.as_str()))
+                .map(|d| (e.feature_name.clone(), format!("{d} is archived and completed: not needed")))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Removes from every `depends_on` the names that are archived and not live.
+pub fn drop_archived_dependencies(entries: &mut [FeatureEntry], archived: &HashSet<String>) {
+    let live: HashSet<String> = entries.iter().map(|e| e.feature_name.clone()).collect();
+    for entry in entries {
+        entry.depends_on.retain(|d| live.contains(d) || !archived.contains(d));
+    }
 }
 
 /// The features of the first dependency cycle in file order: the smallest

@@ -4413,6 +4413,145 @@ function AllFeaturesPage({ token, reloads, onRefresh, onSignedOut }) {
   );
 }
 
+// The features moved out of the ledger into the project's archive, read-only. Null when they cannot be read.
+function archivedPath(projectId) {
+  return API_PROJECTS + "/" + encodeURIComponent(projectId) + "/features/archived";
+}
+
+function useArchived(token, projectId, reloads) {
+  const [archived, setArchived] = useState(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const response = await get(archivedPath(projectId), token, controller.signal);
+        const body = response.ok ? await jsonOrNull(response) : null;
+        if (!controller.signal.aborted) setArchived(body !== null && Array.isArray(body.archived) ? body.archived.filter((entry) => entry !== null && typeof entry.name === "string") : null);
+      } catch (unreachable) {
+        // Unknown: no archive is shown.
+      }
+    })();
+    return () => controller.abort();
+  }, [token, projectId, reloads]);
+  return archived;
+}
+
+// The archive filter: "Archived (N)" opens a searchable, read-only list of the archived features.
+function ArchivedList({ archived, projectId }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  if (archived === null || archived.length === 0) return null;
+  const needle = query.trim().toLowerCase();
+  const shown = archived.filter((entry) => needle === "" || entry.name.toLowerCase().includes(needle) || (typeof entry.description === "string" && entry.description.toLowerCase().includes(needle)));
+  return (
+    <div className="archived-features card">
+      <button type="button" data-archived-toggle aria-expanded={open} onClick={() => setOpen(!open)}>{"Archived (" + archived.length + ")"}</button>
+      {open ? (
+        <>
+          <input type="search" data-archived-search aria-label="Search archived features" placeholder="Search archived features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
+          {shown.length === 0 ? <p>No archived features match.</p> : (
+            <ul className="archived-rows">
+              {shown.map((entry) => (
+                <li key={entry.name} data-archived-row={entry.name}>
+                  <a className="feature-link" href={featureHref(projectId, entry.name)} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(projectId, entry.name)); } }}>{entry.name}</a>
+                  <FeatureState status={entry.status} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// Over this many completed features the page offers to archive them.
+const ARCHIVE_OVER = 200;
+
+// "Archive completed (M)": reads what a dry run would move, asks with those counts, then archives.
+function ArchiveCompleted({ completed, control }) {
+  const [asking, setAsking] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const path = controlPath(control, "features/archive");
+  const send = async (dry) => {
+    const response = await actionRequest(path, control.token, { dry_run: dry });
+    if (response.status === 401) {
+      control.onSignedOut();
+      return undefined;
+    }
+    return { ok: response.ok, body: await jsonOrNull(response) };
+  };
+  const check = async () => {
+    setBusy(true);
+    setNote("");
+    try {
+      const result = await send(true);
+      if (result === undefined) return;
+      if (result.ok && result.body !== null && typeof result.body.archived === "number") setAsking(result.body);
+      else setNote(result.body !== null && typeof result.body.error === "string" ? result.body.error : "The archive could not be checked.");
+    } catch (unreachable) {
+      setNote("The archive could not be checked.");
+    }
+    setBusy(false);
+  };
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      const result = await send(false);
+      if (result === undefined) return;
+      setAsking(null);
+      if (result.ok) {
+        setNote("Archived " + (result.body !== null && typeof result.body.archived === "number" ? result.body.archived : 0) + " features.");
+        control.onDone();
+      } else setNote(result.body !== null && typeof result.body.error === "string" ? result.body.error : "The features could not be archived.");
+    } catch (unreachable) {
+      setNote("The features could not be archived.");
+    }
+    setBusy(false);
+  };
+  const stripped = asking !== null && Array.isArray(asking.stripped) ? asking.stripped.length : 0;
+  return (
+    <div className="archive-completed">
+      {asking === null ? <button type="button" data-archive-completed disabled={busy} onClick={check}>{"Archive completed (" + completed + ")"}</button> : (
+        <Confirm question={"Archive " + asking.archived + " features?"} detail={stripped > 0 ? " Their names are dropped from " + stripped + " feature" + (stripped === 1 ? "" : "s") + "' dependencies." : null} answer="Yes, archive" busy={busy} onConfirm={confirm} onCancel={() => setAsking(null)} />
+      )}
+      {note !== "" ? <span role="status" className="run-action-note">{note}</span> : null}
+    </div>
+  );
+}
+
+// An archived feature's page: what it was, read-only. Not found when the archive has no such feature either.
+function ArchivedDetail({ token, projectId, name, reloads }) {
+  const archived = useArchived(token, projectId, reloads);
+  if (archived === null) return <p>Loading the feature…</p>;
+  const feature = archived.find((entry) => entry.name === name);
+  if (feature === undefined) return <NotFound back={"/projects/" + encodeURIComponent(projectId) + "/features"} />;
+  const deps = Array.isArray(feature.depends_on) ? feature.depends_on : [];
+  return (
+    <div className="card archived-feature" data-archived-feature={name}>
+      <h2>{name}</h2>
+      <p><FeatureState status={feature.status} /> <span className="muted">Archived, read-only</span></p>
+      {typeof feature.description === "string" ? <p>{feature.description}</p> : null}
+      {deps.length > 0 ? <p className="muted">{"Depended on: " + deps.join(", ")}</p> : null}
+      {typeof feature.archived_at === "string" ? <p className="muted">{"Archived " + feature.archived_at}</p> : null}
+    </div>
+  );
+}
+
+// The list with the archive beside it: the Archived filter, and the archive action when it applies.
+function ArchiveSection({ data, control, token, projectId, reloads, children }) {
+  const archived = useArchived(token, projectId, reloads);
+  const completed = data.rows.filter((feature) => feature.status === "completed").length;
+  return (
+    <>
+      {control !== null && completed > ARCHIVE_OVER ? <ArchiveCompleted completed={completed} control={control} /> : null}
+      {children}
+      <ArchivedList archived={archived} projectId={projectId} />
+    </>
+  );
+}
+
 // The Features pages of one project: the list, or one feature's details when its name is given.
 function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, onRefresh }) {
   const runs = useFeatureRuns(token, projectId, reloads, name !== null);
@@ -4426,9 +4565,9 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
           <ProjectSelect projects={projects} projectId={projectId} />
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
-        if (name === null) return <FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} scope={projectId} />;
+        if (name === null) return <ArchiveSection data={data} control={control(data)} token={token} projectId={projectId} reloads={reloads}><FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} scope={projectId} /></ArchiveSection>;
         const feature = data.rows.find((entry) => entry.name === name);
-        return feature === undefined ? <NotFound /> : <FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
+        return feature === undefined ? <ArchivedDetail token={token} projectId={projectId} name={name} reloads={reloads} /> :<FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
       }} />
     </>
   );

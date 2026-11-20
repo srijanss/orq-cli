@@ -1,6 +1,6 @@
 //! Whether a ledger feature may start a pipeline run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use orq_core::FeatureStatus;
 
@@ -67,7 +67,27 @@ pub fn check_run_eligibility<'a>(
     ledger: &'a [FeatureEntry],
     feature_name: &str,
 ) -> Result<&'a FeatureEntry, Ineligible> {
-    check_eligibility(ledger, feature_name, &fresh)
+    check_eligibility(ledger, feature_name, &fresh, &HashSet::new())
+}
+
+/// As [`check_run_eligibility`], counting a dependency in `archived` (completed features moved
+/// out of the ledger) as completed.
+pub fn check_run_eligibility_with_archive<'a>(
+    ledger: &'a [FeatureEntry],
+    feature_name: &str,
+    archived: &HashSet<String>,
+) -> Result<&'a FeatureEntry, Ineligible> {
+    check_eligibility(ledger, feature_name, &fresh, archived)
+}
+
+/// As [`check_resume_eligibility`], counting archived dependencies as completed.
+pub fn check_resume_eligibility_with_archive<'a>(
+    ledger: &'a [FeatureEntry],
+    feature_name: &str,
+    free: &[String],
+    archived: &HashSet<String>,
+) -> Result<&'a FeatureEntry, Ineligible> {
+    check_eligibility(ledger, feature_name, &|entry| resumable(entry, free), archived)
 }
 
 /// As [`check_run_eligibility`] for resuming a run: the feature may be as the run's agent left it,
@@ -77,7 +97,7 @@ pub fn check_resume_eligibility<'a>(
     feature_name: &str,
     free: &[String],
 ) -> Result<&'a FeatureEntry, Ineligible> {
-    check_eligibility(ledger, feature_name, &|entry| resumable(entry, free))
+    check_eligibility(ledger, feature_name, &|entry| resumable(entry, free), &HashSet::new())
 }
 
 /// Whether `entry`'s status lets a fresh run start it.
@@ -103,6 +123,7 @@ fn check_eligibility<'a>(
     ledger: &'a [FeatureEntry],
     feature_name: &str,
     startable: &dyn Fn(&FeatureEntry) -> Result<(), Ineligible>,
+    archived: &HashSet<String>,
 ) -> Result<&'a FeatureEntry, Ineligible> {
     let entry = ledger
         .iter()
@@ -125,6 +146,7 @@ fn check_eligibility<'a>(
                 name: dep.clone(),
                 status: Some(status.as_str().to_string()),
             }),
+            None if archived.contains(dep.as_str()) => None,
             None => Some(UnmetDependency {
                 name: dep.clone(),
                 status: None,
@@ -165,19 +187,35 @@ impl std::error::Error for GroupRefusal {}
 /// on, and otherwise in the order given. Every member must be `pending`, and every dependency
 /// outside the group must be `completed`.
 pub fn order_run_group<'a>(ledger: &'a [FeatureEntry], ids: &[String]) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
-    order_group(ledger, ids, &fresh)
+    order_group(ledger, ids, &fresh, &HashSet::new())
+}
+
+/// As [`order_run_group`], counting archived dependencies as completed.
+pub fn order_run_group_with_archive<'a>(ledger: &'a [FeatureEntry], ids: &[String], archived: &HashSet<String>) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
+    order_group(ledger, ids, &fresh, archived)
+}
+
+/// As [`order_resume_group`], counting archived dependencies as completed.
+pub fn order_resume_group_with_archive<'a>(
+    ledger: &'a [FeatureEntry],
+    ids: &[String],
+    free: &[String],
+    archived: &HashSet<String>,
+) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
+    order_group(ledger, ids, &|entry| resumable(entry, free), archived)
 }
 
 /// As [`order_run_group`] for resuming a group's run: each member may be as the run's agent left it,
 /// as [`check_resume_eligibility`] says.
 pub fn order_resume_group<'a>(ledger: &'a [FeatureEntry], ids: &[String], free: &[String]) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
-    order_group(ledger, ids, &|entry| resumable(entry, free))
+    order_group(ledger, ids, &|entry| resumable(entry, free), &HashSet::new())
 }
 
 fn order_group<'a>(
     ledger: &'a [FeatureEntry],
     ids: &[String],
     startable: &dyn Fn(&FeatureEntry) -> Result<(), Ineligible>,
+    archived: &HashSet<String>,
 ) -> Result<Vec<&'a FeatureEntry>, GroupRefusal> {
     if let Some(index) = (1..ids.len()).find(|&i| ids[..i].contains(&ids[i])) {
         return Err(GroupRefusal::Duplicate(ids[index].clone()));
@@ -195,6 +233,7 @@ fn order_group<'a>(
             .filter_map(|dep| match ledger.iter().find(|e| &e.feature_name == dep) {
                 Some(e) if e.status.known() == Some(FeatureStatus::Completed) => None,
                 Some(e) => Some(UnmetDependency { name: dep.clone(), status: Some(e.status.as_str().to_string()) }),
+                None if archived.contains(dep.as_str()) => None,
                 None => Some(UnmetDependency { name: dep.clone(), status: None }),
             })
             .collect();

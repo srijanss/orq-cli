@@ -967,13 +967,14 @@ impl StoreProjects {
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
         let ledger = read_ledger(&orq_features::ledger_path(&git))?;
         // A group's members in the order to run them; a run of one feature has none.
+        let archived = orq_features::archive::archived_completed_names(&self.roots.data, &orq_git::project_id(&git));
         let ordered: Vec<String> = match target {
-            Launch::One(feature) | Launch::Queued(feature) => match orq_features::check_run_eligibility(&ledger, feature) {
+            Launch::One(feature) | Launch::Queued(feature) => match orq_features::check_run_eligibility_with_archive(&ledger, feature, &archived) {
                 Ok(_) => Vec::new(),
                 Err(orq_features::Ineligible::NotFound) => return Ok(RunStart::Unknown),
                 Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
             },
-            Launch::Group(features) => match orq_features::order_run_group(&ledger, features) {
+            Launch::Group(features) => match orq_features::order_run_group_with_archive(&ledger, features, &archived) {
                 Ok(members) => members.into_iter().map(|member| member.feature_name.clone()).collect(),
                 Err(why) => return Ok(RunStart::Refused(orq_core::redact::redact(&why.to_string()))),
             },
@@ -1508,6 +1509,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             (Some(bytes), Some(version)) if ledger_version(&bytes) != version => return changed(),
             (Some(bytes), _) => orq_features::LoadedLedger::from_bytes(&path, bytes).map_err(|error| format!("{error:?}"))?,
         };
+        // A dependency on an archived completed feature is accepted and dropped, as the CLI's save does.
+        let loaded = match discover(&self.scan_root).into_iter().find(|project| project.id == id).and_then(|project| orq_git::resolve_project(&project.path).ok()) {
+            Some(git) => loaded.with_archive(orq_features::archive::archived_completed_names(&self.roots.data, &orq_git::project_id(&git))),
+            None => loaded,
+        };
         let save_error = |error: SaveError| match error {
             SaveError::Conflict => changed(),
             SaveError::Locked => Ok(FeatureSave::Conflict("the ledger is locked by another writer; nothing was written, try again".to_string())),
@@ -1737,6 +1743,52 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .map(|entry| serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": orq_core::redact::redact(entry.status.as_str()), "depends_on": entry.depends_on.iter().map(|name| orq_core::redact::redact(name)).collect::<Vec<_>>(), "test_file": entry.test_file.as_deref().map(orq_core::redact::redact), "recorded_at": entry.recorded_at.as_deref().map(orq_core::redact::redact)}))
             .collect();
         Ok(Some(serde_json::Value::Array(list)))
+    }
+
+    /// The archived features, shaped like the features list plus when each was archived. The records
+    /// that only note which dependencies were dropped are not features and are left out.
+    fn archived_features(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let entries = orq_features::archive::read_archive(&orq_features::archive::archive_path(&self.roots.data, &orq_git::project_id(&git))).map_err(|error| error.to_string())?;
+        let text = |entry: &serde_json::Value, key: &str| entry.get(key).and_then(|v| v.as_str()).map(orq_core::redact::redact);
+        let list: Vec<serde_json::Value> = entries
+            .iter()
+            .filter(|entry| entry.get("status").is_some())
+            .map(|entry| {
+                let depends_on: Vec<String> = entry.get("dependsOn").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|n| n.as_str().map(orq_core::redact::redact)).collect()).unwrap_or_default();
+                serde_json::json!({"name": text(entry, "featureName"), "description": text(entry, "description"), "status": text(entry, "status"), "depends_on": depends_on, "test_file": text(entry, "testFile"), "recorded_at": text(entry, "recordedAt"), "archived_at": text(entry, "archivedAt")})
+            })
+            .collect();
+        Ok(Some(serde_json::json!({ "archived": list })))
+    }
+
+    fn archive_features(&self, id: &str, dry_run: bool) -> Result<orq_core::remote_inbox::ArchiveOutcome, String> {
+        use orq_core::remote_inbox::ArchiveOutcome;
+        use orq_features::archive::{archive_ledger, ArchiveError};
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(ArchiveOutcome::Unknown) };
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let ledger = orq_features::ledger_path(&git);
+        if !ledger.exists() {
+            return Ok(ArchiveOutcome::Unknown);
+        }
+        let project_id = orq_git::project_id(&git);
+        let active = orq_orchestrator::RunStore::new(&self.roots.state).active_project_runs(&project_id).map_err(|error| format!("{error:?}"))?.len();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+        let stamp = orq_core::storage::readable_utc(now);
+        match archive_ledger(&ledger, &self.roots.data, &project_id, 100, dry_run, active, &stamp) {
+            Ok(plan) => {
+                let stripped: Vec<serde_json::Value> = plan
+                    .stripped
+                    .iter()
+                    .map(|(feature, names)| serde_json::json!({"feature": orq_core::redact::redact(feature), "names": names.iter().map(|n| orq_core::redact::redact(n)).collect::<Vec<_>>()}))
+                    .collect();
+                Ok(ArchiveOutcome::Done(serde_json::json!({"archived": plan.archived.len(), "dry_run": dry_run, "stripped": stripped})))
+            }
+            Err(ArchiveError::ActiveRun) => Ok(ArchiveOutcome::Refused("a run of this project is active; wait for it to finish before archiving".to_string())),
+            Err(ArchiveError::Ledger(why)) => Ok(ArchiveOutcome::Refused(orq_core::redact::redact(&format!("the ledger cannot be archived: {why}")))),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     fn runs(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
