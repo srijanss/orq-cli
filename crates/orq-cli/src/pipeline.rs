@@ -588,10 +588,10 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     if let Err(err) = recorded {
         eprintln!("orq: cannot record the launch of {run_id}: {err}");
     }
-    // The answer itself is kept in the run's logs, for its page to show.
+    // The answer itself is kept in the run's logs, for its page to show, never through a symlink in that path.
     if let Some(answer) = answer.filter(|_| resumed.is_some()) {
-        let logs = root.join("logs").join(&run_id);
-        if let Err(err) = std::fs::create_dir_all(&logs).and_then(|()| std::fs::write(logs.join(orq_orchestrator::RESUME_ANSWER_LOG), answer)) {
+        let kept = Path::new("logs").join(&run_id).join(orq_orchestrator::RESUME_ANSWER_LOG);
+        if let Err(err) = orq_core::storage::check_run_id(&run_id).and_then(|()| orq_core::storage::write_atomic(&root, &kept, answer.as_bytes())) {
             eprintln!("orq: cannot keep the answer {run_id} was resumed with: {err}");
         }
     }

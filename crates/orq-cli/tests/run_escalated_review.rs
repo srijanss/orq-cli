@@ -334,6 +334,25 @@ fn a_resume_records_whether_it_went_with_an_answer_and_keeps_the_answer_in_the_n
 }
 
 #[test]
+fn a_resume_answer_is_never_written_through_a_symlink_planted_in_the_logs_path() {
+    let agent = FakeAgent::builder().write_file("feature.txt", "done\n").commit("feat: add the feature").build();
+    let w = world("answer-symlink", &agent, Some(1));
+    let first = run(&w);
+    assert!(text(&first.stdout).contains("state: failed"), "{}\n{}", text(&first.stdout), text(&first.stderr));
+    let logs = w.state.join("orq/logs");
+    let outside = w.state.join("outside");
+    std::fs::rename(&logs, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &logs).unwrap();
+    let run_id = std::fs::read_dir(w.state.join("orq/runs")).unwrap().next().unwrap().unwrap().file_name().into_string().unwrap();
+
+    let resumed = orq(&w, &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", w.repo.root().to_str().unwrap(), "--answer", "use the v2 endpoint"]);
+
+    let (_, next) = resumed_and_next(&w);
+    assert_eq!(events_of(&w, &next)[0]["payload"]["answer"], serde_json::json!(true), "{}", text(&resumed.stderr));
+    assert!(!outside.join(&next).join("resume-answer.log").exists(), "the answer went through the planted symlink");
+}
+
+#[test]
 fn a_resume_with_an_answer_too_long_is_refused_before_the_run_is_resumed() {
     let long = "x".repeat(8001);
     let (w, _, resumed) = resume_failed("answer-long", |_| {}, &["--answer", &long]);
