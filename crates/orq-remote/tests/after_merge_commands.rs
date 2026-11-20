@@ -15,7 +15,7 @@ use orq_core::remote_inbox::{handle_with_body, RemoteConfig, Request};
 use orq_core::storage::StorageRoots;
 use orq_core::store::Store;
 use orq_orchestrator::{Event, RunRecord, RunStore};
-use orq_remote::projects::{LaunchError, QueueRound, RunLauncher, StoreProjects};
+use orq_remote::projects::{LaunchError, QueueRound, ResumeRequest, RunLauncher, StoreProjects};
 use serde_json::{json, Value};
 
 /// Starts a merge-local run the way `orq run` records one.
@@ -31,6 +31,15 @@ impl RunLauncher for Launcher {
         let run = format!("run-{}-{feature}", started.len());
         seed_run(&self.state, repo, &run, feature);
         Ok(run)
+    }
+
+    fn resume_with(&self, repo: &Path, run: &str, _request: &ResumeRequest) -> Result<String, LaunchError> {
+        let store = RunStore::new(&self.state);
+        let feature = store.load(run).unwrap().feature_id;
+        let next = format!("{run}-r1");
+        seed_run(&self.state, repo, &next, &feature);
+        event(&store, run, "run.resumed", json!({"resumed_as": next}));
+        Ok(next)
     }
 }
 
@@ -574,6 +583,30 @@ fn the_argv_in_the_event_is_redacted() {
         "{}",
         done.payload
     );
+}
+
+#[test]
+fn a_queued_resume_that_merges_before_the_next_round_still_gets_its_go() {
+    let s = setup("fast-resume", None);
+    write_run_toml(&s, &run_toml(&s.marks, &["one"]));
+    seed_run(&s.roots.state, &s.repo, "run-old", "OLD-01");
+    event(&RunStore::new(&s.roots.state), "run-old", "run.completed", json!({"ending": "failed"}));
+    round(&s);
+    // Both features' runs end plainly, with no merge to act on, so the resume has the one slot.
+    for run in ["run-1-COM-01", "run-2-COM-02"] {
+        if run == "run-2-COM-02" {
+            round(&s);
+        }
+        event(&RunStore::new(&s.roots.state), run, "run.completed", json!({"ending": "merged"}));
+    }
+    let (status, body) = send(&s, "POST", "/api/projects/alpha/queue", json!({"action": "resume", "run": "run-old"}).to_string().as_bytes());
+    assert_eq!(status, 200, "{body}");
+    round(&s);
+    let head = git(&s.repo, &["rev-parse", "HEAD"]);
+    merge(&s, "run-old-r1", &head);
+    round(&s);
+    wait_for(&s, "run-old-r1", "after_merge.commands").expect("recorded");
+    assert_eq!(order(&s), ["one"]);
 }
 
 #[test]

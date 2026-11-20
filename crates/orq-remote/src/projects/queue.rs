@@ -161,7 +161,10 @@ impl StoreProjects {
                 run = next;
             }
             match settled {
-                Settled::Going if matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) => accepts_going.push((run, entry.feature.clone())),
+                Settled::Going if matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) => {
+                    after_merge::watch(&self.roots.state, root, &run);
+                    accepts_going.push((run, entry.feature.clone()));
+                }
                 Settled::Going => after_merge::watch(&self.roots.state, root, &run),
                 // A run that ends well or waits for review lifts the pause its own failure caused.
                 Settled::InReview(_) => {
@@ -287,6 +290,7 @@ impl StoreProjects {
                     match self.start_queued_action(id, action) {
                         Ok(RunControlOutcome::Done(run)) => {
                             store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                            after_merge::watch(&self.roots.state, root, &run);
                             if action.kind == QueueKind::Accept {
                                 accepts_going.push((run, entry.feature.clone()));
                             }
