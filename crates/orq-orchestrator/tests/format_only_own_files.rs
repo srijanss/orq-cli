@@ -152,6 +152,22 @@ fn a_declared_file_reformatted_is_kept() {
 }
 
 #[test]
+fn settings_an_earlier_orq_wrote_lose_the_bare_cargo_fmt_rule() {
+    let repo = GitFixture::new();
+    let worktree = repo.add_linked_worktree("fmt-retired");
+    let settings = worktree.join(".claude/settings.local.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, r#"{"permissions":{"allow":["Bash(cargo fmt:*)"]}}"#).unwrap();
+    let base = git(&worktree, &["rev-parse", "HEAD"]);
+    let rules = refresh_run_permissions(&worktree, &[], Path::new("/state/orq/logs/run-1"), &base)
+        .unwrap()
+        .allowed_commands;
+    assert!(!allows_command(&rules, "cargo fmt --all"), "{rules:?}");
+    let written = fs::read_to_string(&settings).unwrap();
+    assert!(!written.contains("\"Bash(cargo fmt:*)\""), "{written}");
+}
+
+#[test]
 fn settings_allow_formatting_named_files_and_refuse_the_workspace() {
     let repo = GitFixture::new();
     let worktree = repo.add_linked_worktree("fmt-rules");

@@ -316,7 +316,8 @@ const ALLOWED: &[&str] = &[
 ];
 /// Rules an earlier orq wrote and no longer does, taken out of the settings it rewrites. They allow
 /// no more than what replaced them, so settings that still hold one never stop a session.
-const RETIRED: [&str; 1] = ["Edit(./**)"];
+/// `Bash(cargo fmt:*)` let a session format the whole workspace.
+const RETIRED: [&str; 2] = ["Edit(./**)", "Bash(cargo fmt:*)"];
 /// Rules of orq's own that run a project's script from the folder that holds it, with the script's
 /// file name: each is allowed only while every file of that name in the worktree is one the run's
 /// base holds checked in and the run has not changed.
