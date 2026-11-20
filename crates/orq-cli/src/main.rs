@@ -19,7 +19,7 @@ mod worktree;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending [--reopen] | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -1150,6 +1150,11 @@ fn feature_edit(args: &[OsString]) -> ExitCode {
 /// promotes a draft and prints the updated entry. Every refusal exits
 /// non-zero with a specific message and leaves the ledger untouched.
 fn feature_set_status(args: &[OsString]) -> ExitCode {
+    // `--reopen` moves a completed feature back to pending; nothing else.
+    let (args, reopen) = match args {
+        [rest @ .., flag] if flag == "--reopen" => (rest, true),
+        _ => (args, false),
+    };
     let (repo, id, status) = match args {
         [r, repo, i, id, s, status] if r == "--repo" && i == "--id" && s == "--status" => {
             match (id.to_str(), status.to_str()) {
@@ -1167,10 +1172,25 @@ fn feature_set_status(args: &[OsString]) -> ExitCode {
         Err(err) => return fail(format!("cannot resolve project: {err:?}")),
     };
     let path = orq_features::ledger_path(&project);
+    if reopen && status != "pending" {
+        return fail("--reopen goes with --status pending only");
+    }
     if status == "completed" {
         return feature_set_completed(&project, &path, id);
     }
-    match orq_features::promote_feature(&path, id) {
+    let promoted = if reopen {
+        let Some(root) = pipeline::state_root() else {
+            return fail("cannot locate the Orq state directory: neither XDG_STATE_HOME nor HOME is set");
+        };
+        let implementing = match implementing_run(&orq_orchestrator::RunStore::new(&root), &pipeline::project_id(&project)) {
+            Ok(implementing) => implementing,
+            Err(err) => return fail(format!("cannot reopen {id}: cannot tell whether a run of this project is in its implement step: {err}")),
+        };
+        orq_features::reopen_completed_feature(&path, id, implementing.is_some())
+    } else {
+        orq_features::promote_feature(&path, id)
+    };
+    match promoted {
         Ok(entry) => {
             println!("{}", entry_json(&entry));
             ExitCode::SUCCESS
@@ -1232,9 +1252,26 @@ fn completed_by_a_session(store: &orq_orchestrator::RunStore, project_id: &str, 
     Ok(false)
 }
 
+/// The first run of `project_id` that is in its implement step, as its events tell. A run that cannot be
+/// read is skipped; only a run store that cannot be listed is an error.
+fn implementing_run(store: &orq_orchestrator::RunStore, project_id: &str) -> Result<Option<String>, String> {
+    for run_id in store.run_ids().map_err(|err| format!("{err:?}"))? {
+        let Ok(record) = store.load(&run_id) else { continue };
+        if record.project_id != project_id {
+            continue;
+        }
+        let Ok(events) = store.events(&run_id) else { continue };
+        if orq_features::in_implement_step(events.iter().map(|e| (e.kind.as_str(), e.stage.as_deref()))) {
+            return Ok(Some(run_id));
+        }
+    }
+    Ok(None)
+}
+
 fn promote_error_text(err: &orq_features::PromoteError, id: &str) -> String {
     use orq_features::PromoteError::*;
     match err {
+        Implementing => format!("cannot reopen {id}: a run of this project is in its implement step"),
         Ledger(err) => ledger_error_text(err),
         UnknownFeature(_) => format!("unknown feature: {id}"),
         UnrecognisedStatus(text) => format!("feature {id} has unrecognised status {text:?} and is left alone"),

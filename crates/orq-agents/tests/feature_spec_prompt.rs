@@ -24,6 +24,7 @@ fn request<'a>(implementer: &str, feature_specs: &'a [(&'a str, &'a str)]) -> Im
         declared_files: &[],
         answer: None,
         undeclared_files: &[],
+        reopened_findings: &[],
         feature_specs,
     }
 }

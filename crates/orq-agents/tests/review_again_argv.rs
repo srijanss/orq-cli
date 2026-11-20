@@ -25,6 +25,7 @@ fn request<'a>(implementer: &str, review_again: Option<ReviewAgain<'a>>) -> Impl
         declared_files: &[],
         answer: None,
         undeclared_files: &[],
+        reopened_findings: &[],
         feature_specs: &[],
     }
 }

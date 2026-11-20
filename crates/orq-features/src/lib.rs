@@ -282,7 +282,7 @@ mod draft;
 pub use draft::FeatureDraft;
 
 mod promote;
-pub use promote::{promote_feature, promote_feature_waiting, PromoteError};
+pub use promote::{in_implement_step, promote_feature, promote_feature_waiting, reopen_completed_feature, reopen_open_findings, PromoteError, ReopenedFinding, FINDING_REOPENED};
 
 mod reopen;
 pub use reopen::{close_features, complete_run_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features, restore_completed_features};

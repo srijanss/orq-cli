@@ -1187,6 +1187,36 @@ fn record_session_completed(store: &RunStore, record: &RunRecord, ledger: &Path,
     }
 }
 
+/// Before an implement session: each finding the run's review ledger (in its worktree) has open whose
+/// feature `ledger` records as completed goes back to pending, recorded as `ledger.finding_reopened
+/// {feature, finding, round}`. Best effort: what cannot be read or saved is said and reopens nothing.
+fn reopen_open_findings(store: &RunStore, record: &RunRecord, ledger: &Path) -> Vec<orq_features::ReopenedFinding> {
+    let mut record_event = |kind: &str, payload: serde_json::Value| {
+        let event = orq_orchestrator::Event {
+            schema_version: 1,
+            event_id: format!("{}-finding-reopened-{}", record.run_id, store.events(&record.run_id).map_or(0, |e| e.len())),
+            run_id: record.run_id.clone(),
+            project_id: record.project_id.clone(),
+            feature_id: record.feature_id.clone(),
+            kind: kind.to_string(),
+            stage: None,
+            attempt: 1,
+            occurred_at: crate::review::utc_now(),
+            payload,
+        };
+        if let Err(err) = store.append_event(&event) {
+            eprintln!("orq: {}: cannot record a reopened finding: {err:?}", record.run_id);
+        }
+    };
+    match orq_features::reopen_open_findings(ledger, &record.worktree, &mut record_event) {
+        Ok(reopened) => reopened,
+        Err(err) => {
+            eprintln!("orq: {}: cannot reopen the findings its review has open again: {err}", record.run_id);
+            Vec::new()
+        }
+    }
+}
+
 /// Each feature a session of `run_id` (or of a run it was resumed from) completed, with the head that
 /// session left, as the run's `ledger.session_completed` events record them. Events that cannot be
 /// read are said and give none.
@@ -2093,6 +2123,10 @@ fn stages(
                     eprintln!("orq: cannot record the skipped {capability} of {run_id}: {err:?}");
                 }
             }
+            // A finding the review has open again whose feature a session already completed could not be
+            // fixed under its own name: it goes back to pending first, and the session is told.
+            let reopened = reopen_open_findings(store, record, &orq_features::ledger_path(options.project));
+            let reopened_findings: Vec<&str> = reopened.iter().map(|r| r.finding.as_str()).collect();
             let open_findings = review_again.map(open_findings_text);
             // A resumed session carries on with the features the run it resumes started; a review asked
             // for again reviews instead.
@@ -2129,6 +2163,7 @@ fn stages(
                     declared_files: &declared_files,
                     answer: options.answer,
                     undeclared_files: &undeclared_files,
+                    reopened_findings: &reopened_findings,
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {

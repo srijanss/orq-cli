@@ -91,6 +91,9 @@ pub struct ImplementRequest<'a> {
     pub feature_specs: &'a [(&'a str, &'a str)],
     /// What the person who resumed the run answered, for the session to act on. `None` or blank says nothing.
     pub answer: Option<&'a str>,
+    /// Review findings orq set back from `completed` to `pending` before this session, since the run's
+    /// review ledger has them open again: the session is told to fix each under its own name. Empty says nothing.
+    pub reopened_findings: &'a [&'a str],
 }
 
 /// The most of a person's answer a resumed session is given.
@@ -624,6 +627,18 @@ fn continuing_wording(features: &[&str], continuing: &Continuing<'_>) -> Result<
     Ok(wording)
 }
 
+/// What the session is told of the review findings orq reopened before it: nothing when there are none.
+fn reopened_findings_wording(findings: &[&str]) -> Result<String, AdapterError> {
+    let mut wording = String::new();
+    for finding in findings {
+        plain("reopened finding", finding)?;
+        wording.push_str(&format!(
+            "\n\nReview finding {finding} was reopened: a review round found it open again after it was fixed and completed, so orq set the feature {finding} back to pending. Fix it under its own name with init_feature(reviewFindingId=...), as any other finding."
+        ));
+    }
+    Ok(wording)
+}
+
 fn implement_prompt(harness: &'static str, command: &str, request: &ImplementRequest<'_>) -> Result<String, AdapterError> {
     if request.implementer.harness != harness {
         return Err(AdapterError::WrongHarness { adapter: harness, requested: request.implementer.harness.clone() });
@@ -670,6 +685,7 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
     if let Some(continuing) = &request.continuing {
         prompt.push_str(&continuing_wording(request.features, continuing)?);
     }
+    prompt.push_str(&reopened_findings_wording(request.reopened_findings)?);
     if request.leave_full_suite_to_gate {
         prompt.push_str("\n\n");
         prompt.push_str(LEAVE_FULL_SUITE_TO_GATE);

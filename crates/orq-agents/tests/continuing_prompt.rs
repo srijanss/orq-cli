@@ -25,6 +25,7 @@ fn request<'a>(continuing: Option<Continuing<'a>>) -> ImplementRequest<'a> {
         declared_files: &[],
         answer: None,
         undeclared_files: &[],
+        reopened_findings: &[],
         feature_specs: &[],
     }
 }
