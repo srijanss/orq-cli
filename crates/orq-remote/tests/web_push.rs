@@ -240,6 +240,40 @@ fn first_uses_at_once_all_get_the_one_key_that_was_kept() {
     }
 }
 
+#[test]
+fn a_key_that_cannot_be_written_is_an_error_that_leaves_nothing_behind_and_a_later_use_makes_it() {
+    let roots = roots("push-vapid-fail");
+    let config = roots.config.clone();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Privileged users write anywhere; then this failure cannot be staged.
+    if std::fs::write(config.join("probe"), b"").is_ok() {
+        let _ = std::fs::remove_file(config.join("probe"));
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let failed = orq_remote::web_push::vapid_public_key(&roots);
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err(), "the error reaches the caller");
+    assert_eq!(std::fs::read_dir(&config).unwrap().count(), 0, "no half-made key and no scratch file");
+
+    let public = orq_remote::web_push::vapid_public_key(&roots).expect("a later use makes the key");
+    assert_eq!(orq_remote::web_push::vapid_public_key(&roots).unwrap(), public);
+    let left: Vec<_> = std::fs::read_dir(&config).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(left, vec![std::ffi::OsString::from("vapid-key")]);
+}
+
+#[test]
+fn an_existing_key_is_never_replaced() {
+    let roots = roots("push-vapid-keep");
+    let public = orq_remote::web_push::vapid_public_key(&roots).unwrap();
+    let file = orq_remote::web_push::vapid_key_file(&roots);
+    let stored = std::fs::read(&file).unwrap();
+    for _ in 0..3 {
+        assert_eq!(orq_remote::web_push::vapid_public_key(&roots).unwrap(), public);
+    }
+    assert_eq!(std::fs::read(&file).unwrap(), stored);
+}
+
 const TOKEN: &str ="web-push-test-token-0123456789abcdef";
 
 struct NoProjects;
