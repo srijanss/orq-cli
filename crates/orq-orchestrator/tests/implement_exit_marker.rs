@@ -523,6 +523,49 @@ fn a_problem_or_a_failed_stage_records_no_notes_and_a_bare_problem_says_it_had_n
 }
 
 #[test]
+fn ok_followed_by_a_colon_or_a_space_and_text_finishes_with_that_text_as_notes() {
+    // (marker text as printf format, passes, the notes recorded or the failure reason)
+    let cases: [(&str, bool, Option<&str>); 6] = [
+        (
+            "OK: committed abc. Review done.\\n",
+            true,
+            Some("committed abc. Review done."),
+        ),
+        ("OK committed abc\\n", true, Some("committed abc")),
+        ("OK:\\n", true, None),
+        (
+            "OK\\nfirst note\\nsecond note\\n",
+            true,
+            Some("first note second note"),
+        ),
+        ("OKAY\\n", false, Some("OKAY")),
+        ("OKish done\\n", false, Some("OKish done")),
+    ];
+    for (n, (text, passes, says)) in cases.into_iter().enumerate() {
+        let (store, root) = setup(&format!("ok-text-{n}"));
+        let marker = root.join("worktree/done.marker");
+        let args = args(&format!("printf '{text}' > {}; sleep 30", marker.display()));
+
+        let outcome =
+            run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+        assert_eq!(outcome.success, passes, "{text:?}: {outcome:?}");
+        let notes = notes_events(&store);
+        if passes {
+            let expected: Vec<String> = says.map(str::to_string).into_iter().collect();
+            assert_eq!(notes, expected, "{text:?}");
+        } else {
+            assert_eq!(
+                stage_failure_reason(&store),
+                format!("the session reported a problem: {}", says.unwrap()),
+                "{text:?}"
+            );
+            assert!(notes.is_empty(), "{text:?}: {notes:?}");
+        }
+    }
+}
+
+#[test]
 fn a_first_line_cut_by_the_read_limit_right_after_ok_is_not_taken_as_ok() {
     let (store, root) = setup("cut-after-ok");
     let marker = root.join("worktree/done.marker");
@@ -536,5 +579,26 @@ fn a_first_line_cut_by_the_read_limit_right_after_ok_is_not_taken_as_ok() {
 
     assert!(!outcome.success, "{outcome:?}");
     assert!(stage_failure_reason(&store).contains("more than orq reads"));
+    assert!(notes_events(&store).is_empty());
+}
+
+#[test]
+fn an_ok_colon_first_line_cut_by_the_read_limit_is_reported_as_cut() {
+    let (store, root) = setup("cut-after-ok-colon");
+    let marker = root.join("worktree/done.marker");
+    let script = format!(
+        "head -c 4080 /dev/zero | tr '\\0' ' ' > {m}; printf 'OK: committed abc, but the tests are failing' >> {m}; sleep 30",
+        m = marker.display()
+    );
+    let args = args(&script);
+
+    let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+
+    assert!(!outcome.success, "{outcome:?}");
+    assert!(
+        stage_failure_reason(&store).contains("its first line is cut"),
+        "{}",
+        stage_failure_reason(&store)
+    );
     assert!(notes_events(&store).is_empty());
 }

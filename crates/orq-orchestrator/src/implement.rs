@@ -350,7 +350,8 @@ const MARKER_READ_LIMIT: u64 = 4096;
 const MARKER_REPORT_LIMIT: usize = 2000;
 
 /// What a session's finish marker says. The first line decides: `OK` (or nothing at all) is finished,
-/// with anything after `OK` kept as notes; `PROBLEM` is a failure with the text after it as the reason;
+/// with anything after `OK` (on its line after a colon or a space, or on the lines after it) kept as
+/// notes; `PROBLEM` is a failure with the text after it as the reason;
 /// anything else is a failure with the whole text as the reason.
 #[derive(Debug, PartialEq, Eq)]
 enum Marker {
@@ -430,7 +431,11 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
     }
     let (first, after) = text.split_once('\n').unwrap_or((text, ""));
     let first = first.trim();
-    if first == "OK" {
+    // `OK` alone, or followed by notes on the same line (after a colon or a space) or the lines after it.
+    let ok_rest = first
+        .strip_prefix("OK")
+        .filter(|rest| rest.is_empty() || rest.starts_with([' ', ':']));
+    if let Some(rest) = ok_rest {
         // Read up to the limit with no line end seen, the line may go on past it ("OK tests are failing").
         if after.is_empty() && !text.contains('\n') && bytes.len() as u64 >= MARKER_READ_LIMIT {
             return Some(Marker::Problem(
@@ -438,7 +443,7 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
                     .to_string(),
             ));
         }
-        let notes = clean(after);
+        let notes = clean(&format!("{} {after}", rest.trim_start_matches(':')));
         return Some(Marker::Finished {
             notes: (!notes.is_empty()).then_some(notes),
         });
