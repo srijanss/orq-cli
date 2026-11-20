@@ -907,7 +907,8 @@ fn a_star_followed_by_whitespace_git_keeps_in_the_pattern_is_not_a_self_ignore()
     for (tag, text) in [
         ("nbsp", "*\u{a0}\n"),
         ("tab", "*\t\n"),
-        ("carriage-return", "*\r\n"),
+        // Git drops one carriage return at a line's end, not a second.
+        ("two-carriage-returns", "*\r\r\n"),
         ("escaped-space", "*\\ \n"),
     ] {
         let w =
@@ -930,6 +931,24 @@ fn a_star_followed_by_plain_spaces_is_still_a_self_ignore() {
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
     assert_eq!(outcome, CleanupOutcome::Removed);
+}
+
+#[test]
+fn a_self_ignore_with_crlf_line_endings_still_counts() {
+    // Git drops the carriage return of a CRLF line ending, then the trailing spaces before it.
+    for (tag, text) in [
+        ("crlf", "# made on Windows\r\n\r\n*\r\n"),
+        ("crlf-spaces", "# made on Windows\r\n*  \r\n"),
+        ("crlf-no-final-newline", "# made on Windows\r\n*\r"),
+    ] {
+        let w = world_with_ignored_notes(&format!("self-ignore-{tag}"), |p| {
+            fs::write(p, text).unwrap()
+        });
+
+        let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+        assert_eq!(outcome, CleanupOutcome::Removed, "{tag}");
+    }
 }
 
 #[test]
