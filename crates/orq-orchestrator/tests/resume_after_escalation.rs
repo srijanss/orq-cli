@@ -286,3 +286,20 @@ fn resume_after_escalation_a_session_problem_resumes_even_when_the_review_ledger
     assert!(!plan.skip_implement);
     assert!(plan.review_again.is_none());
 }
+
+#[test]
+fn resume_after_escalation_a_session_problem_mentioning_the_review_resumes_when_the_ledger_is_unreadable() {
+    let w = world(
+        "unreadable-ledger-review-text",
+        "failed",
+        "the implement session reported a problem: the tests for the review UI fail",
+        false,
+    );
+    fs::write(w.worktree.join(".tdd-review-rounds.json"), "not json").unwrap();
+
+    let plan = plan_resume(&w.store, &w.repo, "repo-1", "F")
+        .expect("a session problem that merely mentions the review still resumes");
+
+    assert!(!plan.skip_implement);
+    assert!(plan.review_again.is_none());
+}

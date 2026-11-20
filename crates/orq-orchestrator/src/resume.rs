@@ -503,7 +503,9 @@ fn plan(
     if stopped_by_review && review_again.is_none() {
         let found = crate::review_escalation::escalated_review(&from.worktree, &from.base_sha);
         // A run the review itself stopped needs its ledger; any other session problem resumes without it.
-        review_again = if summary.reason.as_deref().is_some_and(|r| r.contains("the review")) {
+        review_again = if summary.reason.as_deref().is_some_and(|r| {
+            r.contains("the review escalated") || r.contains("the review could not be finished")
+        }) {
             found.map_err(|e| format!("{}: cannot read the review ledger: {e}", from.run_id))?
         } else {
             found.ok().flatten()
