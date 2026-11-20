@@ -4,7 +4,7 @@ const HEADING = /^(#{1,4})\s+(.*)$/;
 const LIST_ITEM = /^(\s*)([-*]|\d+\.)\s+(.*)$/;
 
 // The first inline mark in a line: `code`, **bold**, *italic* or [label](address).
-const INLINE = /`([^`]+)`|\*\*(.+?)\*\*|\*([^*\s](?:[^*]*[^*\s])?)\*|\[([^\]]+)\]\(([^)\s]+)\)/;
+const INLINE = /`([^`]+)`|\*\*(.+?)\*\*|\*([^*\s](?:[^*]*[^*\s])?)\*|\[([^\][]+)\]\(([^)\s]+)\)/;
 // The only addresses a link may have.
 const WEB_ADDRESS = /^https?:\/\//i;
 

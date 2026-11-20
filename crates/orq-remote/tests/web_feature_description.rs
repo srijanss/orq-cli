@@ -103,6 +103,15 @@ fn a_nested_list_that_changes_kind_starts_a_new_list_of_that_kind() {
 }
 
 #[test]
+fn many_unmatched_brackets_render_in_linear_time() {
+    let text = "[".repeat(60_000);
+    let started = std::time::Instant::now();
+    let Some(out) = detail(&text, &[".markdown p"]) else { return };
+    assert_eq!(count(&out, ".markdown p"), 1, "{}", &out.to_string()[..300.min(out.to_string().len())]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "unmatched openers are scanned again and again: {:?}", started.elapsed());
+}
+
+#[test]
 fn long_words_wrap_and_fenced_code_scrolls_inside_its_own_box() {
     let css = std::fs::read_to_string(format!("{}/web/app.css", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let rule = |selector: &str| -> String {
