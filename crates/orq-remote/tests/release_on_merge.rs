@@ -392,6 +392,29 @@ fn a_harness_that_exits_but_leaves_its_output_open_is_cut_off_by_the_deadline() 
 }
 
 #[test]
+fn a_merge_with_a_huge_stat_and_diff_gives_the_agent_a_bounded_prompt() {
+    let s = setup("huge-evidence", answering("patch"), "auto");
+    round(&s);
+    round(&s);
+    for i in 0..2500 {
+        std::fs::write(s.repo.join(format!("a-file-with-a-rather-long-name-to-make-the-stat-big-{i:05}.txt")), format!("line {i}\n").repeat(40)).unwrap();
+    }
+    git(&s.repo, &["add", "."]);
+    git(&s.repo, &["commit", "-q", "-m", "fix: a huge change"]);
+    let head = git(&s.repo, &["rev-parse", "HEAD"]);
+    let run = "run-1-COM-01";
+    let store = RunStore::new(&s.roots.state);
+    event(&store, run, "merge.completed", json!({"head_sha": head, "target_branch": "main"}));
+    event(&store, run, "run.completed", json!({"ending": "merged"}));
+    round(&s);
+    wait_for(&s, run, "release.created").expect("the release was recorded");
+    let asked = s.agent.asked.lock().unwrap();
+    let prompt = asked[0].last().unwrap();
+    assert!(prompt.chars().count() < 90_000, "the prompt has {} characters", prompt.chars().count());
+    assert!(prompt.contains("fix: a huge change"), "the subjects are still in it");
+}
+
+#[test]
 fn a_release_that_is_off_or_a_review_delivery_does_nothing() {
     for (off, delivery) in [(true, Delivery::MergeLocal), (false, Delivery::Review)] {
         let agent = answering("patch");

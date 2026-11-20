@@ -18,8 +18,10 @@ use serde_json::Value;
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// The most of the agent's answer that is read.
 const MAX_ANSWER: u64 = 64 * 1024;
-/// The most characters of the diff the agent is shown.
-const MAX_DIFF_CHARS: usize = 60_000;
+/// The most bytes of the diff the agent is shown.
+const MAX_DIFF_BYTES: u64 = 60_000;
+/// The most bytes of the commit subjects, and of the diff stat, the agent is shown.
+const MAX_LIST_BYTES: u64 = 8_000;
 
 /// Runs the one-shot call that picks a release's level.
 pub trait ReleaseAgent: Send + Sync {
@@ -133,6 +135,18 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// The first `max` bytes `git args` prints in `dir`; git is stopped once they are read, so a huge change is never held whole.
+fn git_head(dir: &Path, args: &[&str], max: u64) -> String {
+    let Ok(mut child) = Command::new("git").args(args).current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return String::new() };
+    let mut head = Vec::new();
+    if let Some(out) = child.stdout.take() {
+        let _ = out.take(max).read_to_end(&mut head);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    String::from_utf8_lossy(&head).into_owned()
+}
+
 /// Fails when `file` or a directory on its way under `base` is a symlink, which could lead a write out of `base`.
 fn without_symlinks(base: &Path, file: &Path) -> Result<(), String> {
     let mut at = base.to_path_buf();
@@ -205,9 +219,9 @@ pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) 
 
     let base = if merge.base.is_empty() { format!("{}^", merge.merged) } else { merge.base.to_string() };
     let range = format!("{base}..{}", merge.merged);
-    let subjects = run_git(root, &["log", "--format=%s", &range]).unwrap_or_default();
-    let stat = run_git(root, &["diff", "--stat", &base, merge.merged]).unwrap_or_default();
-    let diff: String = run_git(root, &["diff", &base, merge.merged]).unwrap_or_default().chars().take(MAX_DIFF_CHARS).collect();
+    let subjects = git_head(root, &["log", "--format=%s", &range], MAX_LIST_BYTES);
+    let stat = git_head(root, &["diff", "--stat", &base, merge.merged], MAX_LIST_BYTES);
+    let diff = git_head(root, &["diff", &base, merge.merged], MAX_DIFF_BYTES);
     let evidence = redact(&format!(
         "Feature: {}\nDescription: {}\nCurrent version: {from}\n\nCommit subjects:\n{subjects}\nDiff stat:\n{stat}\nDiff:\n{diff}",
         merge.feature,
