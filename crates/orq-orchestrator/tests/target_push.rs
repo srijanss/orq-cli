@@ -346,9 +346,21 @@ fn a_fetch_that_writes_much_to_stderr_still_finishes_and_is_not_taken_for_a_time
     assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fetch was not held up: {:?}", started.elapsed());
 }
 
-/// Whether process `pid` is still running.
-fn alive(pid: &str) -> bool {
-    Command::new("kill").args(["-0", pid]).status().unwrap().success()
+/// Whether process `pid` has ended within a few seconds. A zombie has ended: once killed it only
+/// waits for a parent to reap it, which a container's init may be slow to do.
+fn ended(pid: &str) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let out = Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !out.status.success() || stat.is_empty() || stat.starts_with('Z') {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -369,8 +381,7 @@ fn a_fetch_whose_transport_leaves_a_process_holding_its_stderr_finishes_and_ends
     assert_eq!((state.reason.as_deref(), state.count), (None, 1), "{state:?}");
     assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fetch was not held up: {:?}", started.elapsed());
     let pid = fs::read_to_string(&pidfile).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(!alive(pid.trim()), "the process the transport left behind was ended");
+    assert!(ended(pid.trim()), "the process the transport left behind was ended");
 }
 
 #[test]
@@ -392,8 +403,7 @@ fn a_fetch_whose_transport_hangs_is_ended_at_the_limit_with_its_process_group() 
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "the fetch was ended at its limit: {:?}", started.elapsed());
     assert!(gh.calls().is_empty(), "nothing was asked of GitHub");
     let pid = fs::read_to_string(&pidfile).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    assert!(!alive(pid.trim()), "the hung transport was ended");
+    assert!(ended(pid.trim()), "the hung transport was ended");
 }
 
 #[test]
