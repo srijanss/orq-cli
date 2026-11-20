@@ -18,6 +18,10 @@ use serde_json::{json, Value};
 
 use super::{carried_on, discover, read_ledger, start_blocked, Launch, ResumeRequest, StoreProjects};
 
+// Declared here, not in projects.rs, so the commands a merge-local run's merge sets off live in their own file.
+#[path = "after_merge.rs"]
+mod after_merge;
+
 /// What a round of the queue needs to know about now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueRound {
@@ -51,6 +55,7 @@ impl StoreProjects {
         if !database.exists() {
             return;
         }
+        after_merge::close_interrupted(&RunStore::new(&self.roots.state), &self.roots.state);
         let store = match Store::open(&database) {
             Ok(store) => store,
             Err(error) => return eprintln!("orq: the run queues cannot be read: {error}"),
@@ -157,13 +162,14 @@ impl StoreProjects {
             }
             match settled {
                 Settled::Going if matches!(entry.action, Some(QueueAction { kind: QueueKind::Accept, .. })) => accepts_going.push((run, entry.feature.clone())),
-                Settled::Going => {}
+                Settled::Going => after_merge::watch(&self.roots.state, root, &run),
                 // A run that ends well or waits for review lifts the pause its own failure caused.
                 Settled::InReview(_) => {
                     in_review = true;
                     self.lift_failure_pause(store, id, root, &run, &what, "recovered and waits for review").map_err(failed)?;
                 }
                 Settled::Done => {
+                    after_merge::settled(&self.roots.state, &runs, root, &run);
                     store.queue_remove(root, &entry.feature).map_err(failed)?;
                     self.lift_failure_pause(store, id, root, &run, &what, "recovered and merged").map_err(failed)?;
                 }

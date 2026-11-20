@@ -66,6 +66,40 @@ impl AfterMerge {
     }
 }
 
+/// What a project's `.orq/run.toml` `[after_merge]` table asks for once a merge-local run's merge
+/// lands: argv lists, run in order in the project's main checkout. Never shell text.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AfterMergeCommands {
+    pub commands: Vec<Vec<String>>,
+}
+
+impl AfterMergeCommands {
+    /// The `[after_merge]` table of `run.toml` text: `None` when it has none, and an error naming
+    /// the key when `commands` is not a list of non-empty argv lists of strings.
+    pub fn parse(text: &str) -> std::result::Result<Option<AfterMergeCommands>, String> {
+        let doc: toml_edit::DocumentMut = text.parse().map_err(|error| format!("run.toml is not valid TOML: {error}"))?;
+        let Some(table) = doc.get("after_merge") else { return Ok(None) };
+        let Some(table) = table.as_table_like() else { return Err("after_merge must be a table".to_string()) };
+        let Some(list) = table.get("commands") else { return Ok(Some(AfterMergeCommands::default())) };
+        let Some(list) = list.as_array() else { return Err("after_merge.commands must be a list of argv lists".to_string()) };
+        let mut commands = Vec::new();
+        for (i, argv) in list.iter().enumerate() {
+            let key = format!("after_merge.commands[{i}]");
+            let Some(argv) = argv.as_array() else { return Err(format!("{key} must be a list of strings, not shell text")) };
+            let mut words = Vec::new();
+            for (j, word) in argv.iter().enumerate() {
+                let Some(word) = word.as_str() else { return Err(format!("{key}[{j}] must be a string")) };
+                words.push(word.to_string());
+            }
+            if words.first().is_none_or(|program| program.is_empty()) {
+                return Err(format!("{key} must start with a program name"));
+            }
+            commands.push(words);
+        }
+        Ok(Some(AfterMergeCommands { commands }))
+    }
+}
+
 /// The agent a project uses for one role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectAgent {
