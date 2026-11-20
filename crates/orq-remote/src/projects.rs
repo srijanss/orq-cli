@@ -169,17 +169,30 @@ fn ending_findings(reason: &str, worktree: &Path) -> Vec<serde_json::Value> {
         return named;
     }
     let ledger = read_review_findings(worktree);
-    let recorded: Vec<&serde_json::Value> = ledger.as_ref().and_then(|l| l.as_object()).into_iter().flat_map(|scopes| scopes.values()).filter_map(|v| v.as_array()).flatten().collect();
+    let places = finding_places(ledger.as_ref());
     for finding in &mut named {
-        let found = recorded.iter().find(|entry| entry.get("id") == finding.get("id") && entry.get("file").and_then(|v| v.as_str()).is_some_and(|file| !file.is_empty()));
-        if let Some(entry) = found {
-            finding["file"] = orq_core::redact::redact(entry["file"].as_str().unwrap_or_default()).into();
-            if let Some(line) = entry.get("line").and_then(|v| v.as_u64()) {
-                finding["line"] = line.into();
+        let id = finding["id"].as_str().unwrap_or_default();
+        if let Some(Some((file, line))) = places.get(id) {
+            finding["file"] = orq_core::redact::redact(file).into();
+            if let Some(line) = line {
+                finding["line"] = (*line).into();
             }
         }
     }
     named
+}
+
+/// Where each finding of a review findings ledger is, by id, read in one pass over every scope: its file and line,
+/// or `None` when its scopes disagree on them, as then none of them can be trusted to be the escalated one.
+fn finding_places(ledger: Option<&serde_json::Value>) -> std::collections::HashMap<&str, Option<(&str, Option<u64>)>> {
+    let mut places = std::collections::HashMap::new();
+    let entries = ledger.and_then(|l| l.as_object()).into_iter().flat_map(|scopes| scopes.values()).filter_map(|v| v.as_array()).flatten();
+    for entry in entries {
+        let (Some(id), Some(file)) = (entry.get("id").and_then(|v| v.as_str()), entry.get("file").and_then(|v| v.as_str()).filter(|file| !file.is_empty())) else { continue };
+        let place = (file, entry.get("line").and_then(|v| v.as_u64()));
+        places.entry(id).and_modify(|known: &mut Option<_>| if known.is_some_and(|seen| seen != place) { *known = None }).or_insert(Some(place));
+    }
+    places
 }
 
 /// The largest review findings file read; a ledger is a few kilobytes.

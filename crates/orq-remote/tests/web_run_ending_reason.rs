@@ -203,6 +203,60 @@ fn a_blocked_run_whose_steps_all_completed_gives_its_ending_reason_and_the_findi
 }
 
 #[test]
+fn a_finding_id_whose_review_scopes_disagree_on_its_place_gets_no_file_line() {
+    let f = fixture("ending-ambiguous");
+    let worktree = f.roots.data.join("wt-ambiguous");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let findings = json!({
+        "review:old": [{"id": "group-kill-incompatible-with-dash", "file": "src/old.rs", "line": 7}, {"id": "token-in-log", "file": "src/log.rs", "line": 3}],
+        "review:new": [{"id": "group-kill-incompatible-with-dash", "file": "src/kill.rs", "line": 42}, {"id": "token-in-log", "file": "src/log.rs", "line": 3}]
+    });
+    std::fs::write(worktree.join(".tdd-review-findings.json"), findings.to_string()).unwrap();
+    f.run("r-ambiguous", &worktree, &blocked_after_steps(ESCALATED));
+    let detail = f.get("/api/projects/alpha/runs/r-ambiguous");
+    assert_eq!(
+        detail["run"]["ending_findings"],
+        json!([
+            {"id": "group-kill-incompatible-with-dash", "severity": "high", "category": "bugs"},
+            {"id": "token-in-log", "severity": "medium", "category": "security", "file": "src/log.rs", "line": 3}
+        ]),
+        "places that disagree are left out, places that agree kept: {detail}"
+    );
+}
+
+#[test]
+fn a_finding_id_whose_scopes_name_one_file_at_different_lines_gets_no_place() {
+    let f = fixture("ending-lines");
+    let worktree = f.roots.data.join("wt-lines");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let findings = json!({"review:old": [{"id": "token-in-log", "file": "src/log.rs", "line": 3}], "review:new": [{"id": "token-in-log", "file": "src/log.rs", "line": 30}]});
+    std::fs::write(worktree.join(".tdd-review-findings.json"), findings.to_string()).unwrap();
+    f.run("r-lines", &worktree, &blocked_after_steps(ESCALATED));
+    let detail = f.get("/api/projects/alpha/runs/r-lines");
+    assert_eq!(detail["run"]["ending_findings"][1], json!({"id": "token-in-log", "severity": "medium", "category": "security"}), "{detail}");
+}
+
+#[test]
+fn a_linked_or_unreadable_findings_ledger_gives_no_place_but_keeps_the_reason_and_findings() {
+    let f = fixture("ending-unreadable");
+    let elsewhere = f.roots.data.join("elsewhere.json");
+    std::fs::write(&elsewhere, json!({"review:x": [{"id": "token-in-log", "file": "secret/place.rs", "line": 1}]}).to_string()).unwrap();
+    let linked = f.roots.data.join("wt-linked");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, linked.join(".tdd-review-findings.json")).unwrap();
+    let malformed = f.roots.data.join("wt-malformed");
+    std::fs::create_dir_all(&malformed).unwrap();
+    std::fs::write(malformed.join(".tdd-review-findings.json"), "{not json").unwrap();
+    f.run("r-linked", &linked, &blocked_after_steps(ESCALATED));
+    f.run("r-malformed", &malformed, &blocked_after_steps(ESCALATED));
+    for id in ["r-linked", "r-malformed"] {
+        let detail = f.get(&format!("/api/projects/alpha/runs/{id}"));
+        assert_eq!(detail["run"]["ending_reason"], json!(ESCALATED), "{detail}");
+        assert_eq!(detail["run"]["ending_findings"][1], json!({"id": "token-in-log", "severity": "medium", "category": "security"}), "{detail}");
+    }
+}
+
+#[test]
 fn merged_and_resumed_runs_give_no_ending_reason() {
     let f = fixture("ending-none");
     let worktree = f.roots.data.join("wt-none");
