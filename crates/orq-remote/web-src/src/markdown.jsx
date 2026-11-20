@@ -37,7 +37,15 @@ function nest(items) {
   for (const item of items) {
     while (stack.length > 1 && item.indent < stack[stack.length - 1].indent) stack.pop();
     let top = stack[stack.length - 1];
-    if (item.indent > top.indent) {
+    // A nested item of another kind than its list's starts a sibling list of its own kind.
+    if (stack.length > 1 && item.indent === top.indent && item.ordered !== top.list.ordered) {
+      stack.pop();
+      top = stack[stack.length - 1];
+      const inner = { ordered: item.ordered, items: [] };
+      top.list.items[top.list.items.length - 1].children.push(inner);
+      top = { indent: item.indent, list: inner };
+      stack.push(top);
+    } else if (item.indent > top.indent) {
       const inner = { ordered: item.ordered, items: [] };
       const parent = top.list.items[top.list.items.length - 1];
       parent.children.push(inner);

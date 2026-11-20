@@ -93,6 +93,16 @@ fn a_numbered_list_with_a_nested_bullet_list_renders_as_ol_li_ul() {
 }
 
 #[test]
+fn a_nested_list_that_changes_kind_starts_a_new_list_of_that_kind() {
+    let selectors = [".markdown > ul > li > ul > li", ".markdown > ul > li > ol > li", ".markdown > ul > li > ul", ".markdown > ul > li > ol"];
+    let Some(out) = detail("- parent\n  - bullet\n  1. numbered", &selectors) else { return };
+    assert_eq!(count(&out, selectors[0]), 1, "{out}");
+    assert_eq!(count(&out, selectors[1]), 1, "the numbered item is in an ordered list: {out}");
+    assert_eq!(count(&out, selectors[2]), 1, "{out}");
+    assert_eq!(count(&out, selectors[3]), 1, "{out}");
+}
+
+#[test]
 fn long_words_wrap_and_fenced_code_scrolls_inside_its_own_box() {
     let css = std::fs::read_to_string(format!("{}/web/app.css", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let rule = |selector: &str| -> String {
