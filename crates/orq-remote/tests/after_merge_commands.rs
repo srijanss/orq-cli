@@ -346,17 +346,31 @@ fn a_command_that_cannot_start_is_a_failure_and_stops_the_rest() {
 
 #[test]
 fn a_merge_the_server_did_not_watch_land_gets_no_go() {
-    // The run's merge is first seen by the round that settles it: the server started after the merge.
+    // A run the queue already followed when the server started, merged meanwhile: the first round
+    // that looks at it finds it settled.
     let s = setup("unwatched", None);
+    write_run_toml(&s, &run_toml(&s.marks, &["one"]));
+    seed_run(&s.roots.state, &s.repo, "run-old-COM-01", "COM-01");
+    Store::open(&s.roots.database()).unwrap().queue_started(&s.repo, "COM-01", "run-old-COM-01").unwrap();
+    let head = git(&s.repo, &["rev-parse", "HEAD"]);
+    merge(&s, "run-old-COM-01", &head);
+    round(&s);
+    settle_time();
+    assert!(order(&s).is_empty());
+    assert!(events_of(&s, "run-old-COM-01", "after_merge.started").is_empty());
+    assert!(events_of(&s, "run-old-COM-01", "after_merge.commands").is_empty());
+}
+
+#[test]
+fn a_run_that_merges_before_the_round_after_its_launch_still_gets_its_go() {
+    let s = setup("fast-merge", None);
     write_run_toml(&s, &run_toml(&s.marks, &["one"]));
     round(&s);
     let head = git(&s.repo, &["rev-parse", "HEAD"]);
     merge(&s, "run-1-COM-01", &head);
     round(&s);
-    settle_time();
-    assert!(order(&s).is_empty());
-    assert!(events_of(&s, "run-1-COM-01", "after_merge.started").is_empty());
-    assert!(events_of(&s, "run-1-COM-01", "after_merge.commands").is_empty());
+    wait_for(&s, "run-1-COM-01", "after_merge.commands").expect("recorded");
+    assert_eq!(order(&s), ["one"]);
 }
 
 #[test]

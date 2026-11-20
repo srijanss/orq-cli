@@ -328,6 +328,8 @@ impl StoreProjects {
                             // Removed while it started, the queue no longer follows the run, which
                             // goes on; removed and added again, the new entry follows this run.
                             store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                            // Watched from its launch, so a run that merges before the next round still gets its go.
+                            after_merge::watch(&self.roots.state, root, &run);
                             started = true;
                             None
                         }
