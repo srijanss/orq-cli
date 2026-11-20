@@ -18,8 +18,8 @@ pub const REMOTE: &str = "origin";
 /// Why a GitLab project's target is never pushed from orq: it is delivered by MR review.
 pub const GITLAB_REFUSAL: &str = "GitLab: deliver by MR review";
 
-/// How long the fetch before a push may take.
-const FETCH_LIMIT: Duration = Duration::from_secs(60);
+/// How long the fetch before a push may take, unless [`TargetPush::fetch_limit`] says otherwise.
+pub const TARGET_FETCH_LIMIT: Duration = Duration::from_secs(60);
 
 /// What a target push needs to know: the project's main checkout and target, and where its runs are.
 pub struct TargetPush<'a> {
@@ -32,6 +32,8 @@ pub struct TargetPush<'a> {
     pub store: &'a RunStore,
     /// The `gh` program the branch lookup runs.
     pub gh: PathBuf,
+    /// How long the fetch before a push may take; [`TARGET_FETCH_LIMIT`] outside tests.
+    pub fetch_limit: Duration,
 }
 
 /// One commit a push would send.
@@ -118,7 +120,7 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
     let local = rev_parse(push.root, &format!("refs/heads/{target}"))
         .ok_or_else(|| format!("the main checkout has no branch {target}"))?;
     state.sha = Some(local.clone());
-    fetch(push.root, target)?;
+    fetch(push.root, target, push.fetch_limit)?;
     let tracking = format!("refs/remotes/{REMOTE}/{target}");
     let origin = rev_parse(push.root, &tracking).ok_or_else(|| format!("{REMOTE}/{target} could not be read"))?;
     state.origin_sha = Some(origin.clone());
@@ -371,11 +373,11 @@ fn rev_parse(dir: &Path, name: &str) -> Option<String> {
 /// How much of a failed fetch's stderr is kept to show: its end, where git says why.
 const FETCH_STDERR_KEPT: usize = 16 * 1024;
 
-/// Fetches origin's `target` into its tracking ref, within [`FETCH_LIMIT`]. Its stderr is read as it
+/// Fetches origin's `target` into its tracking ref, within `limit`. Its stderr is read as it
 /// comes, so a chatty transport never blocks on a full pipe, and only its last
 /// [`FETCH_STDERR_KEPT`] bytes are kept. The fetch runs in its own process group, so a timeout
 /// ends its transport too.
-fn fetch(dir: &Path, target: &str) -> Result<(), String> {
+fn fetch(dir: &Path, target: &str, limit: Duration) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     let refspec = format!("+refs/heads/{target}:refs/remotes/{REMOTE}/{target}");
     let mut child = Command::new("git")
@@ -388,7 +390,10 @@ fn fetch(dir: &Path, target: &str) -> Result<(), String> {
         .process_group(0)
         .spawn()
         .map_err(|error| format!("git could not run: {error}"))?;
-    let reader = child.stderr.take().map(|mut pipe| {
+    // The reader sends what it kept once the pipe closes; it is never joined, so a process that keeps
+    // the pipe open past the deadline cannot hold the fetch up.
+    let (sent, kept) = std::sync::mpsc::channel::<String>();
+    if let Some(mut pipe) = child.stderr.take() {
         std::thread::spawn(move || {
             use std::io::Read;
             let mut kept: Vec<u8> = Vec::new();
@@ -402,30 +407,33 @@ fn fetch(dir: &Path, target: &str) -> Result<(), String> {
                     kept.drain(..kept.len() - FETCH_STDERR_KEPT);
                 }
             }
-            String::from_utf8_lossy(&kept).into_owned()
-        })
-    });
-    let stderr = |reader: Option<std::thread::JoinHandle<String>>| reader.and_then(|reader| reader.join().ok()).unwrap_or_default();
+            let _ = sent.send(String::from_utf8_lossy(&kept).into_owned());
+        });
+    }
     let started = Instant::now();
+    // Ends whatever the fetch's transport left in its process group.
+    let end_group = |child: &std::process::Child| {
+        if let Ok(group) = i32::try_from(child.id()) {
+            // SAFETY: kill only signals; the group is the fetch's own, made at spawn.
+            unsafe { libc::kill(-group, libc::SIGKILL) };
+        }
+    };
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stderr = stderr(reader);
+                end_group(&child);
+                let stderr = kept.recv_timeout(limit.saturating_sub(started.elapsed())).unwrap_or_default();
                 return if status.success() {
                     Ok(())
                 } else {
                     Err(format!("{REMOTE}/{target} could not be fetched: {}", redacted(&stderr)))
                 };
             }
-            Ok(None) if started.elapsed() >= FETCH_LIMIT => {
-                if let Ok(group) = i32::try_from(child.id()) {
-                    // SAFETY: kill only signals; the group is the fetch's own, made at spawn.
-                    unsafe { libc::kill(-group, libc::SIGKILL) };
-                }
+            Ok(None) if started.elapsed() >= limit => {
+                end_group(&child);
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = stderr(reader);
-                return Err(format!("{REMOTE}/{target} could not be fetched within {} seconds", FETCH_LIMIT.as_secs()));
+                return Err(format!("{REMOTE}/{target} could not be fetched within {} seconds", limit.as_secs()));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(error) => return Err(format!("git could not be waited for: {error}")),

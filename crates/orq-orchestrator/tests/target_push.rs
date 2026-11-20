@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{push_target, target_push_state, Event, RunRecord, RunStore, TargetPush, TargetPushOutcome};
+use orq_orchestrator::{push_target, target_push_state, Event, RunRecord, RunStore, TargetPush, TargetPushOutcome, TARGET_FETCH_LIMIT};
 use orq_test_support::FakeProvider;
 
 const ORIGIN: &str = "https://github.com/acme/widgets.git";
@@ -76,6 +76,7 @@ fn request<'a>(w: &'a World, gh: &'a FakeProvider) -> TargetPush<'a> {
         forge: None,
         store: &w.store,
         gh: gh.gh(),
+        fetch_limit: TARGET_FETCH_LIMIT,
     }
 }
 
@@ -326,6 +327,56 @@ fn a_fetch_that_writes_much_to_stderr_still_finishes_and_is_not_taken_for_a_time
     let state = target_push_state(&request(&w, &gh));
     assert_eq!((state.reason.as_deref(), state.count), (None, 1), "{state:?}");
     assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fetch was not held up: {:?}", started.elapsed());
+}
+
+/// Whether process `pid` is still running.
+fn alive(pid: &str) -> bool {
+    Command::new("kill").args(["-0", pid]).status().unwrap().success()
+}
+
+#[test]
+fn a_fetch_whose_transport_leaves_a_process_holding_its_stderr_finishes_and_ends_that_process() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("lingering-fetch", 1);
+    // Origin's upload-pack leaves a process behind that keeps the fetch's stderr open after git exits.
+    let pidfile = w.root.join("lingering.pid");
+    let lingering = w.root.join("lingering-upload-pack");
+    let script = format!("#!/bin/sh\nsleep 45 </dev/null >/dev/null &\necho $! > {}\nexec git-upload-pack \"$@\"\n", pidfile.display());
+    fs::write(&lingering, script).unwrap();
+    fs::set_permissions(&lingering, fs::Permissions::from_mode(0o755)).unwrap();
+    git(&w.repo, &["config", "remote.origin.uploadpack", lingering.to_str().unwrap()]);
+    let gh = unprotected();
+    let started = std::time::Instant::now();
+
+    let state = target_push_state(&request(&w, &gh));
+    assert_eq!((state.reason.as_deref(), state.count), (None, 1), "{state:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fetch was not held up: {:?}", started.elapsed());
+    let pid = fs::read_to_string(&pidfile).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!alive(pid.trim()), "the process the transport left behind was ended");
+}
+
+#[test]
+fn a_fetch_whose_transport_hangs_is_ended_at_the_limit_with_its_process_group() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("hanging-fetch", 1);
+    // Origin's upload-pack never answers.
+    let pidfile = w.root.join("hanging.pid");
+    let hanging = w.root.join("hanging-upload-pack");
+    fs::write(&hanging, format!("#!/bin/sh\nsleep 45 &\necho $! > {}\nwait\n", pidfile.display())).unwrap();
+    fs::set_permissions(&hanging, fs::Permissions::from_mode(0o755)).unwrap();
+    git(&w.repo, &["config", "remote.origin.uploadpack", hanging.to_str().unwrap()]);
+    let gh = unprotected();
+    let push = TargetPush { fetch_limit: std::time::Duration::from_secs(2), ..request(&w, &gh) };
+    let started = std::time::Instant::now();
+
+    let state = target_push_state(&push);
+    assert_eq!(state.reason.as_deref(), Some("origin/main could not be fetched within 2 seconds"), "{state:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "the fetch was ended at its limit: {:?}", started.elapsed());
+    assert!(gh.calls().is_empty(), "nothing was asked of GitHub");
+    let pid = fs::read_to_string(&pidfile).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!alive(pid.trim()), "the hung transport was ended");
 }
 
 #[test]

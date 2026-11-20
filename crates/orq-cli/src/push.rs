@@ -59,6 +59,7 @@ pub(crate) fn push(args: &[OsString]) -> ExitCode {
         forge: settings.as_ref().and_then(|settings| settings.forge.as_deref()),
         store: &store,
         gh: crate::pipeline::find_program("gh").unwrap_or_else(|| "gh".into()),
+        fetch_limit: orq_orchestrator::TARGET_FETCH_LIMIT,
     };
 
     let state = orq_orchestrator::target_push_state(&push);

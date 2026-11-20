@@ -46,6 +46,7 @@ impl StoreProjects {
             forge: forge.as_deref(),
             store: &store,
             gh: self.gh.clone().unwrap_or_else(|| "gh".into()),
+            fetch_limit: orq_orchestrator::TARGET_FETCH_LIMIT,
         };
         Ok(Some(with(&push)))
     }
