@@ -90,6 +90,21 @@ pub fn in_implement_step<'a>(events: impl IntoIterator<Item = (&'a str, Option<&
     implementing
 }
 
+/// The events of one run, each its kind and stage, or why they could not be read.
+pub type RunEvents = (String, Result<Vec<(String, Option<String>)>, String>);
+
+/// The first of `runs` (the project's runs, by id) that is in its implement step. A run whose events
+/// could not be read cannot be told idle, so it is an error naming it rather than passed over.
+pub fn implementing_run(runs: impl IntoIterator<Item = RunEvents>) -> Result<Option<String>, String> {
+    for (run_id, events) in runs {
+        let events = events.map_err(|err| format!("cannot read the events of run {run_id}: {err}"))?;
+        if in_implement_step(events.iter().map(|(kind, stage)| (kind.as_str(), stage.as_deref()))) {
+            return Ok(Some(run_id));
+        }
+    }
+    Ok(None)
+}
+
 pub(crate) fn promote_loaded(
     loaded: &LoadedLedger,
     name: &str,

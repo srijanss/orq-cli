@@ -1252,20 +1252,20 @@ fn completed_by_a_session(store: &orq_orchestrator::RunStore, project_id: &str, 
     Ok(false)
 }
 
-/// The first run of `project_id` that is in its implement step, as its events tell. A run that cannot be
-/// read is skipped; only a run store that cannot be listed is an error.
+/// The first run of `project_id` that is in its implement step, as its events tell. A run whose record,
+/// or whose events, cannot be read cannot be told idle: that is an error naming it, as is a run store
+/// that cannot be listed.
 fn implementing_run(store: &orq_orchestrator::RunStore, project_id: &str) -> Result<Option<String>, String> {
+    let mut runs: Vec<orq_features::RunEvents> = Vec::new();
     for run_id in store.run_ids().map_err(|err| format!("{err:?}"))? {
-        let Ok(record) = store.load(&run_id) else { continue };
-        if record.project_id != project_id {
-            continue;
-        }
-        let Ok(events) = store.events(&run_id) else { continue };
-        if orq_features::in_implement_step(events.iter().map(|e| (e.kind.as_str(), e.stage.as_deref()))) {
-            return Ok(Some(run_id));
-        }
+        let events = match store.load(&run_id) {
+            Ok(record) if record.project_id != project_id => continue,
+            Ok(_) => store.events(&run_id).map_err(|err| format!("{err:?}")),
+            Err(err) => Err(format!("its record cannot be read: {err:?}")),
+        };
+        runs.push((run_id, events.map(|events| events.into_iter().map(|e| (e.kind, e.stage)).collect())));
     }
-    Ok(None)
+    orq_features::implementing_run(runs)
 }
 
 fn promote_error_text(err: &orq_features::PromoteError, id: &str) -> String {

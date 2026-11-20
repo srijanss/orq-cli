@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use orq_agents::{adapter_for, ImplementRequest, ModelSpec};
 use orq_core::FeatureStatus;
-use orq_features::{in_implement_step, load_ledger, promote_feature, reopen_completed_feature, reopen_open_findings, LedgerStatus, PromoteError, FINDING_REOPENED};
+use orq_features::{implementing_run, in_implement_step, load_ledger, promote_feature, reopen_completed_feature, reopen_open_findings, LedgerStatus, PromoteError, FINDING_REOPENED};
 
 const LEDGER: &str = "[\n  {\"featureName\": \"run-feature\", \"status\": \"in_progress\"},\n  {\"featureName\": \"fix-leak\", \"status\": \"completed\", \"recordedAt\": \"2026-11-20T10:00:00Z\"},\n  {\"featureName\": \"other\", \"status\": \"completed\"}\n]\n";
 
@@ -121,6 +121,19 @@ fn reopen_is_refused_while_a_run_of_the_project_is_in_its_implement_step() {
 
     reopen_completed_feature(&ledger, "fix-leak", in_implement_step(finished)).unwrap();
     assert_eq!(status(&ledger, "fix-leak"), LedgerStatus::Known(FeatureStatus::Pending));
+}
+
+#[test]
+fn a_run_whose_events_cannot_be_read_refuses_the_reopen_rather_than_counting_as_idle() {
+    let event = |kind: &str, stage: Option<&str>| (kind.to_string(), stage.map(str::to_string));
+    let idle = ("run-1".to_string(), Ok(vec![event("stage.started", Some("implement_and_review")), event("run.completed", None)]));
+    let busy = ("run-2".to_string(), Ok(vec![event("stage.started", Some("implement_and_review"))]));
+    let unreadable = ("run-3".to_string(), Err("events.jsonl is not valid JSON".to_string()));
+
+    assert_eq!(implementing_run(vec![idle.clone()]), Ok(None));
+    assert_eq!(implementing_run(vec![idle.clone(), busy.clone()]), Ok(Some("run-2".to_string())));
+    let refused = implementing_run(vec![idle, unreadable]).unwrap_err();
+    assert!(refused.contains("run-3") && refused.contains("not valid JSON"), "{refused}");
 }
 
 #[test]
