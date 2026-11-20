@@ -245,10 +245,11 @@ fn origin_push_url(dir: &Path) -> Result<String, String> {
         }
     }
     // git rewrites addresses by url.*.insteadOf and pushInsteadOf before it fetches or pushes. A
-    // rewrite to another network repository than the one checked is refused; one to a local
-    // repository (no host) is the person's own mirror and is left to them.
+    // rewrite to a local repository is the person's own mirror and is left to them. Any other
+    // address must name the repository checked: one whose repository cannot be named (a query or
+    // fragment in it, say) is refused, since git would still send the commits there.
     for effective in effective_urls(dir, false)?.iter().chain(effective_urls(dir, true)?.iter()) {
-        if identity(effective).is_some_and(|rewritten| Some(rewritten) != identity(url)) {
+        if !is_local(effective) && (identity(effective).is_none() || identity(effective) != identity(url)) {
             return Err(format!(
                 "{REMOTE}'s address {} is rewritten by git to {}: only the repository checked may get the commits",
                 shown(url),
@@ -257,6 +258,22 @@ fn origin_push_url(dir: &Path) -> Result<String, String> {
         }
     }
     Ok(url.clone())
+}
+
+/// Whether git takes `address` for a repository on this machine: a `file://` URL, or a path with
+/// no scheme and no `:` before its first `/` (git reads `host:path` as an ssh address).
+fn is_local(address: &str) -> bool {
+    if let Some(path) = address.strip_prefix("file://") {
+        return !path.is_empty();
+    }
+    if address.contains("://") {
+        return false;
+    }
+    match (address.find(':'), address.find('/')) {
+        (None, _) => !address.is_empty(),
+        (Some(colon), Some(slash)) => slash < colon,
+        (Some(_), None) => false,
+    }
 }
 
 /// The addresses git fetches origin from (or, with `push`, pushes it to), after its url rewriting.

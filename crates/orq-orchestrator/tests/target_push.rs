@@ -294,6 +294,23 @@ fn an_origin_git_rewrites_to_another_repository_is_refused_before_anything_is_fe
 }
 
 #[test]
+fn an_origin_git_rewrites_to_a_network_address_whose_repository_cannot_be_named_is_refused() {
+    let refusal = "origin's address https://github.com/acme/widgets.git is rewritten by git to an address that is not a repository: only the repository checked may get the commits";
+    // A query or fragment hides which repository a network address is; git still sends to it.
+    for (tag, rewritten) in [("query-rewrite", "https://other.example/repo.git?token=secret"), ("fragment-rewrite", "ssh://git@other.example/repo.git#main")] {
+        let w = world(tag, 1);
+        git(&w.repo, &["config", &format!("url.{rewritten}.pushInsteadOf"), ORIGIN]);
+        let gh = unprotected();
+        let push = request(&w, &gh);
+        let head = git(&w.repo, &["rev-parse", "main"]);
+
+        assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal), "{tag}");
+        assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()), "{tag}");
+        assert!(gh.calls().is_empty(), "{tag}: nothing was asked of GitHub");
+    }
+}
+
+#[test]
 fn a_refusal_naming_origins_addresses_never_shows_the_credentials_in_them() {
     let w = world("split-credentials", 1);
     let forked = w.root.join("fork.git");
