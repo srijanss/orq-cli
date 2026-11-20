@@ -91,6 +91,17 @@ fn diff(args: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Whether the person passed `--yes` or types `yes` to replace `target` with a snapshot.
+fn confirmed(args: &[OsString], target: &std::path::Path) -> bool {
+    if args.iter().any(|a| a == "--yes") {
+        return true;
+    }
+    eprint!("Replace {} with this snapshot? Type yes to continue: ", target.display());
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    answer.trim() == "yes"
+}
+
 /// Shows what restoring would change, then replaces the ledger with the snapshot once the person
 /// types `yes` (or passed `--yes`). The save snapshots the ledger it replaces first.
 fn restore(args: &[OsString]) -> ExitCode {
@@ -100,7 +111,7 @@ fn restore(args: &[OsString]) -> ExitCode {
     };
     let Some(name) = args.first().and_then(|a| a.to_str()) else { return crate::usage_error() };
     if name.starts_with("orq-db-") {
-        return restore_database(&roots, name);
+        return restore_database(&roots, name, args);
     }
     let (snapshot, ledger) = match find_snapshot(&roots, flag_value(args, "--repo"), name) {
         Ok(found) => found,
@@ -122,13 +133,8 @@ fn restore(args: &[OsString]) -> ExitCode {
         // Restoring undoes what `diff` shows, so the sense is the diff's, seen from the snapshot.
         println!("{}", crate::printable(&line));
     }
-    if !args.iter().any(|a| a == "--yes") {
-        eprint!("Replace {} with this snapshot? Type yes to continue: ", ledger.display());
-        let mut answer = String::new();
-        let _ = std::io::stdin().read_line(&mut answer);
-        if answer.trim() != "yes" {
-            return crate::fail("not restored: the ledger is unchanged");
-        }
+    if !confirmed(args, &ledger) {
+        return crate::fail("not restored: the ledger is unchanged");
     }
     match loaded.save(&text) {
         Ok(()) => {
@@ -140,7 +146,7 @@ fn restore(args: &[OsString]) -> ExitCode {
 }
 
 /// Replaces orq.db with a database snapshot. Refused while `orq serve` runs, which holds the database open.
-fn restore_database(roots: &StorageRoots, name: &str) -> ExitCode {
+fn restore_database(roots: &StorageRoots, name: &str, args: &[OsString]) -> ExitCode {
     if let Some(server) = crate::remote_serve::live_servers(roots).first() {
         let how = match &server.unit {
             Some(unit) => format!("systemctl --user stop {unit}"),
@@ -153,6 +159,9 @@ fn restore_database(roots: &StorageRoots, name: &str) -> ExitCode {
         return crate::fail(format!("no database snapshot {name}; `orq snapshots list` shows them"));
     };
     let database = roots.database();
+    if !confirmed(args, &database) {
+        return crate::fail("not restored: the database is unchanged");
+    }
     let temp = roots.data.join(format!(".orq-db-restore-{}.tmp", std::process::id()));
     let replaced = std::fs::copy(&snapshot, &temp).and_then(|_| std::fs::rename(&temp, &database));
     if let Err(e) = replaced {

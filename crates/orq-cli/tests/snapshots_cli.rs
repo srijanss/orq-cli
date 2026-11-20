@@ -224,6 +224,28 @@ fn restoring_the_database_is_refused_while_serve_runs_and_replaces_it_once_it_ha
 }
 
 #[test]
+fn restoring_the_database_without_confirmation_changes_nothing_and_with_yes_replaces_it() {
+    let s = Sandbox::new("dbconfirm");
+    assert!(s.orq(&["storage", "status"]).status.success());
+    let dir = s.home.join("data/orq/snapshots");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("orq-db-2026-01-01.sqlite"), b"from the snapshot").unwrap();
+    let database = s.home.join("data/orq/orq.db");
+    std::fs::write(&database, b"current").unwrap();
+
+    let declined = s.orq(&["snapshots", "restore", "orq-db-2026-01-01.sqlite"]);
+
+    assert!(!declined.status.success(), "{}", text(&declined));
+    assert!(text(&declined).contains("unchanged"), "{}", text(&declined));
+    assert_eq!(std::fs::read(&database).unwrap(), b"current");
+
+    let done = s.orq(&["snapshots", "restore", "orq-db-2026-01-01.sqlite", "--yes"]);
+
+    assert!(done.status.success(), "{}", text(&done));
+    assert_eq!(std::fs::read(&database).unwrap(), b"from the snapshot");
+}
+
+#[test]
 fn list_without_a_project_shows_the_database_snapshots_and_every_projects_ledger_snapshots() {
     let s = Sandbox::new("listall");
     s.add_feature("first");
