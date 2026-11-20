@@ -50,7 +50,7 @@ pub fn undo_formatting_outside(
         let old = git(worktree, &["cat-file", "blob", &format!("{from}:{path}")])?;
         let new = git(worktree, &["cat-file", "blob", &format!("HEAD:{path}")])?;
         let edition = edition_of(worktree, &path, &mut editions);
-        if rustfmt(worktree, &edition, &old).is_some_and(|formatted| formatted == new) {
+        if rustfmt(&config_dir(worktree, &path), &edition, &old).is_some_and(|formatted| formatted == new) {
             reverted.push(path);
         }
     }
@@ -161,12 +161,24 @@ fn manifest_edition(
         .clone()
 }
 
-/// `source` as rustfmt formats it for `edition`, with the worktree's rustfmt configuration; `None`
+/// The folder rustfmt looks for its configuration from when formatting `path`: the file's own folder
+/// in the worktree, so a crate's own `rustfmt.toml` applies; the worktree when that folder is not
+/// one inside it (gone, or reached through a link that leads out).
+fn config_dir(worktree: &Path, path: &str) -> std::path::PathBuf {
+    let root = worktree.canonicalize().unwrap_or_else(|_| worktree.to_path_buf());
+    let Some((parent, _)) = path.rsplit_once('/') else { return root };
+    match worktree.join(parent).canonicalize() {
+        Ok(dir) if dir.is_dir() && dir.starts_with(&root) => dir,
+        _ => root,
+    }
+}
+
+/// `source` as rustfmt formats it for `edition`, with the configuration found from `dir`; `None`
 /// when rustfmt cannot be run or does not format it.
-fn rustfmt(worktree: &Path, edition: &str, source: &[u8]) -> Option<Vec<u8>> {
+fn rustfmt(dir: &Path, edition: &str, source: &[u8]) -> Option<Vec<u8>> {
     let mut child = Command::new("rustfmt")
         .args(["--edition", edition, "--emit", "stdout", "--quiet"])
-        .current_dir(worktree)
+        .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

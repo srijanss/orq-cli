@@ -152,6 +152,21 @@ fn a_declared_file_reformatted_is_kept() {
 }
 
 #[test]
+fn formatting_with_a_nested_crates_own_rustfmt_config_is_undone() {
+    let two_spaces = "pub fn tidy(a: u32) -> u32 {\n  a + 1\n}\n";
+    let (_repo, store, record) = run_with(
+        "fmt-nested-config",
+        &[("sub/rustfmt.toml", "tab_spaces = 2\n"), ("sub/src/b.rs", UNTIDY)],
+        &[("sub/src/b.rs", two_spaces)],
+    );
+
+    let reverted = undo_formatting_outside(&store, &record, &record.base_sha, &declared(&[]), "implement_and_review").unwrap();
+
+    assert_eq!(reverted, vec!["sub/src/b.rs".to_string()]);
+    assert_eq!(git(&record.worktree, &["show", "HEAD:sub/src/b.rs"]), UNTIDY.trim_end());
+}
+
+#[test]
 fn a_commit_that_fails_leaves_the_worktree_and_index_as_they_were() {
     let (_repo, store, record) = run_with("fmt-commit-fails", &[("src/other.rs", UNTIDY)], &[("src/other.rs", TIDY)]);
     let worktree = &record.worktree;
