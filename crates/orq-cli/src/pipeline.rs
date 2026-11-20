@@ -1070,22 +1070,41 @@ fn restore_target_files(store: &RunStore, record: &RunRecord, ledger: &Path, bef
     let Some(before) = before else { return };
     // One load serves the whole check; it is repeated only after a save or a conflict made it stale.
     let mut conflicts = 0;
+    let mut gone: Vec<&String> = Vec::new();
     loop {
         let loaded = match orq_features::LoadedLedger::load(ledger) {
             Ok(loaded) => loaded,
-            Err(orq_features::LedgerError::Missing { .. }) => return,
+            Err(orq_features::LedgerError::Missing { .. }) => {
+                if before.iter().any(|(_, declared)| !declared.is_empty()) {
+                    eprintln!("orq: the feature ledger is gone, so the files its features declared are not put back");
+                }
+                return;
+            }
             Err(err) => {
                 eprintln!("orq: cannot read the feature ledger to put back the files its features declared: {err:?}");
                 return;
             }
         };
-        let dropped = before.iter().find_map(|(feature, declared)| {
-            let entry = loaded.entries().iter().find(|e| &e.feature_name == feature)?;
+        let mut dropped = None;
+        for (feature, declared) in before {
+            if gone.contains(&feature) {
+                continue;
+            }
+            let Some(entry) = loaded.entries().iter().find(|e| &e.feature_name == feature) else {
+                if !declared.is_empty() {
+                    eprintln!("orq: {feature} is no longer in the feature ledger, so the files it declared are not put back");
+                }
+                gone.push(feature);
+                continue;
+            };
             let restored: Vec<String> = declared.iter().filter(|f| !entry.target_files.contains(f)).cloned().collect();
-            let mut files = declared.clone();
-            files.extend(entry.target_files.iter().filter(|f| !declared.contains(f)).cloned());
-            (!restored.is_empty()).then_some((feature, restored, files))
-        });
+            if !restored.is_empty() {
+                let mut files = declared.clone();
+                files.extend(entry.target_files.iter().filter(|f| !declared.contains(f)).cloned());
+                dropped = Some((feature, restored, files));
+                break;
+            }
+        }
         let Some((feature, restored, files)) = dropped else { return };
         let edits = orq_features::FieldEdits { target_files: Some(files), ..Default::default() };
         match loaded.edit_fields(feature, &edits) {

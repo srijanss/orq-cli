@@ -168,6 +168,31 @@ fn a_ledger_that_cannot_be_read_after_the_session_says_the_declared_files_were_n
     assert_eq!(payloads_of(&w, "ledger.target_files_restored"), Vec::<serde_json::Value>::new());
 }
 
+/// A ledger a session deleted cannot get its files back: that is said, and nothing is recreated.
+#[test]
+fn a_ledger_deleted_by_the_session_says_the_declared_files_were_not_put_back() {
+    let w = world("deleted");
+    let script = format!("rm -f '{}'", w.repo.root().join(".tdd-features.json").display());
+    let agent = FakeAgent::builder().write_file("src/feature.rs", "done\n").commit("feat: add the feature").build();
+
+    let output = run(&w, path_with(&w, &agent, &script));
+
+    assert!(text(&output.stderr).contains("the feature ledger is gone, so the files its features declared are not put back"), "{}", text(&output.stderr));
+    assert_eq!(payloads_of(&w, "ledger.target_files_restored"), Vec::<serde_json::Value>::new());
+}
+
+/// A feature a session removed from the ledger is said, and the others still get their files back.
+#[test]
+fn a_feature_missing_from_the_ledger_after_the_session_is_said() {
+    let w = world("missing-entry");
+    let script = format!("printf '[]' > '{}'", w.repo.root().join(".tdd-features.json").display());
+    let agent = FakeAgent::builder().write_file("src/feature.rs", "done\n").commit("feat: add the feature").build();
+
+    let output = run(&w, path_with(&w, &agent, &script));
+
+    assert!(text(&output.stderr).contains("COM-01 is no longer in the feature ledger, so the files it declared are not put back"), "{}", text(&output.stderr));
+}
+
 /// A session that keeps every declared file changes nothing and records nothing.
 #[test]
 fn a_session_that_keeps_the_declared_files_records_nothing() {
