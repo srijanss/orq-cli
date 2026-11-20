@@ -120,7 +120,7 @@ fn each_listed_name_reads_back_as_the_exact_file_name() {
 /// The paragraph that comes right after the refusal rule; `{report}` is where the session says PROBLEM.
 fn no_ledger_workaround(report: &str) -> String {
     format!(
-        "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature. Never mark the run's feature complete while any of its behaviour is left to do. If a refusal still blocks the work after what the rule above allows, commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left."
+        "When an edit, a file change or a command the work needs is refused (by write_code, a hook, or the run's permissions), never get around it by changing the TDD ledger: don't call complete_feature, abandon or reset a feature, and don't start another feature with init_feature to get past it. Starting a fix for a review finding with init_feature(reviewFindingId=...), under the finding's own feature name, is the normal review loop and allowed. Never mark the run's feature complete while any of its behaviour is left to do. If a refusal still blocks the work after what the rule above allows, commit what is done and passing, then stop and say PROBLEM in {report}: each refused file or command, why the work needs it, and what is left."
     )
 }
 
