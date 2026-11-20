@@ -157,10 +157,10 @@ fn restart_marker(roots: &orq_core::storage::StorageRoots, listen: &str) -> Path
     serve_dir(roots).join(format!("restarted-{key}.json"))
 }
 
-/// When this server was started by a restart, audits it with both builds and says so.
-fn note_restarted(roots: &orq_core::storage::StorageRoots, listen: &str) {
+/// When this server was started by a restart, audits it with both builds and says so; whether it was.
+fn note_restarted(roots: &orq_core::storage::StorageRoots, listen: &str) -> bool {
     let marker = restart_marker(roots, listen);
-    let Ok(text) = std::fs::read_to_string(&marker) else { return };
+    let Ok(text) = std::fs::read_to_string(&marker) else { return false };
     let _ = std::fs::remove_file(&marker);
     let from = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|info| info["from"].as_str().map(str::to_string)).unwrap_or_else(|| "an unknown build".into());
     let reason = format!("from {from} to orq {BUILD}");
@@ -177,6 +177,7 @@ fn note_restarted(roots: &orq_core::storage::StorageRoots, listen: &str) {
         eprintln!("orq serve: cannot audit the restart: {why}");
     }
     println!("orq serve: restarted {reason}");
+    true
 }
 
 /// This build: its version, git commit and build time, as `orq --version` prints it after `orq `.
@@ -319,7 +320,7 @@ fn run(args: &[OsString]) -> ExitCode {
         Err(err) => return fail(format!("cannot start the server: {:?}", err.kind())),
     };
     // Audited before the address is announced, so whoever waits for it finds the line.
-    note_restarted(&state_roots, &listen_key);
+    let restarted = note_restarted(&state_roots, &listen_key);
     println!("orq remote: listening on http://{}", server.addr());
     let announced = announce_server(&state_roots, &server.addr().to_string());
     start_database_snapshots(state_roots.data.clone());
@@ -334,12 +335,15 @@ fn run(args: &[OsString]) -> ExitCode {
     let rounds = orq_remote::review_refresh::start_rounds(reviews, orq_remote::review_refresh::ROUND_EVERY);
     // What runs could not record is repaired now and on each review round.
     let repair_rounds = orq_remote::projects::start_repair_rounds(queued.clone(), orq_remote::review_refresh::ROUND_EVERY);
+    // Subscribed devices hear of the restart and of what runs record, off the runs' path.
+    let push_rounds = orq_remote::projects::start_push_rounds(queued.clone(), std::time::Duration::from_secs(5), restarted);
     // Queued features start on their own, but not while a restart waits for the runs to end.
     let hold = restart.clone();
     let queue_rounds = orq_remote::projects::start_queue_rounds(queued, std::time::Duration::from_secs(5), move || orq_core::remote_inbox::ServerControl::restart_pending(&*hold));
     let stop = wait_for_stop(&restart);
     // In-flight requests finish and event streams close as the server stops.
     drop(queue_rounds);
+    drop(push_rounds);
     drop(repair_rounds);
     drop(server);
     drop(rounds);

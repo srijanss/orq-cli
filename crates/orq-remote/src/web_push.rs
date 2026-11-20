@@ -236,6 +236,16 @@ pub struct PushEvent<'a> {
 /// the same run and kind was notified in the last five minutes. Returns how many devices were pushed to.
 /// A failure is never an error to the caller: a run must not feel a push service.
 pub fn notify(roots: &StorageRoots, event: &PushEvent) -> usize {
+    notify_claiming(roots, event, None)
+}
+
+/// Like [`notify`], but sent at most once ever for `event`'s run (or project) and `once`, which names what
+/// happened (a review merged, a review stale at one head), however often it is seen again.
+pub fn notify_once(roots: &StorageRoots, event: &PushEvent, once: &str) -> usize {
+    notify_claiming(roots, event, Some(once))
+}
+
+fn notify_claiming(roots: &StorageRoots, event: &PushEvent, once: Option<&str>) -> usize {
     let Ok(store) = orq_core::store::Store::open(&roots.database()) else { return 0 };
     let Ok(choices) = store.push_kind_choices() else { return 0 };
     let enabled = choices.iter().find(|(kind, _)| kind == event.kind).map_or(!OFF_BY_DEFAULT.contains(&event.kind), |(_, on)| *on);
@@ -249,7 +259,11 @@ pub fn notify(roots: &StorageRoots, event: &PushEvent) -> usize {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     // A queue has no run: it is the project's own.
     let subject = event.run_id.map_or_else(|| format!("project:{}", event.project_id), str::to_string);
-    if !store.claim_push(&subject, event.kind, now, REPEAT_WINDOW_SECS).unwrap_or(false) {
+    let (subject, window) = match once {
+        Some(once) => (format!("{subject}#{once}"), i64::MAX),
+        None => (subject, REPEAT_WINDOW_SECS),
+    };
+    if !store.claim_push(&subject, event.kind, now, window).unwrap_or(false) {
         return 0;
     }
     let payload = serde_json::json!({ "kind": event.kind, "project": event.project_id, "run": event.run_id, "event": event.event_id }).to_string();
@@ -261,6 +275,157 @@ pub fn notify(roots: &StorageRoots, event: &PushEvent) -> usize {
         }
     }
     sent
+}
+
+/// A [`PushEvent`] that owns its ids, so it can be sent from another thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Push {
+    pub kind: &'static str,
+    pub project_id: String,
+    pub run_id: Option<String>,
+    pub event_id: Option<String>,
+    /// Set when the push goes out at most once ever for what this names (see [`notify_once`]).
+    pub once: Option<String>,
+}
+
+/// Sends `push` on a thread of its own, so a slow or failing push service never holds up the caller; the
+/// handle gives how many devices were pushed to, for whoever wants to wait.
+pub fn notify_later(roots: &StorageRoots, push: Push) -> std::thread::JoinHandle<usize> {
+    let roots = roots.clone();
+    std::thread::spawn(move || {
+        let event = PushEvent { kind: push.kind, project_id: &push.project_id, run_id: push.run_id.as_deref(), event_id: push.event_id.as_deref() };
+        notify_claiming(&roots, &event, push.once.as_deref())
+    })
+}
+
+/// The kind of notification a run's event is, if any.
+pub fn kind_of(event: &orq_orchestrator::Event) -> Option<&'static str> {
+    match event.kind.as_str() {
+        "run.needs_input" => Some("needs_input"),
+        "run.failed" | "run.blocked" => Some("failed"),
+        "run.launched" | "run.started" => Some("started"),
+        "run.completed" => match event.payload.get("ending").and_then(|ending| ending.as_str()) {
+            Some("failed" | "blocked") => Some("failed"),
+            // Merged locally, or pushed with no review at a forge.
+            Some("merged" | "pushed") => Some("finished"),
+            Some("review_ready") => Some("review"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// What a push's notification shows, and the page it opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushText {
+    pub title: String,
+    pub body: String,
+    pub path: String,
+}
+
+/// Which page a notification opens.
+pub enum PushPage<'a> {
+    /// A run's own page, in its project.
+    Run { project: &'a str, run: &'a str },
+    /// A run's review, in its project.
+    Review { project: &'a str, run: &'a str },
+    /// A project's Queue page.
+    Queue { project: &'a str },
+    Dashboard,
+}
+
+impl PushPage<'_> {
+    fn path(&self) -> String {
+        match self {
+            PushPage::Run { project, run } => format!("/projects/{project}/orchestrations/{run}"),
+            PushPage::Review { project, run } => format!("/projects/{project}/reviews/{run}"),
+            PushPage::Queue { project } => format!("/projects/{project}/queue"),
+            PushPage::Dashboard => "/dashboard".to_string(),
+        }
+    }
+}
+
+/// The longest detail (a question, a reason) a notification's body carries, in characters.
+const DETAIL_CHARS: usize = 200;
+
+/// The words for a notification of `kind` about `subject` (a feature, or a project for queue kinds), with
+/// `detail` (redacted and cut short) as its body when there is one. `stale` tells a review that went out of
+/// date from one that is ready.
+pub fn push_text(kind: &str, stale: bool, subject: &str, detail: Option<&str>, page: PushPage) -> PushText {
+    let (title, fallback) = match kind {
+        "needs_input" => (format!("{subject} needs your input"), "A run is waiting for an answer."),
+        "failed" => (format!("{subject} failed"), "The run stopped before it finished."),
+        "stalled" => (format!("{subject} has stalled"), "The run has not moved for a while."),
+        "finished" => (format!("{subject} finished"), "The run is done."),
+        "started" => (format!("{subject} started"), "A run began."),
+        "review" if stale => (format!("{subject}'s review is out of date"), "The MR moved on since it was reviewed."),
+        "review" => (format!("{subject}'s review is ready"), "A review is waiting for you."),
+        "merged" => (format!("{subject}'s MR merged"), "The change is in."),
+        "queue_paused" => (format!("{subject}'s queue paused"), "Nothing more starts until it goes on."),
+        "queue_finished" => (format!("{subject}'s queue finished"), "Nothing is left to start."),
+        "restarted" => ("Orq restarted".to_string(), "The server is back."),
+        _ => (subject.to_string(), ""),
+    };
+    let body = match detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+        Some(detail) => orq_core::redact::redact(detail).chars().take(DETAIL_CHARS).collect(),
+        None => fallback.to_string(),
+    };
+    PushText { title, body, path: page.path() }
+}
+
+/// Follows every run's `events.jsonl` from where it was when the watch began, reading only what was appended.
+pub struct RunWatch {
+    runs: std::path::PathBuf,
+    /// How far into each run's events have been read, in bytes.
+    read: std::collections::HashMap<String, u64>,
+}
+
+impl RunWatch {
+    /// A watch that starts after what the runs have already recorded.
+    pub fn new(roots: &StorageRoots) -> RunWatch {
+        let mut watch = RunWatch { runs: roots.state.join("runs"), read: Default::default() };
+        for run in orq_orchestrator::RunStore::new(&roots.state).run_ids().unwrap_or_default() {
+            let len = std::fs::metadata(watch.events_file(&run)).map_or(0, |meta| meta.len());
+            watch.read.insert(run, len);
+        }
+        watch
+    }
+
+    fn events_file(&self, run: &str) -> PathBuf {
+        self.runs.join(run).join("events.jsonl")
+    }
+
+    /// The events recorded since the last look, in each run's order. A line still being written waits for the next look.
+    pub fn new_events(&mut self, roots: &StorageRoots) -> Vec<orq_orchestrator::Event> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut found = Vec::new();
+        for run in orq_orchestrator::RunStore::new(&roots.state).run_ids().unwrap_or_default() {
+            let file = self.events_file(&run);
+            let Ok(len) = std::fs::metadata(&file).map(|meta| meta.len()) else { continue };
+            let from = self.read.get(&run).copied().unwrap_or(0);
+            if len <= from {
+                // A log that shrank was rewritten: what it holds now was seen in some form already.
+                self.read.insert(run, len.min(from));
+                continue;
+            }
+            let mut bytes = Vec::new();
+            let read = std::fs::File::open(&file).and_then(|mut f| {
+                f.seek(SeekFrom::Start(from))?;
+                f.take(len - from).read_to_end(&mut bytes)
+            });
+            if read.is_err() {
+                continue;
+            }
+            let Some(end) = bytes.iter().rposition(|b| *b == b'\n') else { continue };
+            for line in bytes[..end].split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
+                if let Ok(event) = serde_json::from_slice::<orq_orchestrator::Event>(line) {
+                    found.push(event);
+                }
+            }
+            self.read.insert(run, from + end as u64 + 1);
+        }
+        found
+    }
 }
 
 /// What `/api/push/*` answers: its status and JSON body. The caller has already judged the request's

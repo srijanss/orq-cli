@@ -132,6 +132,8 @@ impl StoreProjects {
         let runs = RunStore::new(&self.roots.state);
         let failed = |e: std::io::Error| e.to_string();
         let mut in_review = false;
+        // The first run seen waiting for review, which then holds the starts after it.
+        let mut waits_on: Option<String> = None;
         // The queued Accepts this round read as going, as (run, entry): each holds its slot for the whole
         // round, though its tests end partway through, and what they ended with is acted on next round.
         let mut accepts_going = Vec::new();
@@ -171,12 +173,16 @@ impl StoreProjects {
                 // A run that ends well or waits for review lifts the pause its own failure caused.
                 Settled::InReview(_) => {
                     in_review = true;
+                    waits_on.get_or_insert_with(|| run.clone());
                     self.lift_failure_pause(store, id, root, &run, &what, "recovered and waits for review").map_err(failed)?;
                 }
                 Settled::Done => {
                     after_merge::settled(&self.roots.state, &runs, root, &run, &|| self.release_env(root, &settings));
                     store.queue_remove(root, &entry.feature).map_err(failed)?;
                     self.lift_failure_pause(store, id, root, &run, &what, "recovered and merged").map_err(failed)?;
+                    if store.queue(root).map_err(failed)?.entries.is_empty() {
+                        self.push_queue_news(id, "queue_finished", None);
+                    }
                 }
                 // A chain longer than one round follows: the run at its end may already wait for
                 // review, so a queue that waits for review starts nothing until a later round knows.
@@ -190,6 +196,7 @@ impl StoreProjects {
                         let why = reason.map_or(String::new(), |reason| format!(": {reason}"));
                         let reason = orq_core::redact::redact(&format!("the run {run} of {what} failed{why}"));
                         store.queue_pause(root, &reason).map_err(failed)?;
+                        self.push_queue_news(id, "queue_paused", None);
                     }
                 }
                 Settled::MrClosed => {
@@ -197,11 +204,16 @@ impl StoreProjects {
                     if settings.queue_stop_on_failure {
                         let reason = orq_core::redact::redact(&format!("{what}'s MR was closed without merging"));
                         store.queue_pause(root, &reason).map_err(failed)?;
+                        self.push_queue_news(id, "queue_paused", None);
                     }
                 }
             }
         }
         let queue = store.queue(root).map_err(failed)?;
+        // A review the queue waits for holds what is left to start: told once for each run it waits on.
+        if let Some(run) = waits_on.filter(|_| queue.paused.is_none() && queue.entries.iter().any(|entry| entry.run.is_none())) {
+            self.push_queue_news(id, "queue_paused", Some(&run));
+        }
         // A merge's release lands, or is refused, before the next run starts: its worktree is cut from the target.
         if queue.paused.is_some() || round.restart_pending || in_review || after_merge::release_pending(root) {
             return Ok(false);
@@ -353,6 +365,7 @@ impl StoreProjects {
             };
             if let Some(why) = refused {
                 store.queue_pause(root, &orq_core::redact::redact(&why)).map_err(failed)?;
+                self.push_queue_news(id, "queue_paused", None);
                 return Ok(started);
             }
             if started && one {
@@ -481,6 +494,9 @@ impl StoreProjects {
         let Ok(record) = runs.load(run_id) else { return };
         let Ok(store) = Store::open_read_only(&self.roots.database()) else { return };
         let latest = store.lifecycles_for_run(run_id).ok().and_then(|all| all.into_iter().filter(|l| l.provider != orq_core::review_lifecycle::LOCAL_PROVIDER).last());
+        if let Some(review) = &latest {
+            self.push_review_news(run_id, &record, review);
+        }
         let Some(review) = latest.filter(|review| review.state == orq_core::review_lifecycle::ProviderState::Merged) else { return };
         // Only a merged review reads the run's events, to pull its merge once and clean up once.
         let Ok(events) = runs.events(run_id) else { return };
@@ -502,6 +518,29 @@ impl StoreProjects {
         if !cleaned && settings.after_merge == orq_core::project_settings::AfterMerge::Auto {
             self.auto_clean_up(&project.id, &root, &runs, &record, &review_ref(&review));
         }
+    }
+
+    /// Tells the subscribed devices that project `id`'s queue paused or ran out, in the background. A pause for
+    /// the review of `waiting_on` is told once for that run; any other is told when it happens.
+    fn push_queue_news(&self, id: &str, kind: &'static str, waiting_on: Option<&str>) {
+        let event_id = waiting_on.map_or_else(|| kind.to_string(), |run| format!("{kind}:{run}"));
+        let once = waiting_on.map(|_| event_id.clone());
+        let push = crate::web_push::Push { kind, project_id: id.to_string(), run_id: None, event_id: Some(event_id), once };
+        drop(crate::web_push::notify_later(&self.roots, push));
+    }
+
+    /// Tells the subscribed devices, once each, that `run_id`'s MR merged or went stale after a push to it, in
+    /// the background.
+    fn push_review_news(&self, run_id: &str, record: &orq_orchestrator::RunRecord, review: &orq_core::review_lifecycle::ReviewLifecycle) {
+        use orq_core::review_lifecycle::ProviderState;
+        let (kind, what) = match review.state {
+            ProviderState::Merged => ("merged", "merged".to_string()),
+            ProviderState::Open if review.stale => ("review", format!("stale:{}", review.observed_head_sha.as_deref().unwrap_or_default())),
+            _ => return,
+        };
+        let Some(project_id) = self.web_project_of(&record.project_id) else { return };
+        let push = crate::web_push::Push { kind, project_id, run_id: Some(run_id.to_string()), event_id: Some(what.clone()), once: Some(what) };
+        drop(crate::web_push::notify_later(&self.roots, push));
     }
 
     /// Pulls the target `review` merged into, fast-forward only, and records how it went.

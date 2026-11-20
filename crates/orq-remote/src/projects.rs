@@ -474,6 +474,97 @@ impl Drop for RepairRounds {
     }
 }
 
+/// The server's push rounds, stopped and joined when dropped.
+pub struct PushRounds {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Tells the devices the server came back when `restarted`, then pushes what runs record every `every`, from
+/// what they had recorded when the rounds began. Every push goes out on a thread of its own.
+pub fn start_push_rounds(projects: std::sync::Arc<StoreProjects>, every: std::time::Duration, restarted: bool) -> PushRounds {
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let mut watch = crate::web_push::RunWatch::new(&projects.roots);
+    if restarted {
+        let push = crate::web_push::Push { kind: "restarted", project_id: "server".into(), run_id: None, event_id: Some("restarted".into()), once: None };
+        drop(crate::web_push::notify_later(&projects.roots, push));
+    }
+    let thread = std::thread::spawn(move || loop {
+        drop(projects.push_round(&mut watch));
+        if !matches!(stopped.recv_timeout(every), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+            break;
+        }
+    });
+    PushRounds { stop: Some(stop), thread: Some(thread) }
+}
+
+impl Drop for PushRounds {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl StoreProjects {
+    /// The id the web shows for the project a run's record names by its git project id; `None` when serve does not see it.
+    pub(crate) fn web_project_of(&self, git_project_id: &str) -> Option<String> {
+        discover(&self.scan_root).into_iter().find(|project| orq_git::resolve_project(&project.path).is_ok_and(|git| orq_git::project_id(&git) == git_project_id)).map(|project| project.id)
+    }
+
+    /// One look at what runs recorded since the last: each event worth a notification is pushed, under its
+    /// project's id as the web shows it, on a thread of its own. The handles give how many devices each reached.
+    pub fn push_round(&self, watch: &mut crate::web_push::RunWatch) -> Vec<std::thread::JoinHandle<usize>> {
+        let mut web_ids: Option<std::collections::HashMap<String, String>> = None;
+        let mut sends = Vec::new();
+        for event in watch.new_events(&self.roots) {
+            let Some(kind) = crate::web_push::kind_of(&event) else { continue };
+            // The projects are scanned once a look, and only when there is something to send.
+            let web_ids = web_ids.get_or_insert_with(|| {
+                discover(&self.scan_root).into_iter().filter_map(|project| Some((orq_git::project_id(&orq_git::resolve_project(&project.path).ok()?), project.id))).collect()
+            });
+            let Some(project_id) = web_ids.get(&event.project_id) else { continue };
+            let push = crate::web_push::Push { kind, project_id: project_id.clone(), run_id: Some(event.run_id.clone()), event_id: Some(event.event_id.clone()), once: None };
+            sends.push(crate::web_push::notify_later(&self.roots, push));
+        }
+        sends
+    }
+
+    /// The words of a push about `event`: one of `run`'s events (or the news its review gave), one of project
+    /// `id`'s queue, or the server's restart. `None` for what this server does not show.
+    fn push_text_of(&self, id: &str, run: Option<&str>, event: &str) -> Result<Option<crate::web_push::PushText>, String> {
+        use crate::web_push::{push_text, PushPage};
+        let Some(run) = run else {
+            if id == "server" && event == "restarted" {
+                return Ok(Some(push_text("restarted", false, "", None, PushPage::Dashboard)));
+            }
+            let kind = match event {
+                "queue_finished" => "queue_finished",
+                paused if paused == "queue_paused" || paused.starts_with("queue_paused:") => "queue_paused",
+                _ => return Ok(None),
+            };
+            let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+            return Ok(Some(push_text(kind, false, &project.name, None, PushPage::Queue { project: &project.id })));
+        };
+        let Some((project, store)) = self.own_run(id, run)? else { return Ok(None) };
+        let feature = store.load(run).map_err(|error| format!("run {run} is unreadable: {error:?}"))?.feature_id;
+        let review = PushPage::Review { project: &project.id, run };
+        if event == "merged" {
+            return Ok(Some(push_text("merged", false, &feature, None, review)));
+        }
+        if event.starts_with("stale:") {
+            return Ok(Some(push_text("review", true, &feature, None, review)));
+        }
+        let events = store.events(run).map_err(|error| format!("run {run}'s events are unreadable: {error:?}"))?;
+        let Some(found) = events.iter().find(|recorded| recorded.event_id == event) else { return Ok(None) };
+        let Some(kind) = crate::web_push::kind_of(found) else { return Ok(None) };
+        let detail = ["question", "reason"].iter().find_map(|key| found.payload.get(*key).and_then(serde_json::Value::as_str));
+        let page = if kind == "review" { review } else { PushPage::Run { project: &project.id, run } };
+        Ok(Some(push_text(kind, false, &feature, detail, page)))
+    }
+}
+
 /// The projects provider the server hands to the handler: it rescans the scan root on each
 /// request and reads counts from the same storage the CLI writes. A project it cannot read is
 /// listed as unavailable, never dropped.
@@ -1261,6 +1352,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn decide_plan(&self, id: &str, run: &str, replace: bool) -> Result<orq_core::remote_inbox::PlanDecision, String> {
         self.decide_plan_run(id, run, replace)
+    }
+
+    fn push_text(&self, id: &str, run: Option<&str>, event: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(self.push_text_of(id, run, event)?.map(|text| serde_json::json!({"title": text.title, "body": text.body, "path": text.path})))
     }
 
     fn review_scope(&self, id: &str) -> Result<Option<orq_core::remote_inbox::ReviewScope>, String> {

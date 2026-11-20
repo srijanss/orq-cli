@@ -204,6 +204,11 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
             log_refusal(peer.ip(), &method, refusal_path(&path));
             return json_reply(401, b"{\"error\":\"unauthorized\"}".to_vec());
         }
+        if method == "GET" && path == "/api/push/text" {
+            let (projects, query) = (shared.projects.clone(), uri.query().unwrap_or("").to_string());
+            let Ok((code, reply)) = tokio::task::spawn_blocking(move || push_text_reply(projects.as_deref(), &query)).await else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+            return json_reply(code, reply.to_string().into_bytes());
+        }
         let roots = shared.state.roots.clone();
         let Ok((code, reply)) = tokio::task::spawn_blocking(move || web_push::route(&roots, &method, &path, &body)).await else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
         return json_reply(code, reply.to_string().into_bytes());
@@ -223,6 +228,29 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
         refresher.request(&run);
     }
     json_reply(reply.0, reply.1)
+}
+
+/// `GET /api/push/text?project=&run=&event=`: what a push about that event shows, for the worker to put on
+/// screen; 404 for what this server does not show.
+fn push_text_reply(projects: Option<&(dyn ProjectsProvider + Send + Sync)>, query: &str) -> (u16, serde_json::Value) {
+    let not_found = || (404, serde_json::json!({ "error": "not found" }));
+    let mut fields = (None, None, None);
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let Some(value) = remote_inbox::query_decode(value).filter(|value| !value.is_empty()) else { continue };
+        match name {
+            "project" => fields.0 = Some(value),
+            "run" => fields.1 = Some(value),
+            "event" => fields.2 = Some(value),
+            _ => {}
+        }
+    }
+    let (Some(projects), (Some(project), run, Some(event))) = (projects, fields) else { return not_found() };
+    match projects.push_text(&project, run.as_deref(), &event) {
+        Ok(Some(text)) => (200, text),
+        Ok(None) => not_found(),
+        Err(_) => (500, serde_json::json!({ "error": "the event could not be read" })),
+    }
 }
 
 /// Reads an action's body up to one byte past the cap, so a body over it reaches the handler as too
@@ -447,7 +475,7 @@ fn is_application_path(path: &str) -> bool {
     match segments.as_slice() {
         ["dashboard"] | ["reviews"] | ["settings"] | ["settings", "audit"] | ["projects"] | ["features"] | ["orchestrations"] => true,
         ["projects", project] => plain(project),
-        ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews"].contains(section),
+        ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews", "queue"].contains(section),
         ["projects", project, "reviews", run] | ["projects", project, "features", run] => plain(project) && plain(run),
         // A run, its next pages of events, and its logs (a file, then the page after a line).
         ["projects", project, "orchestrations", run] | ["projects", project, "orchestrations", run, "logs"] => plain(project) && plain(run),

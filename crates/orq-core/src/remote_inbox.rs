@@ -183,6 +183,12 @@ pub trait ProjectsProvider {
     /// The projects as JSON, or why they cannot be listed.
     fn projects(&self) -> Result<Value, String>;
 
+    /// What a push about `event` (of `run`, or of project `id` itself) shows: `{title, body, path}`. `None` when
+    /// the project, the run or the event is not one this server shows.
+    fn push_text(&self, _id: &str, _run: Option<&str>, _event: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// The review scope of project `id`, `None` when there is no such project.
     fn review_scope(&self, _id: &str) -> Result<Option<ReviewScope>, String> {
         Ok(None)
@@ -3079,7 +3085,7 @@ struct ListQuery {
 }
 
 /// One query component with `%XX` escapes and `+` decoded; `None` when an escape is broken or the bytes are not text.
-fn query_decode(raw: &str) -> Option<String> {
+pub fn query_decode(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;
