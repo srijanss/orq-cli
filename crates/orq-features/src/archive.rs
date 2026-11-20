@@ -118,7 +118,9 @@ pub fn archive_ledger(
     if active_runs > 0 {
         return Err(ArchiveError::ActiveRun);
     }
-    let bytes = std::fs::read(ledger)?;
+    // The ledger is read as a LoadedLedger so the final write goes through its lock and its unchanged-bytes check.
+    let loaded = crate::LoadedLedger::load(ledger).map_err(|e| ArchiveError::Ledger(format!("{e:?}")))?;
+    let bytes = loaded.bytes().to_vec();
     let entries = match serde_json::from_slice::<Value>(&bytes) {
         Ok(Value::Array(items)) => items,
         Ok(_) => return Err(ArchiveError::Ledger("not a JSON array".into())),
@@ -191,15 +193,26 @@ pub fn archive_ledger(
     orq_core::storage::snapshot_ledger(data_root, project_id, &bytes, now_secs)?;
 
     let path = archive_path(data_root, project_id);
-    let mut archive = read_archive(&path)?;
-    archive.extend(moved);
-    for (name, gone) in &plan.stripped {
-        archive.push(json!({"featureName": name, "archivedDependsOn": gone}));
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    write_ledger_atomic(&path, &(serde_json::to_string_pretty(&Value::Array(archive)).expect("json") + "\n"))?;
-    write_ledger_atomic(ledger, &(serde_json::to_string_pretty(&Value::Array(remaining)).expect("json") + "\n"))?;
+    let moved_records: Vec<Value> = moved
+        .into_iter()
+        .chain(plan.stripped.iter().map(|(name, gone)| json!({"featureName": name, "archivedDependsOn": gone})))
+        .collect();
+    // Under the ledger's lock, once the ledger is found unchanged since it was read: the archive is appended
+    // first, then the ledger replaced, so concurrent writers and a second archive pass see one or the other
+    // whole. A change to the ledger since it was read leaves both files as they were.
+    let archive_first = || -> std::io::Result<()> {
+        let mut archive = read_archive(&path).map_err(|e| std::io::Error::other(e.to_string()))?;
+        archive.extend(moved_records.iter().cloned());
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_ledger_atomic(&path, &(serde_json::to_string_pretty(&Value::Array(archive)).expect("json") + "\n"))
+    };
+    let text = serde_json::to_string_pretty(&Value::Array(remaining)).expect("json") + "\n";
+    loaded.save_after(&text, &archive_first).map_err(|e| match e {
+        crate::SaveError::Conflict => ArchiveError::Ledger("the ledger changed while it was being archived; nothing was written, try again".into()),
+        crate::SaveError::Locked => ArchiveError::Ledger("the ledger is locked by another writer; nothing was written, try again".into()),
+        crate::SaveError::Io(e) => ArchiveError::Io(e),
+    })?;
     Ok(plan)
 }

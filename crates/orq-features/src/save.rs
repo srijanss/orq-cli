@@ -312,6 +312,15 @@ impl LoadedLedger {
         self.save_with(contents, wait, &write_ledger_atomic)
     }
 
+    /// Like [`save`](Self::save), but `prelude` runs under the same lock, after the file is found unchanged
+    /// and before the ledger is replaced; a failing prelude leaves the ledger as it was.
+    pub(crate) fn save_after(&self, contents: &str, prelude: &dyn Fn() -> std::io::Result<()>) -> Result<(), SaveError> {
+        self.save_with(contents, LOCK_WAIT, &|path, text| {
+            prelude()?;
+            write_ledger_atomic(path, text)
+        })
+    }
+
     fn save_with(
         &self,
         contents: &str,

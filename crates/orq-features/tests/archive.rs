@@ -189,6 +189,23 @@ fn validation_accepts_an_archived_dependency_and_names_it_for_dropping() {
     assert_eq!(orq_features::validate_entries(&ledger), Ok(()));
 }
 
+/// Another writer holding the ledger's lock keeps the archive out: nothing is written to either file.
+#[test]
+fn archiving_waits_for_the_ledger_lock_and_writes_nothing_when_it_stays_held() {
+    let dir = dir("locked");
+    let data = dir.join("data");
+    let ledger = write_ledger(&dir, &sample());
+    let before = fs::read_to_string(&ledger).unwrap();
+    let lock = fs::OpenOptions::new().create(true).write(true).truncate(false).open(dir.join(".tdd-features.json.lock")).unwrap();
+    lock.lock().unwrap();
+
+    let err = archive_ledger(&ledger, &data, "proj", 2, false, 0, "2026-11-20T00:00:00Z").unwrap_err();
+
+    assert!(err.to_string().contains("locked"), "{err}");
+    assert_eq!(fs::read_to_string(&ledger).unwrap(), before);
+    assert!(!archive_path(&data, "proj").exists());
+}
+
 #[test]
 fn saving_drops_archived_dependencies_and_says_so_while_a_live_name_wins() {
     let dir = dir("save-drops");
