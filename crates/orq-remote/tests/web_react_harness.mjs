@@ -113,6 +113,7 @@ const requests = [];
 const held = {};
 const responses = [...scenario.responses];
 const storageReplies = [...(scenario.storage || [])];
+const archivedReplies = [...(scenario.archived || [])];
 const storageRequests = [];
 const todoReplies = [...(scenario.todo || [])];
 const todoRequests = [];
@@ -200,6 +201,14 @@ window.fetch = (url, options = {}) => {
   if (String(url).startsWith("/api/storage/")) {
     storageRequests.push({ url, method: options.method, headers: options.headers, body: options.body === undefined ? null : options.body });
     const next = storageReplies.shift() || { status: 404, json: { error: "not found" } };
+    if (next.reject) return Promise.reject(new Error("offline"));
+    return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
+  }
+  // The archive read is answered from `archived` in order, apart from `responses`, so a page that reads it
+  // never shifts the other replies; with none left it answers 404.
+  if (String(url).endsWith("/features/archived")) {
+    requests.push({ url, method: options.method, headers: options.headers, body: null, get aborted() { return null; } });
+    const next = archivedReplies.shift() || { status: 404, json: { error: "not found" } };
     if (next.reject) return Promise.reject(new Error("offline"));
     return Promise.resolve({ status: next.status, ok: next.status >= 200 && next.status < 300, json: () => Promise.resolve(next.json) });
   }

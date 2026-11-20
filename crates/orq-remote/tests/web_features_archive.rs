@@ -42,7 +42,9 @@ fn runs() -> Value {
 fn page(url: &str, responses: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
     let mut all = vec![json!({"submit": TOKEN})];
     all.extend(steps);
-    run(json!({"url": url, "responses": responses, "steps": all, "selectors": SELECTORS}))
+    // The archive read is scripted apart from the other replies; the archive action's reply has a count, not a list.
+    let (archived, responses): (Vec<Value>, Vec<Value>) = responses.into_iter().partition(|r| r["json"]["archived"].is_array() || r["archive_read"] == true);
+    run(json!({"url": url, "responses": responses, "archived": archived, "steps": all, "selectors": SELECTORS}))
 }
 
 fn count(frame: &Value, selector: &str) -> u64 {
@@ -92,7 +94,7 @@ fn an_archived_features_page_is_read_only_and_a_missing_one_is_not_found() {
 /// and a refused token asks for the token again.
 #[test]
 fn a_failed_archive_read_shows_an_error_and_a_refused_token_signs_out() {
-    for failure in [json!({"status": 500, "json": {"error": "boom"}}), json!({"reject": true})] {
+    for failure in [json!({"status": 500, "json": {"error": "boom"}, "archive_read": true}), json!({"reject": true, "archive_read": true})] {
         let responses = vec![ledger(2, true), runs(), projects(), failure];
         let Some(out) = page("/projects/alpha/features/old-beta", responses, vec![]) else { return };
         let end = last(&out);
@@ -101,7 +103,7 @@ fn a_failed_archive_read_shows_an_error_and_a_refused_token_signs_out() {
         assert!(!texts(end).iter().any(|t| t == "Not found"), "{out}");
     }
 
-    let responses = vec![ledger(2, true), runs(), projects(), json!({"status": 401, "json": {}})];
+    let responses = vec![ledger(2, true), runs(), projects(), json!({"status": 401, "json": {}, "archive_read": true})];
     let Some(out) = page("/projects/alpha/features/old-beta", responses, vec![]) else { return };
     assert_eq!(last(&out)["settled"]["inputs"].as_array().unwrap().len(), 1, "{out}");
 }
