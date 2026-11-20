@@ -211,6 +211,29 @@ fn an_origin_url_other_than_the_one_the_projects_runs_use_is_refused() {
 }
 
 #[test]
+fn an_origin_that_pushes_to_more_than_one_address_is_refused_and_neither_gets_the_commits() {
+    let refusal = "origin pushes to more than one address: give it one push address first";
+    // Two push urls, or two urls and no push url: `git push origin` would send to both.
+    for (tag, key) in [("two-pushurls", "remote.origin.pushurl"), ("two-urls", "remote.origin.url")] {
+        let w = world(tag, 1);
+        let mirror = w.root.join("mirror.git");
+        git(&w.root, &["clone", "-q", "--bare", w.origin.to_str().unwrap(), mirror.to_str().unwrap()]);
+        if key == "remote.origin.pushurl" {
+            git(&w.repo, &["config", "--add", key, ORIGIN]);
+        }
+        git(&w.repo, &["config", "--add", key, &format!("file://{}", mirror.display())]);
+        let gh = unprotected();
+        let push = request(&w, &gh);
+        let head = git(&w.repo, &["rev-parse", "main"]);
+
+        assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal), "{tag}");
+        assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()), "{tag}");
+        assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "{tag}: nothing was pushed");
+        assert_eq!(git(&mirror, &["rev-parse", "refs/heads/main"]), w.base, "{tag}: nothing was pushed to the other address");
+    }
+}
+
+#[test]
 fn a_branch_that_moved_after_confirmation_is_refused() {
     let w = world("moved", 1);
     let gh = unprotected();

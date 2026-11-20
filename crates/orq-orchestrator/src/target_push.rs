@@ -218,12 +218,17 @@ fn repository_identity(url: &str) -> &str {
     url.strip_suffix(".git").unwrap_or(url)
 }
 
-/// The raw url origin is pushed to, as configured (pushurl, else url).
+/// The raw url origin is pushed to, as configured (its pushurls, else its urls). `git push origin`
+/// sends to every one of them, so an origin with more than one is refused: only the one address
+/// checked here may get the commits.
 fn origin_push_url(dir: &Path) -> Result<String, String> {
     for key in [format!("remote.{REMOTE}.pushurl"), format!("remote.{REMOTE}.url")] {
-        let out = git(dir, &["config", "--get", &key])?;
-        if out.success && !out.stdout.trim().is_empty() {
-            return Ok(out.stdout.trim().to_string());
+        let out = git(dir, &["config", "--get-all", &key])?;
+        let urls: Vec<&str> = if out.success { out.stdout.lines().map(str::trim).filter(|url| !url.is_empty()).collect() } else { Vec::new() };
+        match urls.as_slice() {
+            [] => continue,
+            [url] => return Ok(url.to_string()),
+            _ => return Err(format!("{REMOTE} pushes to more than one address: give it one push address first")),
         }
     }
     Err(format!("the main checkout has no remote {REMOTE}"))
