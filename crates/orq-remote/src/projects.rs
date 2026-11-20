@@ -2204,6 +2204,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if event.kind == "session.undeclared_files" {
                     listed["undeclared_files"] = undeclared_files_shown(&event.payload);
                 }
+                if event.kind == "session.format_reverted" {
+                    listed["format_reverted"] = undeclared_files_shown(&event.payload);
+                }
                 if event.kind == "target.pull_warning" {
                     listed["target_pull"] = target_pull_shown(&event.payload);
                 }
@@ -2352,7 +2355,8 @@ fn flaky_tests_shown(payload: &serde_json::Value) -> serde_json::Value {
 }
 
 /// What the run page shows of a `session.undeclared_files` event: each file a session changed outside
-/// its features' files, redacted. Anything else the payload holds is left out.
+/// its features' files, redacted; of a `session.format_reverted` event, each file whose formatting was
+/// undone. Anything else the payload holds is left out.
 fn undeclared_files_shown(payload: &serde_json::Value) -> serde_json::Value {
     let files: Vec<_> = payload.get("files").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|file| Some(orq_core::redact::redact(file.as_str()?))).collect();
     serde_json::json!(files)

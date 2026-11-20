@@ -300,7 +300,8 @@ const ALLOWED: &[&str] = &[
     "Bash(cargo build:*)",
     "Bash(cargo test:*)",
     "Bash(cargo check:*)",
-    "Bash(cargo fmt:*)",
+    // Formatting named files only: a bare `cargo fmt`, `--all` or `-p` formats files the run does not own.
+    "Bash(cargo fmt -- *)",
     "Bash(cargo clippy:*)",
     "Bash(cargo run:*)",
     "Bash(cargo metadata:*)",
@@ -906,6 +907,16 @@ fn command_pattern(rule: &str) -> (&str, bool) {
         Some(words) => (words, true),
         None => (rule, false),
     }
+}
+
+/// Whether one of the `Bash(...)` rules `rules` (as [`RunPermissions::allowed_commands`] lists them)
+/// lets the session run `command`.
+pub fn allows_command(rules: &[String], command: &str) -> bool {
+    rules.iter().any(|rule| {
+        rule.strip_prefix("Bash(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .is_some_and(|pattern| pattern_matches(pattern, command))
+    })
 }
 
 /// Whether the command `command` is one the rule pattern `rule` names, where `*` stands for any text.

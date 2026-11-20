@@ -10,6 +10,7 @@ mod cleanup;
 mod conflict_fix;
 mod discard;
 mod fix_features;
+mod format_revert;
 mod gate;
 mod gate_fix;
 mod gate_stage;
@@ -73,6 +74,7 @@ pub use discard::{
     features_finished_elsewhere, features_no_later_run_took, DeletedBranch, DiscardOutcome,
 };
 pub use fix_features::{carry_fix_features, fix_features, record_fix_features_added};
+pub use format_revert::{undo_formatting_outside, FORMAT_REVERTED, FORMAT_REVERT_MESSAGE};
 pub use gate::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
 pub use gate_fix::{
     rerun_gate, run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then,
@@ -172,7 +174,7 @@ pub use session_references::{
     carry_session_references, resumable_session, session_references, SessionReference,
 };
 pub use session_settings::{
-    exclude_worktrees_dir, prepare_mcp_servers, prepare_project_mcp, refresh_run_permissions,
+    allows_command, exclude_worktrees_dir, prepare_mcp_servers, prepare_project_mcp, refresh_run_permissions,
     remove_needs_input_hook, setup_mcp_servers, write_needs_input_hook, write_run_permissions,
     write_session_settings, RunPermissions,
 };

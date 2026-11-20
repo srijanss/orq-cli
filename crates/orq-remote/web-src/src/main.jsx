@@ -5936,6 +5936,15 @@ function undeclaredFiles(events) {
   return [...new Set(files)];
 }
 
+// The files whose formatting orq undid after the step's sessions, outside their features' files, each once.
+function formatReverted(events) {
+  const files = events
+    .filter((event) => event.kind === "session.format_reverted" && Array.isArray(event.format_reverted))
+    .flatMap((event) => event.format_reverted)
+    .filter((file) => typeof file === "string" && file !== "");
+  return [...new Set(files)];
+}
+
 // Whether each step detail was opened or closed, by run, step and kind, kept while the page lives so new
 // events (which redraw the steps) never close a detail someone opened; a reload starts them as they start.
 const shownDetails = new Map();
@@ -6001,6 +6010,8 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
         const flaky = flakyNote(step);
         const took = stepDuration(step.events);
         const undeclared = undeclaredFiles(step.events);
+        const reverted = formatReverted(step.events);
+        const outside = undeclared.length + reverted.length;
         const flakyList = flakyTests(step.events);
         const place = runId + "\n" + step.events[0].event_id;
         const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
@@ -6027,10 +6038,11 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
                 </ul>
               </StepDetail>
             ) : null}
-            {undeclared.length > 0 ? (
-              <StepDetail place={place} kind="undeclared" label={"Changed outside its features' files: " + undeclared.length + (undeclared.length === 1 ? " file" : " files")}>
+            {outside > 0 ? (
+              <StepDetail place={place} kind="undeclared" label={"Changed outside its features' files: " + outside + (outside === 1 ? " file" : " files")}>
                 <ul className="run-step-undeclared-list">
                   {undeclared.map((file) => <li key={file} data-step-undeclared>{file}</li>)}
+                  {reverted.map((file) => <li key={"reverted" + file} data-step-format-reverted>{file + " (formatting undone)"}</li>)}
                 </ul>
               </StepDetail>
             ) : null}

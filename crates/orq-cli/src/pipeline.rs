@@ -1391,6 +1391,24 @@ fn record_undeclared_files(store: &RunStore, record: &RunRecord, ledger: &Path, 
     }
 }
 
+/// After the session stage `stage`: a Rust file outside the features' files whose committed change is
+/// formatting only is put back in a commit of its own and recorded as `session.format_reverted`, so it
+/// is no longer among the files changed outside them. What cannot be done is said, and blocks nothing.
+fn undo_formatting_outside(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], generated: &[String], stage: &str) {
+    let events = match store.events(&record.run_id) {
+        Ok(events) => events,
+        Err(err) => {
+            eprintln!("orq: {}: cannot check the {} session's formatting outside its features' files: {err:?}", record.run_id, stage_words(stage));
+            return;
+        }
+    };
+    let base = changes_base(record, &events);
+    let Some(declared) = declared_files(store, record, ledger, features, generated) else { return };
+    if let Err(err) = orq_orchestrator::undo_formatting_outside(store, record, &base, &declared, stage) {
+        eprintln!("orq: {}: cannot undo the {} session's formatting outside its features' files: {err}", record.run_id, stage_words(stage));
+    }
+}
+
 /// The files the implement session is told: those `features` declare, and those this run, or the run
 /// it resumes, already recorded as changed outside them. A name a prompt cannot hold is left out.
 fn session_files(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], resumed_from: Option<&str>) -> (Vec<String>, Vec<String>) {
@@ -1417,15 +1435,21 @@ fn stage_words(stage: &str) -> &str {
     }
 }
 
-/// The files the run's commits changed: since the commit its branch was last rebased (or stopped
-/// rebasing) onto, else since its base.
-fn changed_files(record: &RunRecord, events: &[orq_orchestrator::Event]) -> Result<Vec<String>, String> {
+/// The commit the run's changes are counted from: the one its branch was last rebased (or stopped
+/// rebasing) onto, else its base.
+fn changes_base(record: &RunRecord, events: &[orq_orchestrator::Event]) -> String {
     let onto = events.iter().rev().find_map(|e| match e.kind.as_str() {
         "rebase.completed" | "run.rebase_carried" => e.payload["target_sha"].as_str(),
         "rebase.conflict" => e.payload["onto"].as_str(),
         _ => None,
     });
-    let base = onto.unwrap_or(&record.base_sha);
+    onto.unwrap_or(&record.base_sha).to_string()
+}
+
+/// The files the run's commits changed: since the commit its branch was last rebased (or stopped
+/// rebasing) onto, else since its base.
+fn changed_files(record: &RunRecord, events: &[orq_orchestrator::Event]) -> Result<Vec<String>, String> {
+    let base = changes_base(record, events);
     let output = Command::new("git")
         .arg("-C")
         .arg(&record.worktree)
@@ -2191,6 +2215,7 @@ fn stages(
             restore_target_files(store, record, &orq_features::ledger_path(options.project), files_before.as_deref());
             record_session_completed(store, record, &orq_features::ledger_path(options.project), options.features, before.as_deref());
             record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "implement");
+            undo_formatting_outside(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "implement_and_review");
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "implement_and_review");
             if options.unattended {
                 if let Some(reason) = unanswered_need(store, run_id) {
