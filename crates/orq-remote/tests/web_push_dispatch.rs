@@ -673,6 +673,59 @@ fn text_of(
 }
 
 #[test]
+fn push_text_hides_secrets_in_a_question_or_reason_and_cuts_long_text_at_two_hundred_characters() {
+    let s = setup("dispatch-text-redacted", false);
+    seed_run(&s, "run-1", "COM-01");
+    let token = format!("ghp_{}", "A1b2C3d4".repeat(4));
+    let asked = event(
+        &s,
+        "run-1",
+        "run.needs_input",
+        json!({"question": format!("push with {token} or password=hunter2hunter2?")}),
+    );
+    let failed = event(
+        &s,
+        "run-1",
+        "run.failed",
+        json!({"reason": "curl -H 'Authorization: Bearer abcdefgh12345678' https://ci:s3cretpass@ci.example/x refused"}),
+    );
+    // Multibyte text far past the cut, with its end in sight only if the cut is by bytes or missing.
+    let long = event(
+        &s,
+        "run-1",
+        "run.failed",
+        json!({"reason": format!("{}THE-END", "é漢".repeat(300))}),
+    );
+    let server = serve(&s);
+    let session = web_push_session::sign_in(server.addr(), "tok");
+    let body_of = |event: &str| {
+        let (status, body) = text_of(
+            &server,
+            Some(&session),
+            &format!("project=alpha&run=run-1&event={event}"),
+        );
+        assert_eq!(status, 200, "{body}");
+        body["body"].as_str().unwrap().to_string()
+    };
+
+    let body = body_of(&asked);
+    assert!(
+        !body.contains(&token) && !body.contains("hunter2hunter2"),
+        "{body}"
+    );
+    assert!(body.contains("[REDACTED]") && body.contains("push with"), "{body}");
+    let body = body_of(&failed);
+    assert!(
+        !body.contains("abcdefgh12345678") && !body.contains("s3cretpass"),
+        "{body}"
+    );
+    assert!(body.contains("[REDACTED]") && body.contains("refused"), "{body}");
+    let body = body_of(&long);
+    assert_eq!(body.chars().count(), 200, "{body}");
+    assert_eq!(body, "é漢".repeat(100));
+}
+
+#[test]
 fn push_text_gives_each_kinds_title_body_and_page_to_a_signed_in_session_and_404_for_what_it_cannot_see(
 ) {
     let s = setup("dispatch-text", false);
