@@ -86,7 +86,7 @@ fn a_version_three_database_is_upgraded_keeping_its_reviews() {
     store.save_review(&roots.data, "run-1", "p-0a1b2c3d", "F", &"a".repeat(40), br#"{"status":"current","risks":[]}"#).unwrap();
     drop(store);
     let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old; ALTER TABLE prune_journal RENAME TO prune_journal_old; ALTER TABLE review_lifecycles DROP COLUMN observed; ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; ALTER TABLE todos RENAME TO todos_old; ALTER TABLE queue_wishes RENAME TO queue_wishes_old;").unwrap();
+    conn.execute_batch("ALTER TABLE project_settings RENAME TO project_settings_old; ALTER TABLE prune_journal RENAME TO prune_journal_old; ALTER TABLE review_lifecycles DROP COLUMN observed; ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; ALTER TABLE todos RENAME TO todos_old; ALTER TABLE queue_wishes RENAME TO queue_wishes_old; ALTER TABLE push_subscriptions RENAME TO push_subscriptions_old; ALTER TABLE push_kinds RENAME TO push_kinds_old; ALTER TABLE push_projects_muted RENAME TO push_projects_muted_old; ALTER TABLE push_sent RENAME TO push_sent_old;").unwrap();
     conn.pragma_update(None, "user_version", 3).unwrap();
     drop(conn);
     let store = Store::open(&db).unwrap();

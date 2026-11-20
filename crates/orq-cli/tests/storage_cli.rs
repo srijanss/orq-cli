@@ -155,6 +155,8 @@ fn database_from_before_pins_were_removed(s: &Sandbox, pins: &[&str]) -> rusqlit
          ALTER TABLE project_settings DROP COLUMN pull_target_before_runs; ALTER TABLE project_settings DROP COLUMN after_merge; \
          ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; \
          ALTER TABLE todos RENAME TO todos_old; ALTER TABLE queue_wishes RENAME TO queue_wishes_old; \
+         ALTER TABLE push_subscriptions RENAME TO push_subscriptions_old; ALTER TABLE push_kinds RENAME TO push_kinds_old; \
+         ALTER TABLE push_projects_muted RENAME TO push_projects_muted_old; ALTER TABLE push_sent RENAME TO push_sent_old; \
          PRAGMA user_version = 6;").unwrap();
     for pin in pins {
         db.execute("INSERT INTO run_pins (run_id, pinned_at) VALUES (?1, 1)", [pin]).unwrap();
