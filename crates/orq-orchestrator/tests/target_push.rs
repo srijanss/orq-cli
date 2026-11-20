@@ -271,6 +271,23 @@ fn an_origin_that_fetches_from_one_repository_and_pushes_to_another_is_refused()
 }
 
 #[test]
+fn a_fetch_that_writes_much_to_stderr_still_finishes_and_is_not_taken_for_a_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("noisy-fetch", 1);
+    // Origin's upload-pack writes 200 KB of diagnostics, more than a pipe holds, before serving.
+    let noisy = w.root.join("noisy-upload-pack");
+    fs::write(&noisy, "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' x >&2\nexec git-upload-pack \"$@\"\n").unwrap();
+    fs::set_permissions(&noisy, fs::Permissions::from_mode(0o755)).unwrap();
+    git(&w.repo, &["config", "remote.origin.uploadpack", noisy.to_str().unwrap()]);
+    let gh = unprotected();
+    let started = std::time::Instant::now();
+
+    let state = target_push_state(&request(&w, &gh));
+    assert_eq!((state.reason.as_deref(), state.count), (None, 1), "{state:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fetch was not held up: {:?}", started.elapsed());
+}
+
+#[test]
 fn a_branch_that_moved_after_confirmation_is_refused() {
     let w = world("moved", 1);
     let gh = unprotected();

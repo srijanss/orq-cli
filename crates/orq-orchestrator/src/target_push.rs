@@ -333,8 +333,15 @@ fn rev_parse(dir: &Path, name: &str) -> Option<String> {
     out.success.then(|| out.stdout.trim().to_string())
 }
 
-/// Fetches origin's `target` into its tracking ref, within [`FETCH_LIMIT`].
+/// How much of a failed fetch's stderr is kept to show: its end, where git says why.
+const FETCH_STDERR_KEPT: usize = 16 * 1024;
+
+/// Fetches origin's `target` into its tracking ref, within [`FETCH_LIMIT`]. Its stderr is read as it
+/// comes, so a chatty transport never blocks on a full pipe, and only its last
+/// [`FETCH_STDERR_KEPT`] bytes are kept. The fetch runs in its own process group, so a timeout
+/// ends its transport too.
 fn fetch(dir: &Path, target: &str) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
     let refspec = format!("+refs/heads/{target}:refs/remotes/{REMOTE}/{target}");
     let mut child = Command::new("git")
         .arg("-C")
@@ -343,17 +350,32 @@ fn fetch(dir: &Path, target: &str) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .map_err(|error| format!("git could not run: {error}"))?;
+    let reader = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut kept: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                kept.extend_from_slice(&chunk[..n]);
+                if kept.len() > FETCH_STDERR_KEPT {
+                    kept.drain(..kept.len() - FETCH_STDERR_KEPT);
+                }
+            }
+            String::from_utf8_lossy(&kept).into_owned()
+        })
+    });
+    let stderr = |reader: Option<std::thread::JoinHandle<String>>| reader.and_then(|reader| reader.join().ok()).unwrap_or_default();
     let started = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = pipe.read_to_string(&mut stderr);
-                }
+                let stderr = stderr(reader);
                 return if status.success() {
                     Ok(())
                 } else {
@@ -361,8 +383,13 @@ fn fetch(dir: &Path, target: &str) -> Result<(), String> {
                 };
             }
             Ok(None) if started.elapsed() >= FETCH_LIMIT => {
+                if let Ok(group) = i32::try_from(child.id()) {
+                    // SAFETY: kill only signals; the group is the fetch's own, made at spawn.
+                    unsafe { libc::kill(-group, libc::SIGKILL) };
+                }
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stderr(reader);
                 return Err(format!("{REMOTE}/{target} could not be fetched within {} seconds", FETCH_LIMIT.as_secs()));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
