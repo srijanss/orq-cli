@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 import { Shell, usePageRefresh, usePhone } from "./shell.jsx";
 import { Badge, BADGES } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
+import { Markdown } from "./markdown.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
 import { readPins, writePins } from "./pins.js";
 import { UNREACHABLE, authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
@@ -4226,7 +4227,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           ))}
         </div>
         <div className="feature-panel" id="feature-panel" role="tabpanel" aria-labelledby={"feature-tab-" + tab}>
-          {tab === "description" ? (feature.description ? <p>{feature.description}</p> : <p className="muted">No description.</p>) : null}
+          {tab === "description" ? (feature.description ? <Markdown text={feature.description} /> : <p className="muted">No description.</p>) : null}
           {tab === "test" ? (feature.test_file ? <p><code data-test-file>{feature.test_file}</code></p> : <p className="muted">No test file recorded.</p>) : null}
           {tab === "runs" ? (
           facts.runs.length === 0 ? <p>No runs for this feature yet.</p> : (
