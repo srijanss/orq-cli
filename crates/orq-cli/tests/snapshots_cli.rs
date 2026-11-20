@@ -163,6 +163,28 @@ fn diff_names_features_added_removed_or_changed_since_the_snapshot() {
 }
 
 #[test]
+fn diff_names_a_feature_whose_description_changed_though_its_status_did_not() {
+    let s = Sandbox::new("diff-fields");
+    s.add_feature("kept");
+    s.add_feature("other");
+    s.add_feature("latest");
+    // The newest snapshot is of the ledger as it was before "latest" was added.
+    let snapshot = name_of(s.ledger_snapshots().last().unwrap());
+    let ledger = s.repo.join(".tdd-features.json");
+    let mut entries: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&ledger).unwrap()).unwrap();
+    entries[0]["description"] = "reworded".into();
+    std::fs::write(&ledger, serde_json::to_vec(&entries).unwrap()).unwrap();
+
+    let out = s.orq(&["snapshots", "diff", &snapshot, "--repo", s.repo_arg()]);
+
+    let shown = text(&out);
+    assert!(out.status.success(), "{shown}");
+    assert!(shown.contains("changed: kept"), "{shown}");
+    assert!(!shown.contains("other"), "{shown}");
+    assert!(shown.contains("added: latest"), "{shown}");
+}
+
+#[test]
 fn restore_without_confirmation_changes_nothing_and_with_yes_snapshots_then_replaces_the_ledger() {
     let s = Sandbox::new("restore");
     s.add_feature("first");

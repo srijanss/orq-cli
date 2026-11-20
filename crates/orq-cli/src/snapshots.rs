@@ -60,6 +60,7 @@ fn diff_lines(old: &[orq_features::FeatureEntry], new: &[orq_features::FeatureEn
             Some(before) if before.status != entry.status => {
                 lines.push(format!("changed: {} (status {} -> {})", entry.feature_name, before.status.as_str(), entry.status.as_str()))
             }
+            Some(before) if before != entry => lines.push(format!("changed: {}", entry.feature_name)),
             Some(_) => {}
         }
     }
