@@ -88,6 +88,25 @@ fn feature_edit_finds_an_archived_feature_read_only_and_add_drops_an_archived_de
     assert!(fresh.get("dependsOn").map_or(true, |d| d.as_array().unwrap().is_empty()), "{fresh}");
 }
 
+/// A name from the ledger that carries a terminal escape never reaches the terminal raw in a note or a count line.
+#[test]
+fn archived_names_with_control_characters_are_shown_escaped() {
+    let sandbox = Sandbox::new("escapes");
+    let weird = "c\u{1b}[31mred";
+    sandbox.write_ledger(&[(weird, "completed", &[]), ("p1", "pending", &[weird]), ("c2", "completed", &[])]);
+    let repo = sandbox.repo.to_str().unwrap();
+
+    let dry = sandbox.orq(&["features", "archive", "--repo", repo, "--keep", "1", "--dry-run"]);
+    assert!(dry.status.success(), "{}", text(&dry));
+    assert!(!text(&dry).contains('\u{1b}'), "{:?}", text(&dry));
+    assert!(sandbox.orq(&["features", "archive", "--repo", repo, "--keep", "1"]).status.success());
+
+    let out = sandbox.orq(&["feature", "add", "--repo", repo, "--name", "fresh", "--depends-on", weird]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(!text(&out).contains('\u{1b}'), "{:?}", text(&out));
+    assert!(text(&out).contains("is archived and completed: not needed"), "{}", text(&out));
+}
+
 fn glob_archive(sandbox: &Sandbox) -> Vec<PathBuf> {
     let root = sandbox.home.join("data/orq/archive");
     let Ok(dir) = std::fs::read_dir(&root) else { return Vec::new() };

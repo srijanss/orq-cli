@@ -1086,7 +1086,7 @@ fn feature_add(args: &[OsString]) -> ExitCode {
     };
     let loaded = loaded.with_archive(project_archived_names(&project));
     for note in loaded.archived_dependency_notes(flags.depends_on.as_deref().unwrap_or_default()) {
-        eprintln!("{note}");
+        eprintln!("{}", printable(&note));
     }
     let draft = orq_features::FeatureDraft {
         feature_name: name,
@@ -1124,7 +1124,7 @@ fn feature_edit(args: &[OsString]) -> ExitCode {
     };
     let loaded = loaded.with_archive(project_archived_names(&project));
     for note in loaded.archived_dependency_notes(flags.depends_on.as_deref().unwrap_or_default()) {
-        eprintln!("{note}");
+        eprintln!("{}", printable(&note));
     }
     let edits = orq_features::FieldEdits {
         description: flags.description,
