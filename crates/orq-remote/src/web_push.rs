@@ -246,29 +246,16 @@ pub fn notify_once(roots: &StorageRoots, event: &PushEvent, once: &str) -> usize
 }
 
 fn notify_claiming(roots: &StorageRoots, event: &PushEvent, once: Option<&str>) -> usize {
-    match claim(roots, event, once) {
-        Some(claimed) => claimed.send(roots),
-        None => 0,
-    }
-}
-
-/// A push claimed for sending: the devices to send it to and what to send.
-struct Claimed {
-    store: orq_core::store::Store,
-    devices: Vec<orq_core::store::push::PushSubscription>,
-    payload: String,
-}
-
-/// Claims `event` for sending, unless its kind is off, its project is muted, there is no device or it was
-/// already sent (see [`notify`]); `None` when there is nothing to send.
-fn claim(roots: &StorageRoots, event: &PushEvent, once: Option<&str>) -> Option<Claimed> {
-    let store = orq_core::store::Store::open(&roots.database()).ok()?;
-    let choices = store.push_kind_choices().ok()?;
+    let Ok(store) = orq_core::store::Store::open(&roots.database()) else { return 0 };
+    let Ok(choices) = store.push_kind_choices() else { return 0 };
     let enabled = choices.iter().find(|(kind, _)| kind == event.kind).map_or(!OFF_BY_DEFAULT.contains(&event.kind), |(_, on)| *on);
     if !enabled || !KINDS.contains(&event.kind) || store.push_muted_projects().is_ok_and(|muted| muted.iter().any(|p| p == event.project_id)) {
-        return None;
+        return 0;
     }
-    let devices = store.push_subscriptions().ok().filter(|devices| !devices.is_empty())?;
+    let devices = match store.push_subscriptions() {
+        Ok(devices) if !devices.is_empty() => devices,
+        _ => return 0,
+    };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     // A queue has no run: it is the project's own.
     let subject = event.run_id.map_or_else(|| format!("project:{}", event.project_id), str::to_string);
@@ -277,54 +264,69 @@ fn claim(roots: &StorageRoots, event: &PushEvent, once: Option<&str>) -> Option<
         None => (subject, REPEAT_WINDOW_SECS),
     };
     if !store.claim_push(&subject, event.kind, now, window).unwrap_or(false) {
-        return None;
+        return 0;
     }
     let payload = serde_json::json!({ "kind": event.kind, "project": event.project_id, "run": event.run_id, "event": event.event_id }).to_string();
-    Some(Claimed { store, devices, payload })
-}
-
-impl Claimed {
-    /// Pushes to each device, one at a time; how many were pushed to.
-    fn send(&self, roots: &StorageRoots) -> usize {
-        let mut sent = 0;
-        for device in &self.devices {
-            match deliver(roots, &self.store, device, self.payload.as_bytes()) {
-                Ok(()) => sent += 1,
-                Err(error) => eprintln!("orq-remote: push to device {} failed: {error}", device.id),
-            }
+    let mut sent = 0;
+    for device in &devices {
+        match deliver(roots, &store, device, payload.as_bytes()) {
+            Ok(()) => sent += 1,
+            Err(error) => eprintln!("orq-remote: push to device {} failed: {error}", device.id),
         }
-        sent
     }
+    sent
 }
 
-/// At most this many pushes are sent at once for one server's database; more are dropped, so a push service
-/// that hangs holds a few threads, never one per event.
+/// At most this many pushes are claimed and sent at once for one server's database, each by a thread of its
+/// own; the rest wait their turn, so a push service that hangs holds a few threads, never one per event.
 pub const SENDS_IN_FLIGHT: usize = 8;
+/// At most this many pushes wait their turn for one database; more are dropped.
+pub const SENDS_WAITING: usize = 1024;
 
-/// The sends in flight, per database.
-static IN_FLIGHT: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, usize>>> = std::sync::Mutex::new(None);
+/// One database's pushes waiting to be sent, each with where to say how many devices it reached, and how many
+/// threads are sending them.
+#[derive(Default)]
+struct Outbox {
+    waiting: std::collections::VecDeque<(Push, std::sync::mpsc::Sender<usize>)>,
+    senders: usize,
+}
 
-/// A place among the [`SENDS_IN_FLIGHT`] for one database, given back when dropped.
-struct InFlight(std::path::PathBuf);
+/// The outboxes, per database.
+static OUTBOXES: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, Outbox>>> = std::sync::Mutex::new(None);
 
-impl InFlight {
-    fn take(database: std::path::PathBuf) -> Option<InFlight> {
-        let mut flights = IN_FLIGHT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = flights.get_or_insert_with(Default::default).entry(database.clone()).or_insert(0);
-        if *count >= SENDS_IN_FLIGHT {
-            return None;
-        }
-        *count += 1;
-        Some(InFlight(database))
+fn outboxes() -> std::sync::MutexGuard<'static, Option<std::collections::HashMap<std::path::PathBuf, Outbox>>> {
+    OUTBOXES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Claims and sends `database`'s waiting pushes one after another, until none is left.
+fn send_waiting(roots: &StorageRoots, database: &std::path::Path) {
+    loop {
+        let next = {
+            let mut boxes = outboxes();
+            let Some(outbox) = boxes.as_mut().and_then(|boxes| boxes.get_mut(database)) else { return };
+            match outbox.waiting.pop_front() {
+                Some(next) => next,
+                None => {
+                    outbox.senders -= 1;
+                    return;
+                }
+            }
+        };
+        let (push, tell) = next;
+        let event = PushEvent { kind: push.kind, project_id: &push.project_id, run_id: push.run_id.as_deref(), event_id: push.event_id.as_deref() };
+        // A send that panics must not take its place among the senders with it.
+        let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| notify_claiming(roots, &event, push.once.as_deref()))).unwrap_or(0);
+        let _ = tell.send(sent);
     }
 }
 
-impl Drop for InFlight {
-    fn drop(&mut self) {
-        let mut flights = IN_FLIGHT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(count) = flights.as_mut().and_then(|flights| flights.get_mut(&self.0)) {
-            *count = count.saturating_sub(1);
-        }
+/// A push taken to be sent; [`Sending::join`] waits for it and gives how many devices it reached.
+pub struct Sending(std::sync::mpsc::Receiver<usize>);
+
+impl Sending {
+    /// Waits for the push to be sent (or found to have nothing to send) and gives how many devices it reached.
+    pub fn join(self) -> std::thread::Result<usize> {
+        Ok(self.0.recv().unwrap_or(0))
     }
 }
 
@@ -339,22 +341,33 @@ pub struct Push {
     pub once: Option<String>,
 }
 
-/// Claims `push` here and sends it on a thread of its own, so a slow or failing push service never holds up
-/// the caller; the handle gives how many devices were pushed to, for whoever wants to wait. `None`, and no
-/// thread, when there is nothing to send, or when [`SENDS_IN_FLIGHT`] sends are already waiting on the service.
-pub fn notify_later(roots: &StorageRoots, push: Push) -> Option<std::thread::JoinHandle<usize>> {
-    let Some(place) = InFlight::take(roots.database()) else {
-        eprintln!("orq-remote: {SENDS_IN_FLIGHT} pushes are already waiting on the push service; the {} push is dropped", push.kind);
+/// Leaves `push` to be claimed and sent off the caller's thread, so neither a slow or failing push service nor
+/// a busy database ever holds up the caller: it waits its turn behind at most [`SENDS_IN_FLIGHT`] sends. The
+/// handle gives how many devices were pushed to, for whoever wants to wait; `None` when [`SENDS_WAITING`]
+/// pushes are already waiting, and this one is dropped.
+pub fn notify_later(roots: &StorageRoots, push: Push) -> Option<Sending> {
+    let database = roots.database();
+    let (tell, told) = std::sync::mpsc::channel();
+    let mut boxes = outboxes();
+    let outbox = boxes.get_or_insert_with(Default::default).entry(database.clone()).or_default();
+    if outbox.waiting.len() >= SENDS_WAITING {
+        eprintln!("orq-remote: {SENDS_WAITING} pushes are already waiting on the push service; the {} push is dropped", push.kind);
         return None;
-    };
-    let event = PushEvent { kind: push.kind, project_id: &push.project_id, run_id: push.run_id.as_deref(), event_id: push.event_id.as_deref() };
-    let claimed = claim(roots, &event, push.once.as_deref())?;
-    let roots = roots.clone();
-    Some(std::thread::spawn(move || {
-        let sent = claimed.send(&roots);
-        drop(place);
-        sent
-    }))
+    }
+    outbox.waiting.push_back((push, tell));
+    if outbox.senders < SENDS_IN_FLIGHT {
+        let roots = roots.clone();
+        let started = std::thread::Builder::new().name("orq-push".into()).spawn({
+            let database = database.clone();
+            move || send_waiting(&roots, &database)
+        });
+        match started {
+            Ok(_) => outbox.senders += 1,
+            // No thread to be had: the push waits for a sender already going, or the next push's.
+            Err(error) => eprintln!("orq-remote: a push sender could not be started: {error}"),
+        }
+    }
+    Some(Sending(told))
 }
 
 /// The kind of notification a run's event is, if any.

@@ -514,9 +514,8 @@ impl StoreProjects {
     }
 
     /// One look at what runs recorded since the last: each event worth a notification is pushed, under its
-    /// project's id as the web shows it, on a thread of its own. The handles, one per push actually sent, give
-    /// how many devices each reached.
-    pub fn push_round(&self, watch: &mut crate::web_push::RunWatch) -> Vec<std::thread::JoinHandle<usize>> {
+    /// project's id as the web shows it, off this thread. The handles give how many devices each reached.
+    pub fn push_round(&self, watch: &mut crate::web_push::RunWatch) -> Vec<crate::web_push::Sending> {
         let mut web_ids: Option<std::collections::HashMap<String, String>> = None;
         let mut sends = Vec::new();
         for event in watch.new_events(&self.roots) {

@@ -273,8 +273,8 @@ fn a_needs_input_event_sends_one_push_with_only_the_four_ids_and_a_second_within
     );
     assert_eq!(
         look(&projects, &mut watch),
-        Vec::<usize>::new(),
-        "the same run and kind inside five minutes: nothing to send"
+        vec![0],
+        "the same run and kind inside five minutes"
     );
     assert_eq!(s.service.bodies().len(), 1);
 }
@@ -564,35 +564,71 @@ fn a_push_endpoint_that_hangs_does_not_delay_the_runs_events_and_is_given_up_aft
     );
 }
 
+/// `count` runs, each just recorded as needing input after the watch began; the watch.
+fn many_needing_input(s: &Setup, count: usize) -> orq_remote::web_push::RunWatch {
+    let runs: Vec<String> = (0..count).map(|n| format!("run-{n}")).collect();
+    for run in &runs {
+        seed_run(s, run, "COM-01");
+    }
+    let watch = orq_remote::web_push::RunWatch::new(&s.roots);
+    for run in &runs {
+        event(s, run, "run.needs_input", json!({}));
+    }
+    watch
+}
+
 #[test]
-fn many_pushes_to_a_hanging_endpoint_hold_at_most_a_few_threads_and_one_with_nothing_to_send_holds_none() {
+fn many_pushes_to_a_hanging_endpoint_wait_on_a_few_sends_at_a_time_and_a_burst_to_a_healthy_one_all_arrive() {
     let s = setup("dispatch-bounded", true);
     let projects = provider(&s);
-    let runs: Vec<String> = (0..40).map(|n| format!("run-{n}")).collect();
-    for run in &runs {
-        seed_run(&s, run, "COM-01");
-    }
+    let mut watch = many_needing_input(&s, 40);
+    let began = std::time::Instant::now();
+    let sends = projects.push_round(&mut watch);
+    assert!(began.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(sends.len(), 40, "each push is taken to be sent");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let waiting = s.service.bodies().len();
+    assert!(
+        waiting > 0 && waiting <= orq_remote::web_push::SENDS_IN_FLIGHT,
+        "{waiting} sends waiting on the service at once"
+    );
+
+    let s = setup("dispatch-burst", false);
+    let projects = provider(&s);
+    let mut watch = many_needing_input(&s, 3 * orq_remote::web_push::SENDS_IN_FLIGHT);
+    let reached = look(&projects, &mut watch);
+    assert_eq!(
+        reached,
+        vec![1; 3 * orq_remote::web_push::SENDS_IN_FLIGHT],
+        "none of a burst is dropped"
+    );
+    assert_eq!(
+        s.service.bodies().len(),
+        3 * orq_remote::web_push::SENDS_IN_FLIGHT
+    );
+}
+
+#[test]
+fn a_database_held_by_another_writer_does_not_delay_the_look_and_the_push_goes_out_once_it_is_free() {
+    let s = setup("dispatch-locked", false);
+    let projects = provider(&s);
+    seed_run(&s, "run-1", "COM-01");
     let mut watch = orq_remote::web_push::RunWatch::new(&s.roots);
-    for run in &runs {
-        event(&s, run, "run.needs_input", json!({}));
-    }
+    event(&s, "run-1", "run.needs_input", json!({}));
+    let held = rusqlite::Connection::open(s.roots.database()).unwrap();
+    held.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let began = std::time::Instant::now();
     let sends = projects.push_round(&mut watch);
     assert!(
-        !sends.is_empty() && sends.len() <= orq_remote::web_push::SENDS_IN_FLIGHT,
-        "{} sends in flight at once",
-        sends.len()
+        began.elapsed() < std::time::Duration::from_secs(1),
+        "the look waited for the database: {:?}",
+        began.elapsed()
     );
-    // Off by default: nothing to send, so no thread for it, even while the others hang.
-    seed_run(&s, "run-quiet", "COM-02");
-    event(&s, "run-quiet", "run.launched", json!({}));
-    assert!(projects.push_round(&mut watch).is_empty());
-    for send in sends {
-        send.join().unwrap();
-    }
-    // Once the hung sends are given up, a new push goes out again.
-    seed_run(&s, "run-after", "COM-03");
-    event(&s, "run-after", "run.needs_input", json!({}));
-    assert_eq!(projects.push_round(&mut watch).len(), 1);
+    assert_eq!(sends.len(), 1);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    held.execute_batch("COMMIT").unwrap();
+    let reached: Vec<usize> = sends.into_iter().map(|send| send.join().unwrap()).collect();
+    assert_eq!(reached, vec![1], "claimed and sent once the writer let go");
 }
 
 #[test]
@@ -925,8 +961,8 @@ fn failed_blocked_and_finished_runs_each_send_their_kind_and_started_waits_until
     event(&s, "run-5", "run.launched", json!({}));
     assert_eq!(
         look(&projects, &mut watch),
-        Vec::<usize>::new(),
-        "started is off by default: nothing to send"
+        vec![0],
+        "started is off by default"
     );
     orq_core::store::Store::open(&s.roots.database())
         .unwrap()
