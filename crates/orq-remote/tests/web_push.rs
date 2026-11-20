@@ -171,6 +171,32 @@ fn the_longest_message_fills_a_4096_byte_body_and_one_more_byte_is_refused() {
     assert_eq!(service.requests().len(), 1, "a message too long for a 4096-byte body is never sent");
 }
 
+#[test]
+fn the_vapid_token_is_signed_by_the_served_key_for_the_push_services_origin_and_expires_within_a_day() {
+    use p256::ecdsa::signature::Verifier;
+    let roots = roots("push-jwt");
+    let (service, device) = (FakePush::start(), Device::new());
+    orq_remote::web_push::send(&roots, &device.subscription(service.endpoint("one")), b"{}").expect("sent");
+    let authorization = service.requests()[0].header("authorization").unwrap().to_string();
+    let (token, key) = authorization.strip_prefix("vapid t=").and_then(|rest| rest.split_once(", k=")).expect("vapid t=..., k=...");
+    assert_eq!(key, orq_remote::web_push::vapid_public_key(&roots).unwrap());
+
+    let (signing_input, signature) = token.rsplit_once('.').unwrap();
+    let verifying = p256::ecdsa::VerifyingKey::from_sec1_bytes(&b64(key)).unwrap();
+    let signature = p256::ecdsa::Signature::from_slice(&b64(signature)).expect("a raw 64-byte ES256 signature");
+    verifying.verify(signing_input.as_bytes(), &signature).expect("signed by the served key");
+
+    let (header, claims) = signing_input.split_once('.').unwrap();
+    let header: serde_json::Value = serde_json::from_slice(&b64(header)).unwrap();
+    assert_eq!((header["typ"].as_str(), header["alg"].as_str()), (Some("JWT"), Some("ES256")));
+    let claims: serde_json::Value = serde_json::from_slice(&b64(claims)).unwrap();
+    assert_eq!(claims["aud"].as_str(), Some(format!("http://127.0.0.1:{}", service.port).as_str()), "the push service's origin, no path");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let expires = claims["exp"].as_u64().unwrap();
+    assert!(expires > now && expires <= now + 24 * 3600, "RFC 8292: in the future and at most a day ahead");
+    assert!(claims["sub"].as_str().is_some_and(|s| s.starts_with("mailto:") || s.starts_with("https:")));
+}
+
 fn b64(text: &str) -> Vec<u8> {
     orq_remote::web_push::base64url_decode(text).expect("base64url")
 }
