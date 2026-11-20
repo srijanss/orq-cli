@@ -271,6 +271,25 @@ fn an_origin_that_fetches_from_one_repository_and_pushes_to_another_is_refused()
 }
 
 #[test]
+fn a_refusal_naming_origins_addresses_never_shows_the_credentials_in_them() {
+    let w = world("split-credentials", 1);
+    let forked = w.root.join("fork.git");
+    git(&w.root, &["clone", "-q", "--bare", w.origin.to_str().unwrap(), forked.to_str().unwrap()]);
+    let fork = "https://x-access-token:ghp_secret123@github.com/acme/fork.git";
+    git(&w.repo, &["config", "remote.origin.pushurl", fork]);
+    git(&w.repo, &["config", &format!("url.file://{}.insteadOf", forked.display()), fork]);
+    git(&w.repo, &["config", "remote.origin.url", "https://bot:hunter2@github.com/acme/widgets.git"]);
+    git(&w.repo, &["config", "--add", &format!("url.file://{}.insteadOf", w.origin.display()), "https://bot:hunter2@github.com/acme/widgets.git"]);
+    let gh = FakeProvider::builder().reply(&["api", "repos/acme/fork/branches/main"], r#"{"name":"main","protected":false}"#).build();
+    let push = request(&w, &gh);
+    let head = git(&w.repo, &["rev-parse", "main"]);
+    let refusal = "origin fetches from https://github.com/acme/widgets.git but pushes to https://github.com/acme/fork.git: the commits shown would not be the ones pushed";
+
+    assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal));
+    assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()));
+}
+
+#[test]
 fn a_fetch_that_writes_much_to_stderr_still_finishes_and_is_not_taken_for_a_timeout() {
     use std::os::unix::fs::PermissionsExt;
     let w = world("noisy-fetch", 1);

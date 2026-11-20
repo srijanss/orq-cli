@@ -233,7 +233,13 @@ fn origin_push_url(dir: &Path) -> Result<String, String> {
     if let Some(fetched) = urls.first().filter(|fetched| *fetched != url) {
         let identity = |url: &str| crate::review_request::normalize_remote(url).map(|address| repository_identity(&address).to_string());
         if identity(fetched).is_none() || identity(fetched) != identity(url) {
-            return Err(format!("{REMOTE} fetches from {fetched} but pushes to {url}: the commits shown would not be the ones pushed"));
+            // Shown in its normalized form only: a raw address may carry a credential.
+            let shown = |url: &str| crate::review_request::normalize_remote(url).unwrap_or_else(|| "an address that is not a repository".to_string());
+            return Err(format!(
+                "{REMOTE} fetches from {} but pushes to {}: the commits shown would not be the ones pushed",
+                shown(fetched),
+                shown(url)
+            ));
         }
     }
     Ok(url.clone())
