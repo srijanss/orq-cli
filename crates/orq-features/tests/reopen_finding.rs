@@ -91,6 +91,47 @@ fn a_completed_feature_with_no_open_finding_stays_completed() {
 }
 
 #[test]
+fn a_review_ledger_that_is_missing_malformed_too_large_or_not_a_file_reopens_nothing() {
+    let unchanged = |label: &str, setup: &dyn Fn(&std::path::Path), fails: bool| {
+        let (ledger, worktree) = scratch(label, OPEN_FIX_LEAK, ROUNDS);
+        let findings = worktree.join(".tdd-review-findings.json");
+        fs::remove_file(&findings).unwrap();
+        setup(&findings);
+        let mut events = Vec::new();
+        let result = reopen_open_findings(&ledger, &worktree, &mut |kind, payload| events.push((kind.to_string(), payload)));
+        assert_eq!(result.is_err(), fails, "{label}: {result:?}");
+        if let Ok(reopened) = result {
+            assert!(reopened.is_empty(), "{label}");
+        }
+        assert!(events.is_empty(), "{label}");
+        assert_eq!(fs::read_to_string(&ledger).unwrap(), LEDGER, "{label}");
+    };
+    unchanged("missing", &|_| {}, false);
+    unchanged("malformed", &|path| fs::write(path, "{ not json").unwrap(), true);
+    unchanged("too-large", &|path| fs::write(path, " ".repeat(4 * 1024 * 1024 + 1)).unwrap(), true);
+    unchanged("directory", &|path| fs::create_dir(path).unwrap(), true);
+    unchanged("symlink", &|path| {
+        let target = path.with_file_name("elsewhere.json");
+        fs::write(&target, OPEN_FIX_LEAK).unwrap();
+        std::os::unix::fs::symlink(&target, path).unwrap();
+    }, true);
+}
+
+#[test]
+fn a_locked_main_ledger_is_an_error_and_records_nothing() {
+    let (ledger, worktree) = scratch("locked", OPEN_FIX_LEAK, ROUNDS);
+    let lock = fs::OpenOptions::new().create(true).write(true).truncate(false).open(ledger.with_file_name(".tdd-features.json.lock")).unwrap();
+    lock.lock().unwrap();
+    let mut events = Vec::new();
+
+    let result = reopen_open_findings(&ledger, &worktree, &mut |kind, payload| events.push((kind.to_string(), payload)));
+
+    assert!(result.is_err(), "{result:?}");
+    assert!(events.is_empty());
+    assert_eq!(fs::read_to_string(&ledger).unwrap(), LEDGER);
+}
+
+#[test]
 fn completed_to_pending_is_refused_without_reopen_and_allowed_with_it() {
     let (ledger, _) = scratch("by-hand", "{}", "{}");
 
