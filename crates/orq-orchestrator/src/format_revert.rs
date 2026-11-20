@@ -59,10 +59,17 @@ pub fn undo_formatting_outside(
     }
     let mut checkout = vec!["checkout", from.as_str(), "--"];
     checkout.extend(reverted.iter().map(String::as_str));
-    git(worktree, &checkout)?;
     let mut commit = vec!["commit", "--quiet", "--no-verify", "-m", FORMAT_REVERT_MESSAGE, "--only", "--"];
     commit.extend(reverted.iter().map(String::as_str));
-    git(worktree, &commit)?;
+    if let Err(why) = git(worktree, &checkout).and_then(|_| git(worktree, &commit)) {
+        // The files were clean before: they go back to what HEAD holds, in the index and the worktree.
+        let mut restore = vec!["checkout", "HEAD", "--"];
+        restore.extend(reverted.iter().map(String::as_str));
+        return Err(match git(worktree, &restore) {
+            Ok(_) => why,
+            Err(left) => format!("{why}; the files could not be put back as HEAD holds them: {left}"),
+        });
+    }
     store
         .append_event(&Event {
             schema_version: 1,

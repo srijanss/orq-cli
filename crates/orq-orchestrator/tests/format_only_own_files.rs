@@ -152,6 +152,24 @@ fn a_declared_file_reformatted_is_kept() {
 }
 
 #[test]
+fn a_commit_that_fails_leaves_the_worktree_and_index_as_they_were() {
+    let (_repo, store, record) = run_with("fmt-commit-fails", &[("src/other.rs", UNTIDY)], &[("src/other.rs", TIDY)]);
+    let worktree = &record.worktree;
+    let head = git(worktree, &["rev-parse", "HEAD"]);
+    // Signing with a program that always fails makes the commit fail.
+    git(worktree, &["config", "commit.gpgsign", "true"]);
+    git(worktree, &["config", "gpg.program", "false"]);
+
+    let result = undo_formatting_outside(&store, &record, &record.base_sha, &declared(&[]), "implement_and_review");
+
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(git(worktree, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(worktree, &["status", "--porcelain", "--untracked-files=no"]), "", "nothing left staged or changed");
+    assert_eq!(fs::read_to_string(worktree.join("src/other.rs")).unwrap(), TIDY);
+    assert!(reverted_events(&store).is_empty());
+}
+
+#[test]
 fn settings_an_earlier_orq_wrote_lose_the_bare_cargo_fmt_rule() {
     let repo = GitFixture::new();
     let worktree = repo.add_linked_worktree("fmt-retired");
