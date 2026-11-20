@@ -246,16 +246,29 @@ pub fn notify_once(roots: &StorageRoots, event: &PushEvent, once: &str) -> usize
 }
 
 fn notify_claiming(roots: &StorageRoots, event: &PushEvent, once: Option<&str>) -> usize {
-    let Ok(store) = orq_core::store::Store::open(&roots.database()) else { return 0 };
-    let Ok(choices) = store.push_kind_choices() else { return 0 };
+    match claim(roots, event, once) {
+        Some(claimed) => claimed.send(roots),
+        None => 0,
+    }
+}
+
+/// A push claimed for sending: the devices to send it to and what to send.
+struct Claimed {
+    store: orq_core::store::Store,
+    devices: Vec<orq_core::store::push::PushSubscription>,
+    payload: String,
+}
+
+/// Claims `event` for sending, unless its kind is off, its project is muted, there is no device or it was
+/// already sent (see [`notify`]); `None` when there is nothing to send.
+fn claim(roots: &StorageRoots, event: &PushEvent, once: Option<&str>) -> Option<Claimed> {
+    let store = orq_core::store::Store::open(&roots.database()).ok()?;
+    let choices = store.push_kind_choices().ok()?;
     let enabled = choices.iter().find(|(kind, _)| kind == event.kind).map_or(!OFF_BY_DEFAULT.contains(&event.kind), |(_, on)| *on);
     if !enabled || !KINDS.contains(&event.kind) || store.push_muted_projects().is_ok_and(|muted| muted.iter().any(|p| p == event.project_id)) {
-        return 0;
+        return None;
     }
-    let devices = match store.push_subscriptions() {
-        Ok(devices) if !devices.is_empty() => devices,
-        _ => return 0,
-    };
+    let devices = store.push_subscriptions().ok().filter(|devices| !devices.is_empty())?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     // A queue has no run: it is the project's own.
     let subject = event.run_id.map_or_else(|| format!("project:{}", event.project_id), str::to_string);
@@ -264,17 +277,55 @@ fn notify_claiming(roots: &StorageRoots, event: &PushEvent, once: Option<&str>) 
         None => (subject, REPEAT_WINDOW_SECS),
     };
     if !store.claim_push(&subject, event.kind, now, window).unwrap_or(false) {
-        return 0;
+        return None;
     }
     let payload = serde_json::json!({ "kind": event.kind, "project": event.project_id, "run": event.run_id, "event": event.event_id }).to_string();
-    let mut sent = 0;
-    for device in &devices {
-        match deliver(roots, &store, device, payload.as_bytes()) {
-            Ok(()) => sent += 1,
-            Err(error) => eprintln!("orq-remote: push to device {} failed: {error}", device.id),
+    Some(Claimed { store, devices, payload })
+}
+
+impl Claimed {
+    /// Pushes to each device, one at a time; how many were pushed to.
+    fn send(&self, roots: &StorageRoots) -> usize {
+        let mut sent = 0;
+        for device in &self.devices {
+            match deliver(roots, &self.store, device, self.payload.as_bytes()) {
+                Ok(()) => sent += 1,
+                Err(error) => eprintln!("orq-remote: push to device {} failed: {error}", device.id),
+            }
+        }
+        sent
+    }
+}
+
+/// At most this many pushes are sent at once for one server's database; more are dropped, so a push service
+/// that hangs holds a few threads, never one per event.
+pub const SENDS_IN_FLIGHT: usize = 8;
+
+/// The sends in flight, per database.
+static IN_FLIGHT: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, usize>>> = std::sync::Mutex::new(None);
+
+/// A place among the [`SENDS_IN_FLIGHT`] for one database, given back when dropped.
+struct InFlight(std::path::PathBuf);
+
+impl InFlight {
+    fn take(database: std::path::PathBuf) -> Option<InFlight> {
+        let mut flights = IN_FLIGHT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = flights.get_or_insert_with(Default::default).entry(database.clone()).or_insert(0);
+        if *count >= SENDS_IN_FLIGHT {
+            return None;
+        }
+        *count += 1;
+        Some(InFlight(database))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut flights = IN_FLIGHT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = flights.as_mut().and_then(|flights| flights.get_mut(&self.0)) {
+            *count = count.saturating_sub(1);
         }
     }
-    sent
 }
 
 /// A [`PushEvent`] that owns its ids, so it can be sent from another thread.
@@ -288,14 +339,22 @@ pub struct Push {
     pub once: Option<String>,
 }
 
-/// Sends `push` on a thread of its own, so a slow or failing push service never holds up the caller; the
-/// handle gives how many devices were pushed to, for whoever wants to wait.
-pub fn notify_later(roots: &StorageRoots, push: Push) -> std::thread::JoinHandle<usize> {
+/// Claims `push` here and sends it on a thread of its own, so a slow or failing push service never holds up
+/// the caller; the handle gives how many devices were pushed to, for whoever wants to wait. `None`, and no
+/// thread, when there is nothing to send, or when [`SENDS_IN_FLIGHT`] sends are already waiting on the service.
+pub fn notify_later(roots: &StorageRoots, push: Push) -> Option<std::thread::JoinHandle<usize>> {
+    let Some(place) = InFlight::take(roots.database()) else {
+        eprintln!("orq-remote: {SENDS_IN_FLIGHT} pushes are already waiting on the push service; the {} push is dropped", push.kind);
+        return None;
+    };
+    let event = PushEvent { kind: push.kind, project_id: &push.project_id, run_id: push.run_id.as_deref(), event_id: push.event_id.as_deref() };
+    let claimed = claim(roots, &event, push.once.as_deref())?;
     let roots = roots.clone();
-    std::thread::spawn(move || {
-        let event = PushEvent { kind: push.kind, project_id: &push.project_id, run_id: push.run_id.as_deref(), event_id: push.event_id.as_deref() };
-        notify_claiming(&roots, &event, push.once.as_deref())
-    })
+    Some(std::thread::spawn(move || {
+        let sent = claimed.send(&roots);
+        drop(place);
+        sent
+    }))
 }
 
 /// The kind of notification a run's event is, if any.

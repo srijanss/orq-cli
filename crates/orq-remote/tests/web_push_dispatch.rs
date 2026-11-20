@@ -273,8 +273,8 @@ fn a_needs_input_event_sends_one_push_with_only_the_four_ids_and_a_second_within
     );
     assert_eq!(
         look(&projects, &mut watch),
-        vec![0],
-        "the same run and kind inside five minutes"
+        Vec::<usize>::new(),
+        "the same run and kind inside five minutes: nothing to send"
     );
     assert_eq!(s.service.bodies().len(), 1);
 }
@@ -565,6 +565,37 @@ fn a_push_endpoint_that_hangs_does_not_delay_the_runs_events_and_is_given_up_aft
 }
 
 #[test]
+fn many_pushes_to_a_hanging_endpoint_hold_at_most_a_few_threads_and_one_with_nothing_to_send_holds_none() {
+    let s = setup("dispatch-bounded", true);
+    let projects = provider(&s);
+    let runs: Vec<String> = (0..40).map(|n| format!("run-{n}")).collect();
+    for run in &runs {
+        seed_run(&s, run, "COM-01");
+    }
+    let mut watch = orq_remote::web_push::RunWatch::new(&s.roots);
+    for run in &runs {
+        event(&s, run, "run.needs_input", json!({}));
+    }
+    let sends = projects.push_round(&mut watch);
+    assert!(
+        !sends.is_empty() && sends.len() <= orq_remote::web_push::SENDS_IN_FLIGHT,
+        "{} sends in flight at once",
+        sends.len()
+    );
+    // Off by default: nothing to send, so no thread for it, even while the others hang.
+    seed_run(&s, "run-quiet", "COM-02");
+    event(&s, "run-quiet", "run.launched", json!({}));
+    assert!(projects.push_round(&mut watch).is_empty());
+    for send in sends {
+        send.join().unwrap();
+    }
+    // Once the hung sends are given up, a new push goes out again.
+    seed_run(&s, "run-after", "COM-03");
+    event(&s, "run-after", "run.needs_input", json!({}));
+    assert_eq!(projects.push_round(&mut watch).len(), 1);
+}
+
+#[test]
 fn serve_pushes_its_restart_once_then_keeps_pushing_what_runs_record_until_its_rounds_stop() {
     let s = setup("dispatch-rounds", false);
     seed_run(&s, "run-1", "COM-01");
@@ -841,8 +872,8 @@ fn failed_blocked_and_finished_runs_each_send_their_kind_and_started_waits_until
     event(&s, "run-5", "run.launched", json!({}));
     assert_eq!(
         look(&projects, &mut watch),
-        vec![0],
-        "started is off by default"
+        Vec::<usize>::new(),
+        "started is off by default: nothing to send"
     );
     orq_core::store::Store::open(&s.roots.database())
         .unwrap()
