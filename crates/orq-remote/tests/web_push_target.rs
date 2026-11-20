@@ -138,6 +138,21 @@ fn a_github_project_card_offers_the_push_lists_the_commits_with_their_runs_and_t
 }
 
 #[test]
+fn commits_merged_after_a_push_bring_the_line_and_its_push_back_on_the_next_refresh() {
+    let pushed = json!({"status": 200, "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": ["run-1-PUSH-01"]}});
+    let newer = json!({"target": "main", "count": 1, "message": "1 commit on main not pushed", "subjects": ["PUSH-02 work"], "provider": "github"});
+    let responses = vec![projects(unpushed("github")), state(None, true), pushed, projects(newer)];
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"}), json!({"tick": 30000})];
+    let Some(out) = as_session("/dashboard", responses, steps) else { return };
+
+    let done = &frames(&out)[2];
+    assert_eq!(count(done, "[data-push-done]"), 1, "{out}");
+    let refreshed = last(&out);
+    assert_eq!((count(refreshed, "[data-unpushed]"), count(refreshed, "[data-push-done]"), count(refreshed, "[data-push-target]")), (1, 0, 1), "{out}");
+    assert!(shows(refreshed, "1 commit on main not pushed"), "{:?}", texts(refreshed));
+}
+
+#[test]
 fn a_gitlab_project_has_no_push_and_says_deliver_by_mr_review() {
     let Some(out) = as_session("/dashboard", vec![projects(unpushed("gitlab"))], vec![]) else { return };
     let frame = last(&out);

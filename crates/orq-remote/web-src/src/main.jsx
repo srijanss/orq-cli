@@ -818,11 +818,13 @@ function waitingCleanups(list) {
 
 // The commits on a project's target its remote does not have: how many, and the newest subjects. Given
 // `push` ({token, projectId, onSignedOut}), a GitHub project's line offers Push <target>; any other
-// provider's says to deliver by MR review instead. Once the push is done the line gives way to what it did.
+// provider's says to deliver by MR review instead. Once the push is done the line gives way to what it did,
+// until a refresh brings other commits not pushed: then those, with their own Push, come back.
 function Unpushed({ unpushed, subjects = false, push = null }) {
   const [pushed, setPushed] = useState(null);
   if (unpushed === null || typeof unpushed !== "object" || typeof unpushed.message !== "string") return null;
-  if (pushed !== null) return <p className="run-action-note" role="status" data-push-done>{pushed}</p>;
+  const shown = JSON.stringify([unpushed.target, unpushed.count, unpushed.message, unpushed.subjects]);
+  if (pushed !== null && pushed.of === shown) return <p className="run-action-note" role="status" data-push-done>{pushed.text}</p>;
   const listed = subjects && Array.isArray(unpushed.subjects) ? unpushed.subjects.filter((subject) => typeof subject === "string") : [];
   const target = typeof unpushed.target === "string" && unpushed.target !== "" ? unpushed.target : null;
   return (
@@ -830,7 +832,7 @@ function Unpushed({ unpushed, subjects = false, push = null }) {
       <p><Icon name="alert" size={16} />{unpushed.message}</p>
       {listed.length > 0 ? <ul className="unpushed-subjects">{listed.map((subject, at) => <li key={at}>{subject}</li>)}</ul> : null}
       {push === null || target === null ? null : unpushed.provider === "github"
-        ? <PushTarget target={target} push={push} onPushed={setPushed} />
+        ? <PushTarget key={shown} target={target} push={push} onPushed={(text) => setPushed({ text, of: shown })} />
         : <p className="muted" data-push-gitlab>GitLab: deliver by MR review</p>}
     </div>
   );
