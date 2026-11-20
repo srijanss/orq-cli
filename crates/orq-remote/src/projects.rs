@@ -1587,7 +1587,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         let (lines, plan) = storage.preview()?;
         let runs: std::collections::BTreeSet<&str> = plan.candidates.iter().map(|c| c.artifact.run_id.as_str()).collect();
         let bytes = plan.total_bytes();
+        // Snapshots are never part of a cleanup; they are listed so the card shows their size and age.
+        let names: std::collections::BTreeMap<String, String> =
+            discover(&self.scan_root).into_iter().filter_map(|p| Some((orq_git::project_id(&orq_git::resolve_project(&p.path).ok()?), p.name))).collect();
+        let (snapshot_bytes, snapshot_lines) = orq_core::storage::snapshot_summary(&self.roots.data, &|id| names.get(id).cloned());
         Ok(Some(serde_json::json!({
+            "snapshots": {
+                "bytes": snapshot_bytes,
+                "size": orq_core::retention::human_bytes(snapshot_bytes),
+                "lines": snapshot_lines.iter().map(|line| orq_core::redact::redact(line)).collect::<Vec<_>>(),
+            },
             "lines": lines.iter().map(|line| orq_core::redact::redact(line)).collect::<Vec<_>>(),
             "files": plan.candidates.len(),
             "bytes": bytes,

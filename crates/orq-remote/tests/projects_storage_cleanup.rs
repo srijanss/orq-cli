@@ -131,3 +131,31 @@ fn a_server_without_cleanup_does_not_know_it() {
     assert_eq!(send(&roots, &provider, "GET", "/api/settings/storage/preview", "").0, 404);
     assert_eq!(prune(&roots, &provider, "h").0, 404);
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    assert!(std::process::Command::new("git").args(args).current_dir(dir).output().unwrap().status.success(), "git {args:?}");
+}
+
+#[test]
+fn the_preview_counts_snapshots_in_its_sizes_and_names_the_newest_for_the_database_and_each_project() {
+    let roots = roots("snapshots");
+    let code = roots.data.join("code");
+    let app = code.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    git(&app, &["init", "-q"]);
+    let id = orq_git::project_id(&orq_git::resolve_project(&app).unwrap());
+    let ledgers = roots.data.join("snapshots").join(&id);
+    std::fs::create_dir_all(&ledgers).unwrap();
+    std::fs::write(ledgers.join("ledger-20261117T080000Z-aaaaaaaa.json"), "[]").unwrap();
+    std::fs::write(ledgers.join("ledger-20261118T101500Z-bbbbbbbb.json"), "[1]").unwrap();
+    std::fs::write(roots.data.join("snapshots").join("orq-db-2026-11-18.sqlite"), "0123456789").unwrap();
+    let provider = StoreProjects::new(roots.clone(), code).with_storage(Fake::new(plan()));
+    let shown = preview(&roots, &provider);
+    assert_eq!(shown["bytes"], 2560, "the cleanup's own totals are unchanged");
+    assert_eq!(shown["snapshots"]["bytes"], 15);
+    assert_eq!(shown["snapshots"]["size"], "15 B");
+    let lines: Vec<&str> = shown["snapshots"]["lines"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].starts_with("Database") && lines[0].contains("newest "), "{lines:?}");
+    assert!(lines[1].starts_with("app") && lines[1].contains("newest 2026-11-18 10:15:00Z") && lines[1].contains("2 kept"), "{lines:?}");
+}

@@ -87,6 +87,16 @@ fn preview_lists_the_set_and_clean_up_asks_with_its_totals_then_sends_its_hash()
 }
 
 #[test]
+fn a_preview_shows_the_snapshots_kept_with_their_size_and_when_each_was_last_taken() {
+    let mut read = preview(0, 0);
+    read["json"]["snapshots"] = json!({"bytes": 15, "size": "15 B", "lines": ["Database: newest 2026-11-18 10:15:00Z (1 kept, 10 B)", "app: newest 2026-11-18 10:15:00Z (2 kept, 5 B)"]});
+    let Some(out) = run(json!({"url": "/settings", "responses": [settings(true), read], "steps": [{"submit": TOKEN}, {"click": "[data-storage-preview]"}], "selectors": ["[data-snapshot-line]"]})) else { return };
+    assert_eq!(count(last(&out), "[data-snapshot-line]"), 2, "{out}");
+    assert!(shown(last(&out)).iter().any(|t| t == "app: newest 2026-11-18 10:15:00Z (2 kept, 5 B)"), "{out}");
+    assert!(shown(last(&out)).iter().any(|t| t.contains("15 B")), "the snapshots' total size is shown: {out}");
+}
+
+#[test]
 fn nothing_to_prune_offers_no_clean_up() {
     let Some(out) = as_token(vec![settings(true), preview(0, 0)], vec![json!({"click": "[data-storage-preview]"})]) else { return };
     assert!(shown(last(&out)).iter().any(|t| t == "Nothing to prune."), "{out}");

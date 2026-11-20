@@ -296,6 +296,10 @@ impl LoadedLedger {
             }
             Err(e) => return Err(SaveError::Io(e)),
         }
+        #[cfg(unix)]
+        if !self.is_new {
+            crate::snapshot_before_write(&self.path, &self.bytes);
+        }
         write(&self.path, contents).map_err(SaveError::Io)
     }
 

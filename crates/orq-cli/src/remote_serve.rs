@@ -84,12 +84,12 @@ fn runs(count: usize) -> String {
 }
 
 /// A running `orq serve`, as its server file names it.
-struct LiveServer {
-    pid: u32,
+pub(crate) struct LiveServer {
+    pub(crate) pid: u32,
     exe: PathBuf,
     listen: String,
     /// The systemd unit it runs under, when `orq serve install`'s unit started it.
-    unit: Option<String>,
+    pub(crate) unit: Option<String>,
 }
 
 /// Where each running server keeps a file naming it, locked for as long as it runs.
@@ -98,7 +98,7 @@ fn serve_dir(roots: &orq_core::storage::StorageRoots) -> PathBuf {
 }
 
 /// The servers whose files are still locked; a file no server holds is left over and removed.
-fn live_servers(roots: &orq_core::storage::StorageRoots) -> Vec<LiveServer> {
+pub(crate) fn live_servers(roots: &orq_core::storage::StorageRoots) -> Vec<LiveServer> {
     use std::os::fd::AsRawFd;
     let Ok(entries) = std::fs::read_dir(serve_dir(roots)) else { return Vec::new() };
     let mut live = Vec::new();
@@ -321,6 +321,7 @@ fn run(args: &[OsString]) -> ExitCode {
     note_restarted(&state_roots, &listen_key);
     println!("orq remote: listening on http://{}", server.addr());
     let announced = announce_server(&state_roots, &server.addr().to_string());
+    start_database_snapshots(state_roots.data.clone());
     if let Some(auth) = &auth {
         println!("passkeys: sign in at {} (serve it over HTTPS, for example `tailscale serve --bg {}`)", auth.host().origin(), server.addr().port());
     }
@@ -357,6 +358,24 @@ fn run(args: &[OsString]) -> ExitCode {
     let err = std::os::unix::process::CommandExt::exec(&mut command);
     let _ = std::fs::remove_file(&marker);
     fail(format!("cannot start {}: {err}", target.display()))
+}
+
+/// Snapshots orq.db now when the newest snapshot is over a day old, and checks again every hour for as
+/// long as the server runs. A failure is reported and tried again at the next check.
+fn start_database_snapshots(data: PathBuf) {
+    std::thread::spawn(move || loop {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+        // A database not created yet is looked for again soon; otherwise the next check is in an hour.
+        let mut wait = 3600;
+        if orq_core::storage::database_snapshot_due(&data, now) {
+            if !data.join("orq.db").exists() {
+                wait = 2;
+            } else if let Err(why) = orq_core::storage::snapshot_database(&data, now) {
+                eprintln!("orq serve: cannot snapshot the database: {why}");
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(wait));
+    });
 }
 
 /// Why the server stopped: interrupted, or restarting into a binary.

@@ -1,5 +1,7 @@
 use orq_core::FeatureStatus;
 use serde::Deserialize;
+#[cfg(unix)]
+use std::path::Path;
 
 /// One entry of a project's `.tdd-features.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +244,25 @@ pub use write::write_ledger_atomic;
 
 mod save;
 pub use save::{AppendError, EditFieldsError, FieldEdits, LoadedLedger, SaveError};
+
+/// Copies the ledger at `path`, whose current `bytes` are about to be replaced, into Orq's snapshot
+/// folder for its project. A failure is logged and never stops the write it precedes.
+#[cfg(unix)]
+pub(crate) fn snapshot_before_write(path: &Path, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    let attempt = || -> Result<(), String> {
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        let project = orq_git::resolve_project(dir).map_err(|e| format!("{e:?}"))?;
+        let roots = orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()).map_err(|e| e.to_string())?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+        orq_core::storage::snapshot_ledger(&roots.data, &orq_git::project_id(&project), bytes, now).map(|_| ()).map_err(|e| e.to_string())
+    };
+    if let Err(message) = attempt() {
+        eprintln!("orq: could not snapshot the ledger {}: {message}", path.display());
+    }
+}
 
 mod settings;
 pub use settings::{settings_path, MachineRunLimits, Settings, SettingsError};

@@ -2236,6 +2236,12 @@ function StorageCleanup({ token, onSignedOut }) {
           <ul className="storage-preview">{listed.map((line, index) => <li key={index} data-storage-line>{line}</li>)}</ul>
         </div>
       ) : null}
+      {preview !== null && phase !== "loading" && preview.snapshots != null && isTextList(preview.snapshots.lines) && preview.snapshots.lines.length > 0 ? (
+        <div className="settings-block">
+          <span className="settings-label">Snapshots kept ({preview.snapshots.size}, never cleaned up)</span>
+          <ul className="storage-preview">{preview.snapshots.lines.map((line, index) => <li key={index} data-snapshot-line>{line}</li>)}</ul>
+        </div>
+      ) : null}
       {phase === "previewed" ? (
         <div className="settings-block settings-actions" role="group" aria-label="Storage cleanup">
           {something ? <button type="button" className="danger-button" data-storage-prune onClick={() => setPhase("asking")}><Icon name="trash" size={16} />Clean up</button> : null}
