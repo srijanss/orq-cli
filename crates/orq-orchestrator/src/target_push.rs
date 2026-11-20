@@ -109,7 +109,8 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
         Err(error) => return Err(format!("only a GitHub project's target is pushed from orq: {}", redacted(&error.to_string()))),
     }
     let address = crate::review_request::normalize_remote(&url).ok_or_else(|| format!("{REMOTE} has no repository address"))?;
-    if let Some(pinned) = runs_repository(push)? {
+    let runs = project_runs(push)?;
+    if let Some(pinned) = runs_repository(&runs) {
         if repository_identity(&address) != repository_identity(&pinned) {
             return Err(format!("{REMOTE} pushes to {address}, not {pinned} that this project's runs use"));
         }
@@ -135,7 +136,7 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
         .filter_map(|line| line.split_once('\0'))
         .map(|(sha, subject)| PushCommit { sha: sha.to_string(), short: sha.chars().take(7).collect(), subject: orq_core::redact::redact(subject), run: None })
         .collect();
-    link_runs(push, &mut state.commits);
+    link_runs(push, &runs, &mut state.commits);
     state.count = state.commits.len();
     if state.count == 0 {
         return Err(format!("{target} has nothing {REMOTE} does not have"));
@@ -149,15 +150,12 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
 
 /// Marks each of `commits` with the project's run it came from: a run whose recorded local merge
 /// landed one of them owns the commits between where it started and that merge.
-fn link_runs(push: &TargetPush, commits: &mut [PushCommit]) {
+fn link_runs(push: &TargetPush, runs: &[crate::store::RunRecord], commits: &mut [PushCommit]) {
     let listed: std::collections::HashSet<String> = commits.iter().map(|commit| commit.sha.clone()).collect();
     let mut owner: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for id in push.store.run_ids().unwrap_or_default() {
-        let Ok(record) = push.store.load(&id) else { continue };
-        if record.project_id != push.project_id || record.base_sha.is_empty() {
-            continue;
-        }
-        let Ok(events) = push.store.events(&id) else { continue };
+    for record in runs.iter().filter(|record| !record.base_sha.is_empty()) {
+        let id = &record.run_id;
+        let Ok(events) = push.store.events(id) else { continue };
         let merged = events.iter().rev().filter(|event| event.kind == "merge.completed").find_map(|event| event.payload["head_sha"].as_str().map(str::to_string));
         let Some(head) = merged.filter(|head| listed.contains(head)) else { continue };
         let Ok(out) = git(push.root, &["rev-list", &format!("{}..{head}", record.base_sha), "--"]) else { continue };
@@ -200,16 +198,16 @@ fn record_pushed(push: &TargetPush, commits: &[PushCommit], sha: &str) -> Vec<St
     runs
 }
 
+/// The project's runs, in the store's order, each loaded once per check.
+fn project_runs(push: &TargetPush) -> Result<Vec<crate::store::RunRecord>, String> {
+    let ids = push.store.run_ids().map_err(|error| format!("the project's runs could not be read: {error:?}"))?;
+    Ok(ids.iter().filter_map(|id| push.store.load(id).ok()).filter(|record| record.project_id == push.project_id).collect())
+}
+
 /// The repository the project's newest run that pinned one was started against; `None` when no
 /// run of the project pinned one.
-fn runs_repository(push: &TargetPush) -> Result<Option<String>, String> {
-    let ids = push.store.run_ids().map_err(|error| format!("the project's runs could not be read: {error:?}"))?;
-    Ok(ids
-        .iter()
-        .rev()
-        .filter_map(|id| push.store.load(id).ok())
-        .find(|record| record.project_id == push.project_id && !record.repository.is_empty())
-        .map(|record| record.repository))
+fn runs_repository(runs: &[crate::store::RunRecord]) -> Option<String> {
+    runs.iter().rev().find(|record| !record.repository.is_empty()).map(|record| record.repository.clone())
 }
 
 /// `.git` and a trailing slash name the same repository.
