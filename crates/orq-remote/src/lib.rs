@@ -9,6 +9,7 @@
 pub mod discard;
 pub mod projects;
 pub mod review_refresh;
+pub mod web_push;
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -196,6 +197,17 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
         }
     };
 
+    // Push settings are the server's own, so they sit beside the handler: the same peer and credential
+    // rules apply (a live session stands in for the token), and nothing else reaches them.
+    if path.starts_with("/api/push/") {
+        if !remote_inbox::peer_allowed(peer.ip()) || !remote_inbox::token_matches(&shared.state.config.token, authorization.as_deref()) {
+            log_refusal(peer.ip(), &method, refusal_path(&path));
+            return json_reply(401, b"{\"error\":\"unauthorized\"}".to_vec());
+        }
+        let roots = shared.state.roots.clone();
+        let Ok((code, reply)) = tokio::task::spawn_blocking(move || web_push::route(&roots, &method, &path, &body)).await else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+        return json_reply(code, reply.to_string().into_bytes());
+    }
     // Reading storage is blocking work.
     // The API reads its filter, sort and paging from the query; no other path looks at it.
     let target = match uri.query() {

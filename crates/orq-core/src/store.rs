@@ -13,6 +13,7 @@ use crate::review_lifecycle::{Gate, ProviderState, ReviewLifecycle};
 use crate::storage::{check_head_sha, check_run_id, write_atomic};
 
 pub mod run_queue;
+pub mod push;
 pub mod todo;
 
 /// One stored review report, pinned to the head SHA it reviewed.
@@ -29,7 +30,7 @@ pub struct ReviewRecord {
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
 /// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
-const MIGRATIONS: [&str; 14] = ["
+const MIGRATIONS: [&str; 15] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -131,12 +132,34 @@ const MIGRATIONS: [&str; 14] = ["
     ALTER TABLE project_settings ADD COLUMN pull_target_before_runs INTEGER NOT NULL DEFAULT 1;
 ", "
     ALTER TABLE project_settings ADD COLUMN after_merge TEXT NOT NULL DEFAULT 'ask';
+", "
+    CREATE TABLE push_subscriptions (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        endpoint   TEXT    NOT NULL UNIQUE,
+        p256dh     TEXT    NOT NULL,
+        auth       TEXT    NOT NULL,
+        label      TEXT    NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE push_kinds (
+        kind    TEXT    NOT NULL PRIMARY KEY,
+        enabled INTEGER NOT NULL
+    );
+    CREATE TABLE push_projects_muted (
+        project_id TEXT NOT NULL PRIMARY KEY
+    );
+    CREATE TABLE push_sent (
+        run_id  TEXT    NOT NULL,
+        kind    TEXT    NOT NULL,
+        sent_at INTEGER NOT NULL,
+        PRIMARY KEY (run_id, kind)
+    );
 "];
 
 /// Whether each migration, by version, changes or drops something an older Orq reads or writes. A migration that
 /// only adds (a table, a column with a default, an index) leaves older Orq binaries using the database; one that
 /// breaks them raises the database's `compat_from`, so they are refused instead of misreading it.
-const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false, false, false, false];
+const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false, false, false, false, false];
 
 /// Whether migration `version` leaves an older Orq unable to use the database. An unknown version is taken as breaking.
 pub fn is_breaking(version: u32) -> bool {
