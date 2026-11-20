@@ -27,6 +27,7 @@ fn request<'a>(harness: &str, model: &str, features: &'a [&'a str]) -> Implement
         declared_files: &[],
         answer: None,
         undeclared_files: &[],
+        feature_specs: &[],
     }
 }
 

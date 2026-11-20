@@ -27,6 +27,7 @@ fn request(implementer: &str, leave_full_suite_to_gate: bool) -> ImplementReques
         declared_files: &[],
         answer: None,
         undeclared_files: &[],
+        feature_specs: &[],
     }
 }
 

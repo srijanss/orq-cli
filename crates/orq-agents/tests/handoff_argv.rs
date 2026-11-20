@@ -24,6 +24,7 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
         declared_files: &[],
         answer: None,
         undeclared_files: &[],
+        feature_specs: &[],
     };
     let argv = claude.implement_argv(&request).unwrap();
     assert_eq!(argv.len(), 5, "the summary stays inside the one prompt argument: {argv:?}");

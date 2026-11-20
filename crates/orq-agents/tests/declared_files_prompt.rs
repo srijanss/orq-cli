@@ -29,6 +29,7 @@ fn request<'a>(implementer: &str, declared_files: &'a [String], undeclared_files
         declared_files,
         answer: None,
         undeclared_files,
+        feature_specs: &[],
     }
 }
 

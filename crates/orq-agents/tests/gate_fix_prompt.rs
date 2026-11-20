@@ -47,6 +47,7 @@ fn implement_prompt(harness: &str, model: &str) -> String {
         declared_files: &[],
         answer: None,
         undeclared_files: &[],
+        feature_specs: &[],
     };
     adapter_for(harness).unwrap().implement_argv(&request).unwrap().last().unwrap().clone()
 }

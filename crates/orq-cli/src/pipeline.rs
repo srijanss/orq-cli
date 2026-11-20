@@ -1421,6 +1421,19 @@ fn declared_files(store: &RunStore, record: &RunRecord, ledger: &Path, features:
     Some(declared)
 }
 
+/// The spec (ledger description) of each of the run's `features` that has one, in the run's order.
+/// An unreadable ledger gives none: the session still has the feature names.
+fn feature_specs(ledger: &Path, features: &[String]) -> Vec<(String, String)> {
+    let Ok(entries) = orq_features::load_ledger(ledger) else { return Vec::new() };
+    features
+        .iter()
+        .filter_map(|name| {
+            let entry = entries.iter().find(|entry| &entry.feature_name == name)?;
+            Some((name.clone(), entry.description.clone()?))
+        })
+        .collect()
+}
+
 /// A file whose change is normal whatever the features declare: an existing test under a `tests/`
 /// directory, a lockfile, or the TDD workflow's own records (`.tdd-*`, such as its ledger and log).
 fn exempt(file: &str) -> bool {
@@ -2081,8 +2094,11 @@ fn stages(
             });
             // The session is told the features' files, and on a resumed run those already changed outside them.
             let (declared_files, undeclared_files) = session_files(store, record, &orq_features::ledger_path(options.project), options.features, resumed_from.map(|from| from.run_id.as_str()));
+            let specs = feature_specs(&orq_features::ledger_path(options.project), options.features);
+            let spec_refs: Vec<(&str, &str)> = specs.iter().map(|(name, spec)| (name.as_str(), spec.as_str())).collect();
             let args = adapter
                 .implement_argv(&ImplementRequest {
+                    feature_specs: &spec_refs,
                     features: &features,
                     implementer: spec(&implementer),
                     reviewer: spec(&options.reviewer),
@@ -2827,6 +2843,24 @@ mod tests {
         assert!(ahead_count(&output(128, "")).unwrap_err().contains("bad object"));
         assert!(ahead_count(&output(0, "")).is_err());
         assert!(ahead_count(&output(0, "many\n")).is_err());
+    }
+
+    #[test]
+    fn the_run_features_specs_are_their_ledger_descriptions_in_the_runs_order() {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-feature-specs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join(".tdd-features.json");
+        std::fs::write(
+            &ledger,
+            r#"[{"featureName":"A","description":"do a","status":"pending"},{"featureName":"B","status":"pending"},{"featureName":"C","description":"do c","status":"pending"}]"#,
+        )
+        .unwrap();
+        let features = vec!["C".to_string(), "B".to_string(), "A".to_string(), "gone".to_string()];
+        assert_eq!(super::feature_specs(&ledger, &features), vec![("C".to_string(), "do c".to_string()), ("A".to_string(), "do a".to_string())]);
+        // An unreadable ledger gives no specs rather than failing the run.
+        assert!(super::feature_specs(&dir.join("missing.json"), &features).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn record_in(worktree: std::path::PathBuf) -> orq_orchestrator::RunRecord {
