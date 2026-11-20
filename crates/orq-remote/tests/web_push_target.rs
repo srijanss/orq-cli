@@ -153,6 +153,32 @@ fn commits_merged_after_a_push_bring_the_line_and_its_push_back_on_the_next_refr
 }
 
 #[test]
+fn new_commits_that_look_like_the_pushed_ones_or_follow_nothing_waiting_still_bring_the_push_back() {
+    let pushed = json!({"status": 200, "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": ["run-1-PUSH-01"]}});
+    let at = |sha: &str| {
+        let mut line = unpushed("github");
+        line["sha"] = json!(sha);
+        line
+    };
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"}), json!({"tick": 30000})];
+
+    // The same count and subjects at another tip are other commits.
+    let responses = vec![projects(at(HEAD)), state(None, true), pushed.clone(), projects(at("3333333333333333333333333333333333333333"))];
+    let Some(out) = as_session("/dashboard", responses, steps.clone()) else { return };
+    assert_eq!(count(&frames(&out)[2], "[data-push-done]"), 1, "{out}");
+    let refreshed = last(&out);
+    assert_eq!((count(refreshed, "[data-unpushed]"), count(refreshed, "[data-push-done]"), count(refreshed, "[data-push-target]")), (1, 0, 1), "{out}");
+
+    // Nothing waiting ends the pushed note: a line that comes back after it is shown with its Push.
+    let mut steps = steps;
+    steps.push(json!({"tick": 30000}));
+    let responses = vec![projects(at(HEAD)), state(None, true), pushed, projects(Value::Null), projects(at(HEAD))];
+    let Some(out) = as_session("/dashboard", responses, steps) else { return };
+    let refreshed = last(&out);
+    assert_eq!((count(refreshed, "[data-unpushed]"), count(refreshed, "[data-push-done]"), count(refreshed, "[data-push-target]")), (1, 0, 1), "{out}");
+}
+
+#[test]
 fn a_gitlab_project_has_no_push_and_says_deliver_by_mr_review() {
     let Some(out) = as_session("/dashboard", vec![projects(unpushed("gitlab"))], vec![]) else { return };
     let frame = last(&out);

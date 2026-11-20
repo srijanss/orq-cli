@@ -214,6 +214,14 @@ fn the_not_pushed_line_names_the_project_provider_so_only_github_offers_the_push
     assert!(s.gh.calls().is_empty(), "the line asks GitHub nothing");
 }
 
+#[test]
+fn the_not_pushed_line_names_the_target_tip_it_counts_up_to() {
+    let s = github("push-target-line-sha");
+    let (card, queue) = unpushed_lines(&s);
+    assert_eq!(card["sha"].as_str(), Some(s.by_hand.as_str()), "{card}");
+    assert_eq!(queue["sha"].as_str(), Some(s.by_hand.as_str()), "{queue}");
+}
+
 fn run_page(s: &Setup) -> Value {
     let config = RemoteConfig { token: "tok".into() };
     let path = format!("/api/projects/alpha/runs/{RUN}");

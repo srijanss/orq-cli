@@ -819,11 +819,16 @@ function waitingCleanups(list) {
 // The commits on a project's target its remote does not have: how many, and the newest subjects. Given
 // `push` ({token, projectId, onSignedOut}), a GitHub project's line offers Push <target>; any other
 // provider's says to deliver by MR review instead. Once the push is done the line gives way to what it did,
-// until a refresh brings other commits not pushed: then those, with their own Push, come back.
+// until a refresh brings other commits not pushed (another target tip): then those, with their own Push,
+// come back. A refresh with nothing waiting ends the note.
 function Unpushed({ unpushed, subjects = false, push = null }) {
   const [pushed, setPushed] = useState(null);
-  if (unpushed === null || typeof unpushed !== "object" || typeof unpushed.message !== "string") return null;
-  const shown = JSON.stringify([unpushed.target, unpushed.count, unpushed.message, unpushed.subjects]);
+  const waiting = unpushed !== null && typeof unpushed === "object" && typeof unpushed.message === "string";
+  useEffect(() => {
+    if (!waiting) setPushed(null);
+  }, [waiting]);
+  if (!waiting) return null;
+  const shown = typeof unpushed.sha === "string" ? unpushed.sha : JSON.stringify([unpushed.target, unpushed.count, unpushed.message, unpushed.subjects]);
   if (pushed !== null && pushed.of === shown) return <p className="run-action-note" role="status" data-push-done>{pushed.text}</p>;
   const listed = subjects && Array.isArray(unpushed.subjects) ? unpushed.subjects.filter((subject) => typeof subject === "string") : [];
   const target = typeof unpushed.target === "string" && unpushed.target !== "" ? unpushed.target : null;

@@ -129,7 +129,12 @@ pub(super) fn waiting_by_project(
 /// the page offers the Push. `None` when there are none, or the remote's branch is not known here.
 pub(super) fn unpushed(root: &Path) -> Option<Value> {
     let target = project_target(root);
-    let range = format!("refs/remotes/{PULL_REMOTE}/{target}..refs/heads/{target}");
+    // The tip is read once and the line counts up to it, so the sha it names is the one it counts.
+    let tip = git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{target}^{{commit}}")])
+        .ok()
+        .filter(|out| out.status.success())?;
+    let sha = String::from_utf8_lossy(&tip.stdout).trim().to_string();
+    let range = format!("refs/remotes/{PULL_REMOTE}/{target}..{sha}");
     let out = git(root, &["rev-list", "--count", &range])
         .ok()
         .filter(|out| out.status.success())?;
@@ -147,7 +152,7 @@ pub(super) fn unpushed(root: &Path) -> Option<Value> {
         .collect();
     let noun = if count == 1 { "commit" } else { "commits" };
     Some(
-        json!({"target": target, "count": count, "message": format!("{count} {noun} on {target} not pushed"), "subjects": subjects, "provider": super::push_target::provider_of(root)}),
+        json!({"target": target, "sha": sha, "count": count, "message": format!("{count} {noun} on {target} not pushed"), "subjects": subjects, "provider": super::push_target::provider_of(root)}),
     )
 }
 
