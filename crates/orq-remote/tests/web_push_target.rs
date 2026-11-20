@@ -11,7 +11,11 @@ use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const HEAD: &str = "2222222222222222222222222222222222222222";
-const SELECTORS: [&str; 11] = [
+const SELECTORS: [&str; 15] = [
+    "details[data-unpushed-details]",
+    "details[data-unpushed-details][open]",
+    ".unpushed-warning",
+    "[data-unpushed-details] [data-push-target]",
     "[data-unpushed]",
     "[data-push-target]",
     "[data-push-target]:disabled",
@@ -236,4 +240,63 @@ fn a_delivered_merge_local_run_page_offers_the_push_and_its_timeline_says_pushed
     let frame = last(&out);
     assert_eq!((count(frame, "[data-unpushed]"), count(frame, "[data-run-pushed]")), (0, 1), "{out}");
     assert!(shows(frame, "Pushed to origin/main"), "{:?}", texts(frame));
+}
+
+fn queue_page(line: Value) -> Value {
+    json!({"status": 200, "json": {"queue": {"entries": [], "count": 0, "paused": null, "unpushed": line}, "remote_actions": true}})
+}
+
+#[test]
+fn the_queue_pages_line_is_a_closed_details_with_the_push_outside_it_that_opens_to_the_subjects() {
+    let steps = vec![json!({"click": "[data-unpushed-details] > summary"})];
+    let Some(out) = as_session("/projects/alpha/queue", vec![queue_page(unpushed("github")), projects(Value::Null)], steps) else { return };
+    let closed = &frames(&out)[0];
+    assert_eq!((count(closed, "details[data-unpushed-details]"), count(closed, "details[data-unpushed-details][open]")), (1, 0), "{out}");
+    assert_eq!((count(closed, "[data-push-target]"), count(closed, "[data-unpushed-details] [data-push-target]")), (1, 0), "the Push is beside the summary: {out}");
+    assert!(shows(closed, "2 commits on main not pushed"), "{:?}", texts(closed));
+    let opened = last(&out);
+    assert_eq!(count(opened, "details[data-unpushed-details][open]"), 1, "{out}");
+    for wanted in ["a note by hand", "PUSH-01 work"] {
+        assert!(shows(opened, wanted), "{wanted}: {:?}", texts(opened));
+    }
+}
+
+#[test]
+fn the_push_works_with_the_line_closed() {
+    let pushed = json!({"status": 200, "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": []}});
+    let responses = vec![queue_page(unpushed("github")), projects(Value::Null), state(None, true), pushed];
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"})];
+    let Some(out) = as_session("/projects/alpha/queue", responses, steps) else { return };
+    assert_eq!(count(&frames(&out)[1], "[data-push-confirm]"), 1, "{out}");
+    assert!(requests(&out).iter().any(|(method, _, body)| method == "POST" && body == &json!({"sha": HEAD})), "{:?}", requests(&out));
+    assert_eq!(count(last(&out), "[data-push-done]"), 1, "{out}");
+}
+
+#[test]
+fn the_icon_and_message_carry_the_warning_class_on_the_card_the_queue_and_the_run_page_but_the_pushed_note_does_not() {
+    let hold = json!({"status": 200, "stream": [], "end": "hold"});
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github"))], vec![]) else { return };
+    assert_eq!((count(last(&out), ".unpushed-warning"), count(last(&out), "details[data-unpushed-details]")), (1, 0), "the card is one line with no details: {out}");
+
+    let Some(out) = as_session("/projects/alpha/queue", vec![queue_page(unpushed("github")), projects(Value::Null)], vec![]) else { return };
+    assert_eq!(count(last(&out), ".unpushed-warning"), 1, "{out}");
+
+    let Some(out) = as_session("/projects/alpha/orchestrations/run-1-PUSH-01", vec![run_page(unpushed("github"), json!([])), projects(Value::Null), hold], vec![]) else { return };
+    assert_eq!(count(last(&out), ".unpushed-warning"), 1, "{out}");
+
+    let pushed = json!({"status": 200, "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": []}});
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"})];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true), pushed], steps) else { return };
+    assert_eq!((count(last(&out), "[data-push-done]"), count(last(&out), ".unpushed-warning")), (1, 0), "{out}");
+}
+
+#[test]
+fn the_warning_token_is_defined_in_every_theme_block_and_the_line_uses_it() {
+    let css = std::fs::read_to_string(format!("{}/web/app.css", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let themes = css.matches("--status-pending-bg:").count();
+    assert!(themes >= 4, "four theme blocks: {themes}");
+    assert_eq!(css.matches("--warning:").count(), themes, "one --warning per theme block");
+    assert!(css.contains("--warning: #fcd34d") && css.contains("--warning: #92400e"), "dark and light values");
+    let rule = css.split(".unpushed-warning").nth(1).expect("a .unpushed-warning rule");
+    assert!(rule.split('}').next().unwrap().contains("var(--warning)"), "{rule}");
 }

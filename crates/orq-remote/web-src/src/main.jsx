@@ -877,8 +877,12 @@ function Unpushed({ unpushed, subjects = false, push = null }) {
   const target = typeof unpushed.target === "string" && unpushed.target !== "" ? unpushed.target : null;
   return (
     <div className="unpushed" role="note" data-unpushed>
-      <p><Icon name="alert" size={16} />{unpushed.message}</p>
-      {listed.length > 0 ? <ul className="unpushed-subjects">{listed.map((subject, at) => <li key={at}>{subject}</li>)}</ul> : null}
+      {listed.length > 0 ? (
+        <details className="unpushed-details" data-unpushed-details>
+          <summary className="unpushed-warning"><Icon name="alert" size={16} /><span>{unpushed.message}</span><Icon name="chevronDown" size={16} /></summary>
+          <ul className="unpushed-subjects">{listed.map((subject, at) => <li key={at}>{subject}</li>)}</ul>
+        </details>
+      ) : <p className="unpushed-warning"><Icon name="alert" size={16} /><span>{unpushed.message}</span></p>}
       {push === null || target === null ? null : unpushed.provider === "github"
         ? <PushTarget key={shown} target={target} push={push} onPushed={(text) => setPushed({ text, of: shown })} />
         : <p className="muted" data-push-gitlab>GitLab: deliver by MR review</p>}
