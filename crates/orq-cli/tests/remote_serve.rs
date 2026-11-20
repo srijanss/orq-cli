@@ -184,6 +184,23 @@ fn a_broken_run_toml_does_not_stop_the_server_and_its_error_is_logged() {
 }
 
 #[test]
+fn a_run_of_a_project_with_a_broken_run_toml_is_refused_with_the_error_until_it_is_fixed() {
+    let (root, repo) = setup("broken-run", true);
+    fs::write(repo.join(".orq/run.toml"), "[foo]\nbar = 1\n").unwrap();
+    orq_test_support::write_ledger(&repo, &[orq_test_support::LedgerEntry::new("COM-01", "pending")]);
+    let run = || orq(&root).args(["run", "--check", "--repo"]).arg(&repo).args(["--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]).output().unwrap();
+
+    let refused = run();
+
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "a broken run.toml must refuse the run: {stderr}");
+    assert!(stderr.contains("run settings") && stderr.contains("foo"), "{stderr:?}");
+    fs::write(repo.join(".orq/run.toml"), "[release]\nrelease_on_merge = \"auto\"\n\n[after_merge]\ncommands = [[\"true\"]]\n").unwrap();
+    let after = String::from_utf8_lossy(&run().stderr).into_owned();
+    assert!(!after.contains("run settings"), "the fixed file no longer blocks the run: {after:?}");
+}
+
+#[test]
 fn the_removed_remote_serve_points_to_orq_serve_and_binds_nothing() {
     let (root, repo) = setup("removed", true);
     let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
