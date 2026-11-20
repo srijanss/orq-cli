@@ -271,6 +271,28 @@ fn an_origin_that_fetches_from_one_repository_and_pushes_to_another_is_refused()
 }
 
 #[test]
+fn an_origin_git_rewrites_to_another_repository_is_refused_before_anything_is_fetched_or_pushed() {
+    let evil = "https://github.com/acme/evil.git";
+    let refusal = "origin's address https://github.com/acme/widgets.git is rewritten by git to https://github.com/acme/evil.git: only the repository checked may get the commits";
+    // pushInsteadOf rewrites only the push; insteadOf rewrites the fetch and the push.
+    for (tag, key) in [("push-instead-of", "pushInsteadOf"), ("instead-of", "insteadOf")] {
+        let w = world(tag, 1);
+        if key == "insteadOf" {
+            git(&w.repo, &["config", "--unset", &format!("url.file://{}.insteadOf", w.origin.display())]);
+        }
+        git(&w.repo, &["config", &format!("url.{evil}.{key}"), ORIGIN]);
+        let gh = unprotected();
+        let push = request(&w, &gh);
+        let head = git(&w.repo, &["rev-parse", "main"]);
+
+        assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal), "{tag}");
+        assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()), "{tag}");
+        assert!(gh.calls().is_empty(), "{tag}: nothing was asked of GitHub");
+        assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "{tag}: nothing was pushed");
+    }
+}
+
+#[test]
 fn a_refusal_naming_origins_addresses_never_shows_the_credentials_in_them() {
     let w = world("split-credentials", 1);
     let forked = w.root.join("fork.git");

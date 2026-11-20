@@ -230,11 +230,11 @@ fn origin_push_url(dir: &Path) -> Result<String, String> {
         [url] => url,
         _ => return Err(format!("{REMOTE} pushes to more than one address: give it one push address first")),
     };
+    let identity = |url: &str| crate::review_request::normalize_remote(url).map(|address| repository_identity(&address).to_string());
+    // Shown in its normalized form only: a raw address may carry a credential.
+    let shown = |url: &str| crate::review_request::normalize_remote(url).unwrap_or_else(|| "an address that is not a repository".to_string());
     if let Some(fetched) = urls.first().filter(|fetched| *fetched != url) {
-        let identity = |url: &str| crate::review_request::normalize_remote(url).map(|address| repository_identity(&address).to_string());
         if identity(fetched).is_none() || identity(fetched) != identity(url) {
-            // Shown in its normalized form only: a raw address may carry a credential.
-            let shown = |url: &str| crate::review_request::normalize_remote(url).unwrap_or_else(|| "an address that is not a repository".to_string());
             return Err(format!(
                 "{REMOTE} fetches from {} but pushes to {}: the commits shown would not be the ones pushed",
                 shown(fetched),
@@ -242,13 +242,44 @@ fn origin_push_url(dir: &Path) -> Result<String, String> {
             ));
         }
     }
+    // git rewrites addresses by url.*.insteadOf and pushInsteadOf before it fetches or pushes. A
+    // rewrite to another network repository than the one checked is refused; one to a local
+    // repository (no host) is the person's own mirror and is left to them.
+    for effective in effective_urls(dir, false)?.iter().chain(effective_urls(dir, true)?.iter()) {
+        if identity(effective).is_some_and(|rewritten| Some(rewritten) != identity(url)) {
+            return Err(format!(
+                "{REMOTE}'s address {} is rewritten by git to {}: only the repository checked may get the commits",
+                shown(url),
+                shown(effective)
+            ));
+        }
+    }
     Ok(url.clone())
+}
+
+/// The addresses git fetches origin from (or, with `push`, pushes it to), after its url rewriting.
+fn effective_urls(dir: &Path, push: bool) -> Result<Vec<String>, String> {
+    let mut args = vec!["remote", "get-url", "--all"];
+    if push {
+        args.push("--push");
+    }
+    args.push(REMOTE);
+    let out = git(dir, &args)?;
+    if !out.success {
+        return Err(format!("git could not read {REMOTE}'s address"));
+    }
+    Ok(values(&out.stdout))
+}
+
+/// The non-empty lines of git's `stdout`, trimmed.
+fn values(stdout: &str) -> Vec<String> {
+    stdout.lines().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string).collect()
 }
 
 /// Every value of git config `key` in `dir`, in order.
 fn config_all(dir: &Path, key: &str) -> Result<Vec<String>, String> {
     let out = git(dir, &["config", "--get-all", key])?;
-    Ok(if out.success { out.stdout.lines().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string).collect() } else { Vec::new() })
+    Ok(if out.success { values(&out.stdout) } else { Vec::new() })
 }
 
 /// The `owner/name` on its host of the repository at push url `url`.
