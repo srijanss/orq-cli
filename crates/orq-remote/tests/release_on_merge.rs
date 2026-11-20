@@ -458,6 +458,32 @@ fn a_feature_commit_behind_many_long_subjects_still_makes_the_fallback_minor() {
     assert_eq!(created.payload["version"], "0.2.0");
 }
 
+/// Whether process `pid` is running (a zombie is not).
+fn running(pid: &str) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat.rsplit(')').next().is_some_and(|rest| !rest.trim_start().starts_with('Z')),
+        Err(_) => false,
+    }
+}
+
+#[test]
+fn a_timed_out_harness_leaves_no_descendant_running() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = web_deps::private_temp_dir("descendant-harness");
+    let script = dir.join("harness.sh");
+    let pid_file = dir.join("descendant.pid");
+    std::fs::write(&script, format!("#!/bin/sh\nsleep 60 &\necho $! > {}\nexit 0\n", pid_file.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let answer = orq_remote::projects::HarnessAgent::with_timeout(Duration::from_secs(1)).ask(script.to_str().unwrap(), &[]);
+    assert!(answer.is_err());
+    let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
+    let until = Instant::now() + Duration::from_secs(5);
+    while running(&pid) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!running(&pid), "the descendant {pid} is still running");
+}
+
 #[test]
 fn a_release_that_is_off_or_a_review_delivery_does_nothing() {
     for (off, delivery) in [(true, Delivery::MergeLocal), (false, Delivery::Review)] {

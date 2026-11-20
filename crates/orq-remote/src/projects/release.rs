@@ -47,15 +47,27 @@ impl Default for HarnessAgent {
     }
 }
 
+/// Kills the process group of a harness when dropped, so nothing it started outlives the call or keeps its output open.
+struct GroupKill(u32);
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        let _ = Command::new("sh").args(["-c", "kill -s KILL -- \"-$0\"", &self.0.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+}
+
 impl ReleaseAgent for HarnessAgent {
     fn ask(&self, harness: &str, argv: &[String]) -> Result<String, String> {
+        use std::os::unix::process::CommandExt;
         let mut child = Command::new(harness)
             .args(argv)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .process_group(0)
             .spawn()
             .map_err(|error| format!("{harness} could not start: {}", error.kind()))?;
+        let _group = GroupKill(child.id());
         let Some(out) = child.stdout.take() else { return Err(format!("{harness} gave no output")) };
         let (sender, answers) = std::sync::mpsc::channel();
         // Detached: a program that left the output open keeps this thread until it closes it, not the caller.
