@@ -124,8 +124,9 @@ pub(super) fn waiting_by_project(
 }
 
 /// The commits on the target of the main checkout at `root` that its remote does not have, as the
-/// project's card and page show them: `{target, count, message, subjects}` with the newest ten
-/// subjects, redacted. `None` when there are none, or the remote's branch is not known here.
+/// project's card and page show them: `{target, count, message, subjects, provider}` with the newest
+/// ten subjects, redacted, and the project's provider (`github`, `gitlab` or null), which says whether
+/// the page offers the Push. `None` when there are none, or the remote's branch is not known here.
 pub(super) fn unpushed(root: &Path) -> Option<Value> {
     let target = project_target(root);
     let range = format!("refs/remotes/{PULL_REMOTE}/{target}..refs/heads/{target}");
@@ -146,7 +147,7 @@ pub(super) fn unpushed(root: &Path) -> Option<Value> {
         .collect();
     let noun = if count == 1 { "commit" } else { "commits" };
     Some(
-        json!({"target": target, "count": count, "message": format!("{count} {noun} on {target} not pushed"), "subjects": subjects}),
+        json!({"target": target, "count": count, "message": format!("{count} {noun} on {target} not pushed"), "subjects": subjects, "provider": super::push_target::provider_of(root)}),
     )
 }
 

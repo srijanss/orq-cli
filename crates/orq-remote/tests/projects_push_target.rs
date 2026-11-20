@@ -73,6 +73,7 @@ fn setup(label: &str, origin_url: &str, gh: FakeProvider) -> Setup {
     git(&repo, &["remote", "add", "origin", origin_url]);
     git(&repo, &["config", &format!("url.file://{}.insteadOf", origin.display()), origin_url]);
     std::fs::write(repo.join(".gitignore"), ".tdd-*.json\n.claude/\n").unwrap();
+    std::fs::write(repo.join(".tdd-features.json"), json!([{"featureName": "PUSH-01", "dependsOn": [], "status": "in_progress"}]).to_string()).unwrap();
     let base = commit(&repo, "README", "start");
     git(&repo, &["push", "-q", "origin", "main"]);
     git(&repo, &["fetch", "-q", "origin"]);
@@ -181,6 +182,30 @@ fn get_for_a_protected_branch_gives_the_reason_the_push_is_off() {
     let (status, body) = send(&s, "GET", b"");
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["reason"], "main is protected on GitHub: deliver by review instead", "{body}");
+}
+
+/// The "not pushed" line of project `alpha` as the project card and the project's queue page get it.
+fn unpushed_lines(s: &Setup) -> (Value, Value) {
+    let config = RemoteConfig { token: "tok".into() };
+    let get = |path: &str| handle_with_body(&s.roots, &config, "server-project", "server", &request("GET", path), b"", &provider(s)).body;
+    let list = get("/api/projects");
+    let card = list["projects"].as_array().unwrap().iter().find(|p| p["id"] == "alpha").cloned().unwrap();
+    let queue = get("/api/projects/alpha/queue");
+    (card["unpushed"].clone(), queue["queue"]["unpushed"].clone())
+}
+
+#[test]
+fn the_not_pushed_line_names_the_project_provider_so_only_github_offers_the_push() {
+    let s = github("push-target-line-github");
+    let (card, queue) = unpushed_lines(&s);
+    assert_eq!((card["count"].as_u64(), card["provider"].as_str()), (Some(2), Some("github")), "{card}");
+    assert_eq!(queue["provider"], "github", "{queue}");
+
+    let s = setup("push-target-line-gitlab", "https://gitlab.com/acme/alpha.git", FakeProvider::builder().build());
+    let (card, queue) = unpushed_lines(&s);
+    assert_eq!(card["provider"], "gitlab", "{card}");
+    assert_eq!(queue["provider"], "gitlab", "{queue}");
+    assert!(s.gh.calls().is_empty(), "the line asks GitHub nothing");
 }
 
 #[test]
