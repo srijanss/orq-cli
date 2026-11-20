@@ -1256,15 +1256,15 @@ fn completed_by_a_session(store: &orq_orchestrator::RunStore, project_id: &str, 
 /// or whose events, cannot be read cannot be told idle: that is an error naming it, as is a run store
 /// that cannot be listed.
 fn implementing_run(store: &orq_orchestrator::RunStore, project_id: &str) -> Result<Option<String>, String> {
-    let mut runs: Vec<orq_features::RunEvents> = Vec::new();
-    for run_id in store.run_ids().map_err(|err| format!("{err:?}"))? {
+    // Each run's history is read only when the runs before it did not decide, and one at a time.
+    let runs = store.run_ids().map_err(|err| format!("{err:?}"))?.into_iter().filter_map(|run_id| {
         let events = match store.load(&run_id) {
-            Ok(record) if record.project_id != project_id => continue,
+            Ok(record) if record.project_id != project_id => return None,
             Ok(_) => store.events(&run_id).map_err(|err| format!("{err:?}")),
             Err(err) => Err(format!("its record cannot be read: {err:?}")),
         };
-        runs.push((run_id, events.map(|events| events.into_iter().map(|e| (e.kind, e.stage)).collect())));
-    }
+        Some((run_id, events.map(|events| events.into_iter().map(|e| (e.kind, e.stage)).collect())))
+    });
     orq_features::implementing_run(runs)
 }
 

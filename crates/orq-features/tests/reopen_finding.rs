@@ -178,6 +178,16 @@ fn a_run_whose_events_cannot_be_read_refuses_the_reopen_rather_than_counting_as_
 }
 
 #[test]
+fn the_runs_after_an_implementing_or_unreadable_one_are_not_read() {
+    let busy: orq_features::RunEvents = ("run-1".to_string(), Ok(vec![("stage.started".to_string(), Some("implement_and_review".to_string()))]));
+    let unreadable: orq_features::RunEvents = ("run-1".to_string(), Err("unreadable".to_string()));
+    let then_never = || std::iter::from_fn(|| -> Option<orq_features::RunEvents> { panic!("a run after the deciding one was read") });
+
+    assert_eq!(implementing_run(std::iter::once(busy).chain(then_never())), Ok(Some("run-1".to_string())));
+    assert!(implementing_run(std::iter::once(unreadable).chain(then_never())).is_err());
+}
+
+#[test]
 fn only_a_completed_feature_is_reopened_by_hand() {
     let (ledger, _) = scratch("only-completed", "{}", "{}");
     let in_progress = reopen_completed_feature(&ledger, "run-feature", false);
