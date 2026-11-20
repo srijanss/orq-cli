@@ -4418,22 +4418,32 @@ function archivedPath(projectId) {
   return API_PROJECTS + "/" + encodeURIComponent(projectId) + "/features/archived";
 }
 
-function useArchived(token, projectId, reloads) {
-  const [archived, setArchived] = useState(null);
+// { list, failed, retry }: list is null while loading or after a failure; failed says which; a refused token signs out.
+function useArchived(token, projectId, reloads, onSignedOut) {
+  const [state, setState] = useState({ list: null, failed: false });
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
+    setState({ list: null, failed: false });
     (async () => {
       try {
         const response = await get(archivedPath(projectId), token, controller.signal);
+        if (controller.signal.aborted) return;
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
         const body = response.ok ? await jsonOrNull(response) : null;
-        if (!controller.signal.aborted) setArchived(body !== null && Array.isArray(body.archived) ? body.archived.filter((entry) => entry !== null && typeof entry.name === "string") : null);
+        if (controller.signal.aborted) return;
+        if (body !== null && Array.isArray(body.archived)) setState({ list: body.archived.filter((entry) => entry !== null && typeof entry.name === "string"), failed: false });
+        else setState({ list: null, failed: true });
       } catch (unreachable) {
-        // Unknown: no archive is shown.
+        if (!controller.signal.aborted) setState({ list: null, failed: true });
       }
     })();
     return () => controller.abort();
-  }, [token, projectId, reloads]);
-  return archived;
+  }, [token, projectId, reloads, attempt]);
+  return { list: state.list, failed: state.failed, retry: () => setAttempt(attempt + 1) };
 }
 
 // The archive filter: "Archived (N)" opens a searchable, read-only list of the archived features.
@@ -4522,8 +4532,9 @@ function ArchiveCompleted({ completed, control }) {
 }
 
 // An archived feature's page: what it was, read-only. Not found when the archive has no such feature either.
-function ArchivedDetail({ token, projectId, name, reloads }) {
-  const archived = useArchived(token, projectId, reloads);
+function ArchivedDetail({ token, projectId, name, reloads, onSignedOut }) {
+  const { list: archived, failed, retry } = useArchived(token, projectId, reloads, onSignedOut);
+  if (failed) return <p role="alert">The archived features could not be read. <button type="button" data-archived-retry onClick={retry}>Retry</button></p>;
   if (archived === null) return <p>Loading the feature…</p>;
   const feature = archived.find((entry) => entry.name === name);
   if (feature === undefined) return <NotFound back={"/projects/" + encodeURIComponent(projectId) + "/features"} />;
@@ -4540,8 +4551,8 @@ function ArchivedDetail({ token, projectId, name, reloads }) {
 }
 
 // The list with the archive beside it: the Archived filter, and the archive action when it applies.
-function ArchiveSection({ data, control, token, projectId, reloads, children }) {
-  const archived = useArchived(token, projectId, reloads);
+function ArchiveSection({ data, control, token, projectId, reloads, onSignedOut, children }) {
+  const { list: archived } = useArchived(token, projectId, reloads, onSignedOut);
   const completed = data.rows.filter((feature) => feature.status === "completed").length;
   return (
     <>
@@ -4565,9 +4576,9 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
           <ProjectSelect projects={projects} projectId={projectId} />
         </>
       )} token={token} path={featuresPath} loading="Loading the features…" parse={parseFeatures} onSignedOut={onSignedOut} draw={(data) => {
-        if (name === null) return <ArchiveSection data={data} control={control(data)} token={token} projectId={projectId} reloads={reloads}><FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} scope={projectId} /></ArchiveSection>;
+        if (name === null) return <ArchiveSection data={data} control={control(data)} token={token} projectId={projectId} reloads={reloads} onSignedOut={onSignedOut}><FeatureList features={tagged(data.rows, projectId, projectId)} control={control(data)} scope={projectId} /></ArchiveSection>;
         const feature = data.rows.find((entry) => entry.name === name);
-        return feature === undefined ? <ArchivedDetail token={token} projectId={projectId} name={name} reloads={reloads} /> :<FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
+        return feature === undefined ? <ArchivedDetail token={token} projectId={projectId} name={name} reloads={reloads} onSignedOut={onSignedOut} /> :<FeatureDetail feature={feature} features={data.rows} runs={runs} projectId={projectId} control={control(data)} />;
       }} />
     </>
   );

@@ -88,6 +88,24 @@ fn an_archived_features_page_is_read_only_and_a_missing_one_is_not_found() {
     assert!(texts(last(&out)).iter().any(|t| t == "Not found"), "{out}");
 }
 
+/// A failed archive read is told apart from a slow one: the feature page shows an error with a retry, not "Loading" for ever,
+/// and a refused token asks for the token again.
+#[test]
+fn a_failed_archive_read_shows_an_error_and_a_refused_token_signs_out() {
+    for failure in [json!({"status": 500, "json": {"error": "boom"}}), json!({"reject": true})] {
+        let responses = vec![ledger(2, true), runs(), projects(), failure];
+        let Some(out) = page("/projects/alpha/features/old-beta", responses, vec![]) else { return };
+        let end = last(&out);
+        assert!(!texts(end).iter().any(|t| t.contains("Loading the feature")), "{out}");
+        assert!(texts(end).iter().any(|t| t.contains("could not be read")), "{out}");
+        assert!(!texts(end).iter().any(|t| t == "Not found"), "{out}");
+    }
+
+    let responses = vec![ledger(2, true), runs(), projects(), json!({"status": 401, "json": {}})];
+    let Some(out) = page("/projects/alpha/features/old-beta", responses, vec![]) else { return };
+    assert_eq!(last(&out)["settled"]["inputs"].as_array().unwrap().len(), 1, "{out}");
+}
+
 #[test]
 fn archive_completed_shows_over_200_completed_with_actions_on_and_asks_with_the_dry_run_counts() {
     let dry = json!({"status": 200, "json": {"archived": 101, "dry_run": true, "stripped": [{"feature": "next-one", "names": ["done-0"]}]}});
