@@ -212,6 +212,37 @@ fn no_production_code_path_can_invoke_a_merge() {
     assert!(seen > 10, "the scan found only {seen} source files, so it is not looking where the code is");
 }
 
+/// The files a target push may start from: `orq push` and the web's Push. Any call needs a
+/// `TargetPush`, so a stage, the queue, a clean-up or a watchdog that built one would be found.
+const TARGET_PUSH_STARTERS: [&str; 2] = ["orq-cli/src/push.rs", "orq-remote/src/projects/push_target.rs"];
+
+#[test]
+fn only_the_person_started_push_commands_build_a_target_push_and_only_target_push_checks_its_refspec() {
+    let mut starters = Vec::new();
+    let mut checkers = Vec::new();
+    let mut seen = 0;
+    for krate in ["orq-agents", "orq-cli", "orq-core", "orq-features", "orq-git", "orq-herdr", "orq-orchestrator", "orq-remote", "orq-tui"] {
+        for (path, text) in crate_sources(krate) {
+            seen += 1;
+            let name = path.to_string_lossy().replace('\\', "/");
+            if text.contains("TargetPush {") {
+                starters.push(name.clone());
+            }
+            if text.contains("allowed_target_push(") && !path.ends_with("no_merge.rs") {
+                checkers.push(name);
+            }
+        }
+    }
+    assert!(seen > 10, "the scan found only {seen} source files");
+    starters.sort();
+    assert_eq!(starters.len(), TARGET_PUSH_STARTERS.len(), "{starters:?}");
+    for (found, allowed) in starters.iter().zip(TARGET_PUSH_STARTERS) {
+        assert!(found.ends_with(allowed), "{found} builds a target push; only {TARGET_PUSH_STARTERS:?} may");
+    }
+    assert_eq!(checkers.len(), 1, "{checkers:?}");
+    assert!(checkers[0].ends_with("orq-orchestrator/src/target_push.rs"), "{checkers:?}");
+}
+
 #[test]
 fn the_terminal_ui_exposes_no_approve_or_merge_control() {
     let mut seen = 0;
