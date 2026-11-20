@@ -11,7 +11,7 @@ use std::process::Command;
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const SELECTORS: [&str; 8] = [
     ".feature-filters > .feature-editor > button.primary-button[data-feature-add] svg",
-    ".feature-editor-fields label.field > .field-label + input[data-field-description]",
+    ".feature-editor-fields .description-field > .description-head > label.field-label",
     ".feature-editor-actions button.primary-button[data-feature-save]",
     ".confirm .confirm-question + .confirm-actions button.primary-button[data-confirm]",
     "[data-field-depends]",
