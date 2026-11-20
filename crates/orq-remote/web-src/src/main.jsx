@@ -816,19 +816,135 @@ function waitingCleanups(list) {
   return list.filter((waiting) => waiting !== null && typeof waiting === "object" && typeof waiting.run === "string" && RUN_ID.test(waiting.run) && typeof waiting.feature === "string" && typeof waiting.review === "string");
 }
 
-// The commits on a project's target its remote does not have: how many, and the newest subjects.
-function Unpushed({ unpushed, subjects = false }) {
+// The commits on a project's target its remote does not have: how many, and the newest subjects. Given
+// `push` ({token, projectId, onSignedOut}), a GitHub project's line offers Push <target>; any other
+// provider's says to deliver by MR review instead. Once the push is done the line gives way to what it did.
+function Unpushed({ unpushed, subjects = false, push = null }) {
+  const [pushed, setPushed] = useState(null);
   if (unpushed === null || typeof unpushed !== "object" || typeof unpushed.message !== "string") return null;
+  if (pushed !== null) return <p className="run-action-note" role="status" data-push-done>{pushed}</p>;
   const listed = subjects && Array.isArray(unpushed.subjects) ? unpushed.subjects.filter((subject) => typeof subject === "string") : [];
+  const target = typeof unpushed.target === "string" && unpushed.target !== "" ? unpushed.target : null;
   return (
     <div className="unpushed" role="note" data-unpushed>
       <p><Icon name="alert" size={16} />{unpushed.message}</p>
       {listed.length > 0 ? <ul className="unpushed-subjects">{listed.map((subject, at) => <li key={at}>{subject}</li>)}</ul> : null}
+      {push === null || target === null ? null : unpushed.provider === "github"
+        ? <PushTarget target={target} push={push} onPushed={setPushed} />
+        : <p className="muted" data-push-gitlab>GitLab: deliver by MR review</p>}
     </div>
   );
 }
 
-function ProjectCard({ project, selected = false, pinned = false, onPin = null }) {
+// Most commits a push confirmation lists before "and N more".
+const PUSH_LISTED = 50;
+
+// Push <target>: reads what a push would send and why it may not, then asks with the remote, the branch, the
+// range and each commit (its run, or not from orq), and sends the commit it showed. Only a passkey session
+// may push, so signed in with the token the button is off and says so.
+function PushTarget({ target, push, onPushed }) {
+  const [phase, setPhase] = useState("idle");
+  const [state, setState] = useState(null);
+  const [note, setNote] = useState("");
+  const path = "/api/projects/" + encodeURIComponent(push.projectId) + "/push-target";
+  const session = push.token === SESSION;
+  const ask = async () => {
+    setNote("");
+    setPhase("checking");
+    try {
+      const response = await get(path, push.token);
+      if (response.status === 401) {
+        push.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok && body !== null && typeof body === "object") {
+        setState(body);
+        setPhase("asking");
+        return;
+      }
+      setNote(body !== null && typeof body.error === "string" ? body.error : "The push could not be checked.");
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+    }
+    setPhase("idle");
+  };
+  const send = async () => {
+    setPhase("sending");
+    let text = "The push could not be completed.";
+    try {
+      const response = await actionRequest(path, push.token, { sha: state.sha });
+      if (response.status === 401) {
+        push.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok && body !== null && isCount(body.count)) {
+        onPushed("Pushed " + body.count + (body.count === 1 ? " commit" : " commits") + " to " + state.remote + "/" + target + ".");
+        return;
+      }
+      if (response.status === 403) text = body !== null && typeof body.error === "string" ? body.error : "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("asking");
+  };
+  const cancel = () => {
+    setPhase("idle");
+    setState(null);
+    setNote("");
+  };
+  const open = phase === "asking" || phase === "sending";
+  return (
+    <div className="push-target">
+      {open ? null : <button type="button" className="primary-button" data-push-target disabled={!session || phase === "checking"} onClick={ask}><Icon name="arrowUp" size={16} />{"Push " + target}</button>}
+      {session ? null : <p className="muted" data-push-needs-passkey>Pushing needs a passkey sign-in.</p>}
+      {phase === "checking" ? <span role="status">Checking…</span> : null}
+      {open && state !== null ? <PushConfirm state={state} target={target} projectId={push.projectId} busy={phase === "sending"} onConfirm={send} onCancel={cancel} /> : null}
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+    </div>
+  );
+}
+
+// What a push would send, and Push N commits; or why it is off, with only Cancel.
+function PushConfirm({ state, target, projectId, busy, onConfirm, onCancel }) {
+  const remote = typeof state.remote === "string" && state.remote !== "" ? state.remote : "origin";
+  const commits = Array.isArray(state.commits) ? state.commits.filter((commit) => commit !== null && typeof commit === "object" && typeof commit.short === "string" && typeof commit.subject === "string") : [];
+  const shown = commits.slice(0, PUSH_LISTED);
+  const more = (isCount(state.more) ? state.more : 0) + (commits.length - shown.length);
+  const reason = state.remote_actions !== true ? "Remote actions are off on this server." : typeof state.reason === "string" && state.reason !== "" ? state.reason : typeof state.sha !== "string" || shown.length === 0 ? "Nothing is waiting to be pushed." : null;
+  const count = isCount(state.count) ? state.count : commits.length;
+  const runHref = (run) => "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run);
+  return (
+    <div className="confirm push-confirm" role="group" aria-label={"Push " + target + " to " + remote} data-push-confirm>
+      <p className="confirm-question">{"Push " + target + " to " + remote + "/" + target + "?"}</p>
+      <p className="muted">{"Remote: " + remote + ", branch: " + target + ", range: " + remote + "/" + target + ".." + target}</p>
+      {shown.length > 0 ? (
+        <ul className="push-commits">
+          {shown.map((commit, at) => (
+            <li key={at} data-push-commit>
+              <code>{commit.short}</code>
+              <span>{" " + commit.subject + " "}</span>
+              {typeof commit.run === "string" && RUN_ID.test(commit.run)
+                ? <a href={runHref(commit.run)} data-push-commit-run onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(runHref(commit.run)); } }}>{commit.run}</a>
+                : <em className="muted">not from orq</em>}
+            </li>
+          ))}
+          {more > 0 ? <li className="muted">{"and " + more + " more"}</li> : null}
+        </ul>
+      ) : null}
+      {reason !== null ? <p className="error-text" role="note" data-push-reason>{reason}</p> : null}
+      <div className="confirm-actions">
+        {reason === null ? <button type="button" className="primary-button" data-push-send disabled={busy} onClick={onConfirm}>{"Push " + count + (count === 1 ? " commit" : " commits")}</button> : null}
+        <button type="button" data-cancel disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ProjectCard({ project, selected = false, pinned = false, onPin = null, push = null }) {
   const base = "/projects/" + encodeURIComponent(project.id) + "/";
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
@@ -863,7 +979,7 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null }
           <Icon name="check" size={16} />{waiting.feature + " merged in " + waiting.review + ": clean up"}
         </button>
       ))}
-      <Unpushed unpushed={project.unpushed} />
+      <Unpushed unpushed={project.unpushed} push={push} />
     </li>
   );
 }
@@ -1347,7 +1463,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
   };
   const pinned = projects.filter((project) => pins.includes(project.id));
   const rest = projects.filter((project) => !pins.includes(project.id));
-  const card = (project) => <ProjectCard key={project.id} project={project} selected={project.id === lastProject} pinned={pins.includes(project.id)} onPin={() => toggle(project.id)} />;
+  const card = (project) => <ProjectCard key={project.id} project={project} selected={project.id === lastProject} pinned={pins.includes(project.id)} onPin={() => toggle(project.id)} push={{ token, projectId: project.id, onSignedOut }} />;
   return (
     <>
       <div className="stats">
@@ -3341,7 +3457,7 @@ function moved(order, from, to) {
 // A project's run queue in the order it starts: each entry's state, why it waits, and its run. With
 // remote actions on it pauses and resumes, removes after asking, and reorders by drag or by ↑/↓; each
 // change shows the queue the server answers with.
-function QueueView({ data, control, projectId }) {
+function QueueView({ data, control, projectId, push = null }) {
   const [queue, setQueue] = useState(data.queue);
   const [phase, setPhase] = useState("idle");
   const [removing, setRemoving] = useState(null);
@@ -3416,7 +3532,7 @@ function QueueView({ data, control, projectId }) {
           {control !== null ? <button type="button" data-target-pull-retry disabled={busy} onClick={pull}><Icon name="rotate" size={16} />Retry</button> : null}
         </div>
       ) : null}
-      <Unpushed unpushed={queue.unpushed ?? null} subjects />
+      <Unpushed unpushed={queue.unpushed ?? null} subjects push={push} />
       {queue.paused !== null ? (
         <QueuePausedBanner reason={queue.paused}>
           {control !== null ? <button type="button" className="primary-button" data-queue-resume disabled={busy} onClick={() => change("resume", {})}><Icon name="play" size={16} />Resume</button> : null}
@@ -4999,6 +5115,22 @@ function TargetPullNotes({ events, target }) {
   );
 }
 
+// Each push of the target that carried this run's commits, on its timeline: where it went.
+function PushedNotes({ events }) {
+  const pushes = events.filter((event) => event.kind === "target.pushed" && event.pushed && typeof event.pushed === "object" && typeof event.pushed.remote === "string" && typeof event.pushed.target === "string");
+  if (pushes.length === 0) return null;
+  return (
+    <div className="pushed-notes">
+      {pushes.map((event) => (
+        <p key={event.event_id} className="run-action-note" role="note" data-run-pushed>
+          <Icon name="check" size={16} />
+          {"Pushed to " + event.pushed.remote + "/" + event.pushed.target}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 // The MCP servers the run set up: each one's version and where it came from, and what went wrong.
 function McpSetup({ mcp }) {
   const servers = Array.isArray(mcp.servers) ? mcp.servers : [];
@@ -5391,6 +5523,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
       <div className="feature-panel" id="run-panel-timeline" role="tabpanel" aria-labelledby="run-tab-timeline" hidden={tab !== "timeline"}>
         <SetAsideNotes events={all} />
         <TargetPullNotes events={all} target={run.target_branch} />
+        <PushedNotes events={all} />
         {all.length === 0 ? <p>No events recorded.</p> : <RunSteps runId={run.run_id} events={all} rounds={rounds} running={run.state === "running"} ended={runEnded(run.state, all)} failedRun={run.state === "failed"} onLogs={openLog} />}
       </div>
       <div className="feature-panel" id="run-panel-events" role="tabpanel" aria-labelledby="run-tab-events" hidden={tab !== "events"}>
@@ -5419,6 +5552,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           <MissingReport run={run} control={control} />
           <RowActions run={run} control={control} />
           <CleanupCard run={run} control={control} />
+          {run.delivery === "merge_local" && follow !== null && projectId !== null ?<Unpushed unpushed={run.unpushed ?? null} push={{ token: follow.token, projectId, onSignedOut: follow.onSignedOut }} /> : null}
           <ResumeLinks run={run} listPath={listPath} />
           {run.kind === "plan" ? <PlanProposal plan={run.plan === undefined ? null : run.plan} projectId={projectId} apiRun={follow === null ? null : follow.base} control={control} /> : null}
           {validTime(run.started_at) === null && delivery === null ? null : (
@@ -6111,7 +6245,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
           <PageHeader title="Queue" subtitle="The features the server starts in turn, when the project's limits allow" onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} section="queue" />
         </>
-      )} token={token} path={queuePath} loading="Loading the queue…" parse={parseQueue} draw={(data) => <QueueView key={JSON.stringify(data.queue)} data={data} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
+      )} token={token} path={queuePath} loading="Loading the queue…" parse={parseQueue} draw={(data) => <QueueView key={JSON.stringify(data.queue)} data={data} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} push={{ token, projectId, onSignedOut }} />} onSignedOut={onSignedOut} />
     );
   }
   if (/^\/projects\/[^/]+\/orchestrations$/.test(address)) {
