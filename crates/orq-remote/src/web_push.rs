@@ -586,7 +586,7 @@ pub fn route(roots: &StorageRoots, method: &str, path: &str, body: &[u8]) -> (u1
                 changes.push((*kind, on));
             }
             let changed = open().and_then(|store| {
-                changes.iter().try_for_each(|(kind, on)| store.set_push_kind(kind, *on)).and_then(|()| kinds_reply(&store)).map_err(|_| refuse(500, "the notification kinds could not be saved"))
+                store.set_push_kinds(&changes).and_then(|()| kinds_reply(&store)).map_err(|_| refuse(500, "the notification kinds could not be saved"))
             });
             match changed {
                 Ok(reply) => (200, reply),

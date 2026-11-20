@@ -147,6 +147,28 @@ fn kinds_and_mutes_need_a_passkey_session_and_are_what_notify_reads() {
     assert_eq!(pushed.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
+#[test]
+fn a_kind_change_that_cannot_be_saved_whole_changes_nothing() {
+    let roots = roots("push-settings-atomic");
+    let server = serve(&roots);
+    let none = Value::Null;
+    let session = web_push_session::sign_in(server.addr(), TOKEN);
+    let session = Some(&session);
+    assert_eq!(call(&server, "GET", "/api/push/kinds", session, &none).0, 200);
+
+    // The database refuses to save "queue_paused", which is written after "failed".
+    let db = rusqlite::Connection::open(roots.data.join("orq.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER refuse_insert BEFORE INSERT ON push_kinds WHEN NEW.kind = 'queue_paused' BEGIN SELECT RAISE(ABORT, 'refused'); END;
+         CREATE TRIGGER refuse_update BEFORE UPDATE ON push_kinds WHEN NEW.kind = 'queue_paused' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+    )
+    .unwrap();
+
+    assert_eq!(call(&server, "PUT", "/api/push/kinds", session, &json!({"failed": false, "queue_paused": false})).0, 500);
+    let kinds = call(&server, "GET", "/api/push/kinds", session, &none).1;
+    assert_eq!((kind_on(&kinds, "failed"), kind_on(&kinds, "queue_paused")), (Some(true), Some(true)), "nothing changed: {kinds}");
+}
+
 // The Settings section and the project card menu, in the page.
 
 const FAILED_ON: &str = "input[data-push-kind=\"failed\"]:checked";

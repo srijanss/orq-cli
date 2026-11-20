@@ -58,10 +58,18 @@ impl Store {
 
     /// Switches a notification kind on or off for every device.
     pub fn set_push_kind(&self, kind: &str, enabled: bool) -> Result<()> {
-        self.conn
-            .execute("INSERT INTO push_kinds (kind, enabled) VALUES (?1, ?2) ON CONFLICT (kind) DO UPDATE SET enabled = excluded.enabled", params![kind, enabled])
-            .map_err(db)?;
-        Ok(())
+        self.set_push_kinds(&[(kind, enabled)])
+    }
+
+    /// Switches several notification kinds at once: all are saved, or, when one cannot be, none is.
+    pub fn set_push_kinds(&self, changes: &[(&str, bool)]) -> Result<()> {
+        let transaction = self.conn.unchecked_transaction().map_err(db)?;
+        for (kind, enabled) in changes {
+            transaction
+                .execute("INSERT INTO push_kinds (kind, enabled) VALUES (?1, ?2) ON CONFLICT (kind) DO UPDATE SET enabled = excluded.enabled", params![kind, enabled])
+                .map_err(db)?;
+        }
+        transaction.commit().map_err(db)
     }
 
     /// Each kind that was switched on or off, with which; a kind never chosen has its default.
