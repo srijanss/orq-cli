@@ -347,13 +347,17 @@ fn a_fetch_that_writes_much_to_stderr_still_finishes_and_is_not_taken_for_a_time
 }
 
 /// Whether process `pid` has ended within a few seconds. A zombie has ended: once killed it only
-/// waits for a parent to reap it, which a container's init may be slow to do.
+/// waits for a parent to reap it, which a container's init may be slow to do. ps exits non-zero
+/// with nothing to say when no such process is left; anything it says on stderr fails the test,
+/// so a ps that could not look is never taken for a process that ended.
 fn ended(pid: &str) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let out = Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+        let complaint = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        assert!(complaint.is_empty(), "ps could not inspect process {pid}: {complaint}");
         let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !out.status.success() || stat.is_empty() || stat.starts_with('Z') {
+        if stat.is_empty() || stat.starts_with('Z') {
             return true;
         }
         if std::time::Instant::now() >= deadline {
@@ -361,6 +365,12 @@ fn ended(pid: &str) -> bool {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+#[test]
+#[should_panic(expected = "ps could not inspect")]
+fn the_process_check_fails_the_test_when_ps_cannot_inspect_the_process() {
+    ended("not-a-pid");
 }
 
 #[test]
