@@ -219,7 +219,7 @@ pub(crate) fn scan_work(
 }
 
 /// What would have let the ignored `path` go with the worktree: what its install folder lacks, or,
-/// for a file in some other ignored folder, the cache tag. `None` for an ignored file in no ignored folder.
+/// for a file in some other ignored folder, the cache tags. `None` for an ignored file in no ignored folder.
 fn ignored_hint(
     worktree: &Path,
     path: &str,
@@ -242,7 +242,8 @@ fn ignored_hint(
         return Ok(Some("it differs from what orq last wrote".to_string()));
     }
     Ok(in_ignored_folder(worktree, path)?.then(|| {
-        "an ignored folder holding a CACHEDIR.TAG is removed with the worktree".to_string()
+        "an ignored folder holding a CACHEDIR.TAG, or a .gitignore of just `*`, is removed with the worktree"
+            .to_string()
     }))
 }
 
@@ -444,37 +445,73 @@ fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Re
 /// output (https://bford.info/cachedir/).
 const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
 
-/// Whether `path` (relative to `worktree`) lies in a directory tagged as a cache: whatever is
-/// there can be rebuilt, so losing it with the worktree loses no work.
+/// The largest `.gitignore` read as a possible self-ignore: the ones caches write are a few lines.
+const SELF_IGNORE_MAX_BYTES: u64 = 4096;
+
+/// Whether `path` (relative to `worktree`) lies in a directory tagged as a cache, by a `CACHEDIR.TAG`
+/// or by a `.gitignore` that ignores everything beside it (as Hypothesis, pytest, ruff and mypy write):
+/// whatever is there can be rebuilt, so losing it with the worktree loses no work.
 fn in_cache_dir(worktree: &Path, path: &str, tagged: &mut HashMap<PathBuf, bool>) -> bool {
     Path::new(path).ancestors().skip(1).any(|dir| {
-        *tagged
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| is_cache_tag(&worktree.join(dir).join("CACHEDIR.TAG")))
+        *tagged.entry(dir.to_path_buf()).or_insert_with(|| {
+            let dir_path = worktree.join(dir);
+            is_cache_tag(&dir_path.join("CACHEDIR.TAG"))
+                // The worktree's own top folder is never a cache, whatever its .gitignore says.
+                || (!dir.as_os_str().is_empty() && is_self_ignore(&dir_path.join(".gitignore")))
+        })
     })
 }
 
-/// Whether `tag` is a plain file that begins with the cache signature. It is opened without following
-/// a link and without waiting on a pipe, then judged by the handle itself: the path may have been
-/// swapped for something else since it was listed.
-fn is_cache_tag(tag: &Path) -> bool {
-    use std::io::Read;
+/// Opens `path` for reading without following a link and without waiting on a pipe, and only when
+/// the handle itself is a plain file: the path may have been swapped for something else since it was listed.
+fn open_plain_file(path: &Path) -> Option<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let Ok(file) = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(tag)
-    else {
+        .open(path)
+        .ok()?;
+    file.metadata().is_ok_and(|m| m.is_file()).then_some(file)
+}
+
+/// Whether `tag` is a plain file that begins with the cache signature.
+fn is_cache_tag(tag: &Path) -> bool {
+    use std::io::Read;
+    let Some(file) = open_plain_file(tag) else {
         return false;
     };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return false;
-    }
     let mut head = Vec::new();
     file.take(CACHEDIR_SIGNATURE.len() as u64)
         .read_to_end(&mut head)
         .is_ok()
         && head == CACHEDIR_SIGNATURE.as_bytes()
+}
+
+/// Whether `gitignore` is a plain file of at most [`SELF_IGNORE_MAX_BYTES`] whose only pattern, blank
+/// lines and `#` comments aside, is `*`: the folder holding it ignores all it holds.
+fn is_self_ignore(gitignore: &Path) -> bool {
+    use std::io::Read;
+    let Some(file) = open_plain_file(gitignore) else {
+        return false;
+    };
+    let mut text = Vec::new();
+    // One byte more than allowed, to tell a file at the limit from a larger one.
+    if file
+        .take(SELF_IGNORE_MAX_BYTES + 1)
+        .read_to_end(&mut text)
+        .is_err()
+        || text.len() as u64 > SELF_IGNORE_MAX_BYTES
+    {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(&text) else {
+        return false;
+    };
+    let mut patterns = text
+        .lines()
+        .map(|line| line.trim_end_matches('\r').trim_end())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'));
+    patterns.next() == Some("*") && patterns.next().is_none()
 }
 
 /// `run_succeeded` says whether the run itself finished well, apart from why the worktree stays.

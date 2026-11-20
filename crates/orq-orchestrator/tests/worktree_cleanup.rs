@@ -815,8 +815,143 @@ fn a_file_in_an_ignored_build_folder_keeps_the_worktree_and_the_reason_points_at
     assert_eq!(
         reason,
         "the worktree has uncommitted changes: web-src/dist/app.js \
-         (an ignored folder holding a CACHEDIR.TAG is removed with the worktree)"
+         (an ignored folder holding a CACHEDIR.TAG, or a .gitignore of just `*`, is removed with the worktree)"
     );
+}
+
+/// The `.gitignore` Hypothesis writes in its `.hypothesis/` folder: comment lines, then `*`.
+const HYPOTHESIS_GITIGNORE: &str =
+    "# This directory is managed by Hypothesis and should not be checked into version control.\n\
+# It holds the example database and other files Hypothesis rebuilds as needed.\n\
+\n\
+*\n";
+
+#[test]
+fn a_hypothesis_folder_that_ignores_itself_is_removed_with_the_worktree_and_its_branch() {
+    let w = world("hypothesis");
+    write(&w, ".hypothesis/.gitignore", HYPOTHESIS_GITIGNORE);
+    write(&w, ".hypothesis/constants/x", "cached\n");
+
+    let outcome = merge_and_remove(&w);
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists(), "the worktree directory is gone");
+    let branches = git(&w.repo, &["branch", "--list", "fix--COM-02"]);
+    assert!(branches.is_empty(), "the merged branch is gone: {branches}");
+}
+
+#[test]
+fn a_pytest_cache_with_both_a_self_ignore_and_a_cache_tag_is_removed_with_the_worktree() {
+    let w = world("pytest-cache");
+    write(
+        &w,
+        ".pytest_cache/.gitignore",
+        "# Created by pytest automatically.\n*\n",
+    );
+    write(&w, ".pytest_cache/CACHEDIR.TAG", CACHE_SIGNATURE);
+    write(&w, ".pytest_cache/v/cache/nodeids", "[]\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+    assert!(!w.worktree.exists(), "the worktree directory is gone");
+}
+
+/// A worktree whose `.cache/` folder is ignored from the top and holds `.cache/notes.txt`, with
+/// `.cache/.gitignore` made by `make_gitignore`: whatever that file is, the notes are ignored.
+fn world_with_ignored_notes(tag: &str, make_gitignore: impl FnOnce(&Path)) -> World {
+    let w = world(tag);
+    ignore(&w, ".cache/\n");
+    write(&w, ".cache/notes.txt", "my notes\n");
+    make_gitignore(&w.worktree.join(".cache/.gitignore"));
+    w
+}
+
+#[test]
+fn a_folder_whose_gitignore_is_not_just_a_plain_star_keeps_the_worktree() {
+    use std::os::unix::fs::symlink;
+    type Make = fn(&Path);
+    let cases: [(&str, Make); 3] = [
+        ("negation", |p| fs::write(p, "*\n!notes.txt\n").unwrap()),
+        ("link", |p| {
+            let real = p.with_file_name("real-gitignore");
+            fs::write(&real, "*\n").unwrap();
+            symlink(&real, p).unwrap();
+        }),
+        ("too-large", |p| {
+            let comments = "# padding\n".repeat(410);
+            fs::write(p, format!("{comments}*\n")).unwrap();
+        }),
+    ];
+    for (tag, make) in cases {
+        let w = world_with_ignored_notes(&format!("not-self-ignore-{tag}"), make);
+
+        let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+        assert!(
+            matches!(outcome, CleanupOutcome::Kept { .. }),
+            "{tag}: {outcome:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(w.worktree.join(".cache/notes.txt")).unwrap(),
+            "my notes\n",
+            "{tag}"
+        );
+    }
+}
+
+#[test]
+fn a_self_ignore_of_exactly_four_kib_still_counts() {
+    let w = world_with_ignored_notes("self-ignore-at-limit", |p| {
+        let comments = "# padding\n".repeat(409);
+        let text = format!("{comments}{}*\n", "#".repeat(4096 - 4090 - 3) + "\n");
+        assert_eq!(text.len(), 4096);
+        fs::write(p, text).unwrap();
+    });
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert_eq!(outcome, CleanupOutcome::Removed);
+}
+
+#[test]
+fn a_file_beside_a_self_ignoring_folder_not_in_it_keeps_the_worktree() {
+    let w = world("beside-self-ignore");
+    ignore(&w, "*.cfg\n");
+    write(&w, ".hypothesis/.gitignore", HYPOTHESIS_GITIGNORE);
+    write(&w, ".hypothesis/constants/x", "cached\n");
+    write(&w, "local.cfg", "SECRET=1\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert!(reason.contains("local.cfg"), "{reason}");
+    assert!(w.worktree.join("local.cfg").exists());
+}
+
+#[test]
+fn a_self_ignore_at_the_top_of_the_worktree_does_not_make_it_a_cache() {
+    let w = world("top-self-ignore");
+    write(&w, ".gitignore", "*\n");
+    git(&w.worktree, &["add", "-f", ".gitignore"]);
+    git(&w.worktree, &["commit", "-q", "-m", "ignore everything"]);
+    write(&w, "local.cfg", "SECRET=1\n");
+
+    let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
+
+    assert!(
+        matches!(outcome, CleanupOutcome::Kept { .. }),
+        "{outcome:?}"
+    );
+    assert!(w.worktree.join("local.cfg").exists());
+}
+
+/// Lands the run's branch on `main`, then removes the merged run as orq does after a merge.
+fn merge_and_remove(w: &World) -> CleanupOutcome {
+    git(&w.repo, &["merge", "-q", "--ff-only", "fix--COM-02"]);
+    orq_orchestrator::remove_merged_run(&w.store, "run-1").unwrap()
 }
 
 #[test]
