@@ -1,4 +1,5 @@
 //! The page offers exactly sixteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume, review again, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, clean up a merged run, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
+//! and a GitHub project's Push <target> of the sha it showed, never forced,
 //! and the Settings server card's restart when idle and its cancel, the Todo list's add, edit, delete and move,
 //! and a draft's queue wish, and no other merge, nor any approve,
 //! restart or edit control or request.
@@ -115,7 +116,16 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     assert!(code.contains("todoSend(API_TODO, token, onSignedOut, { name, description }"), "Todo's add");
     assert!(code.contains("path: API_TODO + \"/\" + item.id + \"/move\""), "a Todo item's move");
     assert!(code.contains("encodeURIComponent(feature.name) + \"/queue-wish\";"), "the queue wish");
-    let rest = code.replacen(kept_body, "", 1).replacen(SET_ASIDE, "", 1).replacen(server_body, "", 1).replacen(RESTART_ROUTE, "", 1).replacen(todo_body, "", 1).replacen(edit_body, "", 1);
+    // A GitHub project's Push <target> reads the push's checks and posts the confirmed sha to the project's
+    // push-target route, from its one component; no other push, and never a force.
+    let push_body = body_of("PushTarget");
+    const PUSH_ROUTE: &str = "const path = \"/api/projects/\" + encodeURIComponent(push.projectId) + \"/push-target\";";
+    assert_eq!(code.matches("/push-target").count(), 1, "only Push <target> builds the push-target route");
+    assert!(push_body.contains(PUSH_ROUTE), "{push_body}");
+    let pushed: Vec<&str> = push_body.split("actionRequest(").skip(1).map(|tail| tail.split(';').next().unwrap()).collect();
+    assert_eq!(pushed, ["path, push.token, { sha: state.sha })"], "Push N commits posts the sha it showed, nothing else");
+    assert!(!push_body.to_lowercase().contains("force"), "Push <target> asks for no forced push");
+    let rest = code.replacen(kept_body, "", 1).replacen(SET_ASIDE, "", 1).replacen(server_body, "", 1).replacen(RESTART_ROUTE, "", 1).replacen(todo_body, "", 1).replacen(edit_body, "", 1).replacen(push_body, "", 1);
     // Queueing posts the chosen features to the project's queue; the queue view posts to its pause,
     // resume, remove and reorder routes; nothing else.
     let queued = paths("queueFeatures");
