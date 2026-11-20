@@ -222,6 +222,27 @@ fn a_batch_reintroducing_an_archived_name_keeps_the_dependency_on_it() {
     assert_eq!(saved[1].depends_on, vec!["old"]);
 }
 
+/// A long chain of abandoned features a pending one waits on stays whole, and an unrelated abandoned one moves.
+#[test]
+fn a_long_abandoned_dependency_chain_stays_and_an_unrelated_abandoned_feature_moves() {
+    let dir = dir("abandoned-chain");
+    let data = dir.join("data");
+    let mut entries: Vec<Value> = Vec::new();
+    entries.push(entry("stray", "abandoned", &[]));
+    for i in (0..300).rev() {
+        let deps = if i + 1 < 300 { vec![format!("a{}", i + 1)] } else { Vec::new() };
+        let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+        entries.push(entry(&format!("a{i}"), "abandoned", &deps));
+    }
+    entries.push(entry("p", "pending", &["a0"]));
+    let ledger = write_ledger(&dir, &entries);
+
+    let plan = archive_ledger(&ledger, &data, "proj", 100, false, 0, "2026-11-20T00:00:00Z").unwrap();
+
+    assert_eq!(plan.archived, vec!["stray"]);
+    assert_eq!(ledger_names(&ledger).len(), 301);
+}
+
 #[test]
 fn saving_drops_archived_dependencies_and_says_so_while_a_live_name_wins() {
     let dir = dir("save-drops");

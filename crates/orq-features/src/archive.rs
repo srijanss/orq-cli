@@ -143,18 +143,18 @@ pub fn archive_ledger(
     }
     // An abandoned feature a remaining feature still waits on stays, so stripping never quietly
     // satisfies a dependency that was abandoned.
-    loop {
-        let needed: HashSet<String> =
-            (0..entries.len()).filter(|&i| !moving[i]).flat_map(|i| deps_of(&entries[i])).collect();
-        let mut changed = false;
-        for i in 0..entries.len() {
-            if moving[i] && status_of(&entries[i]) == Some("abandoned") && name_of(&entries[i]).is_some_and(|n| needed.contains(n)) {
-                moving[i] = false;
-                changed = true;
+    // One traversal from the entries that stay, following dependencies into the abandoned ones.
+    let index: std::collections::HashMap<&str, usize> =
+        entries.iter().enumerate().filter_map(|(i, e)| name_of(e).map(|n| (n, i))).collect();
+    let mut pending: Vec<usize> = (0..entries.len()).filter(|&i| !moving[i]).collect();
+    while let Some(i) = pending.pop() {
+        for dep in deps_of(&entries[i]) {
+            if let Some(&d) = index.get(dep.as_str()) {
+                if moving[d] && status_of(&entries[d]) == Some("abandoned") {
+                    moving[d] = false;
+                    pending.push(d);
+                }
             }
-        }
-        if !changed {
-            break;
         }
     }
 
