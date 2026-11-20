@@ -1,5 +1,5 @@
 use orq_core::no_merge::forbidden_provider_call;
-use orq_core::provider_observation::{classify_failure, parse_view, view_command};
+use orq_core::provider_observation::{branch_protection_command, classify_failure, parse_branch_protection, parse_view, view_command};
 use orq_core::review_lifecycle::{ObservationError, ProviderState};
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
@@ -74,4 +74,22 @@ fn failure_details_are_redacted_and_bounded() {
     let ObservationError::Unavailable(detail) = classify_failure(&noisy) else { panic!("expected unavailable") };
     assert!(!detail.contains("gh\x70_abcdefghijklmnopqrstuvwxyz0123456789"));
     assert!(detail.len() <= 600, "{}", detail.len());
+}
+
+#[test]
+fn the_github_branch_lookup_is_one_read_only_rest_get_and_its_protected_field_is_read() {
+    let (program, args) = branch_protection_command("acme/widgets", "main").unwrap();
+    assert_eq!(program, "gh");
+    assert_eq!(args, ["api", "repos/acme/widgets/branches/main"]);
+    assert!(forbidden_provider_call(&program, &args).is_none());
+    assert!(!args.iter().any(|arg| arg.contains("graphql") || arg.starts_with('-')), "a plain GET, never GraphQL: {args:?}");
+    for (repository, branch) in [("acme", "main"), ("acme/widgets/x", "main"), ("-x/y", "main"), ("acme/widgets", "-main"), ("acme/widgets", "a b"), ("../x", "main")] {
+        assert!(branch_protection_command(repository, branch).is_err(), "{repository:?} {branch:?}");
+    }
+
+    assert_eq!(parse_branch_protection(r#"{"name":"main","protected":false}"#, "main"), Ok(false));
+    assert_eq!(parse_branch_protection(r#"{"name":"main","protected":true,"commit":{}}"#, "main"), Ok(true));
+    for bad in ["not json", "[]", r#"{"name":"main"}"#, r#"{"name":"main","protected":"no"}"#, r#"{"name":"other","protected":false}"#] {
+        assert!(parse_branch_protection(bad, "main").is_err(), "{bad}");
+    }
 }

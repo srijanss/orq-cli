@@ -1138,6 +1138,7 @@ version = "0.1.2"
 dependencies = [
  "libc",
  "orq-core",
+ "orq-git",
  "orq-test-support",
  "serde",
  "serde_json",

@@ -370,6 +370,19 @@ pub trait ProjectsProvider {
         Ok(RunCleanup::Unknown)
     }
 
+    /// Whether project `id`'s target may be pushed to origin now, why not, and the commits a push
+    /// would send, as `{provider, remote, target, sha, origin_sha, count, commits, more, reason}`;
+    /// `None` when there is no such project.
+    fn push_target_state(&self, _id: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
+    /// Pushes project `id`'s target to origin at `sha`, the commit the person confirmed, once every
+    /// check passes again. A provider that cannot does not know the project.
+    fn push_target(&self, _id: &str, _sha: &str) -> Result<TargetPushResult, String> {
+        Ok(TargetPushResult::Unknown)
+    }
+
     /// What a storage cleanup would remove now, as `{lines, files, bytes, size, runs, metadata, hash}`; the
     /// hash names that set. `None` when this provider cannot clean up.
     fn storage_preview(&self) -> Result<Option<Value>, String> {
@@ -557,6 +570,16 @@ pub enum RunCleanup {
     /// Why this run may not be cleaned up now; safe to show.
     Refused(String),
     /// There is no such project or run.
+    Unknown,
+}
+
+/// How a push of a project's target ended.
+pub enum TargetPushResult {
+    /// Origin's `target` moved from `from` to `to` with `count` commits, carrying the commits of `runs`.
+    Pushed { target: String, from: String, to: String, count: usize, runs: Vec<String> },
+    /// Why nothing was pushed; safe to show.
+    Refused(String),
+    /// There is no such project.
     Unknown,
 }
 
@@ -2179,6 +2202,68 @@ fn pull_project_target(roots: &StorageRoots, provider: Option<&dyn ProjectsProvi
     }
 }
 
+/// Whether a project's target may be pushed now, why not, and the commits a push would send, for the
+/// web's Push. It changes nothing, so it is there with actions off too, and it says whether they are on.
+fn push_target_state(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str) -> Response {
+    match provider.map(|provider| provider.push_target_state(id)) {
+        Some(Ok(Some(mut state))) => {
+            state["remote_actions"] = json!(remote_actions_on(roots));
+            reply(200, state)
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => error(500, "the target could not be checked"),
+        _ => error(404, "not found"),
+    }
+}
+
+/// Pushes a project's target to origin at the confirmed `{sha}`, as the web's Push asks: only with
+/// actions on and from a passkey session (`passkey`). Every attempt is audited as `project.push_target`,
+/// a push with its branch, the shas it moved origin between, its count and that it came from the web.
+fn push_project_target(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, body: &[u8], passkey: bool) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "project.push_target", project: id, run: None, outcome, reason: Some(reason) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    if let Some(refusal) = body_refusal(body, &["sha"]) {
+        audit(Outcome::Refused, "bad request body");
+        return refusal;
+    }
+    let sha = serde_json::from_slice::<Value>(body).ok().and_then(|fields| fields["sha"].as_str().map(str::to_string)).unwrap_or_default();
+    if !((sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())) {
+        audit(Outcome::Refused, "not a commit id");
+        return error(400, "pushing the target needs the commit it was confirmed at");
+    }
+    if !passkey {
+        audit(Outcome::Refused, "no passkey session");
+        return error(403, "pushing the target needs a passkey sign-in");
+    }
+    match provider.map(|provider| provider.push_target(id, &sha)) {
+        Some(Ok(TargetPushResult::Pushed { target, from, to, count, runs })) => {
+            let noun = if count == 1 { "commit" } else { "commits" };
+            audit(Outcome::Allowed, &format!("pushed {target} from {from} to {to}, {count} {noun}, from web"));
+            reply(200, json!({ "from": from, "to": to, "count": count, "runs": runs }))
+        }
+        Some(Ok(TargetPushResult::Refused(why))) => {
+            audit(Outcome::Refused, &why);
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, "the target could not be pushed");
+            error(500, "the target could not be pushed")
+        }
+        _ => {
+            audit(Outcome::Refused, "no such project");
+            error(404, "not found")
+        }
+    }
+}
+
 /// Adds to, removes from, reorders, pauses or resumes a project's run queue: only with actions on,
 /// and every attempt audited as `queue.<action>`.
 fn change_queue(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, leaf: &str, body: &[u8]) -> Response {
@@ -2723,6 +2808,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if let Some(id) = (request.method == "POST").then(|| project_target(path, "pull")).flatten() {
         return pull_project_target(roots, provider, id, body);
     }
+    if let Some(id) = (request.method == "POST").then(|| project_target(path, "push-target")).flatten() {
+        return push_project_target(roots, provider, id, body, confirm.is_some());
+    }
     if let Some(item) = (request.method == "POST").then(|| todo_plan_target(path)).flatten() {
         return plan_from_todo(roots, provider, item, body);
     }
@@ -2747,6 +2835,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             Some(Err(_)) => error(500, "the planning run could not be read"),
             _ => error(404, "not found"),
         };
+    }
+    if let Some(id) = project_target(path, "push-target") {
+        return push_target_state(roots, provider, id);
     }
     if let Some((id, run)) = run_target(path, "resume-check") {
         return resume_check(roots, provider, id, run);

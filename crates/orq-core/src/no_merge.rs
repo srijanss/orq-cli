@@ -112,6 +112,35 @@ pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'stati
     None
 }
 
+/// Whether `args` (the arguments after `git`) are the one push of a target branch a person asks
+/// for themselves (`orq push`, or Push on the web): exactly `push <remote> <sha>:refs/heads/<branch>`,
+/// with the commit id they confirmed as the source. No option is accepted, so nothing can force,
+/// delete, mirror or push tags or more refs. Only that command path calls this; every other push
+/// goes through [`forbidden_git_push`], which keeps refusing target branches.
+pub fn allowed_target_push(args: &[String], sha: &str, branch: &str) -> Result<(), &'static str> {
+    let commit_id = (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit());
+    if !commit_id {
+        return Err("the commit to push is not a commit id");
+    }
+    let plain_branch = !branch.is_empty() && !branch.starts_with('-') && branch.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'));
+    if !plain_branch {
+        return Err("the branch to push is not a plain branch name");
+    }
+    let [push, remote, refspec] = args else {
+        return Err("a target push is one remote and one refspec, with no options");
+    };
+    if push != "push" {
+        return Err("not a push");
+    }
+    if remote.is_empty() || remote.starts_with('-') || !remote.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        return Err("a target push names its remote plainly");
+    }
+    if *refspec != format!("{sha}:refs/heads/{branch}") {
+        return Err("a target push updates only the branch, from the confirmed commit, without force");
+    }
+    Ok(())
+}
+
 /// Why a push (the arguments after `git`) is forbidden, or `None`. A push may
 /// only update feature branches: never a protected target branch, and never
 /// every ref at once.

@@ -7,6 +7,7 @@ use orq_core::retention::PrunePlan;
 
 mod cleanup;
 mod plan;
+mod push_target;
 mod queue;
 pub use queue::{action_label, change_queue, project_queue_json, queue_json, start_queue_rounds, QueueRound, QueueRounds, QUEUE_ROUND_EVERY};
 
@@ -494,6 +495,8 @@ pub struct StoreProjects {
     plan_agent: Option<PathBuf>,
     /// How long a planning session may run; [`orq_orchestrator::PLAN_TIMEOUT`] when unset.
     plan_timeout: Option<std::time::Duration>,
+    /// The program the target push's GitHub branch lookup runs; `gh` when unset.
+    gh: Option<PathBuf>,
 }
 
 /// A report serve builds for a run whose own build of it failed: the run, its head, and the evidence its events hold.
@@ -588,7 +591,14 @@ impl StoreProjects {
             server: None,
             plan_agent: None,
             plan_timeout: None,
+            gh: None,
         }
+    }
+
+    /// Has the target push ask GitHub about its branch through `gh` instead of the `gh` on PATH.
+    pub fn with_gh(mut self, gh: PathBuf) -> Self {
+        self.gh = Some(gh);
+        self
     }
 
     /// Gives the web the server's own controls: its builds and a restart when idle.
@@ -1296,6 +1306,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn pull_project_target(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
         self.pull_target_of(id)
+    }
+
+    fn push_target_state(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
+        self.push_target_state_of(id)
+    }
+
+    fn push_target(&self, id: &str, sha: &str) -> Result<orq_core::remote_inbox::TargetPushResult, String> {
+        self.push_target_of(id, sha)
     }
 
     fn queue_wish(&self, id: &str, feature: &str) -> Result<Option<bool>, String> {

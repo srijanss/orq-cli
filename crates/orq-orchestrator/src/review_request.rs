@@ -366,7 +366,7 @@ pub(crate) fn repository_url(record: &RunRecord) -> Result<String, StoreError> {
     ensure_pinned_remote(record)
 }
 
-fn normalize_remote(raw: &str) -> Option<String> {
+pub(crate) fn normalize_remote(raw: &str) -> Option<String> {
     // A query or fragment may carry a credential, and is never part of a repository's identity.
     if raw.is_empty()
         || raw

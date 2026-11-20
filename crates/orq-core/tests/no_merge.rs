@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use orq_core::no_merge::{forbidden_git_push, forbidden_provider_call};
+use orq_core::no_merge::{allowed_target_push, forbidden_git_push, forbidden_provider_call};
 
 fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
@@ -342,4 +342,40 @@ fn an_unrecognised_push_option_spelling_fails_closed() {
     ] {
         assert_eq!(forbidden_git_push(&args(&push), &protected), None, "{push:?} must stay allowed");
     }
+}
+
+const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+#[test]
+fn the_person_started_target_push_allows_only_one_sha_refspec_without_force_or_multi_ref_forms() {
+    let refspec = format!("{SHA}:refs/heads/main");
+    assert_eq!(allowed_target_push(&args(&["push", "origin", &refspec]), SHA, "main"), Ok(()));
+    let forced = format!("+{refspec}");
+    let other_branch = format!("{SHA}:refs/heads/release");
+    let other_sha = "fedcba9876543210fedcba9876543210fedcba98:refs/heads/main".to_string();
+    for bad in [
+        vec!["push", "--force", "origin", refspec.as_str()],
+        vec!["push", "-f", "origin", refspec.as_str()],
+        vec!["push", "--force-with-lease", "origin", refspec.as_str()],
+        vec!["push", "--mirror", "origin"],
+        vec!["push", "--all", "origin"],
+        vec!["push", "--tags", "origin", refspec.as_str()],
+        vec!["push", "origin", forced.as_str()],
+        vec!["push", "origin", refspec.as_str(), "feat:refs/heads/feat"],
+        vec!["push", "origin", "main"],
+        vec!["push", "origin", "HEAD:refs/heads/main"],
+        vec!["push", "origin", other_branch.as_str()],
+        vec!["push", "origin", other_sha.as_str()],
+        vec!["push", "--delete", "origin", "main"],
+        vec!["push", "-o", "x", "origin", refspec.as_str()],
+        vec!["push", "-", refspec.as_str()],
+        vec!["fetch", "origin", refspec.as_str()],
+        vec!["push", "origin"],
+    ] {
+        assert!(allowed_target_push(&args(&bad), SHA, "main").is_err(), "{bad:?} must be refused");
+    }
+    assert!(
+        allowed_target_push(&args(&["push", "origin", "HEAD:refs/heads/main"]), "HEAD", "main").is_err(),
+        "the source must be a commit id"
+    );
 }

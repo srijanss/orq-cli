@@ -49,6 +49,7 @@ mod session_settings;
 mod setup;
 mod kept_worktrees;
 mod store;
+mod target_push;
 mod terminal_session;
 mod test_failures;
 mod worktree_databases;
@@ -98,6 +99,7 @@ pub use notify::{
     notification_message, review_ready_message, send_notification, send_notification_with, wants_notification,
 };
 pub use orq_written::record_orq_written;
+pub use target_push::{push_target, target_push_state, PushCommit, TargetPush, TargetPushOutcome, TargetPushState};
 pub use terminal_session::run_in_terminal;
 pub use test_failures::{find_test_failures, FailedTest, TestFailures};
 pub use outcome::{check_implement_outcome, record_implement_unfinished, ImplementCheck};

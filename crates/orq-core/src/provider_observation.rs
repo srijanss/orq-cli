@@ -124,6 +124,35 @@ pub fn view_command(provider: &str, repository: &str, review_id: &str) -> Result
     Ok((program.to_string(), args))
 }
 
+/// The read-only GitHub lookup of branch `branch` of `repository` (`owner/name`): one REST GET,
+/// never GraphQL, whose answer says whether GitHub protects the branch.
+pub fn branch_protection_command(repository: &str, branch: &str) -> Result<(String, Vec<String>), String> {
+    let owner_name = repository.split('/').collect::<Vec<_>>();
+    let plain_part = |part: &str| plain_path(part) && !part.contains('/') && part != "." && part != "..";
+    if owner_name.len() != 2 || !owner_name.iter().all(|part| plain_part(part)) {
+        return Err(format!("repository {repository:?} is not a plain owner/name"));
+    }
+    if !plain_path(branch) || branch.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return Err(format!("branch name {branch:?} is not a plain name"));
+    }
+    let args = vec!["api".to_string(), format!("repos/{repository}/branches/{branch}")];
+    if let Some(reason) = crate::no_merge::forbidden_provider_call("gh", &args) {
+        return Err(format!("refusing to run a forbidden provider call: {reason}"));
+    }
+    Ok(("gh".to_string(), args))
+}
+
+/// Whether GitHub's answer to [`branch_protection_command`] says `branch` is protected. An answer
+/// about another branch, or without a true/false `protected`, is not understood: protection is
+/// never assumed away.
+pub fn parse_branch_protection(output: &str, branch: &str) -> Result<bool, String> {
+    let value: Value = serde_json::from_str(output).map_err(|_| "GitHub's answer was not JSON".to_string())?;
+    if value.get("name").and_then(Value::as_str) != Some(branch) {
+        return Err(format!("GitHub's answer was not about {branch}"));
+    }
+    value.get("protected").and_then(Value::as_bool).ok_or_else(|| "GitHub's answer did not say whether the branch is protected".to_string())
+}
+
 /// The state and head commit in a provider's `view` output.
 pub fn parse_view(provider: &str, output: &str) -> Result<Observation, ObservationError> {
     let unreadable = |what: &str| ObservationError::Unavailable(format!("the provider's answer was not understood: {what}"));
