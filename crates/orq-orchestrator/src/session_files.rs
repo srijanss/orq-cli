@@ -15,15 +15,21 @@ pub const SESSION_FILES_DIR: &str = ".claude/orq-run";
 /// the session sees only this attempt's files; git never sees them. Returns the folder.
 pub fn copy_session_files(worktree: &Path, files: &[&Path]) -> Result<PathBuf, String> {
     let dir = session_dir(worktree)?;
-    exclude_locally(worktree, SESSION_FILES_DIR).map_err(|why| format!("cannot keep {SESSION_FILES_DIR} out of git: {why}"))?;
+    exclude_locally(worktree, SESSION_FILES_DIR)
+        .map_err(|why| format!("cannot keep {SESSION_FILES_DIR} out of git: {why}"))?;
     remove(&dir)?;
     fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
     for file in files {
-        let Some(name) = file.file_name() else { continue };
+        let Some(name) = file.file_name() else {
+            continue;
+        };
         if let Err(err) = fs::copy(file, dir.join(name)) {
             // A session never starts from part of its files.
             let _ = remove(&dir);
-            return Err(format!("cannot copy {} into the worktree: {err}", file.display()));
+            return Err(format!(
+                "cannot copy {} into the worktree: {err}",
+                file.display()
+            ));
         }
     }
     Ok(dir)
@@ -36,7 +42,11 @@ pub fn finish_session_files(worktree: &Path, log_dir: &Path) -> Result<(), Strin
     // The session may have put a link in the folder's place: what it points at is not its report.
     if is_link(&dir) {
         remove(&dir)?;
-        return Err(format!("{} in {} was replaced by a link, so its report is not read", SESSION_FILES_DIR, worktree.display()));
+        return Err(format!(
+            "{} in {} was replaced by a link, so its report is not read",
+            SESSION_FILES_DIR,
+            worktree.display()
+        ));
     }
     let kept = match read_report(&dir.join(UNRELATED_FAILURE_FILE)) {
         Some(summary) => keep_report(&log_dir.join(UNRELATED_FAILURE_FILE), &summary),
@@ -50,10 +60,20 @@ pub fn finish_session_files(worktree: &Path, log_dir: &Path) -> Result<(), Strin
 /// Write `summary` as the report at `path`, never through whatever is in its place.
 fn keep_report(path: &Path, summary: &str) -> Result<(), String> {
     use std::io::Write;
-    let failed = |err: std::io::Error| format!("cannot keep the unrelated-failure report in {}: {err}", path.display());
+    let failed = |err: std::io::Error| {
+        format!(
+            "cannot keep the unrelated-failure report in {}: {err}",
+            path.display()
+        )
+    };
     clear_report(path).map_err(failed)?;
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(failed)?;
-    file.write_all(format!("{summary}\n").as_bytes()).map_err(failed)
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(failed)?;
+    file.write_all(format!("{summary}\n").as_bytes())
+        .map_err(failed)
 }
 
 /// Remove the copies from `worktree`, if there are any.
@@ -65,7 +85,11 @@ pub fn remove_session_files(worktree: &Path) -> Result<(), String> {
 /// carry the copies, and their removal, out of the worktree, so it is refused.
 fn session_dir(worktree: &Path) -> Result<PathBuf, String> {
     if crosses_symlink(worktree, SESSION_FILES_DIR) {
-        return Err(format!("{} in {} is a link, so no session files are kept there", SESSION_FILES_DIR, worktree.display()));
+        return Err(format!(
+            "{} in {} is a link, so no session files are kept there",
+            SESSION_FILES_DIR,
+            worktree.display()
+        ));
     }
     Ok(worktree.join(SESSION_FILES_DIR))
 }
@@ -76,9 +100,15 @@ fn is_link(path: &Path) -> bool {
 
 /// Remove `dir`, if anything is there; a link in its place goes, never what it points at.
 fn remove(dir: &Path) -> Result<(), String> {
-    let removed = if is_link(dir) { fs::remove_file(dir) } else { fs::remove_dir_all(dir) };
+    let removed = if is_link(dir) {
+        fs::remove_file(dir)
+    } else {
+        fs::remove_dir_all(dir)
+    };
     match removed {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(format!("cannot remove {}: {err}", dir.display())),
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("cannot remove {}: {err}", dir.display()))
+        }
         _ => Ok(()),
     }
 }

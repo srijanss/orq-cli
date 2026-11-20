@@ -71,7 +71,12 @@ pub struct TargetPushState {
 pub enum TargetPushOutcome {
     /// Origin's target moved from `from` to `to`, carrying the commits of `runs`, which each
     /// recorded `target.pushed`.
-    Pushed { from: String, to: String, count: usize, runs: Vec<String> },
+    Pushed {
+        from: String,
+        to: String,
+        count: usize,
+        runs: Vec<String>,
+    },
     /// Nothing was pushed, for this reason.
     Refused(String),
 }
@@ -96,8 +101,12 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
     let target = push.target;
     let plain = !target.is_empty()
         && !target.starts_with('-')
-        && target.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
-        && target.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
+        && target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+        && target
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..");
     if !plain {
         return Err(format!("{target:?} is not a plain branch name"));
     }
@@ -108,13 +117,21 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
             state.provider = Some("gitlab".to_string());
             return Err(GITLAB_REFUSAL.to_string());
         }
-        Err(error) => return Err(format!("only a GitHub project's target is pushed from orq: {}", redacted(&error.to_string()))),
+        Err(error) => {
+            return Err(format!(
+                "only a GitHub project's target is pushed from orq: {}",
+                redacted(&error.to_string())
+            ))
+        }
     }
-    let address = crate::review_request::normalize_remote(&url).ok_or_else(|| format!("{REMOTE} has no repository address"))?;
+    let address = crate::review_request::normalize_remote(&url)
+        .ok_or_else(|| format!("{REMOTE} has no repository address"))?;
     let runs = project_runs(push)?;
     if let Some(pinned) = runs_repository(&runs) {
         if repository_identity(&address) != repository_identity(&pinned) {
-            return Err(format!("{REMOTE} pushes to {address}, not {pinned} that this project's runs use"));
+            return Err(format!(
+                "{REMOTE} pushes to {address}, not {pinned} that this project's runs use"
+            ));
         }
     }
     let local = rev_parse(push.root, &format!("refs/heads/{target}"))
@@ -122,21 +139,40 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
     state.sha = Some(local.clone());
     fetch(push.root, target, push.fetch_limit)?;
     let tracking = format!("refs/remotes/{REMOTE}/{target}");
-    let origin = rev_parse(push.root, &tracking).ok_or_else(|| format!("{REMOTE}/{target} could not be read"))?;
+    let origin = rev_parse(push.root, &tracking)
+        .ok_or_else(|| format!("{REMOTE}/{target} could not be read"))?;
     state.origin_sha = Some(origin.clone());
     let ancestor = git(push.root, &["merge-base", "--is-ancestor", &origin, &local])?;
     if !ancestor.success {
-        return Err(format!("{REMOTE}/{target} has commits you don't have: pull first"));
+        return Err(format!(
+            "{REMOTE}/{target} has commits you don't have: pull first"
+        ));
     }
-    let log = git(push.root, &["log", "--format=%H%x00%s", &format!("{origin}..{local}"), "--"])?;
+    let log = git(
+        push.root,
+        &[
+            "log",
+            "--format=%H%x00%s",
+            &format!("{origin}..{local}"),
+            "--",
+        ],
+    )?;
     if !log.success {
-        return Err(format!("the commits on {target} could not be listed: {}", log.stderr));
+        return Err(format!(
+            "the commits on {target} could not be listed: {}",
+            log.stderr
+        ));
     }
     state.commits = log
         .stdout
         .lines()
         .filter_map(|line| line.split_once('\0'))
-        .map(|(sha, subject)| PushCommit { sha: sha.to_string(), short: sha.chars().take(7).collect(), subject: orq_core::redact::redact(subject), run: None })
+        .map(|(sha, subject)| PushCommit {
+            sha: sha.to_string(),
+            short: sha.chars().take(7).collect(),
+            subject: orq_core::redact::redact(subject),
+            run: None,
+        })
         .collect();
     link_runs(push, &runs, &mut state.commits);
     state.count = state.commits.len();
@@ -145,7 +181,9 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
     }
     let repository = owner_name(&url)?;
     if github_protects(push, &repository)? {
-        return Err(format!("{target} is protected on GitHub: deliver by review instead"));
+        return Err(format!(
+            "{target} is protected on GitHub: deliver by review instead"
+        ));
     }
     Ok(())
 }
@@ -153,14 +191,28 @@ fn check(push: &TargetPush, state: &mut TargetPushState) -> Result<(), String> {
 /// Marks each of `commits` with the project's run it came from: a run whose recorded local merge
 /// landed one of them owns the commits between where it started and that merge.
 fn link_runs(push: &TargetPush, runs: &[crate::store::RunRecord], commits: &mut [PushCommit]) {
-    let listed: std::collections::HashSet<String> = commits.iter().map(|commit| commit.sha.clone()).collect();
+    let listed: std::collections::HashSet<String> =
+        commits.iter().map(|commit| commit.sha.clone()).collect();
     let mut owner: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for record in runs.iter().filter(|record| !record.base_sha.is_empty()) {
         let id = &record.run_id;
-        let Ok(events) = push.store.events(id) else { continue };
-        let merged = events.iter().rev().filter(|event| event.kind == "merge.completed").find_map(|event| event.payload["head_sha"].as_str().map(str::to_string));
-        let Some(head) = merged.filter(|head| listed.contains(head)) else { continue };
-        let Ok(out) = git(push.root, &["rev-list", &format!("{}..{head}", record.base_sha), "--"]) else { continue };
+        let Ok(events) = push.store.events(id) else {
+            continue;
+        };
+        let merged = events
+            .iter()
+            .rev()
+            .filter(|event| event.kind == "merge.completed")
+            .find_map(|event| event.payload["head_sha"].as_str().map(str::to_string));
+        let Some(head) = merged.filter(|head| listed.contains(head)) else {
+            continue;
+        };
+        let Ok(out) = git(
+            push.root,
+            &["rev-list", &format!("{}..{head}", record.base_sha), "--"],
+        ) else {
+            continue;
+        };
         if !out.success {
             continue;
         }
@@ -175,11 +227,16 @@ fn link_runs(push: &TargetPush, runs: &[crate::store::RunRecord], commits: &mut 
 
 /// Records `target.pushed` on each run whose commits went in the push of `sha`; the runs, sorted.
 fn record_pushed(push: &TargetPush, commits: &[PushCommit], sha: &str) -> Vec<String> {
-    let mut runs: Vec<String> = commits.iter().filter_map(|commit| commit.run.clone()).collect();
+    let mut runs: Vec<String> = commits
+        .iter()
+        .filter_map(|commit| commit.run.clone())
+        .collect();
     runs.sort();
     runs.dedup();
     for run in &runs {
-        let Ok(record) = push.store.load(run) else { continue };
+        let Ok(record) = push.store.load(run) else {
+            continue;
+        };
         let n = push.store.events(run).map_or(0, |events| events.len());
         let event = Event {
             schema_version: 1,
@@ -194,7 +251,10 @@ fn record_pushed(push: &TargetPush, commits: &[PushCommit], sha: &str) -> Vec<St
             payload: serde_json::json!({ "sha": sha, "remote": REMOTE, "target": push.target }),
         };
         if let Err(error) = push.store.append_event(&event) {
-            eprintln!("orq: cannot record the push of {} on {run}: {error:?}", push.target);
+            eprintln!(
+                "orq: cannot record the push of {} on {run}: {error:?}",
+                push.target
+            );
         }
     }
     runs
@@ -202,14 +262,24 @@ fn record_pushed(push: &TargetPush, commits: &[PushCommit], sha: &str) -> Vec<St
 
 /// The project's runs, in the store's order, each loaded once per check.
 fn project_runs(push: &TargetPush) -> Result<Vec<crate::store::RunRecord>, String> {
-    let ids = push.store.run_ids().map_err(|error| format!("the project's runs could not be read: {error:?}"))?;
-    Ok(ids.iter().filter_map(|id| push.store.load(id).ok()).filter(|record| record.project_id == push.project_id).collect())
+    let ids = push
+        .store
+        .run_ids()
+        .map_err(|error| format!("the project's runs could not be read: {error:?}"))?;
+    Ok(ids
+        .iter()
+        .filter_map(|id| push.store.load(id).ok())
+        .filter(|record| record.project_id == push.project_id)
+        .collect())
 }
 
 /// The repository the project's newest run that pinned one was started against; `None` when no
 /// run of the project pinned one.
 fn runs_repository(runs: &[crate::store::RunRecord]) -> Option<String> {
-    runs.iter().rev().find(|record| !record.repository.is_empty()).map(|record| record.repository.clone())
+    runs.iter()
+        .rev()
+        .find(|record| !record.repository.is_empty())
+        .map(|record| record.repository.clone())
 }
 
 /// `.git` and a trailing slash name the same repository.
@@ -226,15 +296,29 @@ fn repository_identity(url: &str) -> &str {
 fn origin_push_url(dir: &Path) -> Result<String, String> {
     let urls = config_all(dir, &format!("remote.{REMOTE}.url"))?;
     let pushurls = config_all(dir, &format!("remote.{REMOTE}.pushurl"))?;
-    let pushed = if pushurls.is_empty() { &urls } else { &pushurls };
+    let pushed = if pushurls.is_empty() {
+        &urls
+    } else {
+        &pushurls
+    };
     let url = match pushed.as_slice() {
         [] => return Err(format!("the main checkout has no remote {REMOTE}")),
         [url] => url,
-        _ => return Err(format!("{REMOTE} pushes to more than one address: give it one push address first")),
+        _ => {
+            return Err(format!(
+                "{REMOTE} pushes to more than one address: give it one push address first"
+            ))
+        }
     };
-    let identity = |url: &str| crate::review_request::normalize_remote(url).map(|address| repository_identity(&address).to_string());
+    let identity = |url: &str| {
+        crate::review_request::normalize_remote(url)
+            .map(|address| repository_identity(&address).to_string())
+    };
     // Shown in its normalized form only: a raw address may carry a credential.
-    let shown = |url: &str| crate::review_request::normalize_remote(url).unwrap_or_else(|| "an address that is not a repository".to_string());
+    let shown = |url: &str| {
+        crate::review_request::normalize_remote(url)
+            .unwrap_or_else(|| "an address that is not a repository".to_string())
+    };
     if let Some(fetched) = urls.first().filter(|fetched| *fetched != url) {
         if identity(fetched).is_none() || identity(fetched) != identity(url) {
             return Err(format!(
@@ -248,8 +332,13 @@ fn origin_push_url(dir: &Path) -> Result<String, String> {
     // rewrite to a local repository is the person's own mirror and is left to them. Any other
     // address must name the repository checked: one whose repository cannot be named (a query or
     // fragment in it, say) is refused, since git would still send the commits there.
-    for effective in effective_urls(dir, false)?.iter().chain(effective_urls(dir, true)?.iter()) {
-        if !is_local(effective) && (identity(effective).is_none() || identity(effective) != identity(url)) {
+    for effective in effective_urls(dir, false)?
+        .iter()
+        .chain(effective_urls(dir, true)?.iter())
+    {
+        if !is_local(effective)
+            && (identity(effective).is_none() || identity(effective) != identity(url))
+        {
             return Err(format!(
                 "{REMOTE}'s address {} is rewritten by git to {}: only the repository checked may get the commits",
                 shown(url),
@@ -292,20 +381,33 @@ fn effective_urls(dir: &Path, push: bool) -> Result<Vec<String>, String> {
 
 /// The non-empty lines of git's `stdout`, trimmed.
 fn values(stdout: &str) -> Vec<String> {
-    stdout.lines().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string).collect()
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Every value of git config `key` in `dir`, in order.
 fn config_all(dir: &Path, key: &str) -> Result<Vec<String>, String> {
     let out = git(dir, &["config", "--get-all", key])?;
-    Ok(if out.success { values(&out.stdout) } else { Vec::new() })
+    Ok(if out.success {
+        values(&out.stdout)
+    } else {
+        Vec::new()
+    })
 }
 
 /// The `owner/name` on its host of the repository at push url `url`.
 fn owner_name(url: &str) -> Result<String, String> {
     let unreadable = || format!("{REMOTE}'s address is not an owner/name repository");
     let normalized = crate::review_request::normalize_remote(url).ok_or_else(unreadable)?;
-    let path = normalized.split_once("://").and_then(|(_, rest)| rest.split_once('/')).map(|(_, path)| path).ok_or_else(unreadable)?;
+    let path = normalized
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('/'))
+        .map(|(_, path)| path)
+        .ok_or_else(unreadable)?;
     let path = path.trim_end_matches('/');
     Ok(path.strip_suffix(".git").unwrap_or(path).to_string())
 }
@@ -313,8 +415,15 @@ fn owner_name(url: &str) -> Result<String, String> {
 /// Whether GitHub protects the target, from its read-only branch lookup. A lookup that fails or is
 /// not understood is a reason not to push: protection is never assumed away.
 fn github_protects(push: &TargetPush, repository: &str) -> Result<bool, String> {
-    let failed = |why: String| format!("GitHub could not say whether {} is protected: {why}", push.target);
-    let (_, args) = orq_core::provider_observation::branch_protection_command(repository, push.target).map_err(failed)?;
+    let failed = |why: String| {
+        format!(
+            "GitHub could not say whether {} is protected: {why}",
+            push.target
+        )
+    };
+    let (_, args) =
+        orq_core::provider_observation::branch_protection_command(repository, push.target)
+            .map_err(failed)?;
     let out = Command::new(&push.gh)
         .args(&args)
         .current_dir(push.root)
@@ -323,9 +432,17 @@ fn github_protects(push: &TargetPush, repository: &str) -> Result<bool, String> 
         .map_err(|error| failed(format!("gh could not run: {error}")))?;
     if !out.status.success() {
         let stderr = redacted(&String::from_utf8_lossy(&out.stderr));
-        return Err(failed(if stderr.is_empty() { "gh failed".to_string() } else { stderr }));
+        return Err(failed(if stderr.is_empty() {
+            "gh failed".to_string()
+        } else {
+            stderr
+        }));
     }
-    orq_core::provider_observation::parse_branch_protection(&String::from_utf8_lossy(&out.stdout), push.target).map_err(failed)
+    orq_core::provider_observation::parse_branch_protection(
+        &String::from_utf8_lossy(&out.stdout),
+        push.target,
+    )
+    .map_err(failed)
 }
 
 /// Pushes the target at `sha`, the commit the person confirmed, once every check passes again.
@@ -341,7 +458,12 @@ pub fn push_target(push: &TargetPush, sha: &str) -> TargetPushOutcome {
         return TargetPushOutcome::Refused("the branch changed: review again".to_string());
     }
     // --no-follow-tags: a checkout's push.followTags would otherwise send tags nobody confirmed.
-    let args = vec!["push".to_string(), "--no-follow-tags".to_string(), REMOTE.to_string(),format!("{sha}:refs/heads/{}", push.target)];
+    let args = vec![
+        "push".to_string(),
+        "--no-follow-tags".to_string(),
+        REMOTE.to_string(),
+        format!("{sha}:refs/heads/{}", push.target),
+    ];
     if let Err(why) = orq_core::no_merge::allowed_target_push(&args, sha, push.target) {
         return TargetPushOutcome::Refused(why.to_string());
     }
@@ -349,7 +471,12 @@ pub fn push_target(push: &TargetPush, sha: &str) -> TargetPushOutcome {
     match git(push.root, &args) {
         Ok(out) if out.success => {
             let runs = record_pushed(push, &state.commits, &local);
-            TargetPushOutcome::Pushed { from: origin, to: local, count: state.count, runs }
+            TargetPushOutcome::Pushed {
+                from: origin,
+                to: local,
+                count: state.count,
+                runs,
+            }
         }
         Ok(out) => TargetPushOutcome::Refused(out.stderr),
         Err(why) => TargetPushOutcome::Refused(why),
@@ -383,7 +510,16 @@ fn redacted(text: &str) -> String {
 }
 
 fn rev_parse(dir: &Path, name: &str) -> Option<String> {
-    let out = git(dir, &["rev-parse", "--verify", "--quiet", &format!("{name}^{{commit}}")]).ok()?;
+    let out = git(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{name}^{{commit}}"),
+        ],
+    )
+    .ok()?;
     out.success.then(|| out.stdout.trim().to_string())
 }
 
@@ -439,18 +575,26 @@ fn fetch(dir: &Path, target: &str, limit: Duration) -> Result<(), String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 end_group(&child);
-                let stderr = kept.recv_timeout(limit.saturating_sub(started.elapsed())).unwrap_or_default();
+                let stderr = kept
+                    .recv_timeout(limit.saturating_sub(started.elapsed()))
+                    .unwrap_or_default();
                 return if status.success() {
                     Ok(())
                 } else {
-                    Err(format!("{REMOTE}/{target} could not be fetched: {}", redacted(&stderr)))
+                    Err(format!(
+                        "{REMOTE}/{target} could not be fetched: {}",
+                        redacted(&stderr)
+                    ))
                 };
             }
             Ok(None) if started.elapsed() >= limit => {
                 end_group(&child);
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{REMOTE}/{target} could not be fetched within {} seconds", limit.as_secs()));
+                return Err(format!(
+                    "{REMOTE}/{target} could not be fetched within {} seconds",
+                    limit.as_secs()
+                ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(error) => return Err(format!("git could not be waited for: {error}")),

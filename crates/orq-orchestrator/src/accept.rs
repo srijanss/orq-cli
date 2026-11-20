@@ -21,16 +21,25 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// a subdirectory, a symlink to elsewhere or a switched branch would test work that is not the run's.
 fn verify_own_worktree(run_id: &str, worktree: &Path, branch: &str) -> Result<(), String> {
     let top = git(worktree, &["rev-parse", "--show-toplevel"])?;
-    let same_root = match (std::fs::canonicalize(top.trim()), std::fs::canonicalize(worktree)) {
+    let same_root = match (
+        std::fs::canonicalize(top.trim()),
+        std::fs::canonicalize(worktree),
+    ) {
         (Ok(top), Ok(recorded)) => top == recorded,
         _ => false,
     };
     if !same_root {
-        return Err(format!("{} is not the root of the worktree of {run_id}", worktree.display()));
+        return Err(format!(
+            "{} is not the root of the worktree of {run_id}",
+            worktree.display()
+        ));
     }
     let current = git(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     if current.trim() != branch {
-        return Err(format!("the worktree of {run_id} has {} checked out, not its branch {branch}", current.trim()));
+        return Err(format!(
+            "the worktree of {run_id} has {} checked out, not its branch {branch}",
+            current.trim()
+        ));
     }
     Ok(())
 }
@@ -48,7 +57,9 @@ fn check(store: &RunStore, run_id: &str) -> Result<crate::store::RunRecord, Stri
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     let phase = summarize_run(&events).phase;
     if phase == RunPhase::Accepting {
-        return Err(format!("{run_id}: an accept is running; wait for its tests to finish"));
+        return Err(format!(
+            "{run_id}: an accept is running; wait for its tests to finish"
+        ));
     }
     if !matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) {
         return Err(format!(
@@ -57,12 +68,19 @@ fn check(store: &RunStore, run_id: &str) -> Result<crate::store::RunRecord, Stri
         ));
     }
     if !record.worktree.is_dir() {
-        return Err(format!("the worktree of {run_id} is gone; there is no work to accept"));
+        return Err(format!(
+            "the worktree of {run_id} is gone; there is no work to accept"
+        ));
     }
     verify_own_worktree(run_id, &record.worktree, &record.branch)?;
-    let status = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    let status = git(
+        &record.worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?;
     if !status.trim().is_empty() {
-        return Err(format!("{run_id} has uncommitted changes in its worktree; commit or discard them first"));
+        return Err(format!(
+            "{run_id} has uncommitted changes in its worktree; commit or discard them first"
+        ));
     }
     let range = format!("{}..HEAD", record.base_sha);
     let commits = git(&record.worktree, &["rev-list", "--count", &range])?;
@@ -73,7 +91,11 @@ fn check(store: &RunStore, run_id: &str) -> Result<crate::store::RunRecord, Stri
 }
 
 /// [`accept_run_by`] from the command line.
-pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
+pub fn accept_run(
+    store: &RunStore,
+    run_id: &str,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<String, String> {
     accept_run_by(store, run_id, "cli", tests)
 }
 
@@ -81,20 +103,28 @@ pub fn accept_run(store: &RunStore, run_id: &str, tests: &dyn Fn(&Path) -> Resul
 /// passes. The tests run only once the run is known to be acceptable. Once they start, `run.accept_started`
 /// (with `by` and the head being tested) is recorded; a failure after that is recorded as `run.accept_failed`,
 /// which gives the run back the phase it had, and is returned as the reason.
-pub fn accept_run_by(store: &RunStore, run_id: &str, by: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<String, String> {
+pub fn accept_run_by(
+    store: &RunStore,
+    run_id: &str,
+    by: &str,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<String, String> {
     accept_run_delivering(store, run_id, by, tests, &|_, _, _| Ok(Vec::new()))
 }
 
 /// Sets each of the features (second argument) of a run of the project (first argument) completed in the
 /// project's ledger, recorded at the time given (third argument, RFC 3339), and says which it set.
-pub type CompleteFeatures<'a> = dyn Fn(&str, &[String], &str) ->Result<Vec<String>, String> + 'a;
+pub type CompleteFeatures<'a> = dyn Fn(&str, &[String], &str) -> Result<Vec<String>, String> + 'a;
 
 /// What an accept whose tests passed went on to do.
 enum Delivered {
     /// Nothing more: the run is review ready.
     ReviewReady,
     /// The run is merge-local and its branch landed on the target at `head_sha`.
-    Merged { head_sha: String, note: Option<String> },
+    Merged {
+        head_sha: String,
+        note: Option<String>,
+    },
     /// The run is merge-local and its target could not take it; it waits on a person.
     Blocked { reason: String },
 }
@@ -117,14 +147,28 @@ pub fn accept_run_delivering(
 
 /// Whether `record`'s run is merge-local and was accepted, from `events`, before an accept merged such a run:
 /// it ended review ready with its worktree kept and nothing merged, so [`merge_accepted_run`] can land it.
-pub fn merge_after_accept_pending(record: &crate::store::RunRecord, events: &[crate::store::Event]) -> bool {
-    if record.delivery != orq_core::project_settings::Delivery::MergeLocal || summarize_run(events).phase != RunPhase::Completed {
+pub fn merge_after_accept_pending(
+    record: &crate::store::RunRecord,
+    events: &[crate::store::Event],
+) -> bool {
+    if record.delivery != orq_core::project_settings::Delivery::MergeLocal
+        || summarize_run(events).phase != RunPhase::Completed
+    {
         return false;
     }
-    let Some(ended) = events.iter().rposition(|event| event.kind == "run.completed") else { return false };
+    let Some(ended) = events
+        .iter()
+        .rposition(|event| event.kind == "run.completed")
+    else {
+        return false;
+    };
     let payload = &events[ended].payload;
-    let accepted = payload["ending"] == "review_ready" && payload["note"] == "accepted: tests passed";
-    accepted && !events[ended..].iter().any(|event| matches!(event.kind.as_str(), "merge.completed" | "worktree.removed"))
+    let accepted =
+        payload["ending"] == "review_ready" && payload["note"] == "accepted: tests passed";
+    accepted
+        && !events[ended..]
+            .iter()
+            .any(|event| matches!(event.kind.as_str(), "merge.completed" | "worktree.removed"))
 }
 
 /// Carry the merge-local run `run_id`, accepted before an accept merged such a run, on to the merge as
@@ -151,19 +195,37 @@ fn check_accepted(store: &RunStore, run_id: &str) -> Result<crate::store::RunRec
     crate::discard::refuse_taken_over(store, run_id)?;
     let events = store.events(run_id).map_err(|e| e.to_string())?;
     if !merge_after_accept_pending(&record, &events) {
-        return Err(format!("{run_id} is not a merge-local run accepted and waiting to be merged"));
+        return Err(format!(
+            "{run_id} is not a merge-local run accepted and waiting to be merged"
+        ));
     }
     if !record.worktree.is_dir() {
-        return Err(format!("the worktree of {run_id} is gone; there is no work to merge"));
+        return Err(format!(
+            "the worktree of {run_id} is gone; there is no work to merge"
+        ));
     }
     verify_own_worktree(run_id, &record.worktree, &record.branch)?;
-    let status = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    let status = git(
+        &record.worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?;
     if !status.trim().is_empty() {
-        return Err(format!("{run_id} has uncommitted changes in its worktree; commit or discard them first"));
+        return Err(format!(
+            "{run_id} has uncommitted changes in its worktree; commit or discard them first"
+        ));
     }
     let target = format!("refs/heads/{}", record.target_branch);
-    if git_raw(&record.worktree, &["merge-base", "--is-ancestor", "HEAD", &target]).map_err(|e| e.to_string())?.success {
-        return Err(format!("{} already holds the work of {run_id}", record.target_branch));
+    if git_raw(
+        &record.worktree,
+        &["merge-base", "--is-ancestor", "HEAD", &target],
+    )
+    .map_err(|e| e.to_string())?
+    .success
+    {
+        return Err(format!(
+            "{} already holds the work of {run_id}",
+            record.target_branch
+        ));
     }
     Ok(record)
 }
@@ -171,9 +233,18 @@ fn check_accepted(store: &RunStore, run_id: &str) -> Result<crate::store::RunRec
 /// The head the accept that ended run `run_id` tested: the one its `run.accept_started` recorded, if any.
 fn accepted_head(store: &RunStore, run_id: &str) -> Option<String> {
     let events = store.events(run_id).ok()?;
-    let ended = events.iter().rposition(|event| event.kind == "run.completed")?;
-    let started = events[..ended].iter().rev().find(|event| event.kind == "run.accept_started")?;
-    started.payload.get("head").and_then(|head| head.as_str()).map(str::to_string)
+    let ended = events
+        .iter()
+        .rposition(|event| event.kind == "run.completed")?;
+    let started = events[..ended]
+        .iter()
+        .rev()
+        .find(|event| event.kind == "run.accept_started")?;
+    started
+        .payload
+        .get("head")
+        .and_then(|head| head.as_str())
+        .map(str::to_string)
 }
 
 /// An accept, or with `merge_only` the merge of a run accepted before: the tests of an accept run first, and
@@ -189,19 +260,35 @@ fn accept_or_merge(
     store.load(run_id).map_err(|e| e.to_string())?;
     // Held until the result is recorded, so only one accept of a run runs at a time, whoever starts it.
     let Some(_lock) = lock_accept(store, run_id)? else {
-        return Err(format!("{run_id}: an accept is running; wait for its tests to finish"));
+        return Err(format!(
+            "{run_id}: an accept is running; wait for its tests to finish"
+        ));
     };
     // With the lock ours, an accept still shown running has nothing running its tests.
     record_interrupted(store, run_id)?;
-    let record = if merge_only { check_accepted(store, run_id)? } else { check(store, run_id)? };
+    let record = if merge_only {
+        check_accepted(store, run_id)?
+    } else {
+        check(store, run_id)?
+    };
     let head_before = git(&record.worktree, &["rev-parse", "HEAD"])?;
-    append(store, &record, "run.accept_started", serde_json::json!({ "by": by, "head": head_before.trim() }))?;
+    append(
+        store,
+        &record,
+        "run.accept_started",
+        serde_json::json!({ "by": by, "head": head_before.trim() }),
+    )?;
     let log = open_accept_log(store, run_id);
     let outcome = {
         let _teeing = log.as_ref().map(|(_, file)| StepLog::tee_into(file));
         // A run accepted before is merged untested only at the head its accept tested.
-        let tested_before = merge_only && accepted_head(store, run_id).as_deref() == Some(head_before.trim());
-        let tested = if tested_before { Ok(()) } else { test_and_confirm(run_id, &record, &head_before, tests) };
+        let tested_before =
+            merge_only && accepted_head(store, run_id).as_deref() == Some(head_before.trim());
+        let tested = if tested_before {
+            Ok(())
+        } else {
+            test_and_confirm(run_id, &record, &head_before, tests)
+        };
         tested.and_then(|()| match record.delivery {
             orq_core::project_settings::Delivery::MergeLocal => land(store, run_id, &record, tests),
             _ => Ok(Delivered::ReviewReady),
@@ -212,25 +299,38 @@ fn accept_or_merge(
         record_accept_failed(store, &record, why, log.as_deref())?;
     }
     let (ending, note, said) = match outcome? {
-        Delivered::ReviewReady => ("review_ready", "accepted: tests passed".to_string(), format!("Accepted {run_id}: its tests pass and it is review ready")),
+        Delivered::ReviewReady => (
+            "review_ready",
+            "accepted: tests passed".to_string(),
+            format!("Accepted {run_id}: its tests pass and it is review ready"),
+        ),
         Delivered::Merged { head_sha, note } => {
             let target = &record.target_branch;
-            let mut said = format!("Accepted {run_id}: its tests pass and it is merged into {target} at {head_sha}");
+            let mut said = format!(
+                "Accepted {run_id}: its tests pass and it is merged into {target} at {head_sha}"
+            );
             if let Some(note) = note {
                 said.push_str(&format!("; {note}"));
             }
             if let Some(kept) = finish_merged(store, &record, complete) {
                 said.push_str(&format!("; {kept}"));
             }
-            ("merged", format!("accepted: tests passed, merged into {target}"), said)
+            (
+                "merged",
+                format!("accepted: tests passed, merged into {target}"),
+                said,
+            )
         }
         Delivered::Blocked { reason } => {
-            let mut blocked = serde_json::json!({ "ending": "blocked", "reason": reason, "by": by });
+            let mut blocked =
+                serde_json::json!({ "ending": "blocked", "reason": reason, "by": by });
             if let Some(log) = &log {
                 blocked["log"] = log.to_string_lossy().into_owned().into();
             }
             append(store, &record, "run.completed", blocked)?;
-            return Err(format!("{run_id} passed its tests but is blocked: {reason}"));
+            return Err(format!(
+                "{run_id} passed its tests but is blocked: {reason}"
+            ));
         }
     };
     let mut completed = serde_json::json!({ "ending": ending, "note": note });
@@ -244,20 +344,41 @@ fn accept_or_merge(
 
 /// Land the accepted merge-local run on its target ([`crate::land_on_target`]). A rebase that stops on a
 /// conflict is undone, so the worktree is left as it was, and fails the accept; a rebased head is tested again.
-fn land(store: &RunStore, run_id: &str, record: &crate::store::RunRecord, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<Delivered, String> {
+fn land(
+    store: &RunStore,
+    run_id: &str,
+    record: &crate::store::RunRecord,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<Delivered, String> {
     let mut conflict = |reason: String| -> Result<Option<String>, crate::store::StoreError> {
-        let files: Vec<String> = crate::rebase::unmerged_files(&record.worktree)?.iter().map(|file| crate::cleanup::printable(file)).collect();
+        let files: Vec<String> = crate::rebase::unmerged_files(&record.worktree)?
+            .iter()
+            .map(|file| crate::cleanup::printable(file))
+            .collect();
         let aborted = git_raw(&record.worktree, &["rebase", "--abort"])?;
-        let undone = if aborted.success { "the rebase was undone" } else { "the rebase could not be undone" };
-        Ok(Some(format!("{reason} in {}; {undone} and {} was left as it was", files.join(", "), record.target_branch)))
+        let undone = if aborted.success {
+            "the rebase was undone"
+        } else {
+            "the rebase could not be undone"
+        };
+        Ok(Some(format!(
+            "{reason} in {}; {undone} and {} was left as it was",
+            files.join(", "),
+            record.target_branch
+        )))
     };
     let mut check = || -> Result<Option<String>, crate::store::StoreError> {
-        let head = git(&record.worktree, &["rev-parse", "HEAD"]).map_err(crate::store::StoreError::Corrupt)?;
+        let head = git(&record.worktree, &["rev-parse", "HEAD"])
+            .map_err(crate::store::StoreError::Corrupt)?;
         Ok(test_and_confirm(run_id, record, &head, tests).err())
     };
-    let landed = crate::merge_local::land_on_target(store, run_id, false, true, &mut conflict, &mut check).map_err(|e| format!("{e:?}"))?;
+    let landed =
+        crate::merge_local::land_on_target(store, run_id, false, true, &mut conflict, &mut check)
+            .map_err(|e| format!("{e:?}"))?;
     match landed {
-        crate::merge_local::Landing::Merged { head_sha, note } => Ok(Delivered::Merged { head_sha, note }),
+        crate::merge_local::Landing::Merged { head_sha, note } => {
+            Ok(Delivered::Merged { head_sha, note })
+        }
         crate::merge_local::Landing::Blocked { reason } => Ok(Delivered::Blocked { reason }),
         crate::merge_local::Landing::Stopped(why) => Err(why),
     }
@@ -265,19 +386,35 @@ fn land(store: &RunStore, run_id: &str, record: &crate::store::RunRecord, tests:
 
 /// After an accepted run merged: its worktree and branch go, and its features no later run took are set
 /// completed. Best effort, as the run is merged whatever happens here: what went wrong is returned to be said.
-fn finish_merged(store: &RunStore, record: &crate::store::RunRecord, complete: &CompleteFeatures<'_>) -> Option<String> {
+fn finish_merged(
+    store: &RunStore,
+    record: &crate::store::RunRecord,
+    complete: &CompleteFeatures<'_>,
+) -> Option<String> {
     let mut notes = Vec::new();
     match crate::merge_local::remove_merged_run(store, &record.run_id) {
         Ok(crate::cleanup::CleanupOutcome::Removed) => {}
-        Ok(crate::cleanup::CleanupOutcome::Kept { reason }) => notes.push(format!("its worktree was kept: {reason}")),
+        Ok(crate::cleanup::CleanupOutcome::Kept { reason }) => {
+            notes.push(format!("its worktree was kept: {reason}"))
+        }
         Err(err) => notes.push(format!("its worktree could not be removed: {err:?}")),
     }
-    let members = store.events(&record.run_id).map(|events| crate::resume::members_of(record, &events)).unwrap_or_else(|_| vec![record.feature_id.clone()]);
+    let members = store
+        .events(&record.run_id)
+        .map(|events| crate::resume::members_of(record, &events))
+        .unwrap_or_else(|_| vec![record.feature_id.clone()]);
     let free = crate::discard::features_no_later_run_took(store, &record.run_id, &members);
-    match free.and_then(|free| complete(&record.project_id, &free, &crate::implement::now_rfc3339())) {
+    match free
+        .and_then(|free| complete(&record.project_id, &free, &crate::implement::now_rfc3339()))
+    {
         Ok(completed) if completed.is_empty() => {}
         Ok(completed) => {
-            if let Err(err) = crate::ledger_events::record_ledger_features(store, record, "ledger.completed_by_run", &completed) {
+            if let Err(err) = crate::ledger_events::record_ledger_features(
+                store,
+                record,
+                "ledger.completed_by_run",
+                &completed,
+            ) {
                 notes.push(format!("cannot record its completed features: {err:?}"));
             }
         }
@@ -286,14 +423,22 @@ fn finish_merged(store: &RunStore, record: &crate::store::RunRecord, complete: &
     (!notes.is_empty()).then(|| notes.join("; "))
 }
 
-fn test_and_confirm(run_id: &str, record: &crate::store::RunRecord, head_before: &str, tests: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+fn test_and_confirm(
+    run_id: &str,
+    record: &crate::store::RunRecord,
+    head_before: &str,
+    tests: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<(), String> {
     // Tests that panic fail the accept like any other failure, so the run is never left accepting.
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tests(&record.worktree)));
     let ran = ran.unwrap_or_else(|panic| Err(format!("they panicked: {}", panic_message(&*panic))));
     ran.map_err(|why| format!("the tests failed in {run_id}: {why}"))?;
     verify_own_worktree(run_id, &record.worktree, &record.branch)?;
     let head_after = git(&record.worktree, &["rev-parse", "HEAD"])?;
-    let status_after = git(&record.worktree, &["status", "--porcelain", "--untracked-files=all"])?;
+    let status_after = git(
+        &record.worktree,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?;
     if head_after != head_before || !status_after.trim().is_empty() {
         return Err(format!("the tests changed the worktree of {run_id}; what they left is not the work that was tested"));
     }
@@ -309,29 +454,42 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// What an accept the server stopped during is recorded as.
-pub const ACCEPT_INTERRUPTED: &str = "the server stopped while the tests were running; accept again";
+pub const ACCEPT_INTERRUPTED: &str =
+    "the server stopped while the tests were running; accept again";
 
 /// When `run_id` is still accepting (started, no result) and nothing is running its tests anymore, record the
 /// accept as failed because the server stopped. Says whether it recorded anything.
 pub fn fail_interrupted_accept(store: &RunStore, run_id: &str) -> Result<bool, String> {
-    if summarize_run(&store.events(run_id).map_err(|e| e.to_string())?).phase != RunPhase::Accepting {
+    if summarize_run(&store.events(run_id).map_err(|e| e.to_string())?).phase != RunPhase::Accepting
+    {
         return Ok(false);
     }
     // A held lock means an accept, in this process or another, is still running the tests: leave it alone.
-    let Some(_lock) = lock_accept(store, run_id)? else { return Ok(false) };
+    let Some(_lock) = lock_accept(store, run_id)? else {
+        return Ok(false);
+    };
     record_interrupted(store, run_id)
 }
 
 /// Take the accept lock of `run_id` (`accept.lock` in its run folder) if no one holds it. The lock goes with the
 /// returned file, and the system lets go of it when the process holding it ends, however it ends.
 fn lock_accept(store: &RunStore, run_id: &str) -> Result<Option<std::fs::File>, String> {
-    let path = store.run_dir(run_id).map_err(|e| format!("{e:?}"))?.join("accept.lock");
-    let opened = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path);
+    let path = store
+        .run_dir(run_id)
+        .map_err(|e| format!("{e:?}"))?
+        .join("accept.lock");
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path);
     let file = opened.map_err(|e| format!("could not open {}: {e}", path.display()))?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => Err(format!("could not lock {}: {e}", path.display())),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(format!("could not lock {}: {e}", path.display()))
+        }
     }
 }
 
@@ -342,7 +500,12 @@ fn record_interrupted(store: &RunStore, run_id: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let record = store.load(run_id).map_err(|e| e.to_string())?;
-    append(store, &record, "run.accept_failed", serde_json::json!({ "reason": ACCEPT_INTERRUPTED, "output": "" }))?;
+    append(
+        store,
+        &record,
+        "run.accept_failed",
+        serde_json::json!({ "reason": ACCEPT_INTERRUPTED, "output": "" }),
+    )?;
     Ok(true)
 }
 
@@ -350,15 +513,24 @@ fn record_interrupted(store: &RunStore, run_id: &str) -> Result<bool, String> {
 /// nothing), with a reason naming them, or the first line of `why` when none was named; the end of `why` as the
 /// output; and the log. All of it is redacted before anything is cut, so a cut never leaves part of a secret too
 /// short to recognise.
-fn record_accept_failed(store: &RunStore, record: &crate::store::RunRecord, why: &str, log: Option<&Path>) -> Result<(), String> {
+fn record_accept_failed(
+    store: &RunStore,
+    record: &crate::store::RunRecord,
+    why: &str,
+    log: Option<&Path>,
+) -> Result<(), String> {
     let why = orq_core::redact::redact(why);
-    let logged = log.and_then(read_log).filter(|text| !text.trim().is_empty());
+    let logged = log
+        .and_then(read_log)
+        .filter(|text| !text.trim().is_empty());
     if let (None, Some(path)) = (&logged, log) {
         // Tests that ran no step still leave their failure in the log.
         let _ = std::fs::write(path, format!("{why}\n"));
     }
     let failures = crate::test_failures::find_test_failures(logged.as_deref().unwrap_or(&why));
-    let reason = failures.headline().unwrap_or_else(|| why.lines().next().unwrap_or_default().to_string());
+    let reason = failures
+        .headline()
+        .unwrap_or_else(|| why.lines().next().unwrap_or_default().to_string());
     let reason: String = reason.chars().take(300).collect();
     let mut payload = serde_json::json!({ "reason": reason, "output": tail(&why) });
     if let Some(log) = log {
@@ -395,9 +567,19 @@ fn read_log_within(path: &Path, cap: u64) -> Option<String> {
     file.seek(SeekFrom::Start(len - half)).ok()?;
     let mut tail = Vec::new();
     file.take(half).read_to_end(&mut tail).ok()?;
-    let head = head.iter().rposition(|&byte| byte == b'\n').map_or(&head[..0], |at| &head[..=at]);
-    let tail = tail.iter().position(|&byte| byte == b'\n').map_or(&tail[..0], |at| &tail[at + 1..]);
-    Some(format!("{}{LOG_CUT}{}", String::from_utf8_lossy(head), String::from_utf8_lossy(tail)))
+    let head = head
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(&head[..0], |at| &head[..=at]);
+    let tail = tail
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(&tail[..0], |at| &tail[at + 1..]);
+    Some(format!(
+        "{}{LOG_CUT}{}",
+        String::from_utf8_lossy(head),
+        String::from_utf8_lossy(tail)
+    ))
 }
 
 /// A new `accept-<n>.log` in the run's log folder, `n` one past the last, for what this accept's test steps print.
@@ -407,7 +589,11 @@ fn open_accept_log(store: &RunStore, run_id: &str) -> Option<(std::path::PathBuf
     std::fs::create_dir_all(&dir).ok()?;
     for n in 1..=10_000 {
         let path = dir.join(format!("accept-{n}.log"));
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(file) => return Some((path, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(_) => return None,
@@ -432,7 +618,11 @@ impl StepLog {
     }
 
     fn current() -> Option<std::fs::File> {
-        STEP_LOG.with(|slot| slot.borrow().as_ref().and_then(|file| file.try_clone().ok()))
+        STEP_LOG.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|file| file.try_clone().ok())
+        })
     }
 }
 
@@ -442,7 +632,12 @@ impl Drop for StepLog {
     }
 }
 
-fn append(store: &RunStore, record: &crate::store::RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), String> {
+fn append(
+    store: &RunStore,
+    record: &crate::store::RunRecord,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<(), String> {
     store
         .append_event(&crate::store::Event {
             schema_version: 1,
@@ -506,9 +701,15 @@ pub fn run_steps(worktree: &Path, steps: &[Vec<String>]) -> Result<(), String> {
 }
 
 /// `run_steps`, with `env` added to what each step sees, as the verify gate adds its configured env.
-pub fn run_steps_with_env(worktree: &Path, steps: &[Vec<String>], env: &[(String, String)]) -> Result<(), String> {
+pub fn run_steps_with_env(
+    worktree: &Path,
+    steps: &[Vec<String>],
+    env: &[(String, String)],
+) -> Result<(), String> {
     for argv in steps {
-        let Some((program, args)) = argv.split_first() else { continue };
+        let Some((program, args)) = argv.split_first() else {
+            continue;
+        };
         let cannot_run = |e: std::io::Error| format!("could not run `{}`: {e}", argv.join(" "));
         let mut log = StepLog::current();
         if let Some(log) = &mut log {
@@ -532,7 +733,11 @@ pub fn run_steps_with_env(worktree: &Path, steps: &[Vec<String>], env: &[(String
                 Some(code) => format!("exited with status {code}"),
                 None => "was stopped by a signal".to_string(),
             };
-            return Err(format!("`{}` failed: {ended}\n{}", argv.join(" "), tail(&printed)));
+            return Err(format!(
+                "`{}` failed: {ended}\n{}",
+                argv.join(" "),
+                tail(&printed)
+            ));
         }
     }
     Ok(())
@@ -542,7 +747,10 @@ pub fn run_steps_with_env(worktree: &Path, steps: &[Vec<String>], env: &[(String
 /// Each line is redacted whole before anything older is let go, so no cut ever splits a secret. Every line kept
 /// is also written to `log`, when given.
 fn read_tail(source: &mut impl std::io::Read, log: Option<&std::fs::File>) -> String {
-    let mut shown = ShownOutput { log, ..ShownOutput::default() };
+    let mut shown = ShownOutput {
+        log,
+        ..ShownOutput::default()
+    };
     let mut chunk = [0u8; 8192];
     loop {
         let n = match source.read(&mut chunk) {
@@ -584,7 +792,9 @@ struct ShownOutput<'a> {
 fn key_markers(text: &[u8]) -> (bool, Option<bool>) {
     const KEY: &[u8] = b"PRIVATE KEY-----";
     let (mut opens, mut last) = (false, None);
-    for at in (0..text.len().saturating_sub(KEY.len() - 1)).filter(|&at| text[at..].starts_with(KEY)) {
+    for at in
+        (0..text.len().saturating_sub(KEY.len() - 1)).filter(|&at| text[at..].starts_with(KEY))
+    {
         let before = &text[at.saturating_sub(48)..at];
         let found = |marker: &[u8]| before.windows(marker.len()).rposition(|w| w == marker);
         let marker = match (found(b"-----BEGIN"), found(b"-----END")) {
@@ -662,7 +872,9 @@ impl ShownOutput<'_> {
             while !self.kept.is_char_boundary(from) {
                 from += 1;
             }
-            let from = self.kept[from..].find('\n').map_or(from, |at| from + at + 1);
+            let from = self.kept[from..]
+                .find('\n')
+                .map_or(from, |at| from + at + 1);
             self.kept.drain(..from);
         }
     }
@@ -689,7 +901,9 @@ mod tests {
             if self.1 {
                 return Err(Error::from(ErrorKind::Interrupted));
             }
-            let Some((first, rest)) = self.0.split_first() else { return Ok(0) };
+            let Some((first, rest)) = self.0.split_first() else {
+                return Ok(0);
+            };
             self.0 = rest;
             buf[..first.len()].copy_from_slice(first);
             Ok(first.len())
@@ -705,7 +919,13 @@ mod tests {
     #[test]
     fn a_private_key_marker_split_across_reads_of_a_long_line_still_opens_the_key() {
         let spaces = vec![b' '; 3000];
-        let chunks: [&[u8]; 5] = [b"FAILED\n-----BEGIN OPENSSH PRIV", b"ATE KEY-----", &spaces, &spaces, b"\nMIIkeybody\nMIIkeybody\n"];
+        let chunks: [&[u8]; 5] = [
+            b"FAILED\n-----BEGIN OPENSSH PRIV",
+            b"ATE KEY-----",
+            &spaces,
+            &spaces,
+            b"\nMIIkeybody\nMIIkeybody\n",
+        ];
         let shown = read_tail(&mut Interrupted(&chunks, false), None);
         assert!(shown.contains("FAILED"), "{shown}");
         assert!(!shown.contains("MIIkeybody"), "{shown}");
@@ -715,7 +935,9 @@ mod tests {
     fn a_log_longer_than_the_read_keeps_failures_from_its_start_and_its_end() {
         let mut log = String::from("        FAIL [   0.010s] (1/900) suite early\n");
         for n in 2..900 {
-            log.push_str(&format!("        PASS [   0.004s] ({n}/900) suite test_{n}\n"));
+            log.push_str(&format!(
+                "        PASS [   0.004s] ({n}/900) suite test_{n}\n"
+            ));
         }
         log.push_str("        FAIL [   0.010s] (900/900) suite late\n──── STDERR:             suite late\nthread 'late' panicked at src/a.rs:1:1:\nlate broke\n");
         let path = log_file("long");
@@ -724,9 +946,17 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(read.len() < 4200, "{}", read.len());
         let failures = crate::test_failures::find_test_failures(&read);
-        let names: Vec<&str> = failures.tests.iter().map(|test| test.name.as_str()).collect();
+        let names: Vec<&str> = failures
+            .tests
+            .iter()
+            .map(|test| test.name.as_str())
+            .collect();
         assert_eq!(names, ["suite early", "suite late"], "{read}");
-        assert!(failures.tests[1].output.contains("late broke"), "{:?}", failures.tests[1]);
+        assert!(
+            failures.tests[1].output.contains("late broke"),
+            "{:?}",
+            failures.tests[1]
+        );
     }
 
     #[test]
@@ -739,6 +969,7 @@ mod tests {
     }
 
     fn log_file(tag: &str) -> std::path::PathBuf {
-        orq_test_support::process_temp_dir().join(format!("orq-accept-log-{tag}-{}.log", std::process::id()))
+        orq_test_support::process_temp_dir()
+            .join(format!("orq-accept-log-{tag}-{}.log", std::process::id()))
     }
 }

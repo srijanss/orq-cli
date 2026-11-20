@@ -43,8 +43,14 @@ pub fn review_ready_message(
     branch: &str,
 ) -> String {
     let kind = if forge == "github" { "PR" } else { "MR" };
-    let ci = if ci_green { "CI green" } else { "CI not watched" };
-    sanitize(&format!("{repo}: {kind} ready for review, {ci}. {url} ({branch})"))
+    let ci = if ci_green {
+        "CI green"
+    } else {
+        "CI not watched"
+    };
+    sanitize(&format!(
+        "{repo}: {kind} ready for review, {ci}. {url} ({branch})"
+    ))
 }
 
 /// Redacted, on one line and bounded, so a notifier never gets a secret or a control character.

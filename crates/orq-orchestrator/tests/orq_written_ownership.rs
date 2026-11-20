@@ -342,10 +342,17 @@ fn settings_orq_refreshes_before_a_session_do_not_keep_the_worktree() {
     let w = world("refreshed");
     orq_files(&w);
     let base = git(&w.repo, &["rev-parse", "main"]);
-    assert!(orq_orchestrator::write_run_permissions(&w.worktree, &[], Path::new("/logs/first"), &base).is_empty());
+    assert!(orq_orchestrator::write_run_permissions(
+        &w.worktree,
+        &[],
+        Path::new("/logs/first"),
+        &base
+    )
+    .is_empty());
     assert!(record_orq_written(&w.worktree).is_empty());
 
-    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base)
+        .unwrap();
 
     assert_eq!(cleanup(&w), CleanupOutcome::Removed);
 }
@@ -354,10 +361,18 @@ fn settings_orq_refreshes_before_a_session_do_not_keep_the_worktree() {
 fn the_needs_input_hook_orq_writes_and_removes_does_not_keep_the_worktree() {
     let w = world("hooked");
     orq_files(&w);
-    assert!(orq_orchestrator::write_needs_input_hook(&w.worktree, "'/bin/orq' run needs-input 'run-1' --repo '/r'").is_empty());
+    assert!(orq_orchestrator::write_needs_input_hook(
+        &w.worktree,
+        "'/bin/orq' run needs-input 'run-1' --repo '/r'"
+    )
+    .is_empty());
     assert!(record_orq_written(&w.worktree).is_empty());
 
-    assert!(orq_orchestrator::write_needs_input_hook(&w.worktree, "'/bin/orq' run needs-input 'run-2' --repo '/r'").is_empty());
+    assert!(orq_orchestrator::write_needs_input_hook(
+        &w.worktree,
+        "'/bin/orq' run needs-input 'run-2' --repo '/r'"
+    )
+    .is_empty());
     assert!(orq_orchestrator::remove_needs_input_hook(&w.worktree).is_empty());
 
     assert_eq!(cleanup(&w), CleanupOutcome::Removed);
@@ -369,14 +384,24 @@ fn a_hand_edit_after_orqs_refresh_keeps_the_worktree_saying_the_file_differs_fro
     orq_files(&w);
     let base = git(&w.repo, &["rev-parse", "main"]);
     assert!(record_orq_written(&w.worktree).is_empty());
-    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
-    fs::write(w.worktree.join(".claude/settings.local.json"), "{\"env\":{\"MINE\":\"1\"}}\n").unwrap();
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base)
+        .unwrap();
+    fs::write(
+        w.worktree.join(".claude/settings.local.json"),
+        "{\"env\":{\"MINE\":\"1\"}}\n",
+    )
+    .unwrap();
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else {
+        panic!("the worktree was not kept")
+    };
 
     assert!(reason.contains(".claude/settings.local.json"), "{reason}");
     assert!(!reason.contains("CACHEDIR.TAG"), "{reason}");
-    assert!(reason.contains("differs from what orq last wrote"), "{reason}");
+    assert!(
+        reason.contains("differs from what orq last wrote"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -384,11 +409,20 @@ fn an_edited_orq_file_is_named_as_differing_from_what_orq_last_wrote() {
     let w = world("edited-reason");
     orq_files(&w);
     assert!(record_orq_written(&w.worktree).is_empty());
-    fs::write(w.worktree.join(".mcp.json"), "{\"mcpServers\":{\"mine\":{}}}\n").unwrap();
+    fs::write(
+        w.worktree.join(".mcp.json"),
+        "{\"mcpServers\":{\"mine\":{}}}\n",
+    )
+    .unwrap();
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else {
+        panic!("the worktree was not kept")
+    };
 
-    assert!(reason.contains(".mcp.json (it differs from what orq last wrote)"), "{reason}");
+    assert!(
+        reason.contains(".mcp.json (it differs from what orq last wrote)"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -397,16 +431,25 @@ fn rerecording_the_settings_leaves_the_mcp_json_entry_as_recorded() {
     orq_files(&w);
     let base = git(&w.repo, &["rev-parse", "main"]);
     assert!(record_orq_written(&w.worktree).is_empty());
-    let manifest = PathBuf::from(git(&w.worktree, &["rev-parse", "--absolute-git-dir"])).join("orq-written.json");
-    let entries = || serde_json::from_str::<BTreeMap<String, String>>(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    let manifest = PathBuf::from(git(&w.worktree, &["rev-parse", "--absolute-git-dir"]))
+        .join("orq-written.json");
+    let entries = || {
+        serde_json::from_str::<BTreeMap<String, String>>(&fs::read_to_string(&manifest).unwrap())
+            .unwrap()
+    };
     let before = entries();
     assert!(before.contains_key(".mcp.json"), "{before:?}");
 
-    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base)
+        .unwrap();
 
     let after = entries();
     assert_eq!(after.get(".mcp.json"), before.get(".mcp.json"), "{after:?}");
-    assert_ne!(after.get(".claude/settings.local.json"), before.get(".claude/settings.local.json"), "{after:?}");
+    assert_ne!(
+        after.get(".claude/settings.local.json"),
+        before.get(".claude/settings.local.json"),
+        "{after:?}"
+    );
 }
 
 #[test]
@@ -415,12 +458,19 @@ fn a_hand_edit_before_orqs_refresh_is_not_adopted_as_orqs_and_keeps_the_worktree
     orq_files(&w);
     let base = git(&w.repo, &["rev-parse", "main"]);
     assert!(record_orq_written(&w.worktree).is_empty());
-    fs::write(w.worktree.join(".claude/settings.local.json"), "{\"env\":{\"MINE\":\"1\"}}\n").unwrap();
+    fs::write(
+        w.worktree.join(".claude/settings.local.json"),
+        "{\"env\":{\"MINE\":\"1\"}}\n",
+    )
+    .unwrap();
 
-    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base).unwrap();
+    orq_orchestrator::refresh_run_permissions(&w.worktree, &[], Path::new("/logs/second"), &base)
+        .unwrap();
     assert!(orq_orchestrator::remove_needs_input_hook(&w.worktree).is_empty());
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else {
+        panic!("the worktree was not kept")
+    };
     assert!(reason.contains(".claude/settings.local.json"), "{reason}");
 }
 
@@ -429,9 +479,17 @@ fn a_hook_written_over_a_hand_edited_settings_file_does_not_make_it_orqs() {
     let w = world("hook-over-edit");
     orq_files(&w);
     assert!(record_orq_written(&w.worktree).is_empty());
-    fs::write(w.worktree.join(".claude/settings.local.json"), "{\"env\":{\"MINE\":\"1\"}}\n").unwrap();
+    fs::write(
+        w.worktree.join(".claude/settings.local.json"),
+        "{\"env\":{\"MINE\":\"1\"}}\n",
+    )
+    .unwrap();
 
-    assert!(orq_orchestrator::write_needs_input_hook(&w.worktree, "'/bin/orq' run needs-input 'run-2' --repo '/r'").is_empty());
+    assert!(orq_orchestrator::write_needs_input_hook(
+        &w.worktree,
+        "'/bin/orq' run needs-input 'run-2' --repo '/r'"
+    )
+    .is_empty());
 
     assert!(matches!(cleanup(&w), CleanupOutcome::Kept { .. }));
 }
@@ -444,7 +502,11 @@ fn carried_and_scaffolded(w: &World) {
     let listed = "/.tdd-config.json\n/.mcpctl.lock\n/.mcpctl.scaffold.json\n/.agents/guide.md\n/.claude/commands/tdd.md\n";
     fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + listed).unwrap();
     // The main checkout's config, which orq carries into the worktree.
-    fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    fs::write(
+        w.repo.join(".tdd-config.json"),
+        "{\"adapter\":\"cargo-adapter\"}\n",
+    )
+    .unwrap();
     carry_tdd_config(w);
     fs::write(w.worktree.join(".mcpctl.lock"), "version = 1\n").unwrap();
     fs::create_dir_all(w.worktree.join(".agents")).unwrap();
@@ -477,11 +539,20 @@ fn a_scaffolded_file_the_agent_edited_is_work_and_keeps_the_worktree() {
     let w = world("scaffold-edited");
     carried_and_scaffolded(&w);
     assert!(record_orq_written(&w.worktree).is_empty());
-    fs::write(w.worktree.join(".agents/guide.md"), "the agent's own guide\n").unwrap();
+    fs::write(
+        w.worktree.join(".agents/guide.md"),
+        "the agent's own guide\n",
+    )
+    .unwrap();
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else {
+        panic!("the worktree was not kept")
+    };
 
-    assert!(reason.contains(".agents/guide.md (it differs from what orq last wrote)"), "{reason}");
+    assert!(
+        reason.contains(".agents/guide.md (it differs from what orq last wrote)"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -489,16 +560,33 @@ fn an_ignored_tdd_config_the_worktree_had_before_orq_is_not_orqs_and_keeps_the_w
     let w = world("own-tdd-config");
     orq_files(&w);
     let exclude = w.repo.join(".git/info/exclude");
-    fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + "/.tdd-config.json\n").unwrap();
-    fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    fs::write(
+        &exclude,
+        fs::read_to_string(&exclude).unwrap() + "/.tdd-config.json\n",
+    )
+    .unwrap();
+    fs::write(
+        w.repo.join(".tdd-config.json"),
+        "{\"adapter\":\"cargo-adapter\"}\n",
+    )
+    .unwrap();
     // The worktree's own config, which carrying left alone because it was already there.
-    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"my-adapter\"}\n").unwrap();
+    fs::write(
+        w.worktree.join(".tdd-config.json"),
+        "{\"adapter\":\"my-adapter\"}\n",
+    )
+    .unwrap();
     assert!(record_orq_written(&w.worktree).is_empty());
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else {
+        panic!("the worktree was not kept")
+    };
 
     assert!(reason.contains(".tdd-config.json"), "{reason}");
-    assert_eq!(fs::read_to_string(w.worktree.join(".tdd-config.json")).unwrap(), "{\"adapter\":\"my-adapter\"}\n");
+    assert_eq!(
+        fs::read_to_string(w.worktree.join(".tdd-config.json")).unwrap(),
+        "{\"adapter\":\"my-adapter\"}\n"
+    );
 }
 
 #[test]
@@ -513,17 +601,32 @@ fn a_carried_tdd_config_stays_orqs_when_recorded_again_after_the_main_checkouts_
 }
 
 #[test]
-fn an_ignored_tdd_config_the_worktree_had_before_orq_is_not_orqs_even_when_it_matches_the_main_checkouts() {
+fn an_ignored_tdd_config_the_worktree_had_before_orq_is_not_orqs_even_when_it_matches_the_main_checkouts(
+) {
     let w = world("own-same-tdd-config");
     orq_files(&w);
     let exclude = w.repo.join(".git/info/exclude");
-    fs::write(&exclude, fs::read_to_string(&exclude).unwrap() + "/.tdd-config.json\n").unwrap();
-    fs::write(w.repo.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
-    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"cargo-adapter\"}\n").unwrap();
+    fs::write(
+        &exclude,
+        fs::read_to_string(&exclude).unwrap() + "/.tdd-config.json\n",
+    )
+    .unwrap();
+    fs::write(
+        w.repo.join(".tdd-config.json"),
+        "{\"adapter\":\"cargo-adapter\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        w.worktree.join(".tdd-config.json"),
+        "{\"adapter\":\"cargo-adapter\"}\n",
+    )
+    .unwrap();
     carry_tdd_config(&w);
     assert!(record_orq_written(&w.worktree).is_empty());
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else {
+        panic!("the worktree was not kept")
+    };
 
     assert!(reason.contains(".tdd-config.json"), "{reason}");
 }
@@ -531,7 +634,11 @@ fn an_ignored_tdd_config_the_worktree_had_before_orq_is_not_orqs_even_when_it_ma
 #[test]
 fn a_tdd_config_the_worktree_had_is_not_orqs_even_when_mcpctl_lists_it_as_scaffolded() {
     let w = world("own-scaffold-listed-tdd-config");
-    fs::write(w.worktree.join(".tdd-config.json"), "{\"adapter\":\"my-adapter\"}\n").unwrap();
+    fs::write(
+        w.worktree.join(".tdd-config.json"),
+        "{\"adapter\":\"my-adapter\"}\n",
+    )
+    .unwrap();
     carried_and_scaffolded(&w);
     fs::write(
         w.worktree.join(".mcpctl.scaffold.json"),
@@ -540,8 +647,13 @@ fn a_tdd_config_the_worktree_had_is_not_orqs_even_when_mcpctl_lists_it_as_scaffo
     .unwrap();
     assert!(record_orq_written(&w.worktree).is_empty());
 
-    let CleanupOutcome::Kept { reason } = cleanup(&w) else { panic!("the worktree was not kept") };
+    let CleanupOutcome::Kept { reason } = cleanup(&w) else {
+        panic!("the worktree was not kept")
+    };
 
     assert!(reason.contains(".tdd-config.json"), "{reason}");
-    assert_eq!(fs::read_to_string(w.worktree.join(".tdd-config.json")).unwrap(), "{\"adapter\":\"my-adapter\"}\n");
+    assert_eq!(
+        fs::read_to_string(w.worktree.join(".tdd-config.json")).unwrap(),
+        "{\"adapter\":\"my-adapter\"}\n"
+    );
 }

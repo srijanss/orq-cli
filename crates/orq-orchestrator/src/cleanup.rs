@@ -88,7 +88,10 @@ pub(crate) enum UncommittedWork {
     Unreadable,
     /// Something is uncommitted: `path` is the first path git listed for it, and `hint` says, when it
     /// can, what would have let it go with the worktree. Both are printable.
-    Present { path: String, hint: Option<String> },
+    Present {
+        path: String,
+        hint: Option<String>,
+    },
 }
 
 impl UncommittedWork {
@@ -99,7 +102,10 @@ impl UncommittedWork {
             UncommittedWork::Present { path, hint: None } => {
                 format!("the worktree has uncommitted changes: {path}")
             }
-            UncommittedWork::Present { path, hint: Some(hint) } => {
+            UncommittedWork::Present {
+                path,
+                hint: Some(hint),
+            } => {
                 format!("the worktree has uncommitted changes: {path} ({hint})")
             }
         }
@@ -114,7 +120,9 @@ pub(crate) fn uncommitted_work(worktree: &Path) -> Result<Option<UncommittedWork
 
 /// [`uncommitted_work`] from one status scan, but a status git cannot give is git's message, for a
 /// caller that refuses to go on rather than keeping the worktree.
-pub(crate) fn read_uncommitted_work(worktree: &Path) -> Result<Result<Option<UncommittedWork>, String>, StoreError> {
+pub(crate) fn read_uncommitted_work(
+    worktree: &Path,
+) -> Result<Result<Option<UncommittedWork>, String>, StoreError> {
     let scan = match scan_work(worktree, Some(1))? {
         Err(message) => return Ok(Err(message)),
         Ok(None) => return Ok(Ok(Some(UncommittedWork::Unreadable))),
@@ -125,8 +133,15 @@ pub(crate) fn read_uncommitted_work(worktree: &Path) -> Result<Result<Option<Unc
     };
     // An entry is "XY path": the two status letters, a space, then the path.
     let path = entry.get(3..).unwrap_or(entry);
-    let hint = if entry.starts_with("!! ") { ignored_hint(worktree, path, &scan.installs)? } else { None };
-    Ok(Ok(Some(UncommittedWork::Present { path: printable(path), hint: hint.as_deref().map(printable) })))
+    let hint = if entry.starts_with("!! ") {
+        ignored_hint(worktree, path, &scan.installs)?
+    } else {
+        None
+    };
+    Ok(Ok(Some(UncommittedWork::Present {
+        path: printable(path),
+        hint: hint.as_deref().map(printable),
+    })))
 }
 
 /// The status entries of a worktree that are work: everything but the ignored files orq, the
@@ -138,7 +153,10 @@ pub(crate) struct WorkScan {
 
 /// Every entry of [`WorkScan`], or the first `limit` of them. `None` when the status names a path
 /// that is not UTF-8, so it cannot be judged; a status git cannot give is git's message.
-pub(crate) fn scan_work(worktree: &Path, limit: Option<usize>) -> Result<Result<Option<WorkScan>, String>, StoreError> {
+pub(crate) fn scan_work(
+    worktree: &Path,
+    limit: Option<usize>,
+) -> Result<Result<Option<WorkScan>, String>, StoreError> {
     let status = git_raw(
         worktree,
         &[
@@ -215,12 +233,17 @@ fn ignored_hint(
         return Ok(Some(missing.clone()));
     }
     // A single file orq writes: a cache tag on its folder could not help, it changed after orq wrote it.
-    let recorded = || crate::orq_written::Recorded::load(worktree).unchanged(worktree, path).is_some();
+    let recorded = || {
+        crate::orq_written::Recorded::load(worktree)
+            .unchanged(worktree, path)
+            .is_some()
+    };
     if crate::orq_written::is_orq_file_name(path) || recorded() {
         return Ok(Some("it differs from what orq last wrote".to_string()));
     }
-    Ok(in_ignored_folder(worktree, path)?
-        .then(|| "an ignored folder holding a CACHEDIR.TAG is removed with the worktree".to_string()))
+    Ok(in_ignored_folder(worktree, path)?.then(|| {
+        "an ignored folder holding a CACHEDIR.TAG is removed with the worktree".to_string()
+    }))
 }
 
 /// Whether one of the folders `path` lies in is itself ignored, so tagging it as a cache would let it go.
@@ -244,7 +267,13 @@ fn in_ignored_folder(worktree: &Path, path: &str) -> Result<bool, StoreError> {
 /// file name cannot forge lines or move the cursor where the reason is shown.
 pub(crate) fn printable(name: &str) -> String {
     name.chars()
-        .flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] })
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
         .collect()
 }
 
@@ -342,7 +371,11 @@ fn in_installed_deps(
 /// `Ok` when `project` has one of `folder`'s lockfiles and the manifest it is made from committed at `HEAD`;
 /// otherwise what is missing, as a hint for the kept reason.
 fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Result<(), String> {
-    let prefix = if project.is_empty() { String::new() } else { format!("{project}/") };
+    let prefix = if project.is_empty() {
+        String::new()
+    } else {
+        format!("{project}/")
+    };
     // The project folder's own entries only, not its subfolders'; the whole top level for the worktree's.
     let mut args = vec!["ls-tree", "-z", "--full-tree", "HEAD"];
     if !project.is_empty() {
@@ -364,7 +397,11 @@ fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Re
     // Nothing counts as committed when the commit cannot be read, so the folder is never let go then.
     let committed = listing.as_ref().cloned().unwrap_or_default();
     let is_committed = |name: &str| committed.iter().any(|c| c == name);
-    if folder.lockfiles.iter().any(|(lock, manifest)| is_committed(lock) && is_committed(manifest)) {
+    if folder
+        .lockfiles
+        .iter()
+        .any(|(lock, manifest)| is_committed(lock) && is_committed(manifest))
+    {
         return Ok(());
     }
     // A lockfile on disk but not committed is the one to name: committing it is all that is missing.
@@ -380,8 +417,14 @@ fn install_missing(worktree: &Path, project: &str, folder: &InstallFolder) -> Re
         on_disk.unwrap_or(&folder.lockfiles[0].0),
     );
     if let Err(why) = listing {
-        let place = if prefix.is_empty() { "the worktree" } else { prefix.as_str() };
-        return Err(format!("{what}; cannot tell what {place} has committed: {why}"));
+        let place = if prefix.is_empty() {
+            "the worktree"
+        } else {
+            prefix.as_str()
+        };
+        return Err(format!(
+            "{what}; cannot tell what {place} has committed: {why}"
+        ));
     }
     // A committed lockfile whose own manifest is not: it cannot be installed from as it stands.
     let unpaired = folder.lockfiles.iter().find(|(lock, _)| is_committed(lock));
@@ -428,7 +471,10 @@ fn is_cache_tag(tag: &Path) -> bool {
         return false;
     }
     let mut head = Vec::new();
-    file.take(CACHEDIR_SIGNATURE.len() as u64).read_to_end(&mut head).is_ok() && head == CACHEDIR_SIGNATURE.as_bytes()
+    file.take(CACHEDIR_SIGNATURE.len() as u64)
+        .read_to_end(&mut head)
+        .is_ok()
+        && head == CACHEDIR_SIGNATURE.as_bytes()
 }
 
 /// `run_succeeded` says whether the run itself finished well, apart from why the worktree stays.

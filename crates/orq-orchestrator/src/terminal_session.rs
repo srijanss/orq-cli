@@ -17,9 +17,17 @@ const MARKER_CHECK_EVERY: Duration = Duration::from_millis(100);
 /// Runs `command` under a new terminal of its own, reading and discarding what it shows, until it exits.
 /// One still running is stopped, with everything it started, `linger` after `done_marker` appears or at
 /// `limit`, whichever is first. Nothing is ever typed into the terminal.
-pub fn run_in_terminal(mut command: Command, done_marker: &Path, limit: Duration, linger: Duration) -> io::Result<()> {
+pub fn run_in_terminal(
+    mut command: Command,
+    done_marker: &Path,
+    limit: Duration,
+    linger: Duration,
+) -> io::Result<()> {
     let (mut screen, terminal) = open_terminal()?;
-    command.stdin(terminal.try_clone()?).stdout(terminal.try_clone()?).stderr(terminal);
+    command
+        .stdin(terminal.try_clone()?)
+        .stdout(terminal.try_clone()?)
+        .stderr(terminal);
     // Safety: `setsid` and `ioctl` are async-signal-safe, and nothing else happens between fork and exec.
     unsafe {
         command.pre_exec(|| {
@@ -67,7 +75,14 @@ pub(crate) fn has_exited(child: &Child) -> io::Result<bool> {
     // Safety: an all-zero siginfo is valid for waitid to fill in.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     // Safety: `info` is valid for the call; the child is ours and not yet reaped.
-    let status = unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    let status = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
     if status != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -92,7 +107,11 @@ mod tests {
 
         // A reaped program's id is free to be reused; an unreaped one can still be signalled.
         // Safety: signal 0 only checks that the process exists.
-        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "the exited program was reaped by looking at it");
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the exited program was reaped by looking at it"
+        );
         assert!(child.wait().unwrap().success());
     }
 }
@@ -114,7 +133,11 @@ fn stop(child: &crate::child_groups::TrackedChild, screen: &mut File) -> io::Res
 
 /// Waits a moment for output and reads what came, since a program with a full screen buffer stops.
 fn discard_output(screen: &mut File) {
-    let mut wanted = libc::pollfd { fd: screen.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let mut wanted = libc::pollfd {
+        fd: screen.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
     // Safety: `wanted` is one valid pollfd for the length of the call.
     let ready = unsafe { libc::poll(&mut wanted, 1, i32::from(POLL_MS)) };
     let mut buffer = [0u8; 16 * 1024];
@@ -127,13 +150,28 @@ fn discard_output(screen: &mut File) {
 /// A new terminal: the end to read the screen from, and the end for the program.
 fn open_terminal() -> io::Result<(File, OwnedFd)> {
     let (mut screen, mut terminal) = (-1, -1);
-    let mut size = libc::winsize { ws_row: 50, ws_col: 160, ws_xpixel: 0, ws_ypixel: 0 };
+    let mut size = libc::winsize {
+        ws_row: 50,
+        ws_col: 160,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     // Safety: all pointers are valid for the call; a null name and termios are allowed.
-    if unsafe { libc::openpty(&mut screen, &mut terminal, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) } != 0 {
+    if unsafe {
+        libc::openpty(
+            &mut screen,
+            &mut terminal,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    } != 0
+    {
         return Err(io::Error::last_os_error());
     }
     // Safety: openpty has just returned these descriptors, owned by nothing else.
-    let (screen, terminal) = unsafe { (OwnedFd::from_raw_fd(screen), OwnedFd::from_raw_fd(terminal)) };
+    let (screen, terminal) =
+        unsafe { (OwnedFd::from_raw_fd(screen), OwnedFd::from_raw_fd(terminal)) };
     for fd in [&screen, &terminal] {
         // Safety: plain system call on a descriptor owned here. Closed on exec, so no other program
         // this process starts keeps the terminal open; the program's own copies are made for it by spawn.

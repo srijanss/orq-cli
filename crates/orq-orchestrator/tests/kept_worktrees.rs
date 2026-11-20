@@ -5,18 +5,30 @@ use std::process::Command;
 use std::time::Duration;
 
 use orq_orchestrator::{
-    delete_kept_worktree, list_kept_worktrees, ChangeKind, DeleteRefusal, Event, RunIndex, RunRecord, RunStore,
+    delete_kept_worktree, list_kept_worktrees, ChangeKind, DeleteRefusal, Event, RunIndex,
+    RunRecord, RunStore,
 };
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -28,13 +40,18 @@ struct World {
 
 /// A repository on `main` that ignores `.claude/settings.local.json` and its worktrees folder.
 fn world(tag: &str) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-kept-{}-{tag}", std::process::id()));
+    let root =
+        orq_test_support::process_temp_dir().join(format!("orq-kept-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
     fs::write(repo.join("a.txt"), "a\n").unwrap();
-    fs::write(repo.join(".gitignore"), ".claude/settings.local.json\n.claude/worktrees/\n").unwrap();
+    fs::write(
+        repo.join(".gitignore"),
+        ".claude/settings.local.json\n.claude/worktrees/\n",
+    )
+    .unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "base"]);
     let store = RunStore::new(&root.join("state"));
@@ -45,7 +62,17 @@ impl World {
     /// A worktree on `branch` under the repository's worktrees folder, recorded as run `run_id`.
     fn worktree(&self, run_id: &str, branch: &str) -> PathBuf {
         let path = self.repo.join(".claude/worktrees").join(branch);
-        git(&self.repo, &["worktree", "add", "-q", "-b", branch, path.to_str().unwrap()]);
+        git(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                path.to_str().unwrap(),
+            ],
+        );
         self.record(run_id, branch, &path);
         path
     }
@@ -106,7 +133,10 @@ fn a_merged_worktree_with_only_an_ignored_settings_file_is_listed_as_safe_to_del
     let path = w.worktree("run-1", "fix--A");
     fs::create_dir_all(path.join(".claude")).unwrap();
     fs::write(path.join(".claude/settings.local.json"), "{}\n").unwrap();
-    w.kept("run-1", "the worktree has uncommitted changes: .claude/settings.local.json");
+    w.kept(
+        "run-1",
+        "the worktree has uncommitted changes: .claude/settings.local.json",
+    );
 
     let kept = list_kept_worktrees(&w.store, &w.repo).unwrap();
 
@@ -151,7 +181,13 @@ fn a_worktree_with_an_unmerged_commit_or_an_untracked_file_is_listed_but_not_saf
     assert!(kept[0].files.is_empty());
     assert!(!kept[0].merged() && !kept[0].safe());
     assert_eq!(kept[1].commits, Some(0));
-    assert_eq!(kept[1].files, [orq_orchestrator::ChangedFile { path: "notes.txt".to_string(), kind: ChangeKind::Untracked }]);
+    assert_eq!(
+        kept[1].files,
+        [orq_orchestrator::ChangedFile {
+            path: "notes.txt".to_string(),
+            kind: ChangeKind::Untracked
+        }]
+    );
     assert!(kept[1].merged() && !kept[1].safe());
 }
 
@@ -159,7 +195,17 @@ fn a_worktree_with_an_unmerged_commit_or_an_untracked_file_is_listed_but_not_saf
 fn the_main_worktree_one_outside_the_folder_and_an_active_runs_are_not_listed() {
     let w = world("hidden");
     let outside = w.root.join("elsewhere");
-    git(&w.repo, &["worktree", "add", "-q", "-b", "fix--Out", outside.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--Out",
+            outside.to_str().unwrap(),
+        ],
+    );
     w.record("run-1", "fix--Out", &outside);
     w.kept("run-1", "kept");
     w.worktree("run-2", "fix--Busy");
@@ -177,7 +223,12 @@ fn branch_exists(repo: &Path, branch: &str) -> bool {
     Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
         .output()
         .unwrap()
         .status
@@ -193,7 +244,9 @@ fn deleting_a_merged_worktree_removes_it_and_its_branch_and_records_the_sha() {
     w.kept("run-1", "kept");
     let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
 
-    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, false).unwrap().unwrap();
+    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, false)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(deleted.sha, entry.head);
     assert_eq!(deleted.run_id.as_deref(), Some("run-1"));
@@ -216,10 +269,15 @@ fn a_stale_version_is_a_conflict_that_deletes_nothing() {
     let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
     fs::write(path.join("late.txt"), "new\n").unwrap();
 
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap()
+        .unwrap_err();
 
     assert_eq!(refused, DeleteRefusal::Changed);
-    assert_eq!(refused.to_string(), "the worktree changed since you opened it; nothing was deleted");
+    assert_eq!(
+        refused.to_string(),
+        "the worktree changed since you opened it; nothing was deleted"
+    );
     assert!(path.join("late.txt").exists());
     assert!(branch_exists(&w.repo, "fix--A"));
 }
@@ -234,11 +292,15 @@ fn an_unmerged_worktree_is_deleted_only_with_force() {
     w.kept("run-1", "kept");
     let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
 
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--B", &entry.version, false).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--B", &entry.version, false)
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refused, DeleteRefusal::NeedsForce);
     assert!(path.exists() && branch_exists(&w.repo, "fix--B"));
 
-    delete_kept_worktree(&w.store, &w.repo, "fix--B", &entry.version, true).unwrap().unwrap();
+    delete_kept_worktree(&w.store, &w.repo, "fix--B", &entry.version, true)
+        .unwrap()
+        .unwrap();
     assert!(!path.exists() && !branch_exists(&w.repo, "fix--B"));
 }
 
@@ -251,13 +313,28 @@ fn a_worktree_reached_through_a_symlink_is_refused() {
     fs::create_dir_all(w.repo.join(".claude")).unwrap();
     std::os::unix::fs::symlink(&real, w.repo.join(".claude/worktrees")).unwrap();
     let path = w.repo.join(".claude/worktrees/fix--L");
-    git(&w.repo, &["worktree", "add", "-q", "-b", "fix--L", path.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--L",
+            path.to_str().unwrap(),
+        ],
+    );
     w.record("run-1", "fix--L", &path);
     w.kept("run-1", "kept");
 
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--L", "any", true).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--L", "any", true)
+        .unwrap()
+        .unwrap_err();
 
-    assert!(matches!(refused, DeleteRefusal::NotFound | DeleteRefusal::Unsafe(_)), "{refused:?}");
+    assert!(
+        matches!(refused, DeleteRefusal::NotFound | DeleteRefusal::Unsafe(_)),
+        "{refused:?}"
+    );
     assert!(real.join("fix--L").exists());
     assert!(branch_exists(&w.repo, "fix--L"));
 }
@@ -266,7 +343,9 @@ fn a_worktree_reached_through_a_symlink_is_refused() {
 fn an_unknown_branch_is_not_found() {
     let w = world("unknown");
     assert_eq!(
-        delete_kept_worktree(&w.store, &w.repo, "fix--Nope", "v", true).unwrap().unwrap_err(),
+        delete_kept_worktree(&w.store, &w.repo, "fix--Nope", "v", true)
+            .unwrap()
+            .unwrap_err(),
         DeleteRefusal::NotFound
     );
 }
@@ -283,7 +362,17 @@ fn a_run_of_another_repository_on_the_same_branch_says_nothing_about_this_worktr
     git(&other, &["add", "."]);
     git(&other, &["commit", "-q", "-m", "base"]);
     let elsewhere = other.join(".claude/worktrees/fix--A");
-    git(&other, &["worktree", "add", "-q", "-b", "fix--A", elsewhere.to_str().unwrap()]);
+    git(
+        &other,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--A",
+            elsewhere.to_str().unwrap(),
+        ],
+    );
     w.store
         .create(&RunRecord {
             delivery: Default::default(),
@@ -308,9 +397,16 @@ fn a_run_of_another_repository_on_the_same_branch_says_nothing_about_this_worktr
     assert_eq!(kept.len(), 1, "{kept:?}");
     assert_eq!(kept[0].run_id.as_deref(), Some("run-1"));
     assert_eq!(kept[0].target, "main");
-    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &kept[0].version, false).unwrap().unwrap();
+    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &kept[0].version, false)
+        .unwrap()
+        .unwrap();
     assert_eq!(deleted.run_id.as_deref(), Some("run-1"));
-    assert!(w.store.events("run-2").unwrap().iter().all(|e| e.kind != "worktree.deleted"));
+    assert!(w
+        .store
+        .events("run-2")
+        .unwrap()
+        .iter()
+        .all(|e| e.kind != "worktree.deleted"));
 }
 
 #[test]
@@ -325,13 +421,17 @@ fn editing_an_already_changed_file_or_one_past_the_shown_files_makes_the_version
     assert_eq!(entry.files.len(), 20);
 
     fs::write(path.join("f00.txt"), "second, longer\n").unwrap();
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refused, DeleteRefusal::Changed);
 
     let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
     fs::remove_file(path.join("f24.txt")).unwrap();
     fs::write(path.join("f99.txt"), "first\n").unwrap();
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refused, DeleteRefusal::Changed);
     assert!(path.join("f99.txt").exists() && branch_exists(&w.repo, "fix--A"));
 }
@@ -344,16 +444,25 @@ fn listing_and_deleting_read_no_events_of_unrelated_runs() {
     let w = world("unrelated-events");
     w.worktree("run-1", "fix--A");
     w.kept("run-1", "kept");
-    w.record("run-9", "fix--elsewhere", &w.root.join("other/.claude/worktrees/fix--elsewhere"));
+    w.record(
+        "run-9",
+        "fix--elsewhere",
+        &w.root.join("other/.claude/worktrees/fix--elsewhere"),
+    );
     let events = w.root.join("state/runs/run-9/events.jsonl");
     let _ = fs::remove_file(&events);
-    assert!(Command::new("mkfifo").arg(&events).status().unwrap().success());
+    assert!(Command::new("mkfifo")
+        .arg(&events)
+        .status()
+        .unwrap()
+        .success());
 
     let (store, repo) = (RunStore::new(&w.root.join("state")), w.repo.clone());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let kept = list_kept_worktrees(&store, &repo).unwrap();
-        let deleted = delete_kept_worktree(&store, &repo, "fix--A", &kept[0].version, false).unwrap();
+        let deleted =
+            delete_kept_worktree(&store, &repo, "fix--A", &kept[0].version, false).unwrap();
         let _ = tx.send((kept.len(), deleted.is_ok()));
     });
     let outcome = rx.recv_timeout(std::time::Duration::from_secs(20));
@@ -361,7 +470,10 @@ fn listing_and_deleting_read_no_events_of_unrelated_runs() {
         // Let a reader blocked on the pipe go.
         let _ = fs::OpenOptions::new().write(true).open(&events);
     }
-    assert_eq!(outcome.expect("listing waited on an unrelated run's events"), (1, true));
+    assert_eq!(
+        outcome.expect("listing waited on an unrelated run's events"),
+        (1, true)
+    );
 }
 
 #[test]
@@ -374,7 +486,11 @@ fn a_branch_git_cannot_delete_after_the_worktree_went_is_an_error_saying_so() {
 
     let err = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, false).unwrap_err();
 
-    assert!(err.to_string().contains("the worktree was removed but git could not delete its branch"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("the worktree was removed but git could not delete its branch"),
+        "{err}"
+    );
     assert!(!path.exists());
     assert!(branch_exists(&w.repo, "fix--A"));
 }
@@ -395,7 +511,9 @@ fn a_deletion_event_that_cannot_be_written_still_reports_the_deletion() {
         return; // Running as a user permissions do not stop.
     }
 
-    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, false).unwrap().unwrap();
+    let deleted = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, false)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(deleted.run_id.as_deref(), Some("run-1"));
     assert!(!path.exists() && !branch_exists(&w.repo, "fix--A"));
@@ -414,10 +532,19 @@ fn editing_a_file_inside_a_nested_repository_makes_the_version_stale() {
     git(&sub, &["commit", "-q", "-m", "x"]);
     w.kept("run-1", "kept");
     let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
-    assert!(entry.files.iter().any(|f| f.path.trim_end_matches('/') == "sub"), "{:?}", entry.files);
+    assert!(
+        entry
+            .files
+            .iter()
+            .any(|f| f.path.trim_end_matches('/') == "sub"),
+        "{:?}",
+        entry.files
+    );
 
     fs::write(sub.join("deep/x.txt"), "second, longer\n").unwrap();
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refused, DeleteRefusal::Changed);
     assert!(sub.join("deep/x.txt").exists() && branch_exists(&w.repo, "fix--A"));
 }
@@ -427,9 +554,17 @@ fn rewrite_keeping_size_and_time(path: &Path, text: &str) {
     let before = fs::metadata(path).unwrap();
     assert_eq!(before.len(), text.len() as u64);
     fs::write(path, text).unwrap();
-    fs::File::options().write(true).open(path).unwrap().set_modified(before.modified().unwrap()).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(before.modified().unwrap())
+        .unwrap();
     let after = fs::metadata(path).unwrap();
-    assert_eq!((after.len(), after.modified().unwrap()), (before.len(), before.modified().unwrap()));
+    assert_eq!(
+        (after.len(), after.modified().unwrap()),
+        (before.len(), before.modified().unwrap())
+    );
 }
 
 /// A tool that keeps a file's size and modification time still changes what is in it.
@@ -446,12 +581,16 @@ fn rewriting_a_file_with_its_size_and_time_kept_makes_the_version_stale() {
 
     let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
     rewrite_keeping_size_and_time(&path.join("top.txt"), "other\n");
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refused, DeleteRefusal::Changed);
 
     let entry = list_kept_worktrees(&w.store, &w.repo).unwrap().remove(0);
     rewrite_keeping_size_and_time(&sub.join("x.txt"), "third\n");
-    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().unwrap_err();
+    let refused = delete_kept_worktree(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap()
+        .unwrap_err();
     assert_eq!(refused, DeleteRefusal::Changed);
     assert!(sub.join("x.txt").exists() && branch_exists(&w.repo, "fix--A"));
 }
@@ -467,9 +606,13 @@ fn a_version_of_only_links_and_missing_files_with_no_time_deletes_nothing() {
     let path = w.worktree("run-1", "fix--A");
     std::os::unix::fs::symlink("elsewhere", path.join("link")).unwrap();
     w.kept("run-1", "kept");
-    let mut index = RunIndex::load(&w.store).unwrap().with_version_budget(Duration::ZERO);
+    let mut index = RunIndex::load(&w.store)
+        .unwrap()
+        .with_version_budget(Duration::ZERO);
     let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
-    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    let refused = index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap();
     assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
     assert!(path.join("link").symlink_metadata().is_ok() && branch_exists(&w.repo, "fix--A"));
 }
@@ -488,15 +631,24 @@ fn a_version_with_more_entries_than_it_may_read_deletes_nothing() {
     }
     w.kept("run-1", "kept");
 
-    let mut index = RunIndex::load(&w.store).unwrap().with_version_entry_limit(10);
+    let mut index = RunIndex::load(&w.store)
+        .unwrap()
+        .with_version_entry_limit(10);
     let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
-    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    let refused = index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap();
     assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
     assert!(sub.join("f0.txt").exists() && branch_exists(&w.repo, "fix--A"));
 
-    let mut index = RunIndex::load(&w.store).unwrap().with_version_entry_limit(1_000);
+    let mut index = RunIndex::load(&w.store)
+        .unwrap()
+        .with_version_entry_limit(1_000);
     let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
-    assert!(index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap().is_ok());
+    assert!(index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap()
+        .is_ok());
     assert!(!path.exists());
 }
 
@@ -513,7 +665,9 @@ fn a_version_with_something_it_cannot_read_deletes_nothing() {
     fs::write(sub.join("secret.txt"), "work\n").unwrap();
     fs::write(sub.join("locked/inner.txt"), "work\n").unwrap();
     w.kept("run-1", "kept");
-    let set = |p: &std::path::Path, mode| fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+    let set = |p: &std::path::Path, mode| {
+        fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap()
+    };
 
     set(&sub.join("secret.txt"), 0o000);
     if fs::read(sub.join("secret.txt")).is_ok() {
@@ -538,10 +692,14 @@ fn a_version_read_only_in_part_before_its_time_ran_out_deletes_nothing() {
     let path = w.worktree("run-1", "fix--A");
     fs::write(path.join("work.txt"), "work\n").unwrap();
     w.kept("run-1", "kept");
-    let mut index = RunIndex::load(&w.store).unwrap().with_version_budget(Duration::ZERO);
+    let mut index = RunIndex::load(&w.store)
+        .unwrap()
+        .with_version_budget(Duration::ZERO);
 
     let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
-    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    let refused = index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap();
 
     assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
     assert!(path.join("work.txt").exists() && branch_exists(&w.repo, "fix--A"));
@@ -570,20 +728,26 @@ fn a_version_whose_time_runs_out_partway_through_a_file_deletes_nothing() {
     // Sixteen chunks: the version reads the first and is out of time before the second.
     fs::write(path.join("big.bin"), vec![7u8; 1024 * 1024]).unwrap();
     w.kept("run-1", "kept");
-    let mut index = RunIndex::load(&w.store).unwrap().with_version_clock(running_out_clock);
+    let mut index = RunIndex::load(&w.store)
+        .unwrap()
+        .with_version_clock(running_out_clock);
 
     CLOCK_READS_LEFT.set(u64::MAX);
     let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
     // One read sets the deadline, one checks before the entry, one before the first chunk.
     CLOCK_READS_LEFT.set(3);
-    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    let refused = index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap();
 
     assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
     assert!(path.join("big.bin").exists() && branch_exists(&w.repo, "fix--A"));
 
     // The same delete with time for every chunk goes through: what ran out was the time inside the file.
     CLOCK_READS_LEFT.set(u64::MAX);
-    let deleted = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    let deleted = index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap();
     assert!(deleted.is_ok() && !path.exists());
 }
 
@@ -598,24 +762,31 @@ fn a_version_whose_time_runs_out_partway_through_a_folder_deletes_nothing() {
         fs::write(sub.join(format!("f{n}.txt")), "work\n").unwrap();
     }
     w.kept("run-1", "kept");
-    let mut index = RunIndex::load(&w.store).unwrap().with_version_clock(running_out_clock);
+    let mut index = RunIndex::load(&w.store)
+        .unwrap()
+        .with_version_clock(running_out_clock);
 
     CLOCK_READS_LEFT.set(u64::MAX);
     let entry = index.list(&w.store, &w.repo).unwrap().remove(0);
     // The deadline, the status entry and the folder take three reads; the rest run out a few entries in.
     CLOCK_READS_LEFT.set(10);
-    let refused = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    let refused = index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap();
 
     assert_eq!(refused, Err(DeleteRefusal::Unverifiable));
     assert!(sub.join("f0.txt").exists() && branch_exists(&w.repo, "fix--A"));
 
     CLOCK_READS_LEFT.set(u64::MAX);
-    let deleted = index.delete(&w.store, &w.repo, "fix--A", &entry.version, true).unwrap();
+    let deleted = index
+        .delete(&w.store, &w.repo, "fix--A", &entry.version, true)
+        .unwrap();
     assert!(deleted.is_ok() && !path.exists());
 }
 
 #[test]
-fn one_run_index_serves_several_listings_and_deletes_and_still_sees_a_run_started_after_it_was_read() {
+fn one_run_index_serves_several_listings_and_deletes_and_still_sees_a_run_started_after_it_was_read(
+) {
     let w = world("index");
     let a = w.worktree("run-1", "fix--A");
     w.kept("run-1", "kept");
@@ -624,17 +795,31 @@ fn one_run_index_serves_several_listings_and_deletes_and_still_sees_a_run_starte
     let mut index = RunIndex::load(&w.store).unwrap();
 
     let listed = index.list(&w.store, &w.repo).unwrap();
-    assert_eq!(listed.iter().map(|k| k.branch.as_str()).collect::<Vec<_>>(), ["fix--A", "fix--B"]);
-    let version = |branch: &str| listed.iter().find(|k| k.branch == branch).unwrap().version.clone();
+    assert_eq!(
+        listed.iter().map(|k| k.branch.as_str()).collect::<Vec<_>>(),
+        ["fix--A", "fix--B"]
+    );
+    let version = |branch: &str| {
+        listed
+            .iter()
+            .find(|k| k.branch == branch)
+            .unwrap()
+            .version
+            .clone()
+    };
 
     // A run that starts on fix--B after the index was read still holds it.
     w.record("run-3", "fix--B", &b);
     w.event("run-3", "stage.started", serde_json::json!({}));
 
-    let deleted = index.delete(&w.store, &w.repo, "fix--A", &version("fix--A"), false).unwrap();
+    let deleted = index
+        .delete(&w.store, &w.repo, "fix--A", &version("fix--A"), false)
+        .unwrap();
     assert!(deleted.is_ok(), "{deleted:?}");
     assert!(!a.exists());
-    let refused = index.delete(&w.store, &w.repo, "fix--B", &version("fix--B"), false).unwrap();
+    let refused = index
+        .delete(&w.store, &w.repo, "fix--B", &version("fix--B"), false)
+        .unwrap();
     assert_eq!(refused, Err(DeleteRefusal::Active));
     assert!(b.exists());
 }

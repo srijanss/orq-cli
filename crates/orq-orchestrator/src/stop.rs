@@ -35,10 +35,14 @@ pub fn owner_state_in(proc_root: &Path, pid: u32, start: u64) -> OwnerState {
         Err(_) => return OwnerState::Unknown,
     };
     // `comm` (field 2) may contain spaces and parentheses, so count from the last ')'.
-    let Some(after_comm) = stat.rfind(')').map(|i| &stat[i + 1..]) else { return OwnerState::Unknown };
+    let Some(after_comm) = stat.rfind(')').map(|i| &stat[i + 1..]) else {
+        return OwnerState::Unknown;
+    };
     let mut fields = after_comm.split_whitespace();
     let state = fields.next();
-    let Some(ticks) = fields.nth(18).and_then(|t| t.parse::<u64>().ok()) else { return OwnerState::Unknown };
+    let Some(ticks) = fields.nth(18).and_then(|t| t.parse::<u64>().ok()) else {
+        return OwnerState::Unknown;
+    };
     match state {
         Some("Z" | "X" | "x") => OwnerState::Exited,
         Some(_) if ticks != start => OwnerState::Exited,
@@ -57,14 +61,16 @@ pub fn owner_state(pid: u32, start: u64) -> OwnerState {
 /// not stopped to recording how it ended, so one never lands inside the other.
 pub fn run_ending_lock(store: &RunStore, run_id: &str) -> Result<std::fs::File, String> {
     let dir = store.run_dir(run_id).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot open the ending of {run_id}: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot open the ending of {run_id}: {e}"))?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(dir.join("ending.lock"))
         .map_err(|e| format!("cannot open the ending of {run_id}: {e}"))?;
-    file.lock().map_err(|e| format!("cannot hold the ending of {run_id}: {e}"))?;
+    file.lock()
+        .map_err(|e| format!("cannot hold the ending of {run_id}: {e}"))?;
     Ok(file)
 }
 
@@ -97,24 +103,31 @@ pub fn stop_run(
             .and_then(|p| p.as_u64())
             .and_then(|p| i32::try_from(p).ok())
             .filter(|p| *p > 1)
-            .ok_or_else(|| format!("{run_id} records an owner pid that cannot be signalled safely"))?
-            as u32;
+            .ok_or_else(|| {
+                format!("{run_id} records an owner pid that cannot be signalled safely")
+            })? as u32;
         let start = launch
             .payload
             .get("start_ticks")
             .and_then(|t| t.as_u64())
-            .ok_or_else(|| format!("cannot verify the owner of {run_id}; refusing to signal pid {pid}"))?;
+            .ok_or_else(|| {
+                format!("cannot verify the owner of {run_id}; refusing to signal pid {pid}")
+            })?;
         match probe(pid, start) {
             OwnerState::Exited => {}
             OwnerState::Unknown => {
-                return Err(format!("cannot verify the owner of {run_id}; refusing to signal pid {pid}"));
+                return Err(format!(
+                    "cannot verify the owner of {run_id}; refusing to signal pid {pid}"
+                ));
             }
             OwnerState::Running => {
                 signal(pid, false)?;
                 if wait_for_exit(pid, start, probe, sleep)? == OwnerState::Running {
                     signal(pid, true)?;
                     if wait_for_exit(pid, start, probe, sleep)? == OwnerState::Running {
-                        return Err(format!("the owner of {run_id} (pid {pid}) is still running"));
+                        return Err(format!(
+                            "the owner of {run_id} (pid {pid}) is still running"
+                        ));
                     }
                 }
             }
@@ -150,7 +163,9 @@ fn wait_for_exit(
         match state {
             OwnerState::Exited => return Ok(state),
             OwnerState::Unknown => {
-                return Err(format!("lost track of the owner (pid {pid}) while stopping it; not signalling further"));
+                return Err(format!(
+                    "lost track of the owner (pid {pid}) while stopping it; not signalling further"
+                ));
             }
             OwnerState::Running => sleep(POLL_INTERVAL),
         }
@@ -161,13 +176,19 @@ fn wait_for_exit(
 /// Send SIGTERM (or SIGKILL when `force`) to the single process `pid`.
 #[cfg(unix)]
 pub fn terminate_process(pid: u32, force: bool) -> Result<(), String> {
-    let pid = i32::try_from(pid).ok().filter(|p| *p > 1).ok_or_else(|| format!("refusing to signal pid {pid}"))?;
+    let pid = i32::try_from(pid)
+        .ok()
+        .filter(|p| *p > 1)
+        .ok_or_else(|| format!("refusing to signal pid {pid}"))?;
     let sig = if force { libc::SIGKILL } else { libc::SIGTERM };
     // SAFETY: kill(2) with a validated positive pid and a signal number has no memory-safety preconditions.
     if unsafe { libc::kill(pid as libc::pid_t, sig) } == 0 {
         Ok(())
     } else {
-        Err(format!("cannot signal pid {pid}: {}", std::io::Error::last_os_error()))
+        Err(format!(
+            "cannot signal pid {pid}: {}",
+            std::io::Error::last_os_error()
+        ))
     }
 }
 

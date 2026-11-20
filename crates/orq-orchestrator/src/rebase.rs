@@ -42,7 +42,12 @@ pub fn rebase_onto_target(
 fn local_target(record: &RunRecord) -> Result<String, StoreError> {
     let local = git_raw(
         &record.worktree,
-        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}^{{commit}}", record.target_branch)],
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{}^{{commit}}", record.target_branch),
+        ],
     )?;
     if !local.success {
         return Err(StoreError::Corrupt(format!(
@@ -97,13 +102,28 @@ fn fetched_target(record: &RunRecord) -> Result<String, StoreError> {
 
 /// Rebase `run_id`'s branch onto `target_sha`, a commit the repository already has, without
 /// fetching: a merge-local run whose local base branch moved is rebased onto where it is now.
-pub fn rebase_onto_commit(store: &RunStore, run_id: &str, target_sha: &str) -> Result<RebaseOutcome, StoreError> {
+pub fn rebase_onto_commit(
+    store: &RunStore,
+    run_id: &str,
+    target_sha: &str,
+) -> Result<RebaseOutcome, StoreError> {
     let record = store.load(run_id)?;
     // Only a full object id of a commit is taken: anything else, an option or a name, never
     // reaches `git rebase`.
-    let full_id = matches!(target_sha.len(), 40 | 64) && target_sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    if !full_id || !git_raw(&record.worktree, &["cat-file", "-e", &format!("{target_sha}^{{commit}}")])?.success {
-        return Err(StoreError::Corrupt(format!("{target_sha:?} is not the id of a commit to rebase onto")));
+    let full_id = matches!(target_sha.len(), 40 | 64)
+        && target_sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !full_id
+        || !git_raw(
+            &record.worktree,
+            &["cat-file", "-e", &format!("{target_sha}^{{commit}}")],
+        )?
+        .success
+    {
+        return Err(StoreError::Corrupt(format!(
+            "{target_sha:?} is not the id of a commit to rebase onto"
+        )));
     }
     on_run_branch(&record)?;
     rebase_record_onto(store, &record, target_sha.to_string(), "at_merge", "local")
@@ -124,7 +144,13 @@ fn on_run_branch(record: &RunRecord) -> Result<(), StoreError> {
 /// Rebase the run's branch onto `target_sha`: recorded when done. A conflict is recorded with its
 /// files, the commit being replayed onto and `place` (`before_gate` or `at_merge`); it is not a
 /// block yet, as a session may still resolve it.
-fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, place: &str, source: &str) -> Result<RebaseOutcome, StoreError> {
+fn rebase_record_onto(
+    store: &RunStore,
+    record: &RunRecord,
+    target_sha: String,
+    place: &str,
+    source: &str,
+) -> Result<RebaseOutcome, StoreError> {
     let worktree = record.worktree.as_path();
     let rebased = git_raw(worktree, &["rebase", &target_sha])?;
     if rebased.success {
@@ -160,7 +186,12 @@ fn rebase_record_onto(store: &RunStore, record: &RunRecord, target_sha: String, 
 /// escapes them, and not trimmed.
 pub(crate) fn unmerged_files(worktree: &std::path::Path) -> Result<Vec<String>, StoreError> {
     let unmerged = git_raw(worktree, &["diff", "--name-only", "-z", "--diff-filter=U"])?;
-    Ok(unmerged.stdout.split('\0').filter(|name| !name.is_empty()).map(str::to_string).collect())
+    Ok(unmerged
+        .stdout
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// The private ref of a run. Hex keeps any id the store accepts (`run..1`,

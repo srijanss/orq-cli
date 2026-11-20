@@ -23,12 +23,19 @@ impl Drop for RestorePath {
 /// From now until the guard drops, `git rev-parse` and `git rev-list` fail; other commands run the real git.
 fn git_that_cannot_inspect_commits(root: &Path) -> RestorePath {
     let path = std::env::var_os("PATH").unwrap();
-    let real = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file()).expect("a git on PATH");
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|git| git.is_file())
+        .expect("a git on PATH");
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let wrapper = bin.join("git");
     fs::write(&wrapper, format!("#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in rev-parse|rev-list) exit 128;; esac; done\nexec '{}' \"$@\"\n", real.display())).unwrap();
-    fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fs::set_permissions(
+        &wrapper,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     let mut dirs = vec![bin];
     dirs.extend(std::env::split_paths(&path));
     std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
@@ -36,20 +43,45 @@ fn git_that_cannot_inspect_commits(root: &Path) -> RestorePath {
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
 #[test]
 fn a_branch_whose_commits_cannot_be_inspected_once_its_worktree_is_gone_was_inspected_before() {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-discard-inspect-{}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-inspect-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = GitFixture::new();
     let worktree = repo.add_linked_worktree("orq-run-1");
     fs::write(worktree.join("ahead.txt"), "committed work\n").unwrap();
     git_in(&worktree, &["add", "."]);
-    git_in(&worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "ahead"]);
+    git_in(
+        &worktree,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "ahead",
+        ],
+    );
     let last = git_in(&worktree, &["rev-parse", "HEAD"]);
     let store = RunStore::new(&root.join("orq"));
     store
@@ -84,12 +116,19 @@ fn a_branch_whose_commits_cannot_be_inspected_once_its_worktree_is_gone_was_insp
         .unwrap();
 
     let mut guard = None;
-    let outcome = discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
-        guard = Some(git_that_cannot_inspect_commits(&root));
-    });
+    let outcome =
+        discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
+            guard = Some(git_that_cannot_inspect_commits(&root));
+        });
     drop(guard);
 
-    let deleted = outcome.expect("the discard finishes").deleted_branch.expect("the branch was deleted");
-    assert_eq!((deleted.commits_ahead, deleted.last_commit.as_str()), (Some(1), last.as_str()));
+    let deleted = outcome
+        .expect("the discard finishes")
+        .deleted_branch
+        .expect("the branch was deleted");
+    assert_eq!(
+        (deleted.commits_ahead, deleted.last_commit.as_str()),
+        (Some(1), last.as_str())
+    );
     assert!(!worktree.exists() && store.load("run-1").is_err());
 }

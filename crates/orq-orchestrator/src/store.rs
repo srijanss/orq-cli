@@ -53,7 +53,8 @@ mod delivery_text {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Delivery, D::Error> {
         let text = String::deserialize(deserializer)?;
-        Delivery::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("unknown delivery {text:?}")))
+        Delivery::parse(&text)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown delivery {text:?}")))
     }
 }
 
@@ -257,7 +258,14 @@ impl RunStore {
         members: &[String],
         max_active: Option<usize>,
     ) -> Result<(), StoreError> {
-        self.start_group_run_within(record, members, RunLimits { project: max_active, machine: None })
+        self.start_group_run_within(
+            record,
+            members,
+            RunLimits {
+                project: max_active,
+                machine: None,
+            },
+        )
     }
 
     /// [`RunStore::start_group_run`], refused when the machine already has `limits.machine` active
@@ -296,8 +304,10 @@ impl RunStore {
     /// active as [`RunStore::active_project_runs`] counts it.
     pub fn active_machine_runs(&self) -> Result<Vec<(String, String)>, StoreError> {
         let runs = self.runs_where(|_| true)?;
-        let projects: std::collections::HashMap<&str, &str> =
-            runs.iter().map(|(run_id, record, _)| (run_id.as_str(), record.project_id.as_str())).collect();
+        let projects: std::collections::HashMap<&str, &str> = runs
+            .iter()
+            .map(|(run_id, record, _)| (run_id.as_str(), record.project_id.as_str()))
+            .collect();
         Ok(crate::resume::active_runs(&runs)
             .into_iter()
             .map(|(run_id, _)| (projects[run_id.as_str()].to_string(), run_id))
@@ -305,7 +315,10 @@ impl RunStore {
     }
 
     /// Every recorded run whose record `keep` accepts, with its events, in run id order.
-    fn runs_where(&self, keep: impl Fn(&RunRecord) -> bool) -> Result<Vec<(String, RunRecord, Vec<Event>)>, StoreError> {
+    fn runs_where(
+        &self,
+        keep: impl Fn(&RunRecord) -> bool,
+    ) -> Result<Vec<(String, RunRecord, Vec<Event>)>, StoreError> {
         let mut runs = Vec::new();
         for run_id in self.run_ids()? {
             let record = match self.load(&run_id) {
@@ -328,7 +341,11 @@ impl RunStore {
     fn machine_guard(&self) -> Result<fs::File, StoreError> {
         let dir = self.root.join("guards");
         fs::create_dir_all(&dir)?;
-        let file = fs::OpenOptions::new().create(true).write(true).truncate(false).open(dir.join(".machine"))?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join(".machine"))?;
         file.lock()?;
         Ok(file)
     }
@@ -336,7 +353,10 @@ impl RunStore {
     /// The project's active runs, as (run id, feature id) in run id order: running, pausing or
     /// paused, and not continued by a later run (see [`crate::active_runs`]). A run recorded with
     /// no events yet has just started.
-    pub fn active_project_runs(&self, project_id: &str) -> Result<Vec<(String, String)>, StoreError> {
+    pub fn active_project_runs(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
         let runs = self.runs_where(|record| record.project_id == project_id)?;
         Ok(crate::resume::active_runs(&runs))
     }
@@ -367,10 +387,17 @@ impl RunStore {
 
     /// Make sure `run_id` holds the lock of `feature_id`: take it if it is free. Another run's
     /// lock is left alone.
-    pub fn claim_lock(&self, project_id: &str, feature_id: &str, run_id: &str) -> Result<Claim, StoreError> {
+    pub fn claim_lock(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+        run_id: &str,
+    ) -> Result<Claim, StoreError> {
         match self.take_lock(project_id, feature_id, run_id) {
             Ok(()) => Ok(Claim::Taken),
-            Err(StoreError::FeatureBusy { active_run_id }) if active_run_id == run_id => Ok(Claim::AlreadyHeld),
+            Err(StoreError::FeatureBusy { active_run_id }) if active_run_id == run_id => {
+                Ok(Claim::AlreadyHeld)
+            }
             Err(StoreError::FeatureBusy { .. }) => Ok(Claim::HeldByAnother),
             Err(err) => Err(err),
         }
@@ -483,7 +510,11 @@ impl RunStore {
     }
 
     /// Open `guards/<project_id>/<name>` and take an exclusive advisory lock on it.
-    fn locked_guard(&self, project_id: &str, name: &std::ffi::OsStr) -> Result<fs::File, StoreError> {
+    fn locked_guard(
+        &self,
+        project_id: &str,
+        name: &std::ffi::OsStr,
+    ) -> Result<fs::File, StoreError> {
         let dir = self.root.join("guards").join(project_id);
         fs::create_dir_all(&dir)?;
         let file = fs::OpenOptions::new()

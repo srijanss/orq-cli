@@ -149,10 +149,8 @@ fn python_steps(
     // so it only counts when neither has any.
     let root_config = pytest_in_pyproject || pytest_config_in(dir);
     let in_src = !root_config && django && pytest_settings_in(&dir.join("src"));
-    let pytest_configured = root_config
-        || in_src
-        || dir.join("tests").is_dir()
-        || dir.join("conftest.py").is_file();
+    let pytest_configured =
+        root_config || in_src || dir.join("tests").is_dir() || dir.join("conftest.py").is_file();
     let changed = options.changed;
     if options.lint {
         let mut ruff = argv(&["uv", "run", "ruff", "check"]);
@@ -416,7 +414,14 @@ fn rust_steps(
         // Asked once per detection, so one gate run never mixes the two.
         if options.nextest.unwrap_or_else(|| nextest_available(dir)) {
             // nextest fails a run that finds no test; the plain runner passes it, and so does the gate.
-            steps.push(argv(&["cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass"]));
+            steps.push(argv(&[
+                "cargo",
+                "nextest",
+                "run",
+                "--workspace",
+                "--no-fail-fast",
+                "--no-tests=pass",
+            ]));
             // nextest runs no doc tests: cargo test runs them, when Cargo would doc-test a target.
             if may_have_doc_tests(dir) {
                 steps.push(argv(&["cargo", "test", "--workspace", "--doc"]));
@@ -454,13 +459,24 @@ const NEXTEST_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(
 
 /// Whether `cargo nextest --version` succeeds in `dir`, with the environment a gate step gets.
 fn nextest_available(dir: &Path) -> bool {
-    run_bounded("cargo".as_ref(), &["nextest", "--version"], dir, NEXTEST_PROBE_LIMIT).is_some()
+    run_bounded(
+        "cargo".as_ref(),
+        &["nextest", "--version"],
+        dir,
+        NEXTEST_PROBE_LIMIT,
+    )
+    .is_some()
 }
 
 /// What `program args` prints in `dir`, when it starts and exits 0 within `limit`; `None` otherwise.
 /// It gets only the environment a gate step gets, and runs in its own process group: at the limit the
 /// whole group is killed, including a descendant still holding the output open after the tool exits.
-fn run_bounded(program: &std::ffi::OsStr, args: &[&str], dir: &Path, limit: std::time::Duration) -> Option<Vec<u8>> {
+fn run_bounded(
+    program: &std::ffi::OsStr,
+    args: &[&str],
+    dir: &Path,
+    limit: std::time::Duration,
+) -> Option<Vec<u8>> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -501,7 +517,9 @@ fn run_bounded(program: &std::ffi::OsStr, args: &[&str], dir: &Path, limit: std:
     let exited = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.success(),
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
             _ => {
                 kill_group();
                 let _ = child.kill();
@@ -529,7 +547,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn scratch(tag: &str) -> PathBuf {
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-gate-probe-{}-{tag}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-gate-probe-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -555,10 +574,19 @@ mod tests {
     fn gone(pid: &str) -> bool {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid]).output().expect("ps runs");
-            let (state, problem) = (String::from_utf8_lossy(&ps.stdout), String::from_utf8_lossy(&ps.stderr));
+            let ps = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid])
+                .output()
+                .expect("ps runs");
+            let (state, problem) = (
+                String::from_utf8_lossy(&ps.stdout),
+                String::from_utf8_lossy(&ps.stderr),
+            );
             // No row and no complaint: no such process. A row's state starts with Z for a zombie.
-            assert!(problem.trim().is_empty(), "could not look up process {pid}: {problem}");
+            assert!(
+                problem.trim().is_empty(),
+                "could not look up process {pid}: {problem}"
+            );
             let ended = state.trim().is_empty() || state.trim_start().starts_with('Z');
             if ended || Instant::now() >= deadline {
                 return ended;
@@ -570,7 +598,13 @@ mod tests {
     #[test]
     fn a_tool_that_succeeds_gives_its_output_from_the_folder_it_ran_in() {
         let dir = scratch("ok");
-        let out = run_script(&dir, "pwd; echo \"$1 $2\"", &["nextest", "--version"], LIMIT).expect("it succeeded");
+        let out = run_script(
+            &dir,
+            "pwd; echo \"$1 $2\"",
+            &["nextest", "--version"],
+            LIMIT,
+        )
+        .expect("it succeeded");
         let text = String::from_utf8(out).unwrap();
         let here = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(text, format!("{}\nnextest --version\n", here.display()));
@@ -579,9 +613,17 @@ mod tests {
     #[test]
     fn a_tool_that_exits_non_zero_or_cannot_start_gives_nothing() {
         let dir = scratch("fail");
-        assert_eq!(run_script(&dir, "echo partial; exit 101", &[], LIMIT), None, "non-zero exit");
+        assert_eq!(
+            run_script(&dir, "echo partial; exit 101", &[], LIMIT),
+            None,
+            "non-zero exit"
+        );
         let missing = dir.join("no-such-tool");
-        assert_eq!(run_bounded(missing.as_os_str(), &[], &dir, LIMIT), None, "missing program");
+        assert_eq!(
+            run_bounded(missing.as_os_str(), &[], &dir, LIMIT),
+            None,
+            "missing program"
+        );
     }
 
     #[test]
@@ -591,7 +633,11 @@ mod tests {
         let started = Instant::now();
         let body = format!("echo $$ > {}; exec sleep 30", pid_file.display());
         assert_eq!(run_script(&dir, &body, &[], Duration::from_secs(2)), None);
-        assert!(started.elapsed() < Duration::from_secs(10), "returned at the limit: {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned at the limit: {:?}",
+            started.elapsed()
+        );
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         assert!(gone(pid.trim()), "the hung tool {pid} was killed");
     }
@@ -601,9 +647,20 @@ mod tests {
         let dir = scratch("stray");
         let pid_file = dir.join("pid");
         let started = Instant::now();
-        let body = format!("sleep 30 & echo $! > {}; echo done; exit 0", pid_file.display());
-        assert_eq!(run_script(&dir, &body, &[], Duration::from_secs(2)), None, "its output never ended");
-        assert!(started.elapsed() < Duration::from_secs(10), "returned at the limit: {:?}", started.elapsed());
+        let body = format!(
+            "sleep 30 & echo $! > {}; echo done; exit 0",
+            pid_file.display()
+        );
+        assert_eq!(
+            run_script(&dir, &body, &[], Duration::from_secs(2)),
+            None,
+            "its output never ended"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned at the limit: {:?}",
+            started.elapsed()
+        );
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         assert!(gone(pid.trim()), "the descendant {pid} was killed");
     }
@@ -614,8 +671,14 @@ mod tests {
         // Left unreaped, it stays a zombie that kill -0 still finds.
         assert!(gone(&child.id().to_string()), "a zombie is not running");
         let _ = child.wait();
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        assert!(!gone(&child.id().to_string()), "a sleeping process is running");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert!(
+            !gone(&child.id().to_string()),
+            "a sleeping process is running"
+        );
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -629,7 +692,8 @@ mod tests {
     #[test]
     fn a_tool_with_more_output_than_a_pipe_holds_still_finishes() {
         let dir = scratch("big");
-        let out = run_script(&dir, "head -c 300000 /dev/zero | tr '\\0' x", &[], LIMIT).expect("it finished");
+        let out = run_script(&dir, "head -c 300000 /dev/zero | tr '\\0' x", &[], LIMIT)
+            .expect("it finished");
         assert_eq!(out.len(), 300_000);
     }
 }

@@ -184,11 +184,18 @@ fn merge_settings(
 }
 
 /// When a session needs its person, and when a question has been answered and no longer does.
-const NEEDS_INPUT_EVENTS: [(&str, Option<&str>); 3] =
-    [("PreToolUse", Some("AskUserQuestion")), ("Notification", Some("permission_prompt")), ("PostToolUse", Some("AskUserQuestion"))];
+const NEEDS_INPUT_EVENTS: [(&str, Option<&str>); 3] = [
+    ("PreToolUse", Some("AskUserQuestion")),
+    ("Notification", Some("permission_prompt")),
+    ("PostToolUse", Some("AskUserQuestion")),
+];
 /// For a session that leaves a marker when it is finished: when it has ended its turn or sits idle
 /// without one, so waits for its person, and when that person types into it.
-const WAITING_EVENTS: [(&str, Option<&str>); 3] = [("Stop", None), ("Notification", Some("idle_prompt")), ("UserPromptSubmit", None)];
+const WAITING_EVENTS: [(&str, Option<&str>); 3] = [
+    ("Stop", None),
+    ("Notification", Some("idle_prompt")),
+    ("UserPromptSubmit", None),
+];
 
 /// Tells the worktree's Claude session to run `command` when it asks its person a question or waits
 /// for a permission, and nothing else about the settings changes. A command that names the session's
@@ -200,13 +207,19 @@ pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
     let waits = needs_input_marker(command).is_some_and(|marker| !marker.is_empty());
     let edited = edit_settings(worktree, |root| {
         let hooks = root.entry("hooks").or_insert_with(|| serde_json::json!({}));
-        let hooks = hooks.as_object_mut().ok_or("its hooks is not a JSON object")?;
+        let hooks = hooks
+            .as_object_mut()
+            .ok_or("its hooks is not a JSON object")?;
         // Every earlier copy goes before any is added: one event can hold more than one of ours.
         remove_own_hooks_from(hooks)?;
-        let wanted = NEEDS_INPUT_EVENTS.iter().chain(WAITING_EVENTS.iter().filter(|_| waits));
+        let wanted = NEEDS_INPUT_EVENTS
+            .iter()
+            .chain(WAITING_EVENTS.iter().filter(|_| waits));
         for (event, matcher) in wanted {
             let entries = hooks.entry(*event).or_insert_with(|| serde_json::json!([]));
-            let entries = entries.as_array_mut().ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
+            let entries = entries
+                .as_array_mut()
+                .ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
             let mut entry = serde_json::json!({
                 "hooks": [{"type": "command", "command": command, "timeout": NEEDS_INPUT_TIMEOUT_SECS}],
             });
@@ -224,10 +237,14 @@ pub fn write_needs_input_hook(worktree: &Path, command: &str) -> Vec<String> {
 }
 
 /// Takes every copy of the hook out of the settings' `hooks`, whichever events hold one.
-fn remove_own_hooks_from(hooks: &mut serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+fn remove_own_hooks_from(
+    hooks: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     for (event, _) in NEEDS_INPUT_EVENTS.iter().chain(WAITING_EVENTS.iter()) {
         if let Some(entries) = hooks.get_mut(*event) {
-            let entries = entries.as_array_mut().ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
+            let entries = entries
+                .as_array_mut()
+                .ok_or_else(|| format!("its hooks.{event} is not a JSON array"))?;
             remove_own_hooks(entries);
         }
     }
@@ -241,7 +258,12 @@ pub fn remove_needs_input_hook(worktree: &Path) -> Vec<String> {
         return Vec::new();
     }
     let edited = edit_settings(worktree, |root| {
-        let Some(hooks) = root.get_mut("hooks").and_then(|hooks| hooks.as_object_mut()) else { return Ok(()) };
+        let Some(hooks) = root
+            .get_mut("hooks")
+            .and_then(|hooks| hooks.as_object_mut())
+        else {
+            return Ok(());
+        };
         remove_own_hooks_from(hooks)
     });
     match edited {
@@ -254,14 +276,42 @@ pub fn remove_needs_input_hook(worktree: &Path) -> Vec<String> {
 /// the local git commands, building and testing, and the MCP tools the implement-and-review skill
 /// works through.
 const ALLOWED: &[&str] = &[
-    "Read", "Glob", "Grep", "Skill", "ToolSearch", "TodoWrite",
-    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git add:*)",
-    "Bash(git commit:*)", "Bash(git rev-parse:*)", "Bash(git branch:*)", "Bash(git stash:*)",
-    "Bash(git restore:*)", "Bash(git rm:*)", "Bash(git mv:*)", "Bash(git ls-files:*)", "Bash(git grep:*)",
-    "Bash(git merge-base:*)", "Bash(cargo build:*)", "Bash(cargo test:*)", "Bash(cargo check:*)",
-    "Bash(cargo fmt:*)", "Bash(cargo clippy:*)", "Bash(cargo run:*)", "Bash(cargo metadata:*)",
-    "Bash(cargo tree:*)", "Bash(npm ci)", "Bash(ls:*)", "Bash(cat:*)",
-    "Bash(head:*)", "Bash(wc:*)", "mcp__outside-in-tdd", "mcp__project-mcp",
+    "Read",
+    "Glob",
+    "Grep",
+    "Skill",
+    "ToolSearch",
+    "TodoWrite",
+    "Bash(git status:*)",
+    "Bash(git diff:*)",
+    "Bash(git log:*)",
+    "Bash(git show:*)",
+    "Bash(git add:*)",
+    "Bash(git commit:*)",
+    "Bash(git rev-parse:*)",
+    "Bash(git branch:*)",
+    "Bash(git stash:*)",
+    "Bash(git restore:*)",
+    "Bash(git rm:*)",
+    "Bash(git mv:*)",
+    "Bash(git ls-files:*)",
+    "Bash(git grep:*)",
+    "Bash(git merge-base:*)",
+    "Bash(cargo build:*)",
+    "Bash(cargo test:*)",
+    "Bash(cargo check:*)",
+    "Bash(cargo fmt:*)",
+    "Bash(cargo clippy:*)",
+    "Bash(cargo run:*)",
+    "Bash(cargo metadata:*)",
+    "Bash(cargo tree:*)",
+    "Bash(npm ci)",
+    "Bash(ls:*)",
+    "Bash(cat:*)",
+    "Bash(head:*)",
+    "Bash(wc:*)",
+    "mcp__outside-in-tdd",
+    "mcp__project-mcp",
 ];
 /// Rules an earlier orq wrote and no longer does, taken out of the settings it rewrites. They allow
 /// no more than what replaced them, so settings that still hold one never stop a session.
@@ -271,12 +321,35 @@ const RETIRED: [&str; 1] = ["Edit(./**)"];
 /// base holds checked in and the run has not changed.
 const ALLOWED_SCRIPTS: [(&str, &str); 1] = [("Bash(node build.mjs)", "build.mjs")];
 /// Publishing to a remote is orq's own step, never the session's, whatever else is allowed.
-const DENIED: [&str; 3] = ["Bash(git push:*)", "Bash(cargo publish:*)", "Bash(npm publish:*)"];
+const DENIED: [&str; 3] = [
+    "Bash(git push:*)",
+    "Bash(cargo publish:*)",
+    "Bash(npm publish:*)",
+];
 
 /// Shells, wrappers and interpreters run any command or code they are given, publishing included.
 const RUNS_ANYTHING: [&str; 21] = [
-    "sh", "bash", "zsh", "dash", "fish", "env", "xargs", "eval", "exec", "sudo", "nohup", "command", "python", "node", "perl",
-    "ruby", "php", "deno", "bun", "lua", "osascript",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "env",
+    "xargs",
+    "eval",
+    "exec",
+    "sudo",
+    "nohup",
+    "command",
+    "python",
+    "node",
+    "perl",
+    "ruby",
+    "php",
+    "deno",
+    "bun",
+    "lua",
+    "osascript",
 ];
 
 /// Programs with a subcommand that publishes: a rule for one of them must name a subcommand.
@@ -299,11 +372,17 @@ fn publishes(rule: &str) -> bool {
     if rule == "Bash" {
         return true;
     }
-    let Some(command) = rule.strip_prefix("Bash(").and_then(|rest| rest.strip_suffix(')')) else {
+    let Some(command) = rule
+        .strip_prefix("Bash(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
         return false;
     };
     let command = command.trim_end();
-    let command = command.strip_suffix(":*").or_else(|| command.strip_suffix('*')).unwrap_or(command);
+    let command = command
+        .strip_suffix(":*")
+        .or_else(|| command.strip_suffix('*'))
+        .unwrap_or(command);
     let mut words = command.split_whitespace();
     let Some(program) = words.next() else {
         return true;
@@ -343,8 +422,12 @@ fn interpreter_script(rule: &str) -> Option<Option<&str>> {
         [interpreter, script] if *interpreter == program && !program.contains('/') => *script,
         _ => return Some(None),
     };
-    let plain = script.chars().all(|c| c.is_ascii_alphanumeric() || "._-+/".contains(c));
-    let segments_plain = script.split('/').all(|segment| !matches!(segment, "" | "." | ".."));
+    let plain = script
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._-+/".contains(c));
+    let segments_plain = script
+        .split('/')
+        .all(|segment| !matches!(segment, "" | "." | ".."));
     Some((plain && segments_plain && !script.starts_with('-')).then_some(script))
 }
 
@@ -385,23 +468,62 @@ impl Inventory {
             return None;
         }
         let git = |args: &[&str]| -> Option<String> {
-            let output = Command::new("git").arg("-C").arg(worktree).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(worktree)
+                .args(args)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
             // A path that is not UTF-8 could read as another one: git's listing must be exact.
-            output.status.success().then(|| String::from_utf8(output.stdout).ok()).flatten()
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8(output.stdout).ok())
+                .flatten()
         };
         let file_name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
         let names: Vec<String> = scripts.iter().map(|script| file_name(script)).collect();
         let named = |path: &str| names.contains(&file_name(path));
-        let entry = |line: &str| line.split_once('\t').map(|(meta, path)| (meta.to_string(), path.to_string()));
+        let entry = |line: &str| {
+            line.split_once('\t')
+                .map(|(meta, path)| (meta.to_string(), path.to_string()))
+        };
         // ls-tree takes no glob: the base's files are listed and picked by name here.
         let tree = git(&["ls-tree", "-r", "-z", base])?;
         let staged = git(&["ls-files", "-s", "-z"])?;
         let changed = git(&["diff", "--name-only", "-z", base])?;
-        let held = tree.split('\0').filter_map(entry).filter(|(_, path)| named(path)).map(|(meta, path)| (path, meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "))).collect();
+        let held = tree
+            .split('\0')
+            .filter_map(entry)
+            .filter(|(_, path)| named(path))
+            .map(|(meta, path)| {
+                (
+                    path,
+                    meta.starts_with("100644 blob ") || meta.starts_with("100755 blob "),
+                )
+            })
+            .collect();
         // A submodule at the base or in the index.
-        let mut nested: Vec<String> = tree.split('\0').chain(staged.split('\0')).filter(|line| line.starts_with("160000 ")).filter_map(entry).map(|(_, path)| path).collect();
-        let mut differing: Vec<String> = changed.split('\0').filter(|path| !path.is_empty() && named(path)).map(str::to_string).collect();
-        let indexed: HashSet<&str> = staged.split('\0').filter_map(|line| line.split_once('\t')).map(|(_, path)| path).filter(|path| named(path)).collect();
+        let mut nested: Vec<String> = tree
+            .split('\0')
+            .chain(staged.split('\0'))
+            .filter(|line| line.starts_with("160000 "))
+            .filter_map(entry)
+            .map(|(_, path)| path)
+            .collect();
+        let mut differing: Vec<String> = changed
+            .split('\0')
+            .filter(|path| !path.is_empty() && named(path))
+            .map(str::to_string)
+            .collect();
+        let indexed: HashSet<&str> = staged
+            .split('\0')
+            .filter_map(|line| line.split_once('\t'))
+            .map(|(_, path)| path)
+            .filter(|path| named(path))
+            .collect();
         let mut linked = Vec::new();
         let mut untracked = Vec::new();
         // Every file in the worktree, tracked, untracked or ignored, read folder by folder: each entry
@@ -417,7 +539,11 @@ impl Inventory {
                 let name = entry.file_name();
                 // A name that is not UTF-8 could be taken for a checked-in one: nothing is told then.
                 let text = name.to_str()?;
-                let path = if relative.is_empty() { text.to_string() } else { format!("{relative}/{text}") };
+                let path = if relative.is_empty() {
+                    text.to_string()
+                } else {
+                    format!("{relative}/{text}")
+                };
                 if name == ".git" {
                     repository = !relative.is_empty();
                     continue;
@@ -425,7 +551,9 @@ impl Inventory {
                 let kind = entry.file_type().ok()?;
                 if kind.is_dir() {
                     inner.push((entry.path(), path));
-                } else if kind.is_symlink() && std::fs::metadata(entry.path()).is_ok_and(|target| target.is_dir()) {
+                } else if kind.is_symlink()
+                    && std::fs::metadata(entry.path()).is_ok_and(|target| target.is_dir())
+                {
                     linked.push(path);
                 } else if named(&path) && !indexed.contains(&path.as_str()) {
                     files.push(path);
@@ -451,12 +579,18 @@ impl Inventory {
             (true, false) => Some(NamedScripts::Linked(linked)),
             (true, true) => None,
         };
-        Some(Self { held, hidden, differing })
+        Some(Self {
+            held,
+            hidden,
+            differing,
+        })
     }
 
     /// Whether `script` is a regular file of the base.
     fn tracked(&self, script: &str) -> bool {
-        self.held.iter().any(|(path, regular)| path == script && *regular)
+        self.held
+            .iter()
+            .any(|(path, regular)| path == script && *regular)
     }
 
     /// What the worktree holds of the files `script` names below any folder.
@@ -475,7 +609,11 @@ impl Inventory {
 }
 
 fn linked_what(links: &[String]) -> &'static str {
-    if links.len() == 1 { "is a link to a folder" } else { "are links to folders" }
+    if links.len() == 1 {
+        "is a link to a folder"
+    } else {
+        "are links to folders"
+    }
 }
 
 /// Lets the worktree's session work with nobody to answer a prompt: its edits are accepted, the
@@ -487,7 +625,12 @@ fn linked_what(links: &[String]) -> &'static str {
 /// of its own nor link to a folder in the worktree to hide such a file; a rule left out is
 /// also taken out of an allow list an earlier call wrote. Other
 /// keys and earlier entries are kept, and nothing is listed twice. Returns notes, never fails the run.
-pub fn write_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Vec<String> {
+pub fn write_run_permissions(
+    worktree: &Path,
+    extra: &[String],
+    logs: &Path,
+    base: &str,
+) -> Vec<String> {
     let (mut notes, unrevoked, _) = apply_run_permissions(worktree, extra, logs, base);
     notes.extend(unrevoked);
     notes
@@ -506,7 +649,12 @@ pub struct RunPermissions {
 
 /// What [`write_run_permissions`] does: its notes, why a rule left out is still allowed by
 /// settings that could not be updated, and the command rules the settings were given.
-fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> (Vec<String>, Option<String>, Vec<String>) {
+fn apply_run_permissions(
+    worktree: &Path,
+    extra: &[String],
+    logs: &Path,
+    base: &str,
+) -> (Vec<String>, Option<String>, Vec<String>) {
     let mut notes = Vec::new();
     let logs = logs.to_string_lossy();
     // A path rule beginning with `//` is absolute: the session writes its exit marker there.
@@ -518,26 +666,56 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     allowed.push(&marker_rule);
     // A rule left out now goes from the settings too: an earlier session may have been allowed it.
     let mut withdrawn: Vec<&str> = Vec::new();
-    let scripts: Vec<&str> = ALLOWED_SCRIPTS.iter().map(|(_, name)| *name).chain(extra.iter().filter_map(|rule| interpreter_script(rule).flatten())).collect();
+    let scripts: Vec<&str> = ALLOWED_SCRIPTS
+        .iter()
+        .map(|(_, name)| *name)
+        .chain(
+            extra
+                .iter()
+                .filter_map(|rule| interpreter_script(rule).flatten()),
+        )
+        .collect();
     let inventory = Inventory::read(worktree, base, &scripts);
-    let named_scripts = |script: &str| inventory.as_ref().map_or(NamedScripts::Absent, |inventory| inventory.named(script));
-    let tracked_at = |script: &str| inventory.as_ref().is_some_and(|inventory| inventory.tracked(script));
+    let named_scripts = |script: &str| {
+        inventory
+            .as_ref()
+            .map_or(NamedScripts::Absent, |inventory| inventory.named(script))
+    };
+    let tracked_at = |script: &str| {
+        inventory
+            .as_ref()
+            .is_some_and(|inventory| inventory.tracked(script))
+    };
     for (rule, name) in ALLOWED_SCRIPTS {
         match named_scripts(name) {
             // A project without the script has no use for the rule: it goes without a note.
             NamedScripts::Absent => withdrawn.push(rule),
             NamedScripts::Nested(repositories) => {
-                let what = if repositories.len() == 1 { "is a repository of its own" } else { "are repositories of their own" };
-                notes.push(format!("{} {what}, whose {name} orq cannot check, so the rule {rule} was left out", repositories.join(", ")));
+                let what = if repositories.len() == 1 {
+                    "is a repository of its own"
+                } else {
+                    "are repositories of their own"
+                };
+                notes.push(format!(
+                    "{} {what}, whose {name} orq cannot check, so the rule {rule} was left out",
+                    repositories.join(", ")
+                ));
                 withdrawn.push(rule);
             }
             NamedScripts::Linked(links) => {
-                notes.push(format!("{} {}, whose {name} orq cannot check, so the rule {rule} was left out", links.join(", "), linked_what(&links)));
+                notes.push(format!(
+                    "{} {}, whose {name} orq cannot check, so the rule {rule} was left out",
+                    links.join(", "),
+                    linked_what(&links)
+                ));
                 withdrawn.push(rule);
             }
             NamedScripts::Changed(changed) if changed.is_empty() => allowed.push(rule),
             NamedScripts::Changed(changed) => {
-                notes.push(format!("{} was changed by this run, so the rule {rule} was left out", changed.join(", ")));
+                notes.push(format!(
+                    "{} was changed by this run, so the rule {rule} was left out",
+                    changed.join(", ")
+                ));
                 withdrawn.push(rule);
             }
         }
@@ -547,8 +725,12 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
         if withdrawn.contains(&rule.as_str()) {
             continue;
         }
-        let not_script = || format!("allowed_tools rule {rule} runs an interpreter on something other than a checked-in script; it was left out");
-        let could_publish = || format!("allowed_tools rule {rule} could publish to a remote, which orq does itself; it was left out, name the subcommands the run needs instead");
+        let not_script = || {
+            format!("allowed_tools rule {rule} runs an interpreter on something other than a checked-in script; it was left out")
+        };
+        let could_publish = || {
+            format!("allowed_tools rule {rule} could publish to a remote, which orq does itself; it was left out, name the subcommands the run needs instead")
+        };
         let left_out = match interpreter_script(rule) {
             _ if names_publishing(rule) => Some(could_publish()),
             None => publishes(rule).then(could_publish),
@@ -578,14 +760,30 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
     allowed.retain(|rule| !withdrawn.contains(rule));
     let mut commands: Vec<String> = Vec::new();
     let edited = edit_settings(worktree, |root| {
-        let permissions = root.entry("permissions").or_insert_with(|| serde_json::json!({}));
-        let permissions = permissions.as_object_mut().ok_or("its permissions is not a JSON object")?;
+        let permissions = root
+            .entry("permissions")
+            .or_insert_with(|| serde_json::json!({}));
+        let permissions = permissions
+            .as_object_mut()
+            .ok_or("its permissions is not a JSON object")?;
         permissions.insert("defaultMode".to_string(), serde_json::json!("acceptEdits"));
-        for (key, rules) in [("allow", allowed.as_slice()), ("deny", DENIED.as_slice()), ("additionalDirectories", &[logs.as_ref()][..])] {
-            let list = permissions.entry(key).or_insert_with(|| serde_json::json!([]));
-            let list = list.as_array_mut().ok_or_else(|| format!("its permissions.{key} is not a JSON array"))?;
+        for (key, rules) in [
+            ("allow", allowed.as_slice()),
+            ("deny", DENIED.as_slice()),
+            ("additionalDirectories", &[logs.as_ref()][..]),
+        ] {
+            let list = permissions
+                .entry(key)
+                .or_insert_with(|| serde_json::json!([]));
+            let list = list
+                .as_array_mut()
+                .ok_or_else(|| format!("its permissions.{key} is not a JSON array"))?;
             if key == "allow" {
-                list.retain(|item| !item.as_str().is_some_and(|item| withdrawn.contains(&item) || RETIRED.contains(&item)));
+                list.retain(|item| {
+                    !item
+                        .as_str()
+                        .is_some_and(|item| withdrawn.contains(&item) || RETIRED.contains(&item))
+                });
             }
             for rule in rules {
                 if !list.iter().any(|item| item.as_str() == Some(rule)) {
@@ -594,11 +792,22 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
             }
         }
         // The rules the file now holds, those it already held too, but for any a deny rule refuses.
-        let rules = |key: &str| permissions.get(key).and_then(|list| list.as_array()).into_iter().flatten().filter_map(|item| item.as_str());
+        let rules = |key: &str| {
+            permissions
+                .get(key)
+                .and_then(|list| list.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item.as_str())
+        };
         let denied: Vec<&str> = rules("deny").collect();
         let mut seen = std::collections::HashSet::new();
         commands = rules("allow")
-            .filter(|rule| rule.starts_with("Bash(") && !denied.iter().any(|deny| deny_covers(deny, rule)) && seen.insert(*rule))
+            .filter(|rule| {
+                rule.starts_with("Bash(")
+                    && !denied.iter().any(|deny| deny_covers(deny, rule))
+                    && seen.insert(*rule)
+            })
             .map(str::to_string)
             .collect();
         Ok(())
@@ -607,14 +816,26 @@ fn apply_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &
         return (notes, refused, commands);
     };
     // Rules a file Claude Code still reads allows; one it cannot parse allows nothing.
-    let held = std::fs::read_to_string(worktree.join(SETTINGS)).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
-    let still: Vec<&str> = withdrawn.into_iter().filter(|rule| held.as_ref().and_then(|held| held["permissions"]["allow"].as_array()).is_some_and(|list| list.iter().any(|item| item.as_str() == Some(rule)))).collect();
+    let held = std::fs::read_to_string(worktree.join(SETTINGS))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let still: Vec<&str> = withdrawn
+        .into_iter()
+        .filter(|rule| {
+            held.as_ref()
+                .and_then(|held| held["permissions"]["allow"].as_array())
+                .is_some_and(|list| list.iter().any(|item| item.as_str() == Some(rule)))
+        })
+        .collect();
     if still.is_empty() {
         // Settings that were not written allow none of the rules: the session is told of none.
         notes.push(format!("{SETTINGS} was not updated: {why}"));
         return (notes, refused, Vec::new());
     }
-    let unrevoked = format!("{SETTINGS} was not updated ({why}) and still allows {}, which must be left out", still.join(", "));
+    let unrevoked = format!(
+        "{SETTINGS} was not updated ({why}) and still allows {}, which must be left out",
+        still.join(", ")
+    );
     let unrevoked = match refused {
         Some(refused) => format!("{refused}; {unrevoked}"),
         None => unrevoked,
@@ -631,10 +852,22 @@ const PATTERN_CHARACTERS: [char; 9] = ['*', '?', '[', ']', '{', '}', '(', ')', '
 /// Fails, saying why, for a path no rule names exactly: one a pattern or control character, or a
 /// byte UTF-8 does not allow, would make the rule allow more or less than the worktree.
 fn worktree_edit_rule(worktree: &Path) -> Result<String, String> {
-    let cannot = |why: String| format!("orq cannot allow editing the worktree {}: {why}, so no session was given it", worktree.display());
-    let canonical = worktree.canonicalize().map_err(|error| cannot(format!("its path cannot be resolved ({error})")))?;
-    let path = canonical.to_str().ok_or_else(|| cannot("its path is not UTF-8".to_string()))?;
-    if let Some(found) = path.chars().find(|c| PATTERN_CHARACTERS.contains(c) || c.is_control()) {
+    let cannot = |why: String| {
+        format!(
+            "orq cannot allow editing the worktree {}: {why}, so no session was given it",
+            worktree.display()
+        )
+    };
+    let canonical = worktree
+        .canonicalize()
+        .map_err(|error| cannot(format!("its path cannot be resolved ({error})")))?;
+    let path = canonical
+        .to_str()
+        .ok_or_else(|| cannot("its path is not UTF-8".to_string()))?;
+    if let Some(found) = path
+        .chars()
+        .find(|c| PATTERN_CHARACTERS.contains(c) || c.is_control())
+    {
         return Err(cannot(format!("its path holds {found:?}, which a permission rule does not read as itself; move the worktree to a path without it")));
     }
     Ok(format!("Edit(/{path}/**)"))
@@ -647,8 +880,14 @@ fn deny_covers(deny: &str, allow: &str) -> bool {
     if deny == "Bash" {
         return true;
     }
-    let inner = |rule: &str| rule.strip_prefix("Bash(")?.strip_suffix(')').map(str::to_string);
-    let (Some(denied), Some(allowed)) = (inner(deny), inner(allow)) else { return false };
+    let inner = |rule: &str| {
+        rule.strip_prefix("Bash(")?
+            .strip_suffix(')')
+            .map(str::to_string)
+    };
+    let (Some(denied), Some(allowed)) = (inner(deny), inner(allow)) else {
+        return false;
+    };
     let (words, more) = command_pattern(&allowed);
     // A character no configured command holds, so a sample matches only through a `*`.
     let filled = words.replace('*', "\u{1}");
@@ -656,7 +895,9 @@ fn deny_covers(deny: &str, allow: &str) -> bool {
     if more {
         samples.push(format!("{filled} \u{1}"));
     }
-    samples.iter().all(|command| pattern_matches(&denied, command))
+    samples
+        .iter()
+        .all(|command| pattern_matches(&denied, command))
 }
 
 /// A rule's command pattern and whether it lets more words follow: `prefix:*` and `prefix *` do.
@@ -675,7 +916,8 @@ fn pattern_matches(rule: &str, command: &str) -> bool {
 
 /// Whether `text` is `pattern` with each `*` in it standing for any text, none included.
 fn glob_matches(pattern: &str, text: &str) -> bool {
-    let (pattern, text): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (pattern, text): (Vec<char>, Vec<char>) =
+        (pattern.chars().collect(), text.chars().collect());
     let (mut p, mut t) = (0, 0);
     // The last `*` seen and the text position it was last tried to end at.
     let mut star: Option<(usize, usize)> = None;
@@ -700,10 +942,18 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
 /// Like [`write_run_permissions`], for a session that must not start with a rule it was allowed
 /// before and must lose now: fails, saying which, when the settings still allow such a rule. Also
 /// returns the command rules the session is allowed.
-pub fn refresh_run_permissions(worktree: &Path, extra: &[String], logs: &Path, base: &str) -> Result<RunPermissions, String> {
+pub fn refresh_run_permissions(
+    worktree: &Path,
+    extra: &[String],
+    logs: &Path,
+    base: &str,
+) -> Result<RunPermissions, String> {
     match apply_run_permissions(worktree, extra, logs, base) {
         (_, Some(unrevoked), _) => Err(unrevoked),
-        (notes, None, allowed_commands) => Ok(RunPermissions { notes, allowed_commands }),
+        (notes, None, allowed_commands) => Ok(RunPermissions {
+            notes,
+            allowed_commands,
+        }),
     }
 }
 
@@ -711,9 +961,19 @@ pub fn refresh_run_permissions(worktree: &Path, extra: &[String], logs: &Path, b
 /// entry goes only when one of ours was all it held.
 fn remove_own_hooks(entries: &mut Vec<serde_json::Value>) {
     entries.retain_mut(|entry| {
-        let Some(hooks) = entry.get_mut("hooks").and_then(|hooks| hooks.as_array_mut()) else { return true };
+        let Some(hooks) = entry
+            .get_mut("hooks")
+            .and_then(|hooks| hooks.as_array_mut())
+        else {
+            return true;
+        };
         let held = hooks.len();
-        hooks.retain(|hook| !hook.get("command").and_then(|c| c.as_str()).is_some_and(is_needs_input_command));
+        hooks.retain(|hook| {
+            !hook
+                .get("command")
+                .and_then(|c| c.as_str())
+                .is_some_and(is_needs_input_command)
+        });
         hooks.len() == held || !hooks.is_empty()
     });
 }
@@ -818,9 +1078,12 @@ pub fn prepare_mcp_servers(
     let mut notes = Vec::new();
     // A tracked link is in the worktree whatever carrying refused: reading it would let a file
     // from outside select servers, and setup, which rewrites the file, would write through it.
-    let linked = std::fs::symlink_metadata(worktree.join(MCPCTL_TOML)).is_ok_and(|meta| meta.file_type().is_symlink());
+    let linked = std::fs::symlink_metadata(worktree.join(MCPCTL_TOML))
+        .is_ok_and(|meta| meta.file_type().is_symlink());
     if linked {
-        notes.push(format!("{MCPCTL_TOML} is a symbolic link in the worktree; no MCP server was set up"));
+        notes.push(format!(
+            "{MCPCTL_TOML} is a symbolic link in the worktree; no MCP server was set up"
+        ));
     } else {
         let selected = match chosen {
             Some(names) => names.to_vec(),
@@ -845,9 +1108,12 @@ pub fn prepare_project_mcp(
     log: &Path,
 ) -> crate::McpSetupReport {
     let mut report = crate::McpSetupReport::default();
-    let linked = std::fs::symlink_metadata(worktree.join(MCPCTL_TOML)).is_ok_and(|meta| meta.file_type().is_symlink());
+    let linked = std::fs::symlink_metadata(worktree.join(MCPCTL_TOML))
+        .is_ok_and(|meta| meta.file_type().is_symlink());
     if linked {
-        report.notes.push(format!("{MCPCTL_TOML} is a symbolic link in the worktree; no MCP server was set up"));
+        report.notes.push(format!(
+            "{MCPCTL_TOML} is a symbolic link in the worktree; no MCP server was set up"
+        ));
     } else {
         let selected = match chosen {
             Some(names) => names.to_vec(),
@@ -867,7 +1133,9 @@ pub fn prepare_project_mcp(
             report.notes.extend(done.notes);
         }
     }
-    report.notes.extend(write_session_settings(worktree, env, chosen, mcpctl));
+    report
+        .notes
+        .extend(write_session_settings(worktree, env, chosen, mcpctl));
     report
 }
 
@@ -879,12 +1147,17 @@ fn selected_in_mcpctl_toml(worktree: &Path, notes: &mut Vec<String>) -> Vec<Stri
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(err) => {
-            notes.push(format!("{MCPCTL_TOML} could not be read ({:?}); no MCP server was set up", err.kind()));
+            notes.push(format!(
+                "{MCPCTL_TOML} could not be read ({:?}); no MCP server was set up",
+                err.kind()
+            ));
             return Vec::new();
         }
     };
     let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
-        notes.push(format!("{MCPCTL_TOML} is not valid TOML; no MCP server was set up"));
+        notes.push(format!(
+            "{MCPCTL_TOML} is not valid TOML; no MCP server was set up"
+        ));
         return Vec::new();
     };
     let tables = doc.get("mcp").and_then(|item| item.as_array_of_tables());
@@ -892,7 +1165,9 @@ fn selected_in_mcpctl_toml(worktree: &Path, notes: &mut Vec<String>) -> Vec<Stri
     let names = names.filter_map(|table| table.get("name")?.as_str());
     let (options, names): (Vec<&str>, Vec<&str>) = names.partition(|name| name.starts_with('-'));
     if !options.is_empty() {
-        notes.push(format!("{MCPCTL_TOML} names MCP servers that look like options; they were left out"));
+        notes.push(format!(
+            "{MCPCTL_TOML} names MCP servers that look like options; they were left out"
+        ));
     }
     names.into_iter().map(str::to_string).collect()
 }

@@ -73,7 +73,12 @@ pub fn carry_local_files(
 
 /// Copies the main checkout's TDD config into a worktree that has none, so MCP setup finds it and
 /// writes no template; a copy of its own that differs is named key by key, never with values.
-fn carry_tdd_config(main_checkout: &Path, worktree: &Path, tracked_unknown: bool, notes: &mut Vec<String>) {
+fn carry_tdd_config(
+    main_checkout: &Path,
+    worktree: &Path,
+    tracked_unknown: bool,
+    notes: &mut Vec<String>,
+) {
     let (source, target) = (main_checkout.join(TDD_CONFIG), worktree.join(TDD_CONFIG));
     if std::fs::symlink_metadata(&target).is_ok() {
         let keys = differing_keys(&source, &target);
@@ -94,7 +99,9 @@ fn carry_tdd_config(main_checkout: &Path, worktree: &Path, tracked_unknown: bool
         return;
     }
     if let Err(why) = exclude_locally(worktree, TDD_CONFIG) {
-        notes.push(format!("{TDD_CONFIG} is not carried into the worktree: {why}"));
+        notes.push(format!(
+            "{TDD_CONFIG} is not carried into the worktree: {why}"
+        ));
         return;
     }
     if let Err(err) = std::fs::copy(&source, &target) {
@@ -105,7 +112,9 @@ fn carry_tdd_config(main_checkout: &Path, worktree: &Path, tracked_unknown: bool
         return;
     }
     // Recorded as orq's here, where orq made it: a config the worktree had is never claimed.
-    notes.extend(crate::orq_written::record_orq_written_file(worktree, TDD_CONFIG));
+    notes.extend(crate::orq_written::record_orq_written_file(
+        worktree, TDD_CONFIG,
+    ));
 }
 
 /// The top-level keys whose values differ between two JSON objects, sorted; `None` when either

@@ -342,7 +342,9 @@ pub(crate) fn provider_dir(record: &RunRecord) -> std::path::PathBuf {
 fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
     let dir = worktree.parent()?;
     let dot_claude = dir.parent()?;
-    (dir.file_name()? == "worktrees" && dot_claude.file_name()? == ".claude").then(|| dot_claude.parent().map(Path::to_path_buf)).flatten()
+    (dir.file_name()? == "worktrees" && dot_claude.file_name()? == ".claude")
+        .then(|| dot_claude.parent().map(Path::to_path_buf))
+        .flatten()
 }
 
 fn check_pin(record: &RunRecord, current: &str) -> Result<(), StoreError> {

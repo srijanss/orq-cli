@@ -22,7 +22,10 @@ impl Drop for RestorePath {
 /// From now until the guard drops, every `git status` adds a line to `log`; git itself runs as usual.
 fn git_that_counts_status(bin: &Path, log: &Path) -> RestorePath {
     let path = std::env::var_os("PATH").unwrap();
-    let real = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file()).expect("a git on PATH");
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|git| git.is_file())
+        .expect("a git on PATH");
     fs::create_dir_all(bin).unwrap();
     let wrapper = bin.join("git");
     fs::write(
@@ -34,7 +37,11 @@ fn git_that_counts_status(bin: &Path, log: &Path) -> RestorePath {
         ),
     )
     .unwrap();
-    fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fs::set_permissions(
+        &wrapper,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     let mut dirs = vec![bin.to_path_buf()];
     dirs.extend(std::env::split_paths(&path));
     std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
@@ -57,14 +64,17 @@ fn event(kind: &str) -> Event {
 }
 
 fn status_calls(log: &Path) -> usize {
-    fs::read_to_string(log).map(|text| text.lines().count()).unwrap_or(0)
+    fs::read_to_string(log)
+        .map(|text| text.lines().count())
+        .unwrap_or(0)
 }
 
 #[test]
 fn a_discard_and_its_preview_each_read_the_worktree_status_once() {
     let repo = GitFixture::new();
     let worktree = repo.add_linked_worktree("orq-run-1");
-    let root: PathBuf = orq_test_support::process_temp_dir().join(format!("orq-discard-scans-{}", std::process::id()));
+    let root: PathBuf = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-scans-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let store = RunStore::new(&root.join("state"));
     store

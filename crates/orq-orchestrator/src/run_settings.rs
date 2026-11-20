@@ -328,11 +328,19 @@ fn script_gate_line(line: &str) -> Option<&str> {
         .strip_prefix("export")
         .filter(|rest| rest.starts_with(char::is_whitespace))
         .map_or(line, str::trim_start);
-    let value = line.strip_prefix("GATE_CMD")?.trim_start().strip_prefix('=')?.trim_start();
+    let value = line
+        .strip_prefix("GATE_CMD")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start();
     let quoted = value.len() >= 2
         && ((value.starts_with('"') && value.ends_with('"'))
             || (value.starts_with('\'') && value.ends_with('\'')));
-    Some(if quoted { &value[1..value.len() - 1] } else { value })
+    Some(if quoted {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    })
 }
 
 fn invalid(source: &str, reason: impl Into<String>) -> SettingsError {
@@ -432,7 +440,9 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
                         .to_string(),
                 )
             }
-            "allowed_tools" => layer.allowed_tools = Some(tool_rules(&json_of(value)).map_err(|r| bad(&r))?),
+            "allowed_tools" => {
+                layer.allowed_tools = Some(tool_rules(&json_of(value)).map_err(|r| bad(&r))?)
+            }
             "compact_window" => {
                 layer.compact_window = Some(
                     window(
@@ -504,15 +514,23 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
 }
 
 /// The `[rebase]` table: `generated`, a list of paths, and `rebuild`, a command.
-fn read_rebase_table(item: &toml_edit::Item, label: &str, layer: &mut Layer) -> Result<(), SettingsError> {
+fn read_rebase_table(
+    item: &toml_edit::Item,
+    label: &str,
+    layer: &mut Layer,
+) -> Result<(), SettingsError> {
     let table = item
         .as_table_like()
         .ok_or_else(|| invalid(label, "rebase must be a table".to_string()))?;
     for (key, item) in table.iter() {
         let bad = |reason: &str| invalid(label, format!("rebase.{key} {reason}"));
-        let value = item.as_value().ok_or_else(|| bad("must be a plain value"))?;
+        let value = item
+            .as_value()
+            .ok_or_else(|| bad("must be a plain value"))?;
         match key {
-            "generated" => layer.rebase_generated = Some(paths(&json_of(value)).map_err(|r| bad(&r))?),
+            "generated" => {
+                layer.rebase_generated = Some(paths(&json_of(value)).map_err(|r| bad(&r))?)
+            }
             "rebuild" => layer.rebase_rebuild = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             _ => return Err(bad("is not a setting")),
         }
@@ -528,7 +546,9 @@ fn paths(value: &serde_json::Value) -> Result<Vec<String>, String> {
         .iter()
         .map(|path| match path.as_str() {
             Some(path) if path.trim().is_empty() => Err("must not hold an empty path".to_string()),
-            Some(path) if path.chars().any(char::is_control) => Err("must hold one-line paths".to_string()),
+            Some(path) if path.chars().any(char::is_control) => {
+                Err("must hold one-line paths".to_string())
+            }
             Some(path) => Ok(path.to_string()),
             None => Err("must hold only strings".to_string()),
         })
@@ -597,8 +617,10 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
         layer.db_name_template = Some(v.trim().to_string());
     }
     if let Some(v) = get("ORQ_ALLOWED_TOOLS") {
-        layer.allowed_tools =
-            Some(tool_rules(&json("ORQ_ALLOWED_TOOLS", &v)?).map_err(|r| invalid("ORQ_ALLOWED_TOOLS", r))?);
+        layer.allowed_tools = Some(
+            tool_rules(&json("ORQ_ALLOWED_TOOLS", &v)?)
+                .map_err(|r| invalid("ORQ_ALLOWED_TOOLS", r))?,
+        );
     }
     if let Some(v) = get("ORQ_COMPACT_WINDOW") {
         let tokens: i64 = v
@@ -651,7 +673,12 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
         layer.full_suite_in_session = Some(match v.trim() {
             "1" | "true" => true,
             "0" | "false" => false,
-            _ => return Err(invalid("ORQ_FULL_SUITE_IN_SESSION", "must be 1, 0, true or false")),
+            _ => {
+                return Err(invalid(
+                    "ORQ_FULL_SUITE_IN_SESSION",
+                    "must be 1, 0, true or false",
+                ))
+            }
         });
     }
     if let Some(v) = get("ORQ_KEEP_TEST_DB") {
@@ -802,7 +829,9 @@ fn tool_rules(value: &serde_json::Value) -> Result<Vec<String>, String> {
         .iter()
         .map(|rule| match rule.as_str() {
             Some(rule) if rule.trim().is_empty() => Err("must not hold an empty rule".to_string()),
-            Some(rule) if rule.chars().any(char::is_control) => Err("must hold one-line rules".to_string()),
+            Some(rule) if rule.chars().any(char::is_control) => {
+                Err("must hold one-line rules".to_string())
+            }
             Some(rule) => Ok(rule.to_string()),
             None => Err("must hold only strings".to_string()),
         })

@@ -8,11 +8,24 @@ pub(crate) const ADDED: &str = "fix.features_added";
 
 /// Record that the fix session `session` (its stage, or `carried` for those a resumed run took
 /// over) added `features` to the ledger.
-pub fn record_fix_features_added(store: &RunStore, record: &RunRecord, session: &str, features: &[String]) -> Result<(), StoreError> {
-    append_added(store, record, serde_json::json!({ "session": session, "features": features }))
+pub fn record_fix_features_added(
+    store: &RunStore,
+    record: &RunRecord,
+    session: &str,
+    features: &[String],
+) -> Result<(), StoreError> {
+    append_added(
+        store,
+        record,
+        serde_json::json!({ "session": session, "features": features }),
+    )
 }
 
-fn append_added(store: &RunStore, record: &RunRecord, payload: serde_json::Value) -> Result<(), StoreError> {
+fn append_added(
+    store: &RunStore,
+    record: &RunRecord,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),
@@ -31,7 +44,12 @@ fn append_added(store: &RunStore, record: &RunRecord, payload: serde_json::Value
 pub fn fix_features(store: &RunStore, run_id: &str) -> Result<Vec<String>, StoreError> {
     let mut features: Vec<String> = Vec::new();
     for event in store.events(run_id)?.iter().filter(|e| e.kind == ADDED) {
-        let added = event.payload.get("features").and_then(|f| f.as_array()).into_iter().flatten();
+        let added = event
+            .payload
+            .get("features")
+            .and_then(|f| f.as_array())
+            .into_iter()
+            .flatten();
         for name in added.filter_map(|n| n.as_str()) {
             if !features.iter().any(|f| f == name) {
                 features.push(name.to_string());
@@ -43,10 +61,18 @@ pub fn fix_features(store: &RunStore, run_id: &str) -> Result<Vec<String>, Store
 
 /// Carry the features `from_run_id`'s fix sessions added into the run that resumes it, so it closes
 /// them when it ends. Nothing is recorded when there are none.
-pub fn carry_fix_features(store: &RunStore, record: &RunRecord, from_run_id: &str) -> Result<(), StoreError> {
+pub fn carry_fix_features(
+    store: &RunStore,
+    record: &RunRecord,
+    from_run_id: &str,
+) -> Result<(), StoreError> {
     let features = fix_features(store, from_run_id)?;
     if features.is_empty() {
         return Ok(());
     }
-    append_added(store, record, serde_json::json!({ "session": "carried", "from": from_run_id, "features": features }))
+    append_added(
+        store,
+        record,
+        serde_json::json!({ "session": "carried", "from": from_run_id, "features": features }),
+    )
 }

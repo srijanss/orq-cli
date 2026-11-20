@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{accept_check, accept_run, summarize_run, Event, RunPhase, RunRecord, RunStore};
+use orq_orchestrator::{
+    accept_check, accept_run, summarize_run, Event, RunPhase, RunRecord, RunStore,
+};
 use orq_test_support::GitFixture;
 
 fn event(kind: &str, payload: serde_json::Value) -> Event {
@@ -22,8 +24,17 @@ fn event(kind: &str, payload: serde_json::Value) -> Event {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
@@ -33,16 +44,32 @@ fn failed_run(tag: &str, commits: usize) -> (GitFixture, PathBuf, RunStore) {
 }
 
 /// Like `failed_run`, but the record names `recorded(worktree)` as the run's worktree.
-fn failed_run_recorded_as(tag: &str, commits: usize, recorded: impl Fn(&Path) -> PathBuf) -> (GitFixture, PathBuf, RunStore) {
+fn failed_run_recorded_as(
+    tag: &str,
+    commits: usize,
+    recorded: impl Fn(&Path) -> PathBuf,
+) -> (GitFixture, PathBuf, RunStore) {
     let repo = GitFixture::new();
     let base = git(repo.root(), &["rev-parse", "HEAD"]);
     let worktree = repo.add_linked_worktree("orq-run-1");
     for n in 0..commits {
         std::fs::write(worktree.join(format!("work{n}.txt")), "work").unwrap();
         git(&worktree, &["add", "."]);
-        git(&worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work"]);
+        git(
+            &worktree,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "work",
+            ],
+        );
     }
-    let root = orq_test_support::process_temp_dir().join(format!("orq-accept-run-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-accept-run-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
     let record = RunRecord {
@@ -60,7 +87,12 @@ fn failed_run_recorded_as(tag: &str, commits: usize, recorded: impl Fn(&Path) ->
         profiles: BTreeMap::new(),
     };
     store.start_run(&record).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({ "reason": "the implement session reported a problem" }))).unwrap();
+    store
+        .append_event(&event(
+            "run.failed",
+            serde_json::json!({ "reason": "the implement session reported a problem" }),
+        ))
+        .unwrap();
     (repo, worktree, store)
 }
 
@@ -84,7 +116,10 @@ fn a_failed_run_with_committed_work_whose_tests_pass_becomes_review_ready() {
 #[test]
 fn tests_that_fail_leave_the_run_failed_and_say_why() {
     let (_repo, _worktree, store) = failed_run("tests-fail", 1);
-    let err = accept_run(&store, "run-1", &|_: &Path| Err("2 tests failed".to_string())).unwrap_err();
+    let err = accept_run(&store, "run-1", &|_: &Path| {
+        Err("2 tests failed".to_string())
+    })
+    .unwrap_err();
     assert!(err.contains("2 tests failed"), "{err}");
     assert_eq!(phase(&store), RunPhase::Failed);
 }
@@ -107,17 +142,25 @@ fn a_run_with_nothing_committed_or_uncommitted_changes_or_no_worktree_is_not_acc
     assert_eq!(phase(&store), RunPhase::Failed);
 
     let (_repo3, gone, store) = failed_run("gone", 1);
-    git(_repo3.root(), &["worktree", "remove", "--force", gone.to_str().unwrap()]);
+    git(
+        _repo3.root(),
+        &["worktree", "remove", "--force", gone.to_str().unwrap()],
+    );
     assert!(accept_run(&store, "run-1", &never).is_err());
     assert_eq!(phase(&store), RunPhase::Failed);
 
-    assert!(!*ran.borrow(), "the tests are not run for a run that cannot be accepted");
+    assert!(
+        !*ran.borrow(),
+        "the tests are not run for a run that cannot be accepted"
+    );
 }
 
 #[test]
 fn only_a_failed_run_can_be_accepted() {
     let (_repo, _worktree, store) = failed_run("blocked", 1);
-    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.blocked", serde_json::json!({})))
+        .unwrap();
     assert!(accept_run(&store, "run-1", &|_: &Path| Ok(())).is_err());
     assert_eq!(phase(&store), RunPhase::Blocked);
 }
@@ -146,11 +189,15 @@ fn a_directory_that_is_not_the_runs_own_worktree_is_not_accepted() {
     assert!(accept_run(&store2, "run-1", &never).is_err());
     assert_eq!(phase(&store2), RunPhase::Failed);
 
-    assert!(!*ran.borrow(), "the tests are not run in a directory that is not the run's worktree");
+    assert!(
+        !*ran.borrow(),
+        "the tests are not run in a directory that is not the run's worktree"
+    );
 }
 
 #[test]
-fn tests_that_switch_the_branch_or_detach_head_at_the_same_commit_do_not_make_the_run_review_ready() {
+fn tests_that_switch_the_branch_or_detach_head_at_the_same_commit_do_not_make_the_run_review_ready()
+{
     let (_repo, _worktree, store) = failed_run("switched", 1);
     let err = accept_run(&store, "run-1", &|dir: &Path| {
         git(dir, &["checkout", "-q", "-b", "someone-elses-branch"]);
@@ -185,7 +232,18 @@ fn tests_that_leave_the_worktree_changed_or_move_its_head_do_not_make_the_run_re
     let err = accept_run(&store, "run-1", &|dir: &Path| {
         std::fs::write(dir.join("more.txt"), "x").unwrap();
         git(dir, &["add", "."]);
-        git(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "moved"]);
+        git(
+            dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "moved",
+            ],
+        );
         Ok(())
     })
     .unwrap_err();
@@ -201,10 +259,19 @@ fn the_check_says_what_accept_would_refuse_without_running_the_tests_or_changing
 
     let (_repo2, dirty, store) = failed_run("check-dirty", 1);
     std::fs::write(dirty.join("loose.txt"), "not committed").unwrap();
-    assert_eq!(accept_check(&store, "run-1"), Err("run-1 has uncommitted changes in its worktree; commit or discard them first".to_string()));
+    assert_eq!(
+        accept_check(&store, "run-1"),
+        Err(
+            "run-1 has uncommitted changes in its worktree; commit or discard them first"
+                .to_string()
+        )
+    );
 
     let (_repo3, _worktree3, store) = failed_run("check-none", 0);
-    assert_eq!(accept_check(&store, "run-1"), Err("run-1 left no committed work to accept".to_string()));
+    assert_eq!(
+        accept_check(&store, "run-1"),
+        Err("run-1 left no committed work to accept".to_string())
+    );
 }
 
 #[test]
@@ -233,7 +300,8 @@ fn taken_over_a_run_a_later_run_continued_is_refused_and_its_tests_are_not_run()
 }
 
 #[test]
-fn taken_over_a_later_run_on_only_its_branch_or_only_its_worktree_is_refused_and_its_tests_are_not_run() {
+fn taken_over_a_later_run_on_only_its_branch_or_only_its_worktree_is_refused_and_its_tests_are_not_run(
+) {
     for (case, same_branch) in [("branch-only", true), ("worktree-only", false)] {
         let (_repo, worktree, store) = failed_run(case, 1);
         let mut later = store.load("run-1").unwrap();

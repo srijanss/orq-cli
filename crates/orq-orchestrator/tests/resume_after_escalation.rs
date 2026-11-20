@@ -278,17 +278,24 @@ fn resume_after_escalation_run_resumed_records_whether_the_session_was_started_o
 
 #[test]
 fn resume_after_escalation_a_session_problem_resumes_even_when_the_review_ledger_is_unreadable() {
-    let w = world("unreadable-ledger", "failed", "the implement session reported a problem: the tests hang", false);
+    let w = world(
+        "unreadable-ledger",
+        "failed",
+        "the implement session reported a problem: the tests hang",
+        false,
+    );
     fs::write(w.worktree.join(".tdd-review-rounds.json"), "not json").unwrap();
 
-    let plan = plan_resume(&w.store, &w.repo, "repo-1", "F").expect("an unrelated session problem still resumes");
+    let plan = plan_resume(&w.store, &w.repo, "repo-1", "F")
+        .expect("an unrelated session problem still resumes");
 
     assert!(!plan.skip_implement);
     assert!(plan.review_again.is_none());
 }
 
 #[test]
-fn resume_after_escalation_a_session_problem_mentioning_the_review_resumes_when_the_ledger_is_unreadable() {
+fn resume_after_escalation_a_session_problem_mentioning_the_review_resumes_when_the_ledger_is_unreadable(
+) {
     let w = world(
         "unreadable-ledger-review-text",
         "failed",
@@ -302,4 +309,39 @@ fn resume_after_escalation_a_session_problem_mentioning_the_review_resumes_when_
 
     assert!(!plan.skip_implement);
     assert!(plan.review_again.is_none());
+}
+
+#[test]
+fn resume_after_escalation_a_session_problem_quoting_the_review_stop_text_resumes_when_the_ledger_is_unreadable(
+) {
+    let w = world(
+        "unreadable-ledger-quoted-stop",
+        "failed",
+        "the implement session reported a problem: the review escalated earlier",
+        false,
+    );
+    fs::write(w.worktree.join(".tdd-review-rounds.json"), "not json").unwrap();
+
+    let plan = plan_resume(&w.store, &w.repo, "repo-1", "F")
+        .expect("a session problem that quotes the review's stop text still resumes");
+
+    assert!(!plan.skip_implement);
+    assert!(plan.review_again.is_none());
+}
+
+#[test]
+fn resume_after_escalation_a_run_stopped_by_its_review_with_an_unreadable_ledger_is_an_error() {
+    let w = world(
+        "unreadable-ledger-review-stop",
+        "blocked",
+        "the review escalated after 3 rounds with 2 findings open",
+        true,
+    );
+    fs::write(w.worktree.join(".tdd-review-rounds.json"), "not json").unwrap();
+
+    let err = plan_resume(&w.store, &w.repo, "repo-1", "F")
+        .err()
+        .expect("a review stop needs a readable ledger");
+
+    assert!(err.contains("cannot read the review ledger"), "{err}");
 }

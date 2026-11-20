@@ -3,7 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{rebase_onto_commit, rebase_onto_target, RebaseOutcome, RunRecord, RunStore};
+use orq_orchestrator::{
+    rebase_onto_commit, rebase_onto_target, RebaseOutcome, RunRecord, RunStore,
+};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -189,7 +191,10 @@ fn a_conflict_is_recorded_with_its_files_and_target_and_leaves_the_worktree_mid_
     );
     let events = w.store.events("run-1").unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].kind, "rebase.conflict", "a conflict is not yet a block: a session may resolve it");
+    assert_eq!(
+        events[0].kind, "rebase.conflict",
+        "a conflict is not yet a block: a session may resolve it"
+    );
     assert_eq!(events[0].stage.as_deref(), Some("rebase"));
     assert_eq!(events[0].payload["files"], serde_json::json!(["a.txt"]));
     assert_eq!(events[0].payload["onto"], target.as_str());
@@ -419,10 +424,22 @@ fn the_run_branch_is_rebased_onto_a_given_local_commit_without_fetching_and_its_
 
     let outcome = rebase_onto_commit(&w.store, "run-1", &local).unwrap();
 
-    assert_eq!(outcome, RebaseOutcome::Rebased { target_sha: local.clone() });
-    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD~1"]), local, "the run's commit sits on the given commit");
+    assert_eq!(
+        outcome,
+        RebaseOutcome::Rebased {
+            target_sha: local.clone()
+        }
+    );
+    assert_eq!(
+        git(&w.worktree, &["rev-parse", "HEAD~1"]),
+        local,
+        "the run's commit sits on the given commit"
+    );
     assert!(w.worktree.join("local.txt").is_file() && w.worktree.join("mine.txt").is_file());
-    assert!(!w.worktree.join("theirs.txt").exists(), "nothing was fetched");
+    assert!(
+        !w.worktree.join("theirs.txt").exists(),
+        "nothing was fetched"
+    );
     let events = w.store.events("run-1").unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, "rebase.completed");
@@ -435,12 +452,23 @@ fn a_commit_to_rebase_onto_that_is_not_a_commit_id_is_an_error_and_nothing_runs(
     let marker = w.worktree.join("ran");
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
-    for given in [format!("--exec=touch {}", marker.display()), "main".to_string(), "HEAD~1".to_string()] {
-        assert!(rebase_onto_commit(&w.store, "run-1", &given).is_err(), "{given} was taken as a commit id");
+    for given in [
+        format!("--exec=touch {}", marker.display()),
+        "main".to_string(),
+        "HEAD~1".to_string(),
+    ] {
+        assert!(
+            rebase_onto_commit(&w.store, "run-1", &given).is_err(),
+            "{given} was taken as a commit id"
+        );
     }
 
     assert!(!marker.exists(), "an option was run");
-    assert_eq!(git(&w.worktree, &["rev-parse", "HEAD"]), head, "the branch was not touched");
+    assert_eq!(
+        git(&w.worktree, &["rev-parse", "HEAD"]),
+        head,
+        "the branch was not touched"
+    );
     assert!(kinds(&w).is_empty(), "nothing was recorded");
 }
 
@@ -456,7 +484,10 @@ fn a_conflict_rebasing_onto_a_local_commit_is_recorded_as_at_the_merge() {
 
     let outcome = rebase_onto_commit(&w.store, "run-1", &local).unwrap();
 
-    assert!(matches!(outcome, RebaseOutcome::Conflict { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, RebaseOutcome::Conflict { .. }),
+        "{outcome:?}"
+    );
     let events = w.store.events("run-1").unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, "rebase.conflict");

@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{discard_run_then, list_runs_report, mark_merged_runs, plan_resume, Event, RunPhase, RunRecord, RunStore};
+use orq_orchestrator::{
+    discard_run_then, list_runs_report, mark_merged_runs, plan_resume, Event, RunPhase, RunRecord,
+    RunStore,
+};
 use orq_test_support::GitFixture;
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -13,7 +16,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -53,10 +60,18 @@ fn setup(tag: &str) -> Setup {
     let target = git(repo.root(), &["symbolic-ref", "--short", "HEAD"]);
     let base = git(repo.root(), &["rev-parse", "HEAD"]);
     let worktree = repo.add_linked_worktree("orq-run-1");
-    let root = orq_test_support::process_temp_dir().join(format!("orq-merged-by-hand-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-merged-by-hand-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
-    Setup { repo, worktree, target, base, root, store }
+    Setup {
+        repo,
+        worktree,
+        target,
+        base,
+        root,
+        store,
+    }
 }
 
 impl Setup {
@@ -80,17 +95,30 @@ impl Setup {
     /// Start `run-1` and end it with `ending` (`failed` or `needs_review`).
     fn ended_run(&self, ending: &str) {
         self.store.start_run(&self.record("run-1")).unwrap();
-        self.store.append_event(&event("run-1", "run.completed", serde_json::json!({ "ending": ending }))).unwrap();
+        self.store
+            .append_event(&event(
+                "run-1",
+                "run.completed",
+                serde_json::json!({ "ending": ending }),
+            ))
+            .unwrap();
     }
 
     fn merge_by_hand(&self) {
-        git(self.repo.root(), &["merge", "--quiet", "--no-ff", "-m", "merge", "orq-run-1"]);
+        git(
+            self.repo.root(),
+            &["merge", "--quiet", "--no-ff", "-m", "merge", "orq-run-1"],
+        );
     }
 
     fn listed_phase(&self) -> RunPhase {
         let mut list = list_runs_report(&self.store, "p").unwrap();
         mark_merged_runs(&self.store, &mut list, self.repo.root());
-        list.runs.iter().find(|run| run.run_id == "run-1").unwrap().phase
+        list.runs
+            .iter()
+            .find(|run| run.run_id == "run-1")
+            .unwrap()
+            .phase
     }
 }
 
@@ -113,19 +141,36 @@ fn a_failed_run_whose_commits_are_all_on_the_target_branch_is_listed_as_merged()
 }
 
 #[test]
-fn a_run_with_a_commit_not_on_the_target_or_with_no_commits_is_not_merged_but_a_merged_review_waiting_run_is() {
+fn a_run_with_a_commit_not_on_the_target_or_with_no_commits_is_not_merged_but_a_merged_review_waiting_run_is(
+) {
     let s = setup("partly-merged");
     commit(&s.worktree, "a.txt");
     s.ended_run("needs_review");
-    assert_eq!(s.listed_phase(), RunPhase::NeedsReview, "a branch not merged at all");
+    assert_eq!(
+        s.listed_phase(),
+        RunPhase::NeedsReview,
+        "a branch not merged at all"
+    );
     s.merge_by_hand();
-    assert_eq!(s.listed_phase(), RunPhase::Merged, "a review-waiting run merged by hand");
+    assert_eq!(
+        s.listed_phase(),
+        RunPhase::Merged,
+        "a review-waiting run merged by hand"
+    );
     commit(&s.worktree, "b.txt");
-    assert_eq!(s.listed_phase(), RunPhase::NeedsReview, "one commit past what was merged");
+    assert_eq!(
+        s.listed_phase(),
+        RunPhase::NeedsReview,
+        "one commit past what was merged"
+    );
 
     let empty = setup("no-commits");
     empty.ended_run("failed");
-    assert_eq!(empty.listed_phase(), RunPhase::Failed, "a run with no commits");
+    assert_eq!(
+        empty.listed_phase(),
+        RunPhase::Failed,
+        "a run with no commits"
+    );
 }
 
 #[test]
@@ -137,10 +182,16 @@ fn discarding_a_merged_run_removes_its_record_logs_and_locks_without_reopening_i
     std::fs::create_dir_all(s.root.join("logs").join("run-1")).unwrap();
 
     let mut reopened = Vec::new();
-    let outcome = discard_run_then(&s.store, "run-1", s.repo.root(), &mut |_, features| reopened.extend_from_slice(features)).unwrap();
+    let outcome = discard_run_then(&s.store, "run-1", s.repo.root(), &mut |_, features| {
+        reopened.extend_from_slice(features)
+    })
+    .unwrap();
 
     assert!(outcome.merged);
-    assert!(reopened.is_empty(), "features handed back to reopen: {reopened:?}");
+    assert!(
+        reopened.is_empty(),
+        "features handed back to reopen: {reopened:?}"
+    );
     assert!(s.store.load("run-1").is_err());
     assert!(!s.root.join("logs").join("run-1").exists());
     assert_eq!(s.store.active_run("p", "F").unwrap(), None);
@@ -153,7 +204,10 @@ fn discarding_a_failed_run_whose_work_is_not_on_the_target_still_reopens_its_fea
     s.ended_run("failed");
 
     let mut reopened = Vec::new();
-    let outcome = discard_run_then(&s.store, "run-1", s.repo.root(), &mut |_, features| reopened.extend_from_slice(features)).unwrap();
+    let outcome = discard_run_then(&s.store, "run-1", s.repo.root(), &mut |_, features| {
+        reopened.extend_from_slice(features)
+    })
+    .unwrap();
 
     assert!(!outcome.merged);
     assert_eq!(reopened, vec!["F".to_string()]);
@@ -166,10 +220,15 @@ fn a_run_merged_by_hand_is_not_resumed_but_an_unmerged_failed_run_gets_past_the_
     s.ended_run("failed");
     // The fixture's worktree is not where resume looks for one, so an unmerged run gets past the
     // phase check and stops at the worktree check.
-    let unmerged = plan_resume(&s.store, s.repo.root(), "p", "F").expect_err("the fixture's worktree is elsewhere");
+    let unmerged = plan_resume(&s.store, s.repo.root(), "p", "F")
+        .expect_err("the fixture's worktree is elsewhere");
     assert!(unmerged.contains("worktrees directory"), "{unmerged}");
     s.merge_by_hand();
 
-    let refused = plan_resume(&s.store, s.repo.root(), "p", "F").expect_err("a merged run is not resumed");
-    assert!(refused.contains("already on its target branch"), "{refused}");
+    let refused =
+        plan_resume(&s.store, s.repo.root(), "p", "F").expect_err("a merged run is not resumed");
+    assert!(
+        refused.contains("already on its target branch"),
+        "{refused}"
+    );
 }

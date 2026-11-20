@@ -252,7 +252,10 @@ fn a_nested_repository_without_a_proven_cache_around_it_keeps_the_worktree_and_i
     type Tag = Option<fn(&Path)>;
     let cases: [(&str, Tag); 4] = [
         ("no-tag", None),
-        ("wrong-signature", Some(|p| fs::write(p, "Signature: not-the-cache-signature\n").unwrap())),
+        (
+            "wrong-signature",
+            Some(|p| fs::write(p, "Signature: not-the-cache-signature\n").unwrap()),
+        ),
         ("empty-tag", Some(|p| fs::write(p, "").unwrap())),
         (
             "symlinked-tag",
@@ -271,10 +274,18 @@ fn a_nested_repository_without_a_proven_cache_around_it_keeps_the_worktree_and_i
 
         let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-        let CleanupOutcome::Kept { reason } = outcome else { panic!("{tag}: the worktree was removed") };
+        let CleanupOutcome::Kept { reason } = outcome else {
+            panic!("{tag}: the worktree was removed")
+        };
         // Git may list the odd tag file before the folder, so the reason names the first of them.
-        assert!(reason.contains("target/"), "{tag}: the reason names what it kept: {reason}");
-        assert!(w.worktree.join("target/tmp/holder/.git").exists(), "{tag}: the repository is intact");
+        assert!(
+            reason.contains("target/"),
+            "{tag}: the reason names what it kept: {reason}"
+        );
+        assert!(
+            w.worktree.join("target/tmp/holder/.git").exists(),
+            "{tag}: the repository is intact"
+        );
         assert_eq!(kinds(&w), ["worktree.kept"], "{tag}");
     }
 }
@@ -293,7 +304,9 @@ fn a_nested_repository_beside_a_tagged_cache_not_inside_it_keeps_the_worktree() 
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("the worktree was removed") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("the worktree was removed")
+    };
     assert!(reason.contains("scratch/holder"), "{reason}");
     assert!(holder.join(".git").exists(), "the repository is intact");
 }
@@ -369,21 +382,37 @@ fn a_non_utf8_directory_name_never_borrows_the_cache_tag_of_a_look_alike_directo
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Skipped).unwrap();
 
-    assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, CleanupOutcome::Kept { .. }),
+        "{outcome:?}"
+    );
     assert!(raw.join("work.txt").exists(), "the file is intact");
 }
 
 #[test]
-fn a_worktree_is_kept_with_everything_intact_unless_its_ignored_files_are_all_in_a_proven_build_cache() {
+fn a_worktree_is_kept_with_everything_intact_unless_its_ignored_files_are_all_in_a_proven_build_cache(
+) {
     use std::os::unix::fs::symlink;
     const SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55\n";
     // Each case: how `target/CACHEDIR.TAG` is made (None: no tag), and a file outside the cache.
     type Tag = Option<fn(&Path)>;
     let cases: [(&str, Tag, bool); 7] = [
         // A pipe nobody writes to would block a reader forever.
-        ("fifo-tag", Some(|p| assert!(Command::new("mkfifo").arg(p).status().unwrap().success())), false),
-        ("wrong-signature", Some(|p| fs::write(p, "Signature: not-the-cache-signature\n").unwrap()), false),
-        ("truncated-signature", Some(|p| fs::write(p, &SIGNATURE[..20]).unwrap()), false),
+        (
+            "fifo-tag",
+            Some(|p| assert!(Command::new("mkfifo").arg(p).status().unwrap().success())),
+            false,
+        ),
+        (
+            "wrong-signature",
+            Some(|p| fs::write(p, "Signature: not-the-cache-signature\n").unwrap()),
+            false,
+        ),
+        (
+            "truncated-signature",
+            Some(|p| fs::write(p, &SIGNATURE[..20]).unwrap()),
+            false,
+        ),
         ("empty-tag", Some(|p| fs::write(p, "").unwrap()), false),
         (
             "symlinked-tag",
@@ -395,7 +424,11 @@ fn a_worktree_is_kept_with_everything_intact_unless_its_ignored_files_are_all_in
             false,
         ),
         ("no-tag", None, false),
-        ("valid-tag-beside-an-unrelated-ignored-file", Some(|p| fs::write(p, SIGNATURE).unwrap()), true),
+        (
+            "valid-tag-beside-an-unrelated-ignored-file",
+            Some(|p| fs::write(p, SIGNATURE).unwrap()),
+            true,
+        ),
     ];
     for (tag, make_tag, unrelated) in cases {
         let w = world(&format!("not-a-cache-{tag}"));
@@ -413,10 +446,21 @@ fn a_worktree_is_kept_with_everything_intact_unless_its_ignored_files_are_all_in
 
         let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-        assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{tag}: {outcome:?}");
-        assert_eq!(fs::read_to_string(w.worktree.join("target/artifact")).unwrap(), "built", "{tag}");
+        assert!(
+            matches!(outcome, CleanupOutcome::Kept { .. }),
+            "{tag}: {outcome:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(w.worktree.join("target/artifact")).unwrap(),
+            "built",
+            "{tag}"
+        );
         if unrelated {
-            assert_eq!(fs::read_to_string(w.worktree.join("local.env")).unwrap(), "SECRET=1\n", "{tag}");
+            assert_eq!(
+                fs::read_to_string(w.worktree.join("local.env")).unwrap(),
+                "SECRET=1\n",
+                "{tag}"
+            );
         }
         assert_eq!(kinds(&w), ["worktree.kept"], "{tag}");
     }
@@ -607,10 +651,15 @@ fn an_ignored_file_of_the_agent_keeps_the_worktree_and_the_reason_names_it_not_t
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert!(reason.contains("local.cfg"), "{reason}");
     assert!(!reason.contains(".tdd-state.json"), "{reason}");
-    assert_eq!(fs::read_to_string(w.worktree.join("local.cfg")).unwrap(), "SECRET=1\n");
+    assert_eq!(
+        fs::read_to_string(w.worktree.join("local.cfg")).unwrap(),
+        "SECRET=1\n"
+    );
     assert_eq!(kinds(&w), ["worktree.kept"]);
 }
 
@@ -643,20 +692,32 @@ fn a_run_worktree_nested_under_the_claude_folder_is_never_swept_away_with_its_pa
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, CleanupOutcome::Kept { .. }),
+        "{outcome:?}"
+    );
     assert!(w.worktree.join(".claude/worktrees/other/work.txt").exists());
 }
 
 #[test]
-fn files_orq_itself_writes_stay_work_unless_recorded_unchanged_even_though_the_tooling_names_them() {
-    for file in [".mcp.json", ".mcpctl.toml", ".mcpctl.lock", ".claude/settings.local.json"] {
+fn files_orq_itself_writes_stay_work_unless_recorded_unchanged_even_though_the_tooling_names_them()
+{
+    for file in [
+        ".mcp.json",
+        ".mcpctl.toml",
+        ".mcpctl.lock",
+        ".claude/settings.local.json",
+    ] {
         let w = world("orq-named");
         ignore(&w, ".mcp.json\n.mcpctl*\n.claude/\n");
         write(&w, file, "mine\n");
 
         let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-        assert!(matches!(outcome, CleanupOutcome::Kept { .. }), "{file}: {outcome:?}");
+        assert!(
+            matches!(outcome, CleanupOutcome::Kept { .. }),
+            "{file}: {outcome:?}"
+        );
     }
 }
 
@@ -671,7 +732,10 @@ fn the_kept_reason_shows_control_characters_in_a_file_name_escaped_not_raw() {
     let CleanupOutcome::Kept { reason } = outcome else {
         panic!("{outcome:?}");
     };
-    assert!(!reason.contains('\n') && !reason.contains('\x1b'), "{reason:?}");
+    assert!(
+        !reason.contains('\n') && !reason.contains('\x1b'),
+        "{reason:?}"
+    );
     assert!(reason.contains("forged: line"), "{reason:?}");
 }
 
@@ -686,7 +750,11 @@ fn commit_files(w: &World, files: &[&str]) {
 
 /// Installed dependency files a package manager wrote under `folder`, nested ones included.
 fn install(w: &World, folder: &str) {
-    for file in [".bin/esbuild", "esbuild/package.json", "a/node_modules/b/index.js"] {
+    for file in [
+        ".bin/esbuild",
+        "esbuild/package.json",
+        "a/node_modules/b/index.js",
+    ] {
         write(w, &format!("{folder}/{file}"), "installed\n");
     }
 }
@@ -705,7 +773,8 @@ fn installed_node_modules_with_a_committed_manifest_and_lockfile_are_removed_wit
 }
 
 #[test]
-fn installed_node_modules_whose_lockfile_is_not_committed_keep_the_worktree_and_the_reason_says_so() {
+fn installed_node_modules_whose_lockfile_is_not_committed_keep_the_worktree_and_the_reason_says_so()
+{
     let w = world("lock-uncommitted");
     // The project ignores its lockfile, so it is on disk but never committed.
     ignore(&w, "node_modules/\npackage-lock.json\n");
@@ -715,8 +784,13 @@ fn installed_node_modules_whose_lockfile_is_not_committed_keep_the_worktree_and_
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
-    assert!(reason.starts_with("the worktree has uncommitted changes: "), "{reason}");
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert!(
+        reason.starts_with("the worktree has uncommitted changes: "),
+        "{reason}"
+    );
     assert!(
         reason.contains(
             "(web/node_modules is removed with the worktree only when web/package.json and a lockfile such as \
@@ -735,7 +809,9 @@ fn a_file_in_an_ignored_build_folder_keeps_the_worktree_and_the_reason_points_at
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert_eq!(
         reason,
         "the worktree has uncommitted changes: web-src/dist/app.js \
@@ -745,20 +821,30 @@ fn a_file_in_an_ignored_build_folder_keeps_the_worktree_and_the_reason_points_at
 
 #[test]
 fn an_ignored_file_outside_any_ignored_folder_and_an_untracked_file_keep_todays_reason() {
-    for (tag, file) in [("lone-ignored", "local.cfg"), ("plain-untracked", "src/new.rs")] {
+    for (tag, file) in [
+        ("lone-ignored", "local.cfg"),
+        ("plain-untracked", "src/new.rs"),
+    ] {
         let w = world(tag);
         ignore(&w, "*.cfg\n");
         write(&w, file, "mine\n");
 
         let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-        let CleanupOutcome::Kept { reason } = outcome else { panic!("{tag}: {outcome:?}") };
-        assert_eq!(reason, format!("the worktree has uncommitted changes: {file}"), "{tag}");
+        let CleanupOutcome::Kept { reason } = outcome else {
+            panic!("{tag}: {outcome:?}")
+        };
+        assert_eq!(
+            reason,
+            format!("the worktree has uncommitted changes: {file}"),
+            "{tag}"
+        );
     }
 }
 
 #[test]
-fn installed_node_modules_with_no_committed_manifest_keep_the_worktree_and_the_reason_names_the_manifest() {
+fn installed_node_modules_with_no_committed_manifest_keep_the_worktree_and_the_reason_names_the_manifest(
+) {
     let w = world("no-manifest");
     ignore(&w, "node_modules/\n");
     commit_files(&w, &["web/package-lock.json"]);
@@ -766,13 +852,19 @@ fn installed_node_modules_with_no_committed_manifest_keep_the_worktree_and_the_r
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert!(reason.contains("web/node_modules/"), "{reason}");
-    assert!(reason.ends_with("; web/package.json is not committed)"), "{reason}");
+    assert!(
+        reason.ends_with("; web/package.json is not committed)"),
+        "{reason}"
+    );
 }
 
 #[test]
-fn installed_node_modules_with_no_lockfile_at_all_keep_the_worktree_and_the_reason_says_none_is_committed() {
+fn installed_node_modules_with_no_lockfile_at_all_keep_the_worktree_and_the_reason_says_none_is_committed(
+) {
     let w = world("no-lockfile");
     ignore(&w, "node_modules/\n");
     commit_files(&w, &["package.json"]);
@@ -780,7 +872,9 @@ fn installed_node_modules_with_no_lockfile_at_all_keep_the_worktree_and_the_reas
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert!(
         reason.ends_with(
             "(node_modules is removed with the worktree only when package.json and a lockfile such as \
@@ -795,7 +889,11 @@ fn a_python_venv_with_a_committed_pyproject_and_lockfile_is_removed_with_the_wor
     let w = world("venv");
     ignore(&w, ".venv/\n");
     commit_files(&w, &["pyproject.toml", "uv.lock"]);
-    write(&w, ".venv/lib/python3.12/site-packages/pkg/__init__.py", "installed\n");
+    write(
+        &w,
+        ".venv/lib/python3.12/site-packages/pkg/__init__.py",
+        "installed\n",
+    );
     write(&w, ".venv/bin/python", "installed\n");
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
@@ -813,7 +911,9 @@ fn a_venv_folder_without_the_dot_keeps_the_worktree_even_with_a_committed_lockfi
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert!(reason.contains("venv/lib/notes.py"), "{reason}");
 }
 
@@ -829,7 +929,9 @@ fn a_nested_repository_inside_passing_node_modules_keeps_the_worktree_and_is_nam
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert!(reason.contains("web/node_modules/linked/"), "{reason}");
     assert!(holder.join(".git").exists());
 }
@@ -844,7 +946,9 @@ fn passing_node_modules_beside_another_ignored_file_keep_the_worktree_naming_tha
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert_eq!(reason, "the worktree has uncommitted changes: local.cfg");
 }
 
@@ -855,13 +959,22 @@ fn a_lockfile_committed_as_a_symlink_into_node_modules_keeps_the_worktree_and_it
     install(&w, "web/node_modules");
     write(&w, "web/node_modules/.package-lock.json", "{}\n");
     write(&w, "web/package.json", "{}\n");
-    std::os::unix::fs::symlink("node_modules/.package-lock.json", w.worktree.join("web/package-lock.json")).unwrap();
-    git(&w.worktree, &["add", "--", "web/package.json", "web/package-lock.json"]);
+    std::os::unix::fs::symlink(
+        "node_modules/.package-lock.json",
+        w.worktree.join("web/package-lock.json"),
+    )
+    .unwrap();
+    git(
+        &w.worktree,
+        &["add", "--", "web/package.json", "web/package-lock.json"],
+    );
     git(&w.worktree, &["commit", "-q", "-m", "manifests"]);
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert!(reason.contains("web/node_modules/"), "{reason}");
     assert!(w.worktree.join("web/node_modules/.bin/esbuild").exists());
 }
@@ -875,7 +988,12 @@ fn a_venv_whose_committed_lockfile_belongs_to_another_manifest_keeps_the_worktre
 
     let outcome = cleanup_worktree(&w.store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
-    assert!(reason.ends_with("; uv.lock goes with pyproject.toml, which is not committed)"), "{reason}");
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert!(
+        reason.ends_with("; uv.lock goes with pyproject.toml, which is not committed)"),
+        "{reason}"
+    );
     assert!(w.worktree.join(".venv/bin/python").exists());
 }

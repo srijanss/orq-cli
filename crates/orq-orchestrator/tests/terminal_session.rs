@@ -7,7 +7,8 @@ use orq_orchestrator::run_in_terminal;
 const LONG: Duration = Duration::from_secs(30);
 
 fn scratch(tag: &str) -> PathBuf {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-terminal-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir()
+        .join(format!("orq-terminal-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -39,13 +40,21 @@ fn the_program_runs_under_a_terminal_of_its_own_and_returns_when_it_exits() {
 
     run_in_terminal(shell(&dir, script), &dir.join("never"), LONG, LONG).unwrap();
 
-    assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
     let out = std::fs::read_to_string(dir.join("out")).unwrap();
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines[0], "terminal", "{out}");
     assert_ne!(lines[1], "0 0", "a screen needs a size: {out}");
     assert_eq!(lines[2], "controlling", "{out}");
-    assert_eq!(Path::new(lines[3]).canonicalize().unwrap(), dir.canonicalize().unwrap(), "{out}");
+    assert_eq!(
+        Path::new(lines[3]).canonicalize().unwrap(),
+        dir.canonicalize().unwrap(),
+        "{out}"
+    );
 }
 
 #[test]
@@ -53,9 +62,19 @@ fn a_program_that_keeps_going_is_closed_shortly_after_its_marker_appears() {
     let dir = scratch("marker");
     let start = Instant::now();
 
-    run_in_terminal(shell(&dir, "echo $$ > pid; touch done; exec sleep 86400"), &dir.join("done"), LONG, Duration::from_millis(100)).unwrap();
+    run_in_terminal(
+        shell(&dir, "echo $$ > pid; touch done; exec sleep 86400"),
+        &dir.join("done"),
+        LONG,
+        Duration::from_millis(100),
+    )
+    .unwrap();
 
-    assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
     assert!(gone(&std::fs::read_to_string(dir.join("pid")).unwrap()));
 }
 
@@ -63,7 +82,16 @@ fn a_program_that_keeps_going_is_closed_shortly_after_its_marker_appears() {
 fn the_program_is_given_the_linger_to_finish_after_its_marker() {
     let dir = scratch("linger");
 
-    run_in_terminal(shell(&dir, "touch done; sleep 0.3; touch finished; exec sleep 86400"), &dir.join("done"), LONG, Duration::from_secs(2)).unwrap();
+    run_in_terminal(
+        shell(
+            &dir,
+            "touch done; sleep 0.3; touch finished; exec sleep 86400",
+        ),
+        &dir.join("done"),
+        LONG,
+        Duration::from_secs(2),
+    )
+    .unwrap();
 
     assert!(dir.join("finished").exists());
 }
@@ -74,9 +102,19 @@ fn a_program_that_never_marks_and_ignores_being_asked_to_stop_is_killed_with_all
     let script = "trap '' TERM HUP; sleep 86400 & echo $! > helper; echo $$ > pid; while :; do sleep 1; done";
     let start = Instant::now();
 
-    run_in_terminal(shell(&dir, script), &dir.join("never"), Duration::from_millis(500), LONG).unwrap();
+    run_in_terminal(
+        shell(&dir, script),
+        &dir.join("never"),
+        Duration::from_millis(500),
+        LONG,
+    )
+    .unwrap();
 
-    assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
     assert!(gone(&std::fs::read_to_string(dir.join("pid")).unwrap()));
     assert!(gone(&std::fs::read_to_string(dir.join("helper")).unwrap()));
 }
@@ -85,7 +123,13 @@ fn a_program_that_never_marks_and_ignores_being_asked_to_stop_is_killed_with_all
 fn a_program_that_writes_a_lot_to_its_screen_does_not_block_on_it() {
     let dir = scratch("output");
 
-    run_in_terminal(shell(&dir, "head -c 2000000 /dev/zero; touch finished"), &dir.join("never"), Duration::from_secs(20), LONG).unwrap();
+    run_in_terminal(
+        shell(&dir, "head -c 2000000 /dev/zero; touch finished"),
+        &dir.join("never"),
+        Duration::from_secs(20),
+        LONG,
+    )
+    .unwrap();
 
     assert!(dir.join("finished").exists());
 }
@@ -93,13 +137,21 @@ fn a_program_that_writes_a_lot_to_its_screen_does_not_block_on_it() {
 #[test]
 fn a_program_that_cannot_start_is_an_error() {
     let dir = scratch("missing");
-    assert!(run_in_terminal(Command::new(dir.join("no-such-program")), &dir.join("never"), LONG, LONG).is_err());
+    assert!(run_in_terminal(
+        Command::new(dir.join("no-such-program")),
+        &dir.join("never"),
+        LONG,
+        LONG
+    )
+    .is_err());
 }
 
 #[test]
-fn something_the_program_left_running_that_ignores_being_asked_to_stop_is_killed_when_it_exits_first() {
+fn something_the_program_left_running_that_ignores_being_asked_to_stop_is_killed_when_it_exits_first(
+) {
     let dir = scratch("leftover");
-    let script = "(trap '' TERM HUP; exec sleep 86400) & echo $! > helper; touch done; sleep 0.2; exit 0";
+    let script =
+        "(trap '' TERM HUP; exec sleep 86400) & echo $! > helper; touch done; sleep 0.2; exit 0";
 
     run_in_terminal(shell(&dir, script), &dir.join("done"), LONG, LONG).unwrap();
 
@@ -107,11 +159,18 @@ fn something_the_program_left_running_that_ignores_being_asked_to_stop_is_killed
 }
 
 #[test]
-fn something_the_program_left_running_is_killed_when_the_program_is_stopped_and_exits_on_being_asked() {
+fn something_the_program_left_running_is_killed_when_the_program_is_stopped_and_exits_on_being_asked(
+) {
     let dir = scratch("leftover-stop");
     let script = "(trap '' TERM HUP; exec sleep 86400) & echo $! > helper; sleep 86400";
 
-    run_in_terminal(shell(&dir, script), &dir.join("never"), Duration::from_millis(500), LONG).unwrap();
+    run_in_terminal(
+        shell(&dir, script),
+        &dir.join("never"),
+        Duration::from_millis(500),
+        LONG,
+    )
+    .unwrap();
 
     assert!(gone(&std::fs::read_to_string(dir.join("helper")).unwrap()));
 }

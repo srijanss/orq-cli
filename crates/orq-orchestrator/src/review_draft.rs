@@ -253,8 +253,7 @@ fn run_session(
         .map_err(|e| format!("the drafting session could not start: {e}"))?;
     on_start(child.id());
     let (stdout, stderr) = child.take_output();
-    let mut stdout = stdout
-        .ok_or_else(|| "the drafting session has no output".to_string())?;
+    let mut stdout = stdout.ok_or_else(|| "the drafting session has no output".to_string())?;
     if let Some(mut stderr) = stderr {
         stderr_sink.done.store(false, Ordering::Release);
         let sink = Arc::clone(stderr_sink);
@@ -601,8 +600,14 @@ enum PlanEnd {
 }
 
 /// What planning run `run_id`'s session answered, or why it did not.
-fn plan_answer(store: &RunStore, run_id: &str, session: &DraftSession, timeout: Duration) -> Result<String, String> {
-    record_plan_event(store, run_id, "stage.started", serde_json::json!({})).map_err(|e| e.to_string())?;
+fn plan_answer(
+    store: &RunStore,
+    run_id: &str,
+    session: &DraftSession,
+    timeout: Duration,
+) -> Result<String, String> {
+    record_plan_event(store, run_id, "stage.started", serde_json::json!({}))
+        .map_err(|e| e.to_string())?;
     let sink = Arc::new(StderrSink {
         bytes: Mutex::new(Vec::new()),
         done: AtomicBool::new(true),
@@ -633,7 +638,8 @@ fn conclude(
         Err(reason) => return fail(reason),
     };
     if let Ok(dir) = store.log_dir(run_id) {
-        let _ = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join("plan.log"), &text));
+        let _ = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(dir.join("plan.log"), &text));
     }
     let Some(json) = marker_text(&text) else {
         return fail("the agent left no marker".to_string());

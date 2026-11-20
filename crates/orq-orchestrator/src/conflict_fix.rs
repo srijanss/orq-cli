@@ -85,17 +85,31 @@ pub fn conflict_fix_task(
     let onto = rebase_onto(&record)?;
     let files = crate::rebase::unmerged_files(&record.worktree)?;
     // Each name is a literal pathspec: glob characters in it match only itself.
-    let pathspecs: Vec<String> = files.iter().map(|file| format!(":(literal){file}")).collect();
+    let pathspecs: Vec<String> = files
+        .iter()
+        .map(|file| format!(":(literal){file}"))
+        .collect();
     // The run branch's ref still names the head the rebase started from until the rebase ends.
     let branch = format!("refs/heads/{}", record.branch);
     // The latest commits of each side, their subjects cut short, so a long history does not fill the
     // session's context; the rest are a `git log` away.
     let commits = |range: String| -> Result<String, StoreError> {
         let max_count = format!("--max-count={}", MAX_COMMITS + 1);
-        let mut args = vec!["log", "--no-decorate", "--format=%h %s", &max_count, &range, "--"];
+        let mut args = vec![
+            "log",
+            "--no-decorate",
+            "--format=%h %s",
+            &max_count,
+            &range,
+            "--",
+        ];
         args.extend(pathspecs.iter().map(String::as_str));
         let log = git_raw(&record.worktree, &args)?;
-        let lines: Vec<&str> = log.stdout.lines().filter(|line| !line.trim().is_empty()).collect();
+        let lines: Vec<&str> = log
+            .stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
         if !log.success || lines.is_empty() {
             return Ok("(none)".to_string());
         }
@@ -109,14 +123,22 @@ pub fn conflict_fix_task(
             .collect::<Vec<_>>()
             .join("\n");
         if lines.len() > MAX_COMMITS {
-            text += &format!("\n… and more; `git log --oneline {range} -- <the files above>` lists them all.");
+            text += &format!(
+                "\n… and more; `git log --oneline {range} -- <the files above>` lists them all."
+            );
         }
         Ok(text)
     };
     let theirs = commits(format!("{branch}..{onto}"))?;
     let ours = commits(format!("{onto}..{branch}"))?;
     let target = &record.target_branch;
-    let listed = |names: &[String]| names.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ");
+    let listed = |names: &[String]| {
+        names
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let generated_rule = match (generated.is_empty(), rebuild) {
         (false, Some(command)) => format!(
             "This project's generated files are {}; rebuild them with `{}`, then add them.",
@@ -148,10 +170,21 @@ pub fn conflict_fix_task(
 /// `words` as a shell command line: each word that is not plain is single-quoted, so it stays one
 /// argument and nothing in it is read as shell syntax.
 fn shell_words(words: &[String]) -> String {
-    let plain = |word: &str| !word.is_empty() && word.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./=:,+@%".contains(&b));
+    let plain = |word: &str| {
+        !word.is_empty()
+            && word
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_./=:,+@%".contains(&b))
+    };
     words
         .iter()
-        .map(|word| if plain(word) { word.clone() } else { format!("'{}'", word.replace('\'', "'\\''")) })
+        .map(|word| {
+            if plain(word) {
+                word.clone()
+            } else {
+                format!("'{}'", word.replace('\'', "'\\''"))
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }

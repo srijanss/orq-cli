@@ -135,20 +135,34 @@ pub fn wait_for_ci_logged(
         // A call never runs past the stage deadline, so nothing is accepted after it.
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            note(log, &format!("CI timed out waiting for the checks of {}", short(head_sha)));
+            note(
+                log,
+                &format!("CI timed out waiting for the checks of {}", short(head_sha)),
+            );
             let payload = serde_json::json!({ "result": "timed_out", "head_sha": head_sha });
             return fail(store, &record, payload, CiOutcome::TimedOut);
         }
         let verdict = poll_once(&sessions, kind, head_sha, config, deadline);
-        let waited = config.timeout.saturating_sub(deadline.saturating_duration_since(Instant::now()));
+        let waited = config
+            .timeout
+            .saturating_sub(deadline.saturating_duration_since(Instant::now()));
         match &verdict {
             Verdict::Pending => note(log, &format!("CI waiting: checks of {} still running ({}s of {}s)", short(head_sha), waited.as_secs(), config.timeout.as_secs())),
             Verdict::Empty => note(log, &format!("CI waiting: no checks reported for {} yet ({}s of {}s)", short(head_sha), waited.as_secs(), config.timeout.as_secs())),
             Verdict::Unusable(_) => note(log, &format!("CI waiting: the provider did not answer usably, trying again ({failures_so_far} so far)", failures_so_far = failures + 1)),
             _ => {}
         }
-        if verdict == Verdict::Empty && waited >= config.no_ci_grace && !has_ci_config(&record.worktree, kind) {
-            note(log, &format!("CI skipped: no CI is configured and no checks were reported for {}", short(head_sha)));
+        if verdict == Verdict::Empty
+            && waited >= config.no_ci_grace
+            && !has_ci_config(&record.worktree, kind)
+        {
+            note(
+                log,
+                &format!(
+                    "CI skipped: no CI is configured and no checks were reported for {}",
+                    short(head_sha)
+                ),
+            );
             record_event(
                 store,
                 &record,
@@ -208,9 +222,14 @@ fn has_ci_config(worktree: &Path, kind: Kind) -> bool {
 }
 
 /// Whether `entries` hold a workflow file; an entry that cannot be read might be one, so it counts.
-fn has_workflow_entry(entries: impl IntoIterator<Item = std::io::Result<std::fs::DirEntry>>) -> bool {
+fn has_workflow_entry(
+    entries: impl IntoIterator<Item = std::io::Result<std::fs::DirEntry>>,
+) -> bool {
     entries.into_iter().any(|entry| match entry {
-        Ok(entry) => matches!(entry.path().extension().and_then(|e| e.to_str()), Some("yml" | "yaml")),
+        Ok(entry) => matches!(
+            entry.path().extension().and_then(|e| e.to_str()),
+            Some("yml" | "yaml")
+        ),
         Err(_) => true,
     })
 }
@@ -351,16 +370,39 @@ pub fn retry_ci(
     match record.provider.as_str() {
         "github" => {
             let repo = format!("{host}/{path}");
-            let listed = call(&["run", "list", "-R", &repo, "--commit", head_sha, "--json", "databaseId,conclusion", "--limit", "100"])?;
+            let listed = call(&[
+                "run",
+                "list",
+                "-R",
+                &repo,
+                "--commit",
+                head_sha,
+                "--json",
+                "databaseId,conclusion",
+                "--limit",
+                "100",
+            ])?;
             for id in github_failed_runs(&listed)? {
                 call(&["run", "rerun", &id.to_string(), "--failed", "-R", &repo])?;
             }
         }
         "gitlab" => {
             let project = path.replace('/', "%2F");
-            let listed = call(&["api", "--hostname", host, &format!("projects/{project}/pipelines?sha={head_sha}&per_page={GITLAB_PAGE}")])?;
+            let listed = call(&[
+                "api",
+                "--hostname",
+                host,
+                &format!("projects/{project}/pipelines?sha={head_sha}&per_page={GITLAB_PAGE}"),
+            ])?;
             let id = gitlab_failed_pipeline(&listed, head_sha)?;
-            call(&["api", "--hostname", host, "--method", "POST", &format!("projects/{project}/pipelines/{id}/retry")])?;
+            call(&[
+                "api",
+                "--hostname",
+                host,
+                "--method",
+                "POST",
+                &format!("projects/{project}/pipelines/{id}/retry"),
+            ])?;
         }
         other => return Err(format!("the provider {other} has no CI to re-run")),
     }
@@ -372,8 +414,18 @@ pub fn retry_ci(
 /// passed), for no more than `RESTART_LIMIT` (and never past the CI timeout). A provider error on the way
 /// proves nothing, so the wait goes on through it. A restart never seen is an error, not a started re-run:
 /// either CI went on showing only the old failure, or it could not be read at all.
-fn await_restart(record: &RunRecord, program: &Path, repo: &str, head_sha: &str, config: &CiWaitConfig) -> Result<(), String> {
-    let kind = if record.provider == "gitlab" { Kind::GitLab } else { Kind::GitHub };
+fn await_restart(
+    record: &RunRecord,
+    program: &Path,
+    repo: &str,
+    head_sha: &str,
+    config: &CiWaitConfig,
+) -> Result<(), String> {
+    let kind = if record.provider == "gitlab" {
+        Kind::GitLab
+    } else {
+        Kind::GitHub
+    };
     let sessions = poll_sessions(record, program, kind, repo, head_sha)
         .ok_or_else(|| "the repository or commit cannot be addressed safely".to_string())?;
     let limit = config.timeout.min(RESTART_LIMIT);
@@ -395,13 +447,23 @@ fn await_restart(record: &RunRecord, program: &Path, repo: &str, head_sha: &str,
     }
     let waited = limit.as_secs();
     match last_error {
-        Some(reason) if !seen_failure => Err(format!("CI could not be read after the re-run was requested ({waited}s): {reason}")),
-        _ => Err(format!("CI still showed only the failure it replaces {waited}s after the re-run was requested")),
+        Some(reason) if !seen_failure => Err(format!(
+            "CI could not be read after the re-run was requested ({waited}s): {reason}"
+        )),
+        _ => Err(format!(
+            "CI still showed only the failure it replaces {waited}s after the re-run was requested"
+        )),
     }
 }
 
 /// The sessions that list the checks of `head_sha`, or `None` when it cannot be addressed safely.
-fn poll_sessions(record: &RunRecord, program: &Path, kind: Kind, repo: &str, head_sha: &str) -> Option<Vec<DraftSession>> {
+fn poll_sessions(
+    record: &RunRecord,
+    program: &Path,
+    kind: Kind,
+    repo: &str,
+    head_sha: &str,
+) -> Option<Vec<DraftSession>> {
     let calls = poll_calls(kind, repo, head_sha)?;
     Some(
         calls
@@ -418,13 +480,17 @@ fn poll_sessions(record: &RunRecord, program: &Path, kind: Kind, repo: &str, hea
 
 /// The ids of the failed workflow runs in a `gh run list --json databaseId,conclusion` answer.
 fn github_failed_runs(text: &str) -> Result<Vec<u64>, String> {
-    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(text.trim())
+    else {
         return Err("the workflow run listing is not a json array".to_string());
     };
     let mut failed = Vec::new();
     for row in &rows {
         let conclusion = row.get("conclusion").and_then(|c| c.as_str());
-        if matches!(conclusion, Some("failure" | "timed_out" | "cancelled" | "startup_failure")) {
+        if matches!(
+            conclusion,
+            Some("failure" | "timed_out" | "cancelled" | "startup_failure")
+        ) {
             let id = row.get("databaseId").and_then(|i| i.as_u64());
             failed.push(id.ok_or_else(|| "a failed workflow run has no readable id".to_string())?);
         }
@@ -439,7 +505,9 @@ fn github_failed_runs(text: &str) -> Result<Vec<u64>, String> {
 fn gitlab_failed_pipeline(text: &str, head_sha: &str) -> Result<u64, String> {
     match latest_pipeline(text, head_sha)? {
         Some((id, "failed" | "canceled")) => Ok(id),
-        Some((id, status)) => Err(format!("the latest pipeline {id} of the commit is {status}, not failed")),
+        Some((id, status)) => Err(format!(
+            "the latest pipeline {id} of the commit is {status}, not failed"
+        )),
         None => Err("no pipeline of the commit to retry".to_string()),
     }
 }
@@ -472,8 +540,22 @@ fn latest_pipeline(text: &str, head_sha: &str) -> Result<Option<(u64, &'static s
 
 /// A pipeline status as one of the names the verdict knows, or "unknown".
 fn known_status(status: &str) -> &'static str {
-    const KNOWN: [&str; 9] = ["success", "failed", "canceled", "created", "waiting_for_resource", "preparing", "pending", "running", "scheduled"];
-    KNOWN.iter().find(|known| **known == status).copied().unwrap_or("unknown")
+    const KNOWN: [&str; 9] = [
+        "success",
+        "failed",
+        "canceled",
+        "created",
+        "waiting_for_resource",
+        "preparing",
+        "pending",
+        "running",
+        "scheduled",
+    ];
+    KNOWN
+        .iter()
+        .find(|known| **known == status)
+        .copied()
+        .unwrap_or("unknown")
 }
 
 fn github_verdict(text: &str) -> Verdict {
@@ -580,7 +662,9 @@ fn gitlab_verdict(text: &str, head_sha: &str) -> Verdict {
             _,
             "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled",
         )) => Verdict::Pending,
-        Some(_) => Verdict::Unusable("the pipeline listing is unusable: a pipeline has an unrecognised state".to_string()),
+        Some(_) => Verdict::Unusable(
+            "the pipeline listing is unusable: a pipeline has an unrecognised state".to_string(),
+        ),
     }
 }
 
@@ -630,16 +714,31 @@ mod tests {
     fn a_github_retry_reruns_each_failed_workflow_run_of_the_commit_and_nothing_else() {
         let listed = r#"[{"databaseId":42,"conclusion":"failure"},{"databaseId":41,"conclusion":"success"},{"databaseId":43,"conclusion":"timed_out"},{"databaseId":44,"conclusion":"cancelled"},{"databaseId":45,"conclusion":""}]"#;
         assert_eq!(github_failed_runs(listed), Ok(vec![42, 43, 44]));
-        assert!(github_failed_runs(r#"[{"databaseId":41,"conclusion":"success"}]"#).unwrap_err().contains("no failed workflow run"));
+        assert!(
+            github_failed_runs(r#"[{"databaseId":41,"conclusion":"success"}]"#)
+                .unwrap_err()
+                .contains("no failed workflow run")
+        );
         assert!(github_failed_runs("not json").is_err());
-        assert!(github_failed_runs(r#"[{"conclusion":"failure"}]"#).is_err(), "a failed run without an id is unusable");
+        assert!(
+            github_failed_runs(r#"[{"conclusion":"failure"}]"#).is_err(),
+            "a failed run without an id is unusable"
+        );
     }
 
     #[test]
     fn a_gitlab_retry_retries_the_latest_pipeline_of_the_commit_only_when_it_failed() {
-        let text = pipelines(&[(7, SHA, "failed"), (9, SHA, "failed"), (12, "b".repeat(40).as_str(), "failed")]);
+        let text = pipelines(&[
+            (7, SHA, "failed"),
+            (9, SHA, "failed"),
+            (12, "b".repeat(40).as_str(), "failed"),
+        ]);
         assert_eq!(gitlab_failed_pipeline(&text, SHA), Ok(9));
-        assert!(gitlab_failed_pipeline(&pipelines(&[(7, SHA, "failed"), (9, SHA, "success")]), SHA).is_err());
+        assert!(gitlab_failed_pipeline(
+            &pipelines(&[(7, SHA, "failed"), (9, SHA, "success")]),
+            SHA
+        )
+        .is_err());
         assert!(gitlab_failed_pipeline("[]", SHA).is_err());
     }
 
@@ -760,7 +859,9 @@ mod tests {
     }
     #[test]
     fn a_workflow_directory_entry_that_cannot_be_read_counts_as_configured() {
-        let unreadable: Vec<std::io::Result<std::fs::DirEntry>> = vec![Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))];
+        let unreadable: Vec<std::io::Result<std::fs::DirEntry>> = vec![Err(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ))];
         assert!(has_workflow_entry(unreadable));
         let none: Vec<std::io::Result<std::fs::DirEntry>> = Vec::new();
         assert!(!has_workflow_entry(none));
@@ -770,7 +871,8 @@ mod tests {
     #[test]
     fn a_config_that_cannot_be_inspected_counts_as_configured_not_absent() {
         // `loop/x` fails with ELOOP, an error that is not NotFound.
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-ci-wait-loop-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-ci-wait-loop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::os::unix::fs::symlink("loop", dir.join("loop")).unwrap();

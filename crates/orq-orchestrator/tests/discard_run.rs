@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{discard_preview, discard_run, discard_run_before_remove, discard_run_then, Event, RunRecord, RunStore, StoreError};
+use orq_orchestrator::{
+    discard_preview, discard_run, discard_run_before_remove, discard_run_then, Event, RunRecord,
+    RunStore, StoreError,
+};
 use orq_test_support::GitFixture;
 
 fn event(kind: &str, payload: serde_json::Value) -> Event {
@@ -38,7 +41,8 @@ fn record(worktree: &Path, branch: &str) -> RunRecord {
 }
 
 fn store(tag: &str) -> (PathBuf, RunStore) {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-discard-run-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-run-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
     (root, store)
@@ -48,7 +52,12 @@ fn branch_exists(repo: &Path, branch: &str) -> bool {
     Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
         .status()
         .unwrap()
         .success()
@@ -60,9 +69,18 @@ fn a_failed_run_is_discarded_with_its_worktree_branch_logs_record_and_every_grou
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (root, store) = store("group");
     let members = vec!["F".to_string(), "G".to_string()];
-    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
-    store.append_event(&event("run.grouped", serde_json::json!({ "features": members }))).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+        .start_group_run(&record(&worktree, "orq-run-1"), &members)
+        .unwrap();
+    store
+        .append_event(&event(
+            "run.grouped",
+            serde_json::json!({ "features": members }),
+        ))
+        .unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
     std::fs::create_dir_all(root.join("logs").join("run-1")).unwrap();
 
     discard_run(&store, "run-1", repo.root()).unwrap();
@@ -81,7 +99,12 @@ fn a_run_that_is_not_failed_or_has_an_unsafe_worktree_or_branch_is_left_untouche
     let other = repo.add_linked_worktree("other");
     let cases: [(&str, Option<&str>, &Path, &str); 4] = [
         ("running", None, &worktree, "orq-run-1"),
-        ("main-worktree", Some("run.failed"), repo.root(), "orq-run-1"),
+        (
+            "main-worktree",
+            Some("run.failed"),
+            repo.root(),
+            "orq-run-1",
+        ),
         ("wrong-branch", Some("run.failed"), &other, "orq-run-1"),
         ("target-branch", Some("run.failed"), &worktree, "main"),
     ];
@@ -89,29 +112,43 @@ fn a_run_that_is_not_failed_or_has_an_unsafe_worktree_or_branch_is_left_untouche
         let (_, store) = store(tag);
         store.start_run(&record(wt, branch)).unwrap();
         if let Some(kind) = ending {
-            store.append_event(&event(kind, serde_json::json!({}))).unwrap();
+            store
+                .append_event(&event(kind, serde_json::json!({})))
+                .unwrap();
         }
         assert!(discard_run(&store, "run-1", repo.root()).is_err(), "{tag}");
         assert!(store.load("run-1").is_ok(), "{tag}");
-        assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"), "{tag}");
+        assert_eq!(
+            store.active_run("p", "F").unwrap().as_deref(),
+            Some("run-1"),
+            "{tag}"
+        );
     }
     assert!(worktree.exists() && other.exists() && repo.root().exists());
     assert!(branch_exists(repo.root(), "orq-run-1") && branch_exists(repo.root(), "other"));
 }
 
 fn head_sha(repo: &Path) -> String {
-    let out = Command::new("git").arg("-C").arg(repo).args(["rev-parse", "HEAD"]).output().unwrap();
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
 fn failed_run_without_worktree(tag: &str, repo: &GitFixture, base_sha: &str) -> RunStore {
     let (_, store) = store(tag);
-    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-gone-{}-{tag}", std::process::id()));
+    let gone = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-gone-{}-{tag}", std::process::id()));
     let mut rec = record(&gone, "orq-run-1");
     rec.base_sha = base_sha.to_string();
     let _ = repo;
     store.start_run(&rec).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
     store
 }
 
@@ -122,7 +159,13 @@ fn a_run_whose_worktree_is_already_gone_is_forgotten_without_deleting_any_branch
         let repo = GitFixture::new();
         let base = head_sha(repo.root());
         let wt = repo.add_linked_worktree("orq-run-1");
-        Command::new("git").arg("-C").arg(repo.root()).args(["worktree", "remove", "--force"]).arg(&wt).status().unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.root())
+            .args(["worktree", "remove", "--force"])
+            .arg(&wt)
+            .status()
+            .unwrap();
         let other = GitFixture::new();
         other.add_linked_worktree("orq-run-1");
         let supplied = if same_repo { repo.root() } else { other.root() };
@@ -130,7 +173,10 @@ fn a_run_whose_worktree_is_already_gone_is_forgotten_without_deleting_any_branch
         discard_run(&store, "run-1", supplied).unwrap();
         assert!(store.load("run-1").is_err(), "{tag}");
         assert_eq!(store.active_run("p", "F").unwrap(), None, "{tag}");
-        assert!(branch_exists(repo.root(), "orq-run-1") && branch_exists(other.root(), "orq-run-1"), "{tag}");
+        assert!(
+            branch_exists(repo.root(), "orq-run-1") && branch_exists(other.root(), "orq-run-1"),
+            "{tag}"
+        );
     }
 }
 
@@ -140,9 +186,18 @@ fn a_group_whose_first_member_lock_is_already_gone_still_releases_the_others() {
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (root, store) = store("lock-gone");
     let members = vec!["F".to_string(), "G".to_string()];
-    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
-    store.append_event(&event("run.grouped", serde_json::json!({ "features": members }))).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+        .start_group_run(&record(&worktree, "orq-run-1"), &members)
+        .unwrap();
+    store
+        .append_event(&event(
+            "run.grouped",
+            serde_json::json!({ "features": members }),
+        ))
+        .unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
     std::fs::remove_file(root.join("locks").join("p").join("F.lock")).unwrap();
 
     discard_run(&store, "run-1", repo.root()).unwrap();
@@ -157,11 +212,20 @@ fn a_branch_also_checked_out_in_another_worktree_is_never_deleted() {
     let worktree = repo.add_linked_worktree("orq-run-1");
     let sibling = worktree.with_file_name("orq-discard-sibling-checkout");
     let _ = std::fs::remove_dir_all(&sibling);
-    let added = Command::new("git").arg("-C").arg(repo.root()).args(["worktree", "add", "--force"]).arg(&sibling).arg("orq-run-1").status().unwrap();
+    let added = Command::new("git")
+        .arg("-C")
+        .arg(repo.root())
+        .args(["worktree", "add", "--force"])
+        .arg(&sibling)
+        .arg("orq-run-1")
+        .status()
+        .unwrap();
     assert!(added.success());
     let (_, store) = store("shared");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
 
     assert!(discard_run(&store, "run-1", repo.root()).is_err());
 
@@ -175,15 +239,27 @@ fn a_lock_that_cannot_be_released_keeps_the_record_so_the_discard_can_be_retried
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (root, store) = store("bad-lock");
     let members = vec!["F".to_string(), "G".to_string()];
-    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
-    store.append_event(&event("run.grouped", serde_json::json!({ "features": members }))).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+        .start_group_run(&record(&worktree, "orq-run-1"), &members)
+        .unwrap();
+    store
+        .append_event(&event(
+            "run.grouped",
+            serde_json::json!({ "features": members }),
+        ))
+        .unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
     let lock = root.join("locks").join("p").join("G.lock");
     std::fs::remove_file(&lock).unwrap();
     std::fs::create_dir(&lock).unwrap();
 
     assert!(discard_run(&store, "run-1", repo.root()).is_err());
-    assert!(store.load("run-1").is_ok(), "the record survives for a retry");
+    assert!(
+        store.load("run-1").is_ok(),
+        "the record survives for a retry"
+    );
 
     std::fs::remove_dir(&lock).unwrap();
     discard_run(&store, "run-1", repo.root()).unwrap();
@@ -196,18 +272,30 @@ fn a_same_branch_sibling_whose_directory_is_gone_still_blocks_the_discard() {
     let worktree = repo.add_linked_worktree("orq-run-1");
     let sibling = worktree.with_file_name("orq-discard-stale-sibling");
     let _ = std::fs::remove_dir_all(&sibling);
-    let added = Command::new("git").arg("-C").arg(repo.root()).args(["worktree", "add", "--force"]).arg(&sibling).arg("orq-run-1").status().unwrap();
+    let added = Command::new("git")
+        .arg("-C")
+        .arg(repo.root())
+        .args(["worktree", "add", "--force"])
+        .arg(&sibling)
+        .arg("orq-run-1")
+        .status()
+        .unwrap();
     assert!(added.success());
     std::fs::remove_dir_all(&sibling).unwrap();
     let (_, store) = store("stale-sibling");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
 
     assert!(discard_run(&store, "run-1", repo.root()).is_err());
 
     assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
     assert!(store.load("run-1").is_ok());
-    assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
+    assert_eq!(
+        store.active_run("p", "F").unwrap().as_deref(),
+        Some("run-1")
+    );
 }
 
 #[test]
@@ -216,7 +304,9 @@ fn a_blocked_run_is_discarded_like_a_failed_one() {
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (root, store) = store("blocked");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.blocked", serde_json::json!({})))
+        .unwrap();
     std::fs::create_dir_all(root.join("logs").join("run-1")).unwrap();
 
     discard_run(&store, "run-1", repo.root()).unwrap();
@@ -234,10 +324,21 @@ fn reopen_the_discard_holds_every_orphaned_feature_lock_while_the_features_are_r
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (_, store) = store("reopen-held");
     let members = vec!["F".to_string(), "G".to_string(), "H".to_string()];
-    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
-    store.append_event(&event("run.grouped", serde_json::json!({ "features": members }))).unwrap();
-    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
-    store.finish_group_run("p", &["F".to_string(), "G".to_string()], "run-1").unwrap();
+    store
+        .start_group_run(&record(&worktree, "orq-run-1"), &members)
+        .unwrap();
+    store
+        .append_event(&event(
+            "run.grouped",
+            serde_json::json!({ "features": members }),
+        ))
+        .unwrap();
+    store
+        .append_event(&event("run.blocked", serde_json::json!({})))
+        .unwrap();
+    store
+        .finish_group_run("p", &["F".to_string(), "G".to_string()], "run-1")
+        .unwrap();
     let mut other = record(&worktree, "orq-run-2");
     other.run_id = "run-2".into();
     other.feature_id = "G".into();
@@ -247,20 +348,34 @@ fn reopen_the_discard_holds_every_orphaned_feature_lock_while_the_features_are_r
     discard_run_then(&store, "run-1", repo.root(), &mut |project_id, features| {
         assert_eq!(project_id, "p");
         for feature in features {
-            assert_eq!(store.active_run("p", feature).unwrap().as_deref(), Some("run-1"), "{feature} is held while it is reopened");
+            assert_eq!(
+                store.active_run("p", feature).unwrap().as_deref(),
+                Some("run-1"),
+                "{feature} is held while it is reopened"
+            );
         }
         // A run launched now cannot take a feature that is being reopened.
         let mut late = record(&worktree, "orq-run-3");
         late.run_id = "run-3".into();
-        assert!(matches!(store.start_run(&late), Err(StoreError::FeatureBusy { .. })));
+        assert!(matches!(
+            store.start_run(&late),
+            Err(StoreError::FeatureBusy { .. })
+        ));
         seen = features.to_vec();
     })
     .unwrap();
 
-    assert_eq!(seen, vec!["F".to_string(), "H".to_string()], "G belongs to run-2");
+    assert_eq!(
+        seen,
+        vec!["F".to_string(), "H".to_string()],
+        "G belongs to run-2"
+    );
     assert_eq!(store.active_run("p", "F").unwrap(), None);
     assert_eq!(store.active_run("p", "H").unwrap(), None);
-    assert_eq!(store.active_run("p", "G").unwrap().as_deref(), Some("run-2"));
+    assert_eq!(
+        store.active_run("p", "G").unwrap().as_deref(),
+        Some("run-2")
+    );
 }
 
 #[test]
@@ -270,29 +385,56 @@ fn reopen_a_lock_that_cannot_be_claimed_frees_the_locks_the_discard_took_and_kee
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (_, store) = store("reopen-claim-fails");
     let members = vec!["F".to_string(), "H".to_string()];
-    store.start_group_run(&record(&worktree, "orq-run-1"), &members).unwrap();
     store
-        .append_event(&event("run.grouped", serde_json::json!({ "features": ["F", "H", "not a feature id"] })))
+        .start_group_run(&record(&worktree, "orq-run-1"), &members)
         .unwrap();
-    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
-    store.finish_group_run("p", &["F".to_string()], "run-1").unwrap();
+    store
+        .append_event(&event(
+            "run.grouped",
+            serde_json::json!({ "features": ["F", "H", "not a feature id"] }),
+        ))
+        .unwrap();
+    store
+        .append_event(&event("run.blocked", serde_json::json!({})))
+        .unwrap();
+    store
+        .finish_group_run("p", &["F".to_string()], "run-1")
+        .unwrap();
 
     let mut reopened = false;
     let result = discard_run_then(&store, "run-1", repo.root(), &mut |_, _| reopened = true);
 
     assert!(result.is_err());
-    assert!(!reopened, "nothing is reopened when the locks could not all be claimed");
-    assert_eq!(store.active_run("p", "F").unwrap(), None, "the lock the discard took is given back");
-    assert_eq!(store.active_run("p", "H").unwrap().as_deref(), Some("run-1"), "the run's own lock stays for a retry");
-    assert!(store.load("run-1").is_ok(), "the record stays, so the discard can be retried");
+    assert!(
+        !reopened,
+        "nothing is reopened when the locks could not all be claimed"
+    );
+    assert_eq!(
+        store.active_run("p", "F").unwrap(),
+        None,
+        "the lock the discard took is given back"
+    );
+    assert_eq!(
+        store.active_run("p", "H").unwrap().as_deref(),
+        Some("run-1"),
+        "the run's own lock stays for a retry"
+    );
+    assert!(
+        store.load("run-1").is_ok(),
+        "the record stays, so the discard can be retried"
+    );
 }
 
 fn paused_run(tag: &str, repo: &GitFixture) -> (PathBuf, PathBuf, RunStore) {
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (root, store) = store(tag);
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.pause_requested", serde_json::json!({}))).unwrap();
-    store.append_event(&event("run.paused", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.pause_requested", serde_json::json!({})))
+        .unwrap();
+    store
+        .append_event(&event("run.paused", serde_json::json!({})))
+        .unwrap();
     std::fs::create_dir_all(root.join("logs").join("run-1")).unwrap();
     (root, worktree, store)
 }
@@ -319,13 +461,26 @@ fn discard_keep_a_dirty_worktree_and_its_branch_are_kept_while_the_run_is_forgot
         let (root, worktree, store) = paused_run(&format!("dirty-{tag}"), &repo);
         std::fs::write(worktree.join("work.txt"), "unfinished").unwrap();
         if staged {
-            Command::new("git").arg("-C").arg(&worktree).args(["add", "work.txt"]).status().unwrap();
+            Command::new("git")
+                .arg("-C")
+                .arg(&worktree)
+                .args(["add", "work.txt"])
+                .status()
+                .unwrap();
         }
 
         let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
 
-        assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()), "{tag}");
-        assert_eq!(std::fs::read_to_string(worktree.join("work.txt")).unwrap(), "unfinished", "{tag}");
+        assert_eq!(
+            outcome.kept_worktree.as_deref(),
+            Some(worktree.as_path()),
+            "{tag}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("work.txt")).unwrap(),
+            "unfinished",
+            "{tag}"
+        );
         assert!(branch_exists(repo.root(), "orq-run-1"), "{tag}");
         assert!(store.load("run-1").is_err(), "{tag}");
         assert!(!root.join("logs").join("run-1").exists(), "{tag}");
@@ -339,14 +494,27 @@ fn discard_keep_a_run_whose_pause_is_only_requested_is_still_live_and_left_untou
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (_, store) = store("pause-requested");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.pause_requested", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.pause_requested", serde_json::json!({})))
+        .unwrap();
 
     assert!(discard_run(&store, "run-1", repo.root()).is_err());
-    assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+    assert!(
+        store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1")
+    );
 }
 
 fn git_in(dir: &Path, args: &[&str]) {
-    assert!(Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success(), "git {args:?}");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap()
+            .success(),
+        "git {args:?}"
+    );
 }
 
 #[test]
@@ -366,7 +534,12 @@ fn discard_status_untracked_work_is_kept_even_when_git_is_configured_to_hide_it(
 fn discard_status_a_worktree_whose_cleanliness_cannot_be_told_is_left_as_it_was() {
     let repo = GitFixture::new();
     let (root, worktree, store) = paused_run("status-fails", &repo);
-    let gitdir = Command::new("git").arg("-C").arg(&worktree).args(["rev-parse", "--absolute-git-dir"]).output().unwrap();
+    let gitdir = Command::new("git")
+        .arg("-C")
+        .arg(&worktree)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .unwrap();
     let gitdir = PathBuf::from(String::from_utf8(gitdir.stdout).unwrap().trim());
     std::fs::write(gitdir.join("index"), "not an index").unwrap();
 
@@ -374,7 +547,10 @@ fn discard_status_a_worktree_whose_cleanliness_cannot_be_told_is_left_as_it_was(
 
     assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
     assert!(store.load("run-1").is_ok() && root.join("logs").join("run-1").exists());
-    assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
+    assert_eq!(
+        store.active_run("p", "F").unwrap().as_deref(),
+        Some("run-1")
+    );
 }
 
 #[test]
@@ -382,10 +558,11 @@ fn discard_race_work_written_after_the_check_is_kept_with_its_worktree_and_branc
     let repo = GitFixture::new();
     let (_, worktree, store) = paused_run("race", &repo);
 
-    let outcome = discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
-        std::fs::write(worktree.join("late.txt"), "written while the discard ran").unwrap();
-    })
-    .unwrap();
+    let outcome =
+        discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
+            std::fs::write(worktree.join("late.txt"), "written while the discard ran").unwrap();
+        })
+        .unwrap();
 
     assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()));
     assert!(worktree.join("late.txt").exists() && branch_exists(repo.root(), "orq-run-1"));
@@ -394,31 +571,80 @@ fn discard_race_work_written_after_the_check_is_kept_with_its_worktree_and_branc
 }
 
 #[test]
-fn discard_submodule_a_worktree_with_an_initialized_submodule_is_kept_and_the_run_still_discarded() {
+fn discard_submodule_a_worktree_with_an_initialized_submodule_is_kept_and_the_run_still_discarded()
+{
     for (tag, dirty) in [("clean", false), ("dirty", true)] {
         let repo = GitFixture::new();
         let (root, worktree, store) = paused_run(&format!("submodule-{tag}"), &repo);
         let sub = root.join("sub-origin");
         std::fs::create_dir_all(&sub).unwrap();
         git_in(&sub, &["init", "-q"]);
-        git_in(&sub, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "sub"]);
-        git_in(&worktree, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.to_string_lossy(), "sub"]);
-        git_in(&worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "add sub"]);
+        git_in(
+            &sub,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "sub",
+            ],
+        );
+        git_in(
+            &worktree,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                &sub.to_string_lossy(),
+                "sub",
+            ],
+        );
+        git_in(
+            &worktree,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "add sub",
+            ],
+        );
         if dirty {
             std::fs::write(worktree.join("sub").join("work.txt"), "unfinished").unwrap();
         }
 
         let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
 
-        assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()), "{tag}");
-        assert!(worktree.join("sub").exists() && branch_exists(repo.root(), "orq-run-1"), "{tag}");
+        assert_eq!(
+            outcome.kept_worktree.as_deref(),
+            Some(worktree.as_path()),
+            "{tag}"
+        );
+        assert!(
+            worktree.join("sub").exists() && branch_exists(repo.root(), "orq-run-1"),
+            "{tag}"
+        );
         assert!(store.load("run-1").is_err(), "{tag}");
         assert_eq!(store.active_run("p", "F").unwrap(), None, "{tag}");
     }
 }
 
 fn current_branch(repo: &Path) -> String {
-    let out = Command::new("git").arg("-C").arg(repo).args(["symbolic-ref", "--short", "HEAD"]).output().unwrap();
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
@@ -427,7 +653,22 @@ fn commit_ahead(worktree: &Path, count: usize) -> String {
     for n in 0..count {
         std::fs::write(worktree.join(format!("ahead-{n}.txt")), "committed work\n").unwrap();
         git_in(worktree, &["add", "."]);
-        git_in(worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", &format!("ahead {n}")]);
+        git_in(
+            worktree,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                &format!("ahead {n}"),
+            ],
+        );
     }
     head_sha(worktree)
 }
@@ -440,25 +681,39 @@ fn failed_run_ahead(tag: &str, repo: &GitFixture, ahead: usize) -> (PathBuf, Str
     let mut rec = record(&worktree, "orq-run-1");
     rec.target_branch = current_branch(repo.root());
     store.start_run(&rec).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
     (worktree, last, store)
 }
 
 #[test]
-fn discard_ahead_a_deleted_branch_is_reported_with_its_commits_past_the_target_and_its_last_commit() {
+fn discard_ahead_a_deleted_branch_is_reported_with_its_commits_past_the_target_and_its_last_commit()
+{
     let repo = GitFixture::new();
     let (_, last, store) = failed_run_ahead("ahead-outcome", &repo, 2);
 
     let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
 
     let deleted = outcome.deleted_branch.expect("the branch was deleted");
-    assert_eq!((deleted.name.as_str(), deleted.commits_ahead, deleted.last_commit.as_str()), ("orq-run-1", Some(2), last.as_str()));
+    assert_eq!(
+        (
+            deleted.name.as_str(),
+            deleted.commits_ahead,
+            deleted.last_commit.as_str()
+        ),
+        ("orq-run-1", Some(2), last.as_str())
+    );
     assert!(!branch_exists(repo.root(), "orq-run-1"));
 }
 
 #[test]
 fn discard_ahead_the_preview_names_the_commits_a_discard_would_delete_and_changes_nothing() {
-    for (tag, ahead, dirty, expected) in [("two", 2, false, Some(2)), ("none", 0, false, Some(0)), ("dirty", 2, true, None)] {
+    for (tag, ahead, dirty, expected) in [
+        ("two", 2, false, Some(2)),
+        ("none", 0, false, Some(0)),
+        ("dirty", 2, true, None),
+    ] {
         let repo = GitFixture::new();
         let (worktree, last, store) = failed_run_ahead(&format!("preview-{tag}"), &repo, ahead);
         if dirty {
@@ -470,11 +725,20 @@ fn discard_ahead_the_preview_names_the_commits_a_discard_would_delete_and_change
         match expected {
             Some(count) => {
                 let branch = preview.unwrap_or_else(|| panic!("{tag}: the branch would go"));
-                assert_eq!((branch.commits_ahead, branch.last_commit.as_str()), (Some(count), last.as_str()), "{tag}");
+                assert_eq!(
+                    (branch.commits_ahead, branch.last_commit.as_str()),
+                    (Some(count), last.as_str()),
+                    "{tag}"
+                );
             }
             None => assert_eq!(preview, None, "{tag}: a dirty worktree keeps its branch"),
         }
-        assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1") && store.load("run-1").is_ok(), "{tag}");
+        assert!(
+            worktree.exists()
+                && branch_exists(repo.root(), "orq-run-1")
+                && store.load("run-1").is_ok(),
+            "{tag}"
+        );
     }
 }
 
@@ -495,7 +759,10 @@ fn discard_ignored_a_hand_placed_ignored_file_keeps_the_worktree_and_branch() {
     let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
 
     assert_eq!(outcome.kept_worktree.as_deref(), Some(worktree.as_path()));
-    assert_eq!(std::fs::read_to_string(worktree.join(".env")).unwrap(), "SECRET=1\n");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".env")).unwrap(),
+        "SECRET=1\n"
+    );
     assert!(branch_exists(repo.root(), "orq-run-1"));
     assert!(store.load("run-1").is_err());
 }
@@ -509,7 +776,10 @@ fn discard_ignored_the_kept_reason_names_the_hand_placed_ignored_file() {
 
     let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
 
-    assert_eq!(outcome.kept_reason.as_deref(), Some("the worktree has uncommitted changes: .env"));
+    assert_eq!(
+        outcome.kept_reason.as_deref(),
+        Some("the worktree has uncommitted changes: .env")
+    );
 }
 
 #[test]
@@ -517,13 +787,17 @@ fn discard_race_a_worktree_git_would_not_remove_is_kept_with_a_reason() {
     let repo = GitFixture::new();
     let (_, worktree, store) = paused_run("race-reason", &repo);
 
-    let outcome = discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
-        std::fs::write(worktree.join("late.txt"), "written while the discard ran").unwrap();
-    })
-    .unwrap();
+    let outcome =
+        discard_run_before_remove(&store, "run-1", repo.root(), &mut |_, _| {}, &mut || {
+            std::fs::write(worktree.join("late.txt"), "written while the discard ran").unwrap();
+        })
+        .unwrap();
 
     let reason = outcome.kept_reason.expect("a kept worktree says why");
-    assert!(reason.starts_with("git would not remove the worktree"), "{reason}");
+    assert!(
+        reason.starts_with("git would not remove the worktree"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -546,8 +820,27 @@ fn install_node_modules(repo: &GitFixture, worktree: &Path, locked: bool) {
         std::fs::write(worktree.join("web/package-lock.json"), "{}\n").unwrap();
     }
     git_in(worktree, &["add", "web"]);
-    git_in(worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", "-m", "web"]);
-    std::fs::write(worktree.join("web/node_modules/.bin/esbuild"), "installed\n").unwrap();
+    git_in(
+        worktree,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            "web",
+        ],
+    );
+    std::fs::write(
+        worktree.join("web/node_modules/.bin/esbuild"),
+        "installed\n",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -556,7 +849,9 @@ fn discard_installed_a_worktree_holding_only_locked_node_modules_is_removed_with
     let (_, worktree, store) = paused_run("node-modules-locked", &repo);
     install_node_modules(&repo, &worktree, true);
 
-    assert!(discard_preview(&store, "run-1", repo.root()).unwrap().is_some());
+    assert!(discard_preview(&store, "run-1", repo.root())
+        .unwrap()
+        .is_some());
     let outcome = discard_run(&store, "run-1", repo.root()).unwrap();
 
     assert_eq!((outcome.kept_worktree, outcome.kept_reason), (None, None));
@@ -578,7 +873,14 @@ fn discard_installed_node_modules_without_a_committed_lockfile_keep_the_worktree
 }
 
 /// `run_id`, a run of `features` led by the first, on `worktree` and `branch`, that started at `at`.
-fn later_run(store: &RunStore, run_id: &str, features: &[&str], worktree: &Path, branch: &str, at: &str) {
+fn later_run(
+    store: &RunStore,
+    run_id: &str,
+    features: &[&str],
+    worktree: &Path,
+    branch: &str,
+    at: &str,
+) {
     let mut later = record(worktree, branch);
     later.run_id = run_id.into();
     later.feature_id = features[0].into();
@@ -599,17 +901,32 @@ fn taken_over_a_blocked_run_a_later_run_continued_is_refused_and_left_whole() {
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (root, store) = store("taken-over");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
+    store
+        .append_event(&event("run.blocked", serde_json::json!({})))
+        .unwrap();
     std::fs::create_dir_all(root.join("logs").join("run-1")).unwrap();
-    later_run(&store, "run-2", &["F"], &worktree, "orq-run-1", "2026-11-02T11:00:00Z");
+    later_run(
+        &store,
+        "run-2",
+        &["F"],
+        &worktree,
+        "orq-run-1",
+        "2026-11-02T11:00:00Z",
+    );
 
     let refused = discard_run(&store, "run-1", repo.root()).unwrap_err();
 
-    assert_eq!(refused, "run-1 was continued as run-2; discard or accept that run instead");
+    assert_eq!(
+        refused,
+        "run-1 was continued as run-2; discard or accept that run instead"
+    );
     assert!(store.load("run-1").is_ok());
     assert!(worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
     assert!(root.join("logs").join("run-1").exists());
-    assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"));
+    assert_eq!(
+        store.active_run("p", "F").unwrap().as_deref(),
+        Some("run-1")
+    );
 }
 
 #[test]
@@ -618,14 +935,31 @@ fn taken_over_a_run_marked_resumed_is_refused_naming_the_run_it_was_continued_as
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (_, store) = store("resumed");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.blocked", serde_json::json!({}))).unwrap();
-    store.append_event(&event("run.resumed", serde_json::json!({ "resumed_as": "run-9" }))).unwrap();
-    store.append_event(&event("run.completed", serde_json::json!({ "ending": "resumed", "reason": "continued as run-9" }))).unwrap();
+    store
+        .append_event(&event("run.blocked", serde_json::json!({})))
+        .unwrap();
+    store
+        .append_event(&event(
+            "run.resumed",
+            serde_json::json!({ "resumed_as": "run-9" }),
+        ))
+        .unwrap();
+    store
+        .append_event(&event(
+            "run.completed",
+            serde_json::json!({ "ending": "resumed", "reason": "continued as run-9" }),
+        ))
+        .unwrap();
 
     let refused = discard_run(&store, "run-1", repo.root()).unwrap_err();
 
-    assert!(refused.starts_with("run-1 is completed, continued as run-9; only a failed"), "{refused}");
-    assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"));
+    assert!(
+        refused.starts_with("run-1 is completed, continued as run-9; only a failed"),
+        "{refused}"
+    );
+    assert!(
+        store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1")
+    );
 }
 
 #[test]
@@ -635,12 +969,25 @@ fn taken_over_a_later_run_of_other_features_only_does_not_block_the_discard() {
     let elsewhere = repo.add_linked_worktree("orq-run-2");
     let (_, store) = store("other-features");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
-    later_run(&store, "run-2", &["G"], &elsewhere, "orq-run-2", "2026-11-02T11:00:00Z");
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
+    later_run(
+        &store,
+        "run-2",
+        &["G"],
+        &elsewhere,
+        "orq-run-2",
+        "2026-11-02T11:00:00Z",
+    );
 
     discard_run(&store, "run-1", repo.root()).unwrap();
 
-    assert!(store.load("run-1").is_err() && !worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
+    assert!(
+        store.load("run-1").is_err()
+            && !worktree.exists()
+            && !branch_exists(repo.root(), "orq-run-1")
+    );
     assert!(store.load("run-2").is_ok() && elsewhere.exists());
 }
 
@@ -650,10 +997,22 @@ fn taken_over_the_preview_of_a_run_a_later_run_continued_gives_the_reason_instea
     let worktree = repo.add_linked_worktree("orq-run-1");
     let (_, store) = store("taken-over-preview");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
-    later_run(&store, "run-2", &["F"], &worktree, "orq-run-1", "2026-11-02T11:00:00Z");
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
+    later_run(
+        &store,
+        "run-2",
+        &["F"],
+        &worktree,
+        "orq-run-1",
+        "2026-11-02T11:00:00Z",
+    );
 
-    assert_eq!(discard_preview(&store, "run-1", repo.root()), Err("run-1 was continued as run-2; discard or accept that run instead".to_string()));
+    assert_eq!(
+        discard_preview(&store, "run-1", repo.root()),
+        Err("run-1 was continued as run-2; discard or accept that run instead".to_string())
+    );
 }
 
 #[test]
@@ -663,13 +1022,30 @@ fn taken_over_a_later_run_of_the_same_feature_on_its_own_checkout_does_not_block
     let elsewhere = repo.add_linked_worktree("orq-run-2");
     let (_, store) = store("same-feature-elsewhere");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
-    later_run(&store, "run-2", &["F"], &elsewhere, "orq-run-2", "2026-11-02T11:00:00Z");
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
+    later_run(
+        &store,
+        "run-2",
+        &["F"],
+        &elsewhere,
+        "orq-run-2",
+        "2026-11-02T11:00:00Z",
+    );
 
     discard_run(&store, "run-1", repo.root()).unwrap();
 
-    assert!(store.load("run-1").is_err() && !worktree.exists() && !branch_exists(repo.root(), "orq-run-1"));
-    assert!(store.load("run-2").is_ok() && elsewhere.exists() && branch_exists(repo.root(), "orq-run-2"));
+    assert!(
+        store.load("run-1").is_err()
+            && !worktree.exists()
+            && !branch_exists(repo.root(), "orq-run-1")
+    );
+    assert!(
+        store.load("run-2").is_ok()
+            && elsewhere.exists()
+            && branch_exists(repo.root(), "orq-run-2")
+    );
 }
 
 #[test]
@@ -679,15 +1055,43 @@ fn taken_over_a_later_run_whose_record_or_events_cannot_be_read_stops_the_discar
         let worktree = repo.add_linked_worktree("orq-run-1");
         let (root, store) = store(&format!("unreadable-{unreadable}"));
         store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-        store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
-        later_run(&store, "run-2", &["F"], &worktree, "orq-run-1", "2026-11-02T11:00:00Z");
-        std::fs::write(root.join("runs").join("run-2").join(unreadable), "{ not json\n").unwrap();
+        store
+            .append_event(&event("run.failed", serde_json::json!({})))
+            .unwrap();
+        later_run(
+            &store,
+            "run-2",
+            &["F"],
+            &worktree,
+            "orq-run-1",
+            "2026-11-02T11:00:00Z",
+        );
+        std::fs::write(
+            root.join("runs").join("run-2").join(unreadable),
+            "{ not json\n",
+        )
+        .unwrap();
 
-        assert!(discard_run(&store, "run-1", repo.root()).is_err(), "{unreadable}");
-        assert!(discard_preview(&store, "run-1", repo.root()).is_err(), "{unreadable}");
+        assert!(
+            discard_run(&store, "run-1", repo.root()).is_err(),
+            "{unreadable}"
+        );
+        assert!(
+            discard_preview(&store, "run-1", repo.root()).is_err(),
+            "{unreadable}"
+        );
 
-        assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"), "{unreadable}");
-        assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"), "{unreadable}");
+        assert!(
+            store.load("run-1").is_ok()
+                && worktree.exists()
+                && branch_exists(repo.root(), "orq-run-1"),
+            "{unreadable}"
+        );
+        assert_eq!(
+            store.active_run("p", "F").unwrap().as_deref(),
+            Some("run-1"),
+            "{unreadable}"
+        );
     }
 }
 
@@ -698,9 +1102,22 @@ fn taken_over_unreadable_events_of_a_run_on_its_own_checkout_do_not_block_the_di
     let elsewhere = repo.add_linked_worktree("orq-run-2");
     let (root, store) = store("unreadable-elsewhere");
     store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-    store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
-    later_run(&store, "run-2", &["G"], &elsewhere, "orq-run-2", "2026-11-02T11:00:00Z");
-    std::fs::write(root.join("runs").join("run-2").join("events.jsonl"), "{ not json\n").unwrap();
+    store
+        .append_event(&event("run.failed", serde_json::json!({})))
+        .unwrap();
+    later_run(
+        &store,
+        "run-2",
+        &["G"],
+        &elsewhere,
+        "orq-run-2",
+        "2026-11-02T11:00:00Z",
+    );
+    std::fs::write(
+        root.join("runs").join("run-2").join("events.jsonl"),
+        "{ not json\n",
+    )
+    .unwrap();
 
     discard_run(&store, "run-1", repo.root()).unwrap();
 
@@ -715,30 +1132,80 @@ fn taken_over_a_later_run_on_only_its_branch_or_only_its_worktree_is_refused_and
         let worktree = repo.add_linked_worktree("orq-run-1");
         let (_, store) = store(case);
         store.start_run(&record(&worktree, "orq-run-1")).unwrap();
-        store.append_event(&event("run.failed", serde_json::json!({}))).unwrap();
+        store
+            .append_event(&event("run.failed", serde_json::json!({})))
+            .unwrap();
         if same_branch {
-            later_run(&store, "run-2", &["G"], &repo.root().join("elsewhere"), "orq-run-1", "2026-11-02T11:00:00Z");
+            later_run(
+                &store,
+                "run-2",
+                &["G"],
+                &repo.root().join("elsewhere"),
+                "orq-run-1",
+                "2026-11-02T11:00:00Z",
+            );
         } else {
-            later_run(&store, "run-2", &["G"], &worktree, "orq-run-2", "2026-11-02T11:00:00Z");
+            later_run(
+                &store,
+                "run-2",
+                &["G"],
+                &worktree,
+                "orq-run-2",
+                "2026-11-02T11:00:00Z",
+            );
         }
 
         let reason = "run-1 was continued as run-2; discard or accept that run instead".to_string();
-        assert_eq!(discard_run(&store, "run-1", repo.root()).map(|_| ()), Err(reason.clone()), "{case}");
-        assert_eq!(discard_preview(&store, "run-1", repo.root()).map(|_| ()), Err(reason), "{case}");
+        assert_eq!(
+            discard_run(&store, "run-1", repo.root()).map(|_| ()),
+            Err(reason.clone()),
+            "{case}"
+        );
+        assert_eq!(
+            discard_preview(&store, "run-1", repo.root()).map(|_| ()),
+            Err(reason),
+            "{case}"
+        );
 
-        assert!(store.load("run-1").is_ok() && worktree.exists() && branch_exists(repo.root(), "orq-run-1"), "{case}");
-        assert_eq!(store.active_run("p", "F").unwrap().as_deref(), Some("run-1"), "{case}");
+        assert!(
+            store.load("run-1").is_ok()
+                && worktree.exists()
+                && branch_exists(repo.root(), "orq-run-1"),
+            "{case}"
+        );
+        assert_eq!(
+            store.active_run("p", "F").unwrap().as_deref(),
+            Some("run-1"),
+            "{case}"
+        );
     }
 }
 
 /// Commits nothing but `subject` on the branch checked out in `dir` and returns the commit's SHA.
 fn commit_subject(dir: &Path, subject: &str) -> String {
-    git_in(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "--no-verify", "-m", subject]);
+    git_in(
+        dir,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--no-verify",
+            "-m",
+            subject,
+        ],
+    );
     head_sha(dir)
 }
 
 #[test]
-fn discard_finished_a_blocked_run_whose_branch_was_fast_forwarded_onto_its_target_is_merged_and_hands_back_nothing() {
+fn discard_finished_a_blocked_run_whose_branch_was_fast_forwarded_onto_its_target_is_merged_and_hands_back_nothing(
+) {
     let repo = GitFixture::new();
     let base = head_sha(repo.root());
     let worktree = repo.add_linked_worktree("orq-run-1");
@@ -749,32 +1216,53 @@ fn discard_finished_a_blocked_run_whose_branch_was_fast_forwarded_onto_its_targe
     rec.base_sha = base;
     rec.target_branch = current_branch(repo.root());
     store.start_run(&rec).unwrap();
-    store.append_event(&event("run.completed", serde_json::json!({"ending": "blocked"}))).unwrap();
+    store
+        .append_event(&event(
+            "run.completed",
+            serde_json::json!({"ending": "blocked"}),
+        ))
+        .unwrap();
 
     let mut handed_back = Vec::new();
-    let outcome = discard_run_then(&store, "run-1", repo.root(), &mut |_, features| handed_back.extend_from_slice(features)).unwrap();
+    let outcome = discard_run_then(&store, "run-1", repo.root(), &mut |_, features| {
+        handed_back.extend_from_slice(features)
+    })
+    .unwrap();
 
     assert!(outcome.merged, "{outcome:?}");
     assert!(handed_back.is_empty(), "{handed_back:?}");
 }
 
 #[test]
-fn discard_finished_a_feature_completed_after_the_run_stopped_or_named_by_a_target_commit_since_its_base_stays_completed() {
+fn discard_finished_a_feature_completed_after_the_run_stopped_or_named_by_a_target_commit_since_its_base_stays_completed(
+) {
     let repo = GitFixture::new();
     let target = current_branch(repo.root());
     commit_subject(repo.root(), "fix: before the run (F-early)");
     let base = head_sha(repo.root());
     let named = commit_subject(repo.root(), "fix(web): the settings cog (F-main)");
-    let finding = commit_subject(repo.root(), "fix(run): a finding (review finding some-finding, F-finding)");
-    commit_subject(repo.root(), "fix: a feature whose name only starts the same (F-main-extra)");
+    let finding = commit_subject(
+        repo.root(),
+        "fix(run): a finding (review finding some-finding, F-finding)",
+    );
+    commit_subject(
+        repo.root(),
+        "fix: a feature whose name only starts the same (F-main-extra)",
+    );
     let (_, store) = store("finished");
-    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-finished-gone-{}", std::process::id()));
+    let gone = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-finished-gone-{}", std::process::id()));
     let mut rec = record(&gone, "orq-run-1");
     rec.base_sha = base;
     rec.target_branch = target.clone();
     store.start_run(&rec).unwrap();
     // The run's last event is at 2026-11-02T10:00:00Z.
-    store.append_event(&event("run.completed", serde_json::json!({"ending": "blocked"}))).unwrap();
+    store
+        .append_event(&event(
+            "run.completed",
+            serde_json::json!({"ending": "blocked"}),
+        ))
+        .unwrap();
 
     let completed: Vec<(String, Option<String>)> = [
         ("F-late", Some("2026-11-02T10:00:01Z")),
@@ -789,14 +1277,25 @@ fn discard_finished_a_feature_completed_after_the_run_stopped_or_named_by_a_targ
     .into_iter()
     .map(|(name, at)| (name.to_string(), at.map(str::to_string)))
     .collect();
-    let kept = orq_orchestrator::features_finished_elsewhere(&store, "run-1", repo.root(), &completed).unwrap();
+    let kept =
+        orq_orchestrator::features_finished_elsewhere(&store, "run-1", repo.root(), &completed)
+            .unwrap();
 
     assert_eq!(
         kept,
         vec![
-            ("F-late".to_string(), "finished after this run stopped".to_string()),
-            ("F-main".to_string(), format!("its work is on {target} ({})", &named[..8])),
-            ("F-finding".to_string(), format!("its work is on {target} ({})", &finding[..8])),
+            (
+                "F-late".to_string(),
+                "finished after this run stopped".to_string()
+            ),
+            (
+                "F-main".to_string(),
+                format!("its work is on {target} ({})", &named[..8])
+            ),
+            (
+                "F-finding".to_string(),
+                format!("its work is on {target} ({})", &finding[..8])
+            ),
         ]
     );
 }
@@ -805,38 +1304,73 @@ fn discard_finished_a_feature_completed_after_the_run_stopped_or_named_by_a_targ
 /// 2026-11-02T10:00:00Z.
 fn blocked_run_based_here(tag: &str, repo: &Path) -> RunStore {
     let (_, store) = store(tag);
-    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-{tag}-gone-{}", std::process::id()));
+    let gone = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-{tag}-gone-{}", std::process::id()));
     let mut rec = record(&gone, "orq-run-1");
     rec.base_sha = head_sha(repo);
     rec.target_branch = current_branch(repo);
     store.start_run(&rec).unwrap();
-    store.append_event(&event("run.completed", serde_json::json!({"ending": "blocked"}))).unwrap();
+    store
+        .append_event(&event(
+            "run.completed",
+            serde_json::json!({"ending": "blocked"}),
+        ))
+        .unwrap();
     store
 }
 
 #[test]
-fn discard_finished_a_recorded_time_that_is_not_plain_ascii_or_not_utc_is_never_later_and_never_panics() {
+fn discard_finished_a_recorded_time_that_is_not_plain_ascii_or_not_utc_is_never_later_and_never_panics(
+) {
     let repo = GitFixture::new();
     let store = blocked_run_based_here("odd-times", repo.root());
-    let completed: Vec<(String, Option<String>)> =
-        ["202é-11-02T10:00:00Z", "2026-11-0é10:00:00Z", "2026-11-03T10:00:00Zé", "2026-11-03T10:00:00+01:00", "2026-11-03", "é", ""]
-            .iter()
-            .enumerate()
-            .map(|(n, at)| (format!("F-{n}"), Some(at.to_string())))
-            .collect();
-    assert_eq!(orq_orchestrator::features_finished_elsewhere(&store, "run-1", repo.root(), &completed).unwrap(), vec![]);
+    let completed: Vec<(String, Option<String>)> = [
+        "202é-11-02T10:00:00Z",
+        "2026-11-0é10:00:00Z",
+        "2026-11-03T10:00:00Zé",
+        "2026-11-03T10:00:00+01:00",
+        "2026-11-03",
+        "é",
+        "",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(n, at)| (format!("F-{n}"), Some(at.to_string())))
+    .collect();
+    assert_eq!(
+        orq_orchestrator::features_finished_elsewhere(&store, "run-1", repo.root(), &completed)
+            .unwrap(),
+        vec![]
+    );
 }
 
 #[test]
-fn discard_finished_the_target_history_is_not_read_when_every_feature_was_finished_after_the_run_stopped() {
+fn discard_finished_the_target_history_is_not_read_when_every_feature_was_finished_after_the_run_stopped(
+) {
     let repo = GitFixture::new();
     let store = blocked_run_based_here("no-history", repo.root());
     // No repository there: reading the target's history would fail.
-    let nowhere = orq_test_support::process_temp_dir().join(format!("orq-discard-no-repo-{}", std::process::id()));
+    let nowhere = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-no-repo-{}", std::process::id()));
     let late = |name: &str| (name.to_string(), Some("2026-11-02T10:00:05Z".to_string()));
     assert_eq!(
-        orq_orchestrator::features_finished_elsewhere(&store, "run-1", &nowhere, &[late("F-b"), late("F-a")]).unwrap(),
-        vec![("F-b".to_string(), "finished after this run stopped".to_string()), ("F-a".to_string(), "finished after this run stopped".to_string())]
+        orq_orchestrator::features_finished_elsewhere(
+            &store,
+            "run-1",
+            &nowhere,
+            &[late("F-b"), late("F-a")]
+        )
+        .unwrap(),
+        vec![
+            (
+                "F-b".to_string(),
+                "finished after this run stopped".to_string()
+            ),
+            (
+                "F-a".to_string(),
+                "finished after this run stopped".to_string()
+            )
+        ]
     );
 }
 
@@ -846,22 +1380,34 @@ fn discard_finished_a_missing_target_or_base_names_no_commit_and_a_git_that_fail
     let undated = [("F-undated".to_string(), None)];
 
     let (_, no_target) = store("no-target");
-    let gone = orq_test_support::process_temp_dir().join(format!("orq-discard-no-target-gone-{}", std::process::id()));
+    let gone = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-no-target-gone-{}", std::process::id()));
     let mut rec = record(&gone, "orq-run-1");
     rec.base_sha = head_sha(repo.root());
     rec.target_branch = "no-such-branch".into();
     no_target.start_run(&rec).unwrap();
-    assert_eq!(orq_orchestrator::features_finished_elsewhere(&no_target, "run-1", repo.root(), &undated).unwrap(), vec![]);
+    assert_eq!(
+        orq_orchestrator::features_finished_elsewhere(&no_target, "run-1", repo.root(), &undated)
+            .unwrap(),
+        vec![]
+    );
 
     let (_, no_base) = store("no-base");
     let mut rec = record(&gone, "orq-run-1");
     rec.base_sha = "0123456789abcdef0123456789abcdef01234567".into();
     rec.target_branch = current_branch(repo.root());
     no_base.start_run(&rec).unwrap();
-    assert_eq!(orq_orchestrator::features_finished_elsewhere(&no_base, "run-1", repo.root(), &undated).unwrap(), vec![]);
+    assert_eq!(
+        orq_orchestrator::features_finished_elsewhere(&no_base, "run-1", repo.root(), &undated)
+            .unwrap(),
+        vec![]
+    );
 
     let based_here = blocked_run_based_here("git-fails", repo.root());
-    let nowhere = orq_test_support::process_temp_dir().join(format!("orq-discard-no-repo-fails-{}", std::process::id()));
-    let err = orq_orchestrator::features_finished_elsewhere(&based_here, "run-1", &nowhere, &undated).unwrap_err();
+    let nowhere = orq_test_support::process_temp_dir()
+        .join(format!("orq-discard-no-repo-fails-{}", std::process::id()));
+    let err =
+        orq_orchestrator::features_finished_elsewhere(&based_here, "run-1", &nowhere, &undated)
+            .unwrap_err();
     assert!(err.contains("could not read the commits on"), "{err}");
 }

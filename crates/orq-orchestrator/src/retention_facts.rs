@@ -36,11 +36,7 @@ pub fn collect_run_facts_for(
     facts_of(runs, store, run_id)
 }
 
-fn facts_of(
-    runs: &RunStore,
-    store: &Store,
-    run_id: &str,
-) -> Result<Option<RunFacts>, StoreError> {
+fn facts_of(runs: &RunStore, store: &Store, run_id: &str) -> Result<Option<RunFacts>, StoreError> {
     if check_run_id(run_id).is_err() {
         return Ok(None);
     }

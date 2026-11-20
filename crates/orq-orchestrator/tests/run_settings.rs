@@ -38,16 +38,28 @@ fn script_private(repo: &Path, text: &str) {
 }
 
 fn shell_gate(command: &str) -> Option<Vec<String>> {
-    Some(vec!["bash".to_string(), "-c".to_string(), command.to_string()])
+    Some(vec![
+        "bash".to_string(),
+        "-c".to_string(),
+        command.to_string(),
+    ])
 }
 
 #[test]
 fn the_gate_command_of_the_old_script_settings_becomes_a_bash_gate_and_names_its_file() {
     let r = repo("scriptgate");
-    script_private(&r, "GATE_CMD='rc=0; uv run pytest -m \"not ft\" || rc=1; exit $rc'\n");
+    script_private(
+        &r,
+        "GATE_CMD='rc=0; uv run pytest -m \"not ft\" || rc=1; exit $rc'\n",
+    );
     let s = load_run_settings(&r, &no_env).unwrap();
-    assert_eq!(s.gate, shell_gate("rc=0; uv run pytest -m \"not ft\" || rc=1; exit $rc"));
-    assert!(s.gate_from_script.is_some_and(|file| file.contains("orchestrate")));
+    assert_eq!(
+        s.gate,
+        shell_gate("rc=0; uv run pytest -m \"not ft\" || rc=1; exit $rc")
+    );
+    assert!(s
+        .gate_from_script
+        .is_some_and(|file| file.contains("orchestrate")));
 }
 
 /// The lines the old script accepts are read as it reads them: never by a shell, and the first value wins.
@@ -68,12 +80,17 @@ fn the_private_script_file_wins_over_the_one_in_the_repo_even_when_it_sets_the_g
     fs::write(only_repo.join(".orchestrate.env"), "GATE_CMD=make repo\n").unwrap();
     let s = load_run_settings(&only_repo, &no_env).unwrap();
     assert_eq!(s.gate, shell_gate("make repo"));
-    assert!(s.gate_from_script.is_some_and(|file| file.ends_with(".orchestrate.env")));
+    assert!(s
+        .gate_from_script
+        .is_some_and(|file| file.ends_with(".orchestrate.env")));
 
     let both = repo("scriptboth");
     fs::write(both.join(".orchestrate.env"), "GATE_CMD=make repo\n").unwrap();
     script_private(&both, "GATE_CMD=make private\n");
-    assert_eq!(load_run_settings(&both, &no_env).unwrap().gate, shell_gate("make private"));
+    assert_eq!(
+        load_run_settings(&both, &no_env).unwrap().gate,
+        shell_gate("make private")
+    );
 
     // Set to nothing is still set: the script then falls back to its own detection.
     script_private(&both, "GATE_CMD=''\n");
@@ -95,12 +112,17 @@ fn a_gate_named_by_orq_settings_wins_over_the_script_file() {
 #[test]
 fn a_script_file_that_is_not_a_regular_file_is_not_opened() {
     let r = repo("scriptfifo");
-    let made = std::process::Command::new("mkfifo").arg(r.join(".git/orchestrate.env")).status().unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(r.join(".git/orchestrate.env"))
+        .status()
+        .unwrap();
     assert!(made.success());
     let (done, finished) = std::sync::mpsc::channel();
     let path = r.clone();
     std::thread::spawn(move || done.send(load_run_settings(&path, &no_env).map(|s| s.gate)));
-    let got = finished.recv_timeout(Duration::from_secs(10)).expect("the settings load returned");
+    let got = finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the settings load returned");
     assert_eq!(got.unwrap(), None);
 }
 
@@ -111,7 +133,10 @@ fn a_script_file_that_cannot_be_read_stops_the_run_instead_of_changing_its_gate(
     let r = repo("scriptunreadable");
     // A symbolic link that loops is unreadable for any user, root included.
     std::os::unix::fs::symlink("orchestrate.env", r.join(".git/orchestrate.env")).unwrap();
-    assert!(matches!(load_run_settings(&r, &no_env), Err(SettingsError::Unreadable { .. })));
+    assert!(matches!(
+        load_run_settings(&r, &no_env),
+        Err(SettingsError::Unreadable { .. })
+    ));
 }
 
 #[test]
@@ -724,13 +749,28 @@ fn the_claude_push_switch_comes_from_the_files_or_the_environment() {
 #[test]
 fn the_full_suite_in_session_switch_comes_from_the_files_or_the_environment() {
     let r = repo("fullsuiteinsession");
-    assert_eq!(load_run_settings(&r, &no_env).unwrap().full_suite_in_session, None);
+    assert_eq!(
+        load_run_settings(&r, &no_env)
+            .unwrap()
+            .full_suite_in_session,
+        None
+    );
     shared(&r, "full_suite_in_session = true\n");
-    assert_eq!(load_run_settings(&r, &no_env).unwrap().full_suite_in_session, Some(true));
+    assert_eq!(
+        load_run_settings(&r, &no_env)
+            .unwrap()
+            .full_suite_in_session,
+        Some(true)
+    );
     let env = |key: &str| (key == "ORQ_FULL_SUITE_IN_SESSION").then(|| "0".to_string());
-    assert_eq!(load_run_settings(&r, &env).unwrap().full_suite_in_session, Some(false));
+    assert_eq!(
+        load_run_settings(&r, &env).unwrap().full_suite_in_session,
+        Some(false)
+    );
 
-    assert!(invalid("full_suite_in_session = \"yes\"\n", "fsisstr").contains("full_suite_in_session"));
+    assert!(
+        invalid("full_suite_in_session = \"yes\"\n", "fsisstr").contains("full_suite_in_session")
+    );
     let bad = |key: &str| (key == "ORQ_FULL_SUITE_IN_SESSION").then(|| "maybe".to_string());
     assert!(
         matches!(load_run_settings(&r, &bad), Err(SettingsError::Invalid { source, .. }) if source == "ORQ_FULL_SUITE_IN_SESSION")
@@ -741,15 +781,40 @@ fn the_full_suite_in_session_switch_comes_from_the_files_or_the_environment() {
 #[test]
 fn allowed_tools_are_permission_rules_the_private_file_and_environment_override() {
     let r = repo("allowedtools");
-    shared(&r, "allowed_tools = [\"Bash(make lint:*)\", \"WebFetch\"]\n");
-    assert_eq!(load_run_settings(&r, &no_env).unwrap().allowed_tools, Some(vec!["Bash(make lint:*)".to_string(), "WebFetch".to_string()]));
+    shared(
+        &r,
+        "allowed_tools = [\"Bash(make lint:*)\", \"WebFetch\"]\n",
+    );
+    assert_eq!(
+        load_run_settings(&r, &no_env).unwrap().allowed_tools,
+        Some(vec![
+            "Bash(make lint:*)".to_string(),
+            "WebFetch".to_string()
+        ])
+    );
     private(&r, "allowed_tools = []\n");
-    assert_eq!(load_run_settings(&r, &no_env).unwrap().allowed_tools, Some(vec![]));
+    assert_eq!(
+        load_run_settings(&r, &no_env).unwrap().allowed_tools,
+        Some(vec![])
+    );
     let env = |name: &str| (name == "ORQ_ALLOWED_TOOLS").then(|| "[\"Bash(just:*)\"]".to_string());
-    assert_eq!(load_run_settings(&r, &env).unwrap().allowed_tools, Some(vec!["Bash(just:*)".to_string()]));
-    for bad in ["allowed_tools = \"WebFetch\"\n", "allowed_tools = [\"\"]\n", "allowed_tools = [\"Bash(a\\nb)\"]\n"] {
+    assert_eq!(
+        load_run_settings(&r, &env).unwrap().allowed_tools,
+        Some(vec!["Bash(just:*)".to_string()])
+    );
+    for bad in [
+        "allowed_tools = \"WebFetch\"\n",
+        "allowed_tools = [\"\"]\n",
+        "allowed_tools = [\"Bash(a\\nb)\"]\n",
+    ] {
         private(&r, bad);
-        assert!(matches!(load_run_settings(&r, &no_env), Err(SettingsError::Invalid { .. })), "{bad}");
+        assert!(
+            matches!(
+                load_run_settings(&r, &no_env),
+                Err(SettingsError::Invalid { .. })
+            ),
+            "{bad}"
+        );
     }
 }
 
@@ -764,16 +829,31 @@ fn the_generated_files_and_their_rebuild_command_for_a_rebase_come_from_a_rebase
         "gate = [\"true\"]\n[rebase]\ngenerated = [\"web/app.js\", \"web/sw.js\"]\nrebuild = [\"node\", \"build.mjs\"]\n",
     );
     let s = load_run_settings(&r, &no_env).unwrap();
-    assert_eq!(s.rebase_generated, Some(vec!["web/app.js".to_string(), "web/sw.js".to_string()]));
-    assert_eq!(s.rebase_rebuild, Some(vec!["node".to_string(), "build.mjs".to_string()]));
+    assert_eq!(
+        s.rebase_generated,
+        Some(vec!["web/app.js".to_string(), "web/sw.js".to_string()])
+    );
+    assert_eq!(
+        s.rebase_rebuild,
+        Some(vec!["node".to_string(), "build.mjs".to_string()])
+    );
 
     // The private file wins key by key inside the table too.
     private(&r, "[rebase]\nrebuild = [\"make\", \"assets\"]\n");
     let s = load_run_settings(&r, &no_env).unwrap();
-    assert_eq!(s.rebase_generated, Some(vec!["web/app.js".to_string(), "web/sw.js".to_string()]));
-    assert_eq!(s.rebase_rebuild, Some(vec!["make".to_string(), "assets".to_string()]));
+    assert_eq!(
+        s.rebase_generated,
+        Some(vec!["web/app.js".to_string(), "web/sw.js".to_string()])
+    );
+    assert_eq!(
+        s.rebase_rebuild,
+        Some(vec!["make".to_string(), "assets".to_string()])
+    );
 
-    assert!(invalid("[rebase]\nrebuild = \"node build.mjs\"\n", "rebase-shell").contains("rebase.rebuild"));
+    assert!(
+        invalid("[rebase]\nrebuild = \"node build.mjs\"\n", "rebase-shell")
+            .contains("rebase.rebuild")
+    );
     assert!(invalid("[rebase]\nrebuild = []\n", "rebase-empty").contains("rebase.rebuild"));
     assert!(invalid("[rebase]\ngenerated = [\"\"]\n", "rebase-blank").contains("rebase.generated"));
     assert!(invalid("[rebase]\ngenerated = \"a.js\"\n", "rebase-str").contains("rebase.generated"));

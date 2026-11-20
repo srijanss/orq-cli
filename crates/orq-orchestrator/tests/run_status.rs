@@ -317,7 +317,11 @@ fn a_run_completed_event_wins_over_the_events_before_it_but_an_unknown_ending_is
 fn a_run_that_ended_pushed_is_completed_even_with_its_worktree_still_running_a_stage() {
     let events = [
         event("stage.started", Some("push"), none()),
-        event("run.completed", None, serde_json::json!({"ending": "pushed"})),
+        event(
+            "run.completed",
+            None,
+            serde_json::json!({"ending": "pushed"}),
+        ),
     ];
 
     assert_eq!(summarize_run(&events).phase, RunPhase::Completed);
@@ -327,7 +331,11 @@ fn a_run_that_ended_pushed_is_completed_even_with_its_worktree_still_running_a_s
 fn a_run_that_ended_merged_is_completed() {
     let events = [
         event("stage.started", Some("gate"), none()),
-        event("run.completed", None, serde_json::json!({"ending": "merged"})),
+        event(
+            "run.completed",
+            None,
+            serde_json::json!({"ending": "merged"}),
+        ),
     ];
 
     assert_eq!(summarize_run(&events).phase, RunPhase::Completed);
@@ -335,22 +343,71 @@ fn a_run_that_ended_merged_is_completed() {
 
 #[test]
 fn a_failed_stage_of_a_run_whose_process_goes_on_is_running_until_the_run_ends() {
-    let launched = event("run.launched", None, serde_json::json!({"pid": 4242, "start_ticks": 7}));
-    let failed = event("stage.failed", Some("verify"), serde_json::json!({"reason": "tests failed"}));
-    let gap = [launched.clone(), event("stage.started", Some("verify"), none()), failed.clone()];
+    let launched = event(
+        "run.launched",
+        None,
+        serde_json::json!({"pid": 4242, "start_ticks": 7}),
+    );
+    let failed = event(
+        "stage.failed",
+        Some("verify"),
+        serde_json::json!({"reason": "tests failed"}),
+    );
+    let gap = [
+        launched.clone(),
+        event("stage.started", Some("verify"), none()),
+        failed.clone(),
+    ];
 
     let alive = summarize_run_with(&gap, &|pid, start| pid == 4242 && start == Some(7));
-    assert_eq!(alive.phase, RunPhase::Running, "its process goes on to fix the failure");
+    assert_eq!(
+        alive.phase,
+        RunPhase::Running,
+        "its process goes on to fix the failure"
+    );
     assert_eq!(alive.reason, None);
-    assert!(holds_run_slot(alive.phase), "it keeps its slot through the gap");
+    assert!(
+        holds_run_slot(alive.phase),
+        "it keeps its slot through the gap"
+    );
 
     let gone = summarize_run_with(&gap, &|_, _| false);
-    assert_eq!(gone.phase, RunPhase::Failed, "with its process gone the failure is the run's end");
+    assert_eq!(
+        gone.phase,
+        RunPhase::Failed,
+        "with its process gone the failure is the run's end"
+    );
     assert_eq!(gone.reason.as_deref(), Some("tests failed"));
 
-    let merged = summarize_run_with(&[launched.clone(), failed.clone(), event("run.completed", None, serde_json::json!({"ending": "merged"}))], &|_, _| true);
+    let merged = summarize_run_with(
+        &[
+            launched.clone(),
+            failed.clone(),
+            event(
+                "run.completed",
+                None,
+                serde_json::json!({"ending": "merged"}),
+            ),
+        ],
+        &|_, _| true,
+    );
     assert_eq!(merged.phase, RunPhase::Completed);
 
-    let ended_failed = summarize_run_with(&[launched, failed, event("run.completed", None, serde_json::json!({"ending": "failed", "reason": "gate fix budget spent"}))], &|_, _| true);
-    assert_eq!(ended_failed.phase, RunPhase::Failed, "a run that ended failed stays failed, its process alive or not");
+    let ended_failed = summarize_run_with(
+        &[
+            launched,
+            failed,
+            event(
+                "run.completed",
+                None,
+                serde_json::json!({"ending": "failed", "reason": "gate fix budget spent"}),
+            ),
+        ],
+        &|_, _| true,
+    );
+    assert_eq!(
+        ended_failed.phase,
+        RunPhase::Failed,
+        "a run that ended failed stays failed, its process alive or not"
+    );
 }

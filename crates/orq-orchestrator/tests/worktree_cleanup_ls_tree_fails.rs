@@ -22,7 +22,10 @@ impl Drop for RestorePath {
 /// From now until the guard drops, `git ls-tree` fails; other commands run the real git.
 fn git_that_cannot_list_trees(root: &Path) -> RestorePath {
     let path = std::env::var_os("PATH").unwrap();
-    let real = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file()).expect("a git on PATH");
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("git"))
+        .find(|git| git.is_file())
+        .expect("a git on PATH");
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let wrapper = bin.join("git");
@@ -34,7 +37,11 @@ fn git_that_cannot_list_trees(root: &Path) -> RestorePath {
         ),
     )
     .unwrap();
-    fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fs::set_permissions(
+        &wrapper,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     let mut dirs = vec![bin];
     dirs.extend(std::env::split_paths(&path));
     std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
@@ -43,12 +50,24 @@ fn git_that_cannot_list_trees(root: &Path) -> RestorePath {
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-C"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "-C",
+        ])
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -60,7 +79,8 @@ fn write(dir: &Path, path: &str, text: &str) {
 
 #[test]
 fn installed_packages_that_cannot_be_checked_against_the_commit_keep_the_worktree_and_say_so() {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-cleanup-ls-tree-{}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-cleanup-ls-tree-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
@@ -68,7 +88,17 @@ fn installed_packages_that_cannot_be_checked_against_the_commit_keep_the_worktre
     git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
     let worktree = root.join("worktree");
-    git(&repo, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--COM-02",
+            worktree.to_str().unwrap(),
+        ],
+    );
     write(&repo, ".git/info/exclude", "node_modules/\n");
     write(&worktree, "web/package.json", "{}\n");
     write(&worktree, "web/package-lock.json", "{}\n");
@@ -96,7 +126,9 @@ fn installed_packages_that_cannot_be_checked_against_the_commit_keep_the_worktre
 
     let outcome = cleanup_worktree(&store, "run-1", true, &CiOutcome::Passed).unwrap();
 
-    let CleanupOutcome::Kept { reason } = outcome else { panic!("{outcome:?}") };
+    let CleanupOutcome::Kept { reason } = outcome else {
+        panic!("{outcome:?}")
+    };
     assert!(
         reason.ends_with("; cannot tell what web/ has committed: fatal: probe refused)"),
         "{reason}"

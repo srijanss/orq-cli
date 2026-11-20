@@ -84,14 +84,21 @@ struct Listed {
 fn listed_worktrees(repo: &Path) -> Result<Vec<Listed>, StoreError> {
     let out = git_raw(repo, &["worktree", "list", "--porcelain", "-z"])?;
     if !out.success {
-        return Err(StoreError::Corrupt(format!("git could not list the worktrees: {}", out.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "git could not list the worktrees: {}",
+            out.stderr.trim()
+        )));
     }
     let mut listed = Vec::new();
     let mut current: Option<Listed> = None;
     for field in out.stdout.split('\0') {
         if let Some(path) = field.strip_prefix("worktree ") {
             listed.extend(current.take());
-            current = Some(Listed { path: PathBuf::from(path), head: String::new(), branch: None });
+            current = Some(Listed {
+                path: PathBuf::from(path),
+                head: String::new(),
+                branch: None,
+            });
         } else if let Some(entry) = current.as_mut() {
             if let Some(head) = field.strip_prefix("HEAD ") {
                 entry.head = head.to_string();
@@ -112,7 +119,10 @@ fn branch_prefix(repo: &Path) -> String {
 }
 
 fn is_active(phase: RunPhase) -> bool {
-    matches!(phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused)
+    matches!(
+        phase,
+        RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused
+    )
 }
 
 /// A run recorded on a worktree, with its events.
@@ -132,7 +142,11 @@ pub struct RunIndex {
 
 impl RunIndex {
     pub fn load(store: &RunStore) -> Result<RunIndex, StoreError> {
-        let mut index = RunIndex { records: Vec::new(), seen: Default::default(), version_limits: VersionLimits::default() };
+        let mut index = RunIndex {
+            records: Vec::new(),
+            seen: Default::default(),
+            version_limits: VersionLimits::default(),
+        };
         index.refresh(store)?;
         Ok(index)
     }
@@ -165,7 +179,9 @@ impl RunIndex {
                 continue;
             }
             // A record that cannot be read yet, say one still being written, is tried again next time.
-            let Ok(record) = store.load(&run_id) else { continue };
+            let Ok(record) = store.load(&run_id) else {
+                continue;
+            };
             self.seen.insert(run_id);
             self.records.push(record);
         }
@@ -189,14 +205,27 @@ impl RunIndex {
         force: bool,
     ) -> Result<Result<DeletedWorktree, DeleteRefusal>, StoreError> {
         self.refresh(store)?;
-        delete_with(store, &self.records, repo, branch, version, force, self.version_limits)
+        delete_with(
+            store,
+            &self.records,
+            repo,
+            branch,
+            version,
+            force,
+            self.version_limits,
+        )
     }
 }
 
 /// `record` with its events. Events that cannot be read say nothing about the run: it counts as still going.
 fn with_events(store: &RunStore, record: &RunRecord) -> Recorded {
-    let events = store.events(&record.run_id).unwrap_or_else(|_| vec![running_marker(record)]);
-    Recorded { record: record.clone(), events }
+    let events = store
+        .events(&record.run_id)
+        .unwrap_or_else(|_| vec![running_marker(record)]);
+    Recorded {
+        record: record.clone(),
+        events,
+    }
 }
 
 /// An event that leaves a run running, for a run whose events cannot be read.
@@ -258,7 +287,9 @@ fn list_with(
     let prefix = branch_prefix(repo);
     let mut kept = Vec::new();
     for listed in listed_worktrees(repo)?.into_iter().skip(1) {
-        let Some(branch) = listed.branch.clone() else { continue };
+        let Some(branch) = listed.branch.clone() else {
+            continue;
+        };
         if same_place(&listed.path, repo) || !within_worktrees_dir(repo, &listed.path) {
             continue;
         }
@@ -277,11 +308,18 @@ fn list_with(
 
 /// The runs recorded on this worktree: on its path, or on its branch in a worktree of the same
 /// repository. A run of another repository on a branch of the same name says nothing about it.
-fn recorded_on(store: &RunStore, all: &[RunRecord], repo: &Path, branch: &str, path: &Path) -> Vec<Recorded> {
+fn recorded_on(
+    store: &RunStore,
+    all: &[RunRecord],
+    repo: &Path,
+    branch: &str,
+    path: &Path,
+) -> Vec<Recorded> {
     all.iter()
         .filter(|run| {
             same_place(&run.worktree, path)
-                || (run.branch == branch && repository_of(&run.worktree).is_some_and(|r| same_place(r, repo)))
+                || (run.branch == branch
+                    && repository_of(&run.worktree).is_some_and(|r| same_place(r, repo)))
         })
         .map(|run| with_events(store, run))
         .collect()
@@ -291,7 +329,9 @@ fn recorded_on(store: &RunStore, all: &[RunRecord], repo: &Path, branch: &str, p
 fn repository_of(worktree: &Path) -> Option<&Path> {
     worktree.ancestors().find_map(|dir| {
         let claude = dir.parent()?;
-        (dir.file_name()? == "worktrees" && claude.file_name()? == ".claude").then(|| claude.parent()).flatten()
+        (dir.file_name()? == "worktrees" && claude.file_name()? == ".claude")
+            .then(|| claude.parent())
+            .flatten()
     })
 }
 
@@ -394,9 +434,20 @@ fn delete_with(
     let path = listed.path.to_string_lossy().to_string();
     let removed = git_raw(repo, &["worktree", "remove", "--force", "--", &path])?;
     if !removed.success {
-        return Err(StoreError::Corrupt(format!("git could not remove the worktree: {}", removed.stderr.trim())));
+        return Err(StoreError::Corrupt(format!(
+            "git could not remove the worktree: {}",
+            removed.stderr.trim()
+        )));
     }
-    let dropped = git_raw(repo, &["update-ref", "-d", &format!("refs/heads/{branch}"), &listed.head])?;
+    let dropped = git_raw(
+        repo,
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/heads/{branch}"),
+            &listed.head,
+        ],
+    )?;
     if !dropped.success {
         return Err(StoreError::Corrupt(format!(
             "the worktree was removed but git could not delete its branch: {}",
@@ -425,26 +476,41 @@ fn delete_with(
 /// Why `path` is not a worktree orq may delete, if it is not: outside the worktrees folder, the
 /// main worktree, written with `..`, or reached through a symlink.
 fn unsafe_path(repo: &Path, path: &Path) -> Option<String> {
-    if path.components().any(|part| part == std::path::Component::ParentDir) {
+    if path
+        .components()
+        .any(|part| part == std::path::Component::ParentDir)
+    {
         return Some("the worktree's path goes up a folder".to_string());
     }
     // Git lists worktrees by absolute path; the repository may be given relative, or through a symlink.
-    let below = [std::path::absolute(repo).ok(), repo.canonicalize().ok()].into_iter().flatten().find_map(|base| {
-        let below = path.strip_prefix(base.join(".claude").join("worktrees")).ok()?.to_path_buf();
-        Some((base, below))
-    });
+    let below = [std::path::absolute(repo).ok(), repo.canonicalize().ok()]
+        .into_iter()
+        .flatten()
+        .find_map(|base| {
+            let below = path
+                .strip_prefix(base.join(".claude").join("worktrees"))
+                .ok()?
+                .to_path_buf();
+            Some((base, below))
+        });
     let Some((mut step, below)) = below else {
         return Some("the worktree is not inside the worktrees folder".to_string());
     };
     for part in [".claude", "worktrees"] {
         step.push(part);
-        if step.symlink_metadata().map_or(true, |meta| meta.file_type().is_symlink()) {
+        if step
+            .symlink_metadata()
+            .map_or(true, |meta| meta.file_type().is_symlink())
+        {
             return Some("the worktrees folder is a symlink or missing".to_string());
         }
     }
     for part in below.components() {
         step.push(part);
-        if step.symlink_metadata().map_or(true, |meta| meta.file_type().is_symlink()) {
+        if step
+            .symlink_metadata()
+            .map_or(true, |meta| meta.file_type().is_symlink())
+        {
             return Some("the worktree's path is a symlink or missing".to_string());
         }
     }
@@ -466,18 +532,48 @@ fn describe(
         Some(run) => run.record.target_branch.clone(),
         None => current_branch(repo)?.unwrap_or_else(|| "main".to_string()),
     };
-    let counted = git_raw(&listed.path, &["rev-list", "--count", &format!("{target}..HEAD"), "--"])?;
-    let commits = counted.success.then(|| counted.stdout.trim().parse::<u64>().ok()).flatten();
-    let (files, more_files, only_ignored, files_unreadable, (version, verified)) = match scan_work(&listed.path, None)? {
-        Ok(Some(scan)) => {
-            let all: Vec<ChangedFile> = scan.entries.iter().map(|entry| changed_file(entry)).collect();
-            let only_ignored = all.iter().all(|file| file.kind == ChangeKind::Ignored);
-            let more = all.len().saturating_sub(SHOWN_FILES);
-            let version = version_of(&listed.head, &target, commits, &listed.path, Some(&scan.entries), limits);
-            (all.into_iter().take(SHOWN_FILES).collect(), more, only_ignored, false, version)
-        }
-        _ => (Vec::new(), 0, false, true, version_of(&listed.head, &target, commits, &listed.path, None, limits)),
-    };
+    let counted = git_raw(
+        &listed.path,
+        &["rev-list", "--count", &format!("{target}..HEAD"), "--"],
+    )?;
+    let commits = counted
+        .success
+        .then(|| counted.stdout.trim().parse::<u64>().ok())
+        .flatten();
+    let (files, more_files, only_ignored, files_unreadable, (version, verified)) =
+        match scan_work(&listed.path, None)? {
+            Ok(Some(scan)) => {
+                let all: Vec<ChangedFile> = scan
+                    .entries
+                    .iter()
+                    .map(|entry| changed_file(entry))
+                    .collect();
+                let only_ignored = all.iter().all(|file| file.kind == ChangeKind::Ignored);
+                let more = all.len().saturating_sub(SHOWN_FILES);
+                let version = version_of(
+                    &listed.head,
+                    &target,
+                    commits,
+                    &listed.path,
+                    Some(&scan.entries),
+                    limits,
+                );
+                (
+                    all.into_iter().take(SHOWN_FILES).collect(),
+                    more,
+                    only_ignored,
+                    false,
+                    version,
+                )
+            }
+            _ => (
+                Vec::new(),
+                0,
+                false,
+                true,
+                version_of(&listed.head, &target, commits, &listed.path, None, limits),
+            ),
+        };
     let entry = KeptWorktree {
         branch,
         path: listed.path.clone(),
@@ -491,7 +587,9 @@ fn describe(
         more_files,
         files_unreadable,
         only_ignored,
-        size: measure.then(|| size_within(&listed.path, SIZE_BUDGET)).flatten(),
+        size: measure
+            .then(|| size_within(&listed.path, SIZE_BUDGET))
+            .flatten(),
         version,
     };
     Ok((entry, verified))
@@ -499,7 +597,10 @@ fn describe(
 
 fn current_branch(repo: &Path) -> Result<Option<String>, StoreError> {
     let out = git_raw(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
-    Ok(out.success.then(|| out.stdout.trim().to_string()).filter(|b| !b.is_empty()))
+    Ok(out
+        .success
+        .then(|| out.stdout.trim().to_string())
+        .filter(|b| !b.is_empty()))
 }
 
 fn kept_reason(events: &[Event]) -> Option<String> {
@@ -517,7 +618,10 @@ fn changed_file(entry: &str) -> ChangedFile {
         Some("??") => ChangeKind::Untracked,
         _ => ChangeKind::Tracked,
     };
-    ChangedFile { path: printable(entry.get(3..).unwrap_or(entry)), kind }
+    ChangedFile {
+        path: printable(entry.get(3..).unwrap_or(entry)),
+        kind,
+    }
 }
 
 /// A fingerprint of what deleting the worktree loses: its commit, its target, and every status entry with
@@ -543,7 +647,9 @@ fn version_of(
             for entry in entries {
                 // Every entry, whatever it turns out to be, is read only while time and entries are left.
                 let stamp = reading.take_entry().and_then(|()| match entry.get(3..) {
-                    Some(path) => stamp_of(&root.join(path.trim_end_matches('/')), &mut reading).map(Some),
+                    Some(path) => {
+                        stamp_of(&root.join(path.trim_end_matches('/')), &mut reading).map(Some)
+                    }
                     None => Some(None),
                 });
                 let Some(stamp) = stamp else {
@@ -569,7 +675,11 @@ struct VersionLimits {
 
 impl Default for VersionLimits {
     fn default() -> VersionLimits {
-        VersionLimits { budget: Duration::from_secs(2), entries: 100_000, clock: Instant::now }
+        VersionLimits {
+            budget: Duration::from_secs(2),
+            entries: 100_000,
+            clock: Instant::now,
+        }
     }
 }
 
@@ -582,7 +692,11 @@ struct Reading {
 
 impl Reading {
     fn new(limits: VersionLimits) -> Reading {
-        Reading { deadline: (limits.clock)() + limits.budget, entries_left: limits.entries, clock: limits.clock }
+        Reading {
+            deadline: (limits.clock)() + limits.budget,
+            entries_left: limits.entries,
+            clock: limits.clock,
+        }
     }
 
     fn out_of_time(&self) -> bool {
@@ -606,7 +720,10 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, reading: &Reading) -> Optio
     use std::io::Read;
     if meta.file_type().is_symlink() {
         let target = std::fs::read_link(path).ok()?;
-        return Some(format!("link {:016x}", fnv1a(target.as_os_str().as_encoded_bytes())));
+        return Some(format!(
+            "link {:016x}",
+            fnv1a(target.as_os_str().as_encoded_bytes())
+        ));
     }
     if !meta.is_file() {
         return Some(format!("special {:?}", meta.file_type()));
@@ -633,8 +750,11 @@ fn content_of(path: &Path, meta: &std::fs::Metadata, reading: &Reading) -> Optio
 #[cfg(unix)]
 fn open_checked(path: &Path, meta: &std::fs::Metadata) -> Option<std::fs::File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let file =
-        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
     let opened = file.metadata().ok()?;
     if !opened.is_file() || (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
         return None;
@@ -656,7 +776,9 @@ fn open_checked(_path: &Path, _meta: &std::fs::Metadata) -> Option<std::fs::File
 fn stamp_of(path: &Path, reading: &mut Reading) -> Option<String> {
     let meta = match path.symlink_metadata() {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some("missing".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Some("missing".to_string())
+        }
         Err(_) => return None,
     };
     if !meta.is_dir() {
@@ -670,7 +792,12 @@ fn stamp_of(path: &Path, reading: &mut Reading) -> Option<String> {
             reading.take_entry()?;
             let child = entry.ok()?.path();
             let meta = child.symlink_metadata().ok()?;
-            let relative = child.strip_prefix(path).unwrap_or(&child).as_os_str().as_encoded_bytes().to_vec();
+            let relative = child
+                .strip_prefix(path)
+                .unwrap_or(&child)
+                .as_os_str()
+                .as_encoded_bytes()
+                .to_vec();
             let content = if meta.is_dir() {
                 pending.push(child);
                 "dir".to_string()
@@ -689,7 +816,9 @@ fn stamp_of(path: &Path, reading: &mut Reading) -> Option<String> {
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 
 fn fnv1a_from(hash: u64, bytes: &[u8]) -> u64 {
-    bytes.iter().fold(hash, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(hash, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -728,7 +857,8 @@ mod tests {
 
     #[test]
     fn a_file_swapped_for_a_link_after_it_was_checked_is_not_read_through_the_link() {
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-content-link-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-content-link-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("work.txt");
@@ -746,7 +876,8 @@ mod tests {
 
     #[test]
     fn a_file_swapped_for_a_pipe_after_it_was_checked_is_not_waited_on() {
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-content-pipe-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-content-pipe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("work.txt");
@@ -773,7 +904,8 @@ mod tests_without_checked_open {
 
     #[test]
     fn a_file_is_never_read_where_it_cannot_be_opened_without_following_a_link() {
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-content-unchecked-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-content-unchecked-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("work.txt");

@@ -35,7 +35,8 @@ fn fake_tool(dir: &Path) -> (PathBuf, PathBuf) {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-drop-{tag}-{}", std::process::id()));
+    let dir =
+        orq_test_support::process_temp_dir().join(format!("orq-drop-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir

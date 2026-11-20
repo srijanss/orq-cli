@@ -34,7 +34,11 @@ fn starts_a_child(pidfile: &Path) -> String {
 /// The signals the owner's child noted it was started ignoring, as the kernel's bit mask.
 fn ignored_by_child(pidfile: &Path) -> u64 {
     let text = std::fs::read_to_string(format!("{}.ignored", pidfile.display())).unwrap();
-    let mask = text.trim().strip_prefix("SigIgn:").expect("a SigIgn line").trim();
+    let mask = text
+        .trim()
+        .strip_prefix("SigIgn:")
+        .expect("a SigIgn line")
+        .trim();
     u64::from_str_radix(mask, 16).unwrap()
 }
 
@@ -50,7 +54,9 @@ fn as_the_owner() -> Option<(PathBuf, String)> {
 #[test]
 #[ignore = "started as a separate process by the tests below"]
 fn owner_running_a_setup_step() {
-    let Some((dir, script)) = as_the_owner() else { return };
+    let Some((dir, script)) = as_the_owner() else {
+        return;
+    };
     let step = vec!["sh".to_string(), "-c".to_string(), script];
     let _ = run_setup(&dir, &[step], &dir.join("setup.log"));
 }
@@ -58,7 +64,9 @@ fn owner_running_a_setup_step() {
 #[test]
 #[ignore = "started as a separate process by the tests below"]
 fn owner_running_a_terminal_session() {
-    let Some((dir, script)) = as_the_owner() else { return };
+    let Some((dir, script)) = as_the_owner() else {
+        return;
+    };
     let mut command = Command::new("sh");
     command.args(["-c", &script]).current_dir(&dir);
     let _ = run_in_terminal(command, &dir.join("never"), LONG, LONG);
@@ -67,7 +75,9 @@ fn owner_running_a_terminal_session() {
 #[test]
 #[ignore = "started as a separate process by the tests below"]
 fn owner_running_a_database_drop() {
-    let Some((dir, script)) = as_the_owner() else { return };
+    let Some((dir, script)) = as_the_owner() else {
+        return;
+    };
     let command = ["sh".to_string(), "-c".to_string(), script];
     let databases = [("DB_NAME".to_string(), "shop_fix_a".to_string())];
     let _ = drop_test_databases_within(&dir, &databases, Some(&command), false, LONG);
@@ -76,13 +86,18 @@ fn owner_running_a_database_drop() {
 #[test]
 #[ignore = "started as a separate process by the tests below"]
 fn owner_running_a_review_draft() {
-    let Some((dir, script)) = as_the_owner() else { return };
+    let Some((dir, script)) = as_the_owner() else {
+        return;
+    };
     let worktree = dir.join("worktree");
     std::fs::create_dir_all(&worktree).unwrap();
     git(&worktree, &["init", "-q", "-b", "main"]);
     git(&worktree, &["commit", "-q", "--allow-empty", "-m", "base"]);
     let base = git(&worktree, &["rev-parse", "HEAD"]);
-    git(&worktree, &["commit", "-q", "--allow-empty", "-m", "feat: the change"]);
+    git(
+        &worktree,
+        &["commit", "-q", "--allow-empty", "-m", "feat: the change"],
+    );
     let store = RunStore::new(&dir.join("state"));
     store
         .create(&RunRecord {
@@ -118,7 +133,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
@@ -166,13 +185,19 @@ fn command_for_owner(owner: &str, pidfile: &Path) -> Command {
 fn started_child(owner: &mut Child, pidfile: &Path) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Some(pid) = std::fs::read_to_string(pidfile).ok().and_then(|text| text.trim().parse().ok()) {
+        if let Some(pid) = std::fs::read_to_string(pidfile)
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
             return pid;
         }
         if let Some(status) = owner.try_wait().unwrap() {
             panic!("the owner ended ({status}) before it started the child");
         }
-        assert!(Instant::now() < deadline, "the owner never started the child");
+        assert!(
+            Instant::now() < deadline,
+            "the owner never started the child"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -197,7 +222,11 @@ fn ends_with_the_owner(owner: &mut Child, child: i32, signal: i32) {
     let _ = owner.wait();
     assert!(gone, "process {child} outlived its owner");
     let status = status.expect("the owner did not end");
-    assert_eq!(status.signal(), Some(signal), "the owner should die of the signal: {status}");
+    assert_eq!(
+        status.signal(),
+        Some(signal),
+        "the owner should die of the signal: {status}"
+    );
 }
 
 fn stopping_the_owner_ends_its_child(owner: &str, signal: i32) {
@@ -265,7 +294,11 @@ fn a_signal_the_owner_was_started_ignoring_stays_ignored() {
     ends_with_the_owner(&mut owner, child, libc::SIGTERM);
     assert!(owner_still_running, "an ignored signal ended the owner");
     for signal in [libc::SIGINT, libc::SIGHUP] {
-        assert_ne!(ignored & (1 << (signal - 1)), 0, "the child stopped ignoring signal {signal}");
+        assert_ne!(
+            ignored & (1 << (signal - 1)),
+            0,
+            "the child stopped ignoring signal {signal}"
+        );
     }
 }
 
@@ -274,12 +307,19 @@ fn a_signal_the_owner_was_started_ignoring_stays_ignored() {
 fn a_setup_step_that_finishes_leaves_what_it_started_running() {
     let dir = scratch("service");
     let pidfile = dir.join("service.pid");
-    let script = format!("sleep 300 >/dev/null 2>&1 & echo $! > '{}'", pidfile.display());
+    let script = format!(
+        "sleep 300 >/dev/null 2>&1 & echo $! > '{}'",
+        pidfile.display()
+    );
     let step = vec!["sh".to_string(), "-c".to_string(), script];
 
     let result = run_setup(&dir, &[step], &dir.join("setup.log"));
 
-    let service: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    let service: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     let running = alive(service);
     send(service as u32, libc::SIGKILL);
     assert!(result.is_ok(), "the setup step failed");

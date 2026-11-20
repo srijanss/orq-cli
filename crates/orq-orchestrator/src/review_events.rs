@@ -8,7 +8,13 @@ use crate::review_request::recorded_review;
 use crate::store::{Event, RunStore, StoreError};
 
 /// Record a `kind` event (such as `review.dismissed`) for the review of `head_sha`, taken by `by`.
-pub fn record_review_action(store: &RunStore, run_id: &str, kind: &str, head_sha: &str, by: &str) -> Result<(), StoreError> {
+pub fn record_review_action(
+    store: &RunStore,
+    run_id: &str,
+    kind: &str,
+    head_sha: &str,
+    by: &str,
+) -> Result<(), StoreError> {
     let record = store.load(run_id)?;
     store.append_event(&Event {
         schema_version: 1,
@@ -29,8 +35,14 @@ pub fn record_review_action(store: &RunStore, run_id: &str, kind: &str, head_sha
 pub fn local_merges(store: &RunStore) -> Result<Vec<(String, String)>, StoreError> {
     let mut merges = Vec::new();
     for run_id in store.run_ids()? {
-        let Ok(events) = store.events(&run_id) else { continue };
-        let merged = events.iter().rev().filter(|e| e.kind == "merge.completed").find_map(|e| e.payload["head_sha"].as_str().map(str::to_string));
+        let Ok(events) = store.events(&run_id) else {
+            continue;
+        };
+        let merged = events
+            .iter()
+            .rev()
+            .filter(|e| e.kind == "merge.completed")
+            .find_map(|e| e.payload["head_sha"].as_str().map(str::to_string));
         if let Some(head_sha) = merged {
             merges.push((run_id, head_sha));
         }
@@ -43,8 +55,16 @@ pub fn local_merges(store: &RunStore) -> Result<Vec<(String, String)>, StoreErro
 pub fn created_reviews(store: &RunStore) -> Result<Vec<CreatedReview>, StoreError> {
     let mut found = Vec::new();
     for run_id in store.run_ids()? {
-        let (Ok(Some(review)), Ok(record)) = (recorded_review(store, &run_id), store.load(&run_id)) else { continue };
-        found.push(CreatedReview { run_id, provider: record.provider, review_id: review.id, url: review.url });
+        let (Ok(Some(review)), Ok(record)) = (recorded_review(store, &run_id), store.load(&run_id))
+        else {
+            continue;
+        };
+        found.push(CreatedReview {
+            run_id,
+            provider: record.provider,
+            review_id: review.id,
+            url: review.url,
+        });
     }
     Ok(found)
 }

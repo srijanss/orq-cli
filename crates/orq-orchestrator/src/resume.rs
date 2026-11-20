@@ -35,7 +35,14 @@ pub struct ResumePlan {
 impl ResumePlan {
     /// Whether the resumed run starts its own session or inherits the finished one, and why.
     pub fn session(&self) -> (&'static str, String) {
-        (if self.skip_implement { "inherited" } else { "started" }, self.session_why.clone())
+        (
+            if self.skip_implement {
+                "inherited"
+            } else {
+                "started"
+            },
+            self.session_why.clone(),
+        )
     }
 }
 
@@ -43,16 +50,27 @@ impl ResumePlan {
 /// refuses it rather than dropping it.
 pub fn check_answer_reaches_session(plan: &ResumePlan, answer: Option<&str>) -> Result<(), String> {
     if plan.skip_implement && answer.is_some_and(|a| !a.trim().is_empty()) {
-        return Err("this run's session already finished cleanly; an answer cannot reach it".to_string());
+        return Err(
+            "this run's session already finished cleanly; an answer cannot reach it".to_string(),
+        );
     }
     Ok(())
 }
 
 /// Whether a run's ending reason says the review (or the session's own report) stopped it.
 fn review_stopped(reason: &str) -> bool {
-    reason.contains("the review escalated")
-        || reason.contains("the review could not be finished")
-        || reason.starts_with("the implement session reported a problem")
+    review_stop_reason(reason)
+        || reason
+            .trim()
+            .starts_with("the implement session reported a problem")
+}
+
+/// Whether the reason is the review's own stop: it starts with the review's wording, so a session
+/// problem that merely quotes that wording is not one.
+fn review_stop_reason(reason: &str) -> bool {
+    let reason = reason.trim();
+    reason.starts_with("the review escalated")
+        || reason.starts_with("the review could not be finished")
 }
 
 const GROUP_EVENT: &str = "run.grouped";
@@ -108,7 +126,12 @@ pub fn supersede_resumed(
     from: &RunRecord,
     new_run_id: &str,
 ) -> Result<(), StoreError> {
-    supersede_resumed_payload(store, from, new_run_id, serde_json::json!({ "resumed_as": new_run_id }))
+    supersede_resumed_payload(
+        store,
+        from,
+        new_run_id,
+        serde_json::json!({ "resumed_as": new_run_id }),
+    )
 }
 
 /// [`supersede_resumed`], recording whether the new run `started` its session or `inherited` the
@@ -175,7 +198,13 @@ pub fn plan_group_resume(
     project_id: &str,
     members: &[String],
 ) -> Result<ResumePlan, String> {
-    plan_group_resume_with(store, repo, project_id, members, &crate::interrupted::process_is_alive)
+    plan_group_resume_with(
+        store,
+        repo,
+        project_id,
+        members,
+        &crate::interrupted::process_is_alive,
+    )
 }
 
 /// [`plan_group_resume`]; with `fix_conflicts`, only for a run blocked on a rebase conflict that is
@@ -187,7 +216,15 @@ pub fn plan_group_resume_fixing(
     members: &[String],
     fix_conflicts: bool,
 ) -> Result<ResumePlan, String> {
-    plan(store, repo, project_id, members, &crate::interrupted::process_is_alive, fix_conflicts, false)
+    plan(
+        store,
+        repo,
+        project_id,
+        members,
+        &crate::interrupted::process_is_alive,
+        fix_conflicts,
+        false,
+    )
 }
 
 /// [`plan_group_resume`], asked to review the run again: a run waiting on a review decision from
@@ -199,25 +236,44 @@ pub fn plan_group_resume_reviewing_again(
     project_id: &str,
     members: &[String],
 ) -> Result<ResumePlan, String> {
-    plan(store, repo, project_id, members, &crate::interrupted::process_is_alive, false, true)
+    plan(
+        store,
+        repo,
+        project_id,
+        members,
+        &crate::interrupted::process_is_alive,
+        false,
+        true,
+    )
 }
 
 /// The run of `project_id` named after `feature_id` (a single feature's run, or a group's that it
 /// leads) that started last: the one a resume of that feature continues. `None` when it never ran.
 /// Nothing is reconciled or changed.
-pub fn newest_run_of(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<String>, String> {
+pub fn newest_run_of(
+    store: &RunStore,
+    project_id: &str,
+    feature_id: &str,
+) -> Result<Option<String>, String> {
     Ok(newest_record(store, project_id, feature_id)?.map(|record| record.run_id))
 }
 
 /// [`newest_run_of`] for each of `features` at once, in one pass over the runs: each feature that ran,
 /// to its newest run. Nothing is reconciled or changed.
-pub fn newest_runs_of(store: &RunStore, project_id: &str, features: &[&str]) -> Result<std::collections::HashMap<String, String>, String> {
+pub fn newest_runs_of(
+    store: &RunStore,
+    project_id: &str,
+    features: &[&str],
+) -> Result<std::collections::HashMap<String, String>, String> {
     let mut latest: std::collections::HashMap<String, RunOrder> = std::collections::HashMap::new();
     let mut runs = std::collections::HashMap::new();
     if features.is_empty() {
         return Ok(runs);
     }
-    for run_id in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
+    for run_id in store
+        .run_ids()
+        .map_err(|e| format!("cannot list the runs: {e:?}"))?
+    {
         let Ok(record) = store.load(&run_id) else {
             continue;
         };
@@ -225,7 +281,10 @@ pub fn newest_runs_of(store: &RunStore, project_id: &str, features: &[&str]) -> 
             continue;
         }
         let order = run_order(&run_id, &store.events(&run_id).unwrap_or_default());
-        if latest.get(&record.feature_id).is_none_or(|best| *best < order) {
+        if latest
+            .get(&record.feature_id)
+            .is_none_or(|best| *best < order)
+        {
             latest.insert(record.feature_id.clone(), order);
             runs.insert(record.feature_id, run_id);
         }
@@ -233,7 +292,11 @@ pub fn newest_runs_of(store: &RunStore, project_id: &str, features: &[&str]) -> 
     Ok(runs)
 }
 
-fn newest_record(store: &RunStore, project_id: &str, feature_id: &str) -> Result<Option<RunRecord>, String> {
+fn newest_record(
+    store: &RunStore,
+    project_id: &str,
+    feature_id: &str,
+) -> Result<Option<RunRecord>, String> {
     let mut latest: Option<(RunOrder, RunRecord)> = None;
     for run_id in store
         .run_ids()
@@ -255,14 +318,20 @@ fn newest_record(store: &RunStore, project_id: &str, feature_id: &str) -> Result
 
 fn run_order(run_id: &str, events: &[Event]) -> RunOrder {
     RunOrder {
-        started: events.first().map(|e| e.occurred_at.clone()).unwrap_or_default(),
+        started: events
+            .first()
+            .map(|e| e.occurred_at.clone())
+            .unwrap_or_default(),
         id: id_key(run_id),
     }
 }
 
 /// The runs of `project_id` with their order and events. A run whose events cannot be read is an
 /// error: when it began and what it took are unknown, so nothing may be assumed about it.
-fn project_runs(store: &RunStore, project_id: &str) -> Result<Vec<(RunOrder, RunRecord, Vec<Event>)>, String> {
+fn project_runs(
+    store: &RunStore,
+    project_id: &str,
+) -> Result<Vec<(RunOrder, RunRecord, Vec<Event>)>, String> {
     let mut runs = Vec::new();
     for run_id in store
         .run_ids()
@@ -274,9 +343,9 @@ fn project_runs(store: &RunStore, project_id: &str) -> Result<Vec<(RunOrder, Run
         if record.project_id != project_id {
             continue;
         }
-        let events = store
-            .events(&run_id)
-            .map_err(|e| format!("cannot tell what run {run_id} took: its events cannot be read: {e:?}"))?;
+        let events = store.events(&run_id).map_err(|e| {
+            format!("cannot tell what run {run_id} took: its events cannot be read: {e:?}")
+        })?;
         runs.push((run_order(&run_id, &events), record, events));
     }
     Ok(runs)
@@ -285,12 +354,21 @@ fn project_runs(store: &RunStore, project_id: &str) -> Result<Vec<(RunOrder, Run
 /// The `members` (led by the first) that a resume of their newest run may still take: those no run
 /// of `project_id` that started after it took, whatever feature led that run. All of them when the
 /// lead never ran. Nothing is reconciled or changed.
-pub fn resumable_members(store: &RunStore, project_id: &str, members: &[String]) -> Result<Vec<String>, String> {
+pub fn resumable_members(
+    store: &RunStore,
+    project_id: &str,
+    members: &[String],
+) -> Result<Vec<String>, String> {
     let Some(lead) = members.first() else {
         return Ok(Vec::new());
     };
     let runs = project_runs(store, project_id)?;
-    let Some(newest) = runs.iter().filter(|(_, record, _)| &record.feature_id == lead).map(|(order, _, _)| order).max() else {
+    let Some(newest) = runs
+        .iter()
+        .filter(|(_, record, _)| &record.feature_id == lead)
+        .map(|(order, _, _)| order)
+        .max()
+    else {
         return Ok(members.to_vec());
     };
     let taken: Vec<String> = runs
@@ -298,7 +376,11 @@ pub fn resumable_members(store: &RunStore, project_id: &str, members: &[String])
         .filter(|(order, _, _)| order > newest)
         .flat_map(|(_, record, events)| members_of(record, events))
         .collect();
-    Ok(members.iter().filter(|m| !taken.contains(m)).cloned().collect())
+    Ok(members
+        .iter()
+        .filter(|m| !taken.contains(m))
+        .cloned()
+        .collect())
 }
 
 /// [`plan_group_resume`] with the owner-liveness check supplied (pid, recorded start time).
@@ -337,7 +419,10 @@ fn plan(
     let phase = summarize_run(&events).phase;
     if review_again && !matches!(phase, RunPhase::NeedsReview | RunPhase::Failed) {
         let phase = phase.as_str().replace('_', " ");
-        return Err(format!("{} is {phase}: only a run that needs review or failed can be reviewed again", from.run_id));
+        return Err(format!(
+            "{} is {phase}: only a run that needs review or failed can be reviewed again",
+            from.run_id
+        ));
     }
     // A failed run never keeps its features, whether it just now proved dead or an earlier attempt
     // recorded that and died before releasing. Each release checks ownership, so this is repeatable.
@@ -346,7 +431,10 @@ fn plan(
             match store.finish_run(&from.project_id, &feature, &from.run_id) {
                 Ok(()) | Err(StoreError::NotFound(_)) | Err(StoreError::FeatureBusy { .. }) => {}
                 Err(e) => {
-                    return Err(format!("cannot release {feature} of {}: {e:?}", from.run_id))
+                    return Err(format!(
+                        "cannot release {feature} of {}: {e:?}",
+                        from.run_id
+                    ))
                 }
             }
         }
@@ -363,7 +451,9 @@ fn plan(
     let mut checkpoint = None;
     let mut phase = summarize_run(&events).phase;
     // The events never say a run was merged by hand: only its branch and the target can tell.
-    if matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) && crate::work_is_on_target(repo, &from) {
+    if matches!(phase, RunPhase::Failed | RunPhase::NeedsReview)
+        && crate::work_is_on_target(repo, &from)
+    {
         phase = RunPhase::Merged;
     }
     match phase {
@@ -387,7 +477,10 @@ fn plan(
             ))
         }
         RunPhase::Accepting => {
-            return Err(format!("{}: an accept is running; wait for its tests to finish", from.run_id))
+            return Err(format!(
+                "{}: an accept is running; wait for its tests to finish",
+                from.run_id
+            ))
         }
         RunPhase::Paused => {
             // A paused run continues only from a checkpoint that still describes its checkout.
@@ -425,7 +518,8 @@ fn plan(
         RunPhase::Blocked => crate::checkpoint::blocked_on_conflict(&events),
         _ => None,
     };
-    let mid_rebase = conflict_onto.is_some() && crate::checkpoint::rebase_in_progress(&from.worktree)?;
+    let mid_rebase =
+        conflict_onto.is_some() && crate::checkpoint::rebase_in_progress(&from.worktree)?;
     if fix_conflicts && !mid_rebase {
         return Err(format!(
             "{}: --fix-conflicts resumes only a run blocked on a rebase conflict that is still in progress; \
@@ -434,16 +528,19 @@ fn plan(
         ));
     }
     if mid_rebase && !fix_conflicts {
-        return Err(crate::checkpoint::mid_rebase_refusal(&from.run_id, &from.worktree));
+        return Err(crate::checkpoint::mid_rebase_refusal(
+            &from.run_id,
+            &from.worktree,
+        ));
     }
     // A stopped rebase has HEAD detached; the branch it is rebasing has to be the run's.
     let checkout = if let Some(onto) = conflict_onto.as_deref().filter(|_| mid_rebase) {
         crate::checkpoint::rebase_problem(repo, &from.worktree, &from.branch, onto)
     } else {
-        checkout_problem(repo, &from.worktree, &from.branch).map_err(|e| format!("cannot inspect the worktree: {e:?}"))
+        checkout_problem(repo, &from.worktree, &from.branch)
+            .map_err(|e| format!("cannot inspect the worktree: {e:?}"))
     };
-    if let Some(problem) = checkout?
-    {
+    if let Some(problem) = checkout? {
         return Err(format!(
             "{}: {problem}; finish or abort a stopped rebase, or start a new run",
             from.run_id
@@ -503,9 +600,7 @@ fn plan(
     if stopped_by_review && review_again.is_none() {
         let found = crate::review_escalation::escalated_review(&from.worktree, &from.base_sha);
         // A run the review itself stopped needs its ledger; any other session problem resumes without it.
-        review_again = if summary.reason.as_deref().is_some_and(|r| {
-            r.contains("the review escalated") || r.contains("the review could not be finished")
-        }) {
+        review_again = if summary.reason.as_deref().is_some_and(review_stop_reason) {
             found.map_err(|e| format!("{}: cannot read the review ledger: {e}", from.run_id))?
         } else {
             found.ok().flatten()
@@ -513,7 +608,10 @@ fn plan(
     }
     let skip_implement = implement_finished(&events) && !stopped_by_review;
     let session_why = if stopped_by_review {
-        format!("the run ended because of its review: {}", summary.reason.as_deref().unwrap_or_default())
+        format!(
+            "the run ended because of its review: {}",
+            summary.reason.as_deref().unwrap_or_default()
+        )
     } else if skip_implement {
         "the session already finished cleanly".to_string()
     } else {
@@ -594,7 +692,11 @@ pub fn rebased_onto(store: &RunStore, run_id: &str) -> Result<Option<String>, St
 
 /// Tell `record`'s run what the branch it takes over from `from_run_id` sits on: a resumed run can
 /// skip its rebase. Only appends to the new run.
-pub fn carry_rebase(store: &RunStore, record: &RunRecord, from_run_id: &str) -> Result<(), StoreError> {
+pub fn carry_rebase(
+    store: &RunStore,
+    record: &RunRecord,
+    from_run_id: &str,
+) -> Result<(), StoreError> {
     let Some(target_sha) = rebased_onto(store, from_run_id)? else {
         return Ok(());
     };
@@ -615,43 +717,71 @@ pub fn carry_rebase(store: &RunStore, record: &RunRecord, from_run_id: &str) -> 
 /// The run that took `run_id` over, with the features of `run_id` it took: the newest run of
 /// `run_id`'s feature when that is a later one, as a resume continues it on the same branch and
 /// worktree. `None` when `run_id` is the newest run of its feature.
-pub fn later_run_of(store: &RunStore, run_id: &str) -> Result<Option<(String, Vec<String>)>, String> {
-    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
-    let Some(later) = newest_run_of(store, &record.project_id, &record.feature_id)?.filter(|newest| newest != run_id) else {
+pub fn later_run_of(
+    store: &RunStore,
+    run_id: &str,
+) -> Result<Option<(String, Vec<String>)>, String> {
+    let record = store
+        .load(run_id)
+        .map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let Some(later) = newest_run_of(store, &record.project_id, &record.feature_id)?
+        .filter(|newest| newest != run_id)
+    else {
         return Ok(None);
     };
     let theirs = run_members(store, &later)?;
-    let taken = run_members(store, run_id)?.into_iter().filter(|m| theirs.contains(m)).collect();
+    let taken = run_members(store, run_id)?
+        .into_iter()
+        .filter(|m| theirs.contains(m))
+        .collect();
     Ok(Some((later, taken)))
 }
 
 /// Whether `other` works on `run`'s branch or in its worktree, as a run that continues it does.
 fn shares_checkout(run: &RunRecord, other: &RunRecord) -> bool {
-    (!run.branch.is_empty() && other.branch == run.branch) || (!run.worktree.as_os_str().is_empty() && other.worktree == run.worktree)
+    (!run.branch.is_empty() && other.branch == run.branch)
+        || (!run.worktree.as_os_str().is_empty() && other.worktree == run.worktree)
 }
 
 /// The newest run of `run_id`'s project that started after it on its branch or in its worktree, as
 /// a resume continues a run: that run works in the checkout `run_id` recorded, so what is done to
 /// the checkout is its to do. A run of the same features on a checkout of its own is no such run.
 pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, String> {
-    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
-    let own = run_order(run_id, &store.events(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?);
+    let record = store
+        .load(run_id)
+        .map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let own = run_order(
+        run_id,
+        &store
+            .events(run_id)
+            .map_err(|err| format!("cannot read the run: {err:?}"))?,
+    );
     // One scan: a run whose record cannot be read may be the one that took this checkout over, and
     // so may a run on it whose events cannot be read; either fails rather than let another run's
     // work be discarded or accepted. Runs elsewhere are not read further.
     let mut newest: Option<(RunOrder, String)> = None;
-    for other in store.run_ids().map_err(|e| format!("cannot list the runs: {e:?}"))? {
+    for other in store
+        .run_ids()
+        .map_err(|e| format!("cannot list the runs: {e:?}"))?
+    {
         let candidate = match store.load(&other) {
             Ok(candidate) => candidate,
             Err(StoreError::NotFound(_)) => continue,
-            Err(e) => return Err(format!("cannot tell whether {other} took over {run_id}: its record cannot be read: {e:?}")),
+            Err(e) => return Err(format!(
+                "cannot tell whether {other} took over {run_id}: its record cannot be read: {e:?}"
+            )),
         };
-        if other == run_id || candidate.project_id != record.project_id || !shares_checkout(&record, &candidate) {
+        if other == run_id
+            || candidate.project_id != record.project_id
+            || !shares_checkout(&record, &candidate)
+        {
             continue;
         }
-        let events = store
-            .events(&other)
-            .map_err(|e| format!("cannot tell whether {other} took over {run_id}: its events cannot be read: {e:?}"))?;
+        let events = store.events(&other).map_err(|e| {
+            format!(
+                "cannot tell whether {other} took over {run_id}: its events cannot be read: {e:?}"
+            )
+        })?;
         let order = run_order(&other, &events);
         if order > own && newest.as_ref().is_none_or(|(best, _)| order > *best) {
             newest = Some((order, other));
@@ -664,7 +794,10 @@ pub fn taken_over_by(store: &RunStore, run_id: &str) -> Result<Option<String>, S
 /// paused (a paused run keeps its worktree mid-stage and resumes into the same session). A blocked,
 /// failed, review-waiting or ended run waits on a person, not on the machine, and holds none.
 pub fn holds_run_slot(phase: RunPhase) -> bool {
-    matches!(phase, RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused)
+    matches!(
+        phase,
+        RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused
+    )
 }
 
 /// Whether resuming `run_id` is a start as far as its project's run limit goes: a run [`holds_run_slot`]
@@ -673,11 +806,17 @@ pub fn holds_run_slot(phase: RunPhase) -> bool {
 /// is counted among the active runs until the resume records it as failed, so either way the resume
 /// adds no run beyond the limit. Whether the run can be resumed at all is the resume planner's call.
 pub fn resume_takes_a_slot(store: &RunStore, run_id: &str) -> Result<bool, String> {
-    let events = store.events(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let events = store
+        .events(run_id)
+        .map_err(|err| format!("cannot read the run: {err:?}"))?;
     if events.is_empty() {
-        store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+        store
+            .load(run_id)
+            .map_err(|err| format!("cannot read the run: {err:?}"))?;
     }
-    Ok(!holds_run_slot(crate::run_status::summarize_live_run(&events).phase))
+    Ok(!holds_run_slot(
+        crate::run_status::summarize_live_run(&events).phase,
+    ))
 }
 
 /// The runs among `runs` (run id, record, events) that are active, as (run id, feature id) in the
@@ -686,30 +825,41 @@ pub fn resume_takes_a_slot(store: &RunStore, run_id: &str) -> Result<bool, Strin
 /// run's own events last said.
 pub fn active_runs(runs: &[(String, RunRecord, Vec<Event>)]) -> Vec<(String, String)> {
     use std::collections::HashMap;
-    let ordered: Vec<RunOrder> = runs.iter().map(|(run_id, _, events)| run_order(run_id, events)).collect();
+    let ordered: Vec<RunOrder> = runs
+        .iter()
+        .map(|(run_id, _, events)| run_order(run_id, events))
+        .collect();
     // The latest run of each project on each branch and in each worktree, so whether a later run
     // continued a run is one lookup per run rather than a scan of every other run.
     let mut by_branch: HashMap<(&str, &str), &RunOrder> = HashMap::new();
     let mut by_worktree: HashMap<(&str, &Path), &RunOrder> = HashMap::new();
     for ((_, record, _), order) in runs.iter().zip(&ordered) {
         if !record.branch.is_empty() {
-            let latest = by_branch.entry((&record.project_id, &record.branch)).or_insert(order);
+            let latest = by_branch
+                .entry((&record.project_id, &record.branch))
+                .or_insert(order);
             *latest = (*latest).max(order);
         }
         if !record.worktree.as_os_str().is_empty() {
-            let latest = by_worktree.entry((&record.project_id, &record.worktree)).or_insert(order);
+            let latest = by_worktree
+                .entry((&record.project_id, &record.worktree))
+                .or_insert(order);
             *latest = (*latest).max(order);
         }
     }
     let continued = |record: &RunRecord, own: &RunOrder| {
         let later = |latest: Option<&&RunOrder>| latest.is_some_and(|latest| *latest > own);
-        (!record.branch.is_empty() && later(by_branch.get(&(record.project_id.as_str(), record.branch.as_str()))))
-            || (!record.worktree.as_os_str().is_empty() && later(by_worktree.get(&(record.project_id.as_str(), record.worktree.as_path()))))
+        (!record.branch.is_empty()
+            && later(by_branch.get(&(record.project_id.as_str(), record.branch.as_str()))))
+            || (!record.worktree.as_os_str().is_empty()
+                && later(by_worktree.get(&(record.project_id.as_str(), record.worktree.as_path()))))
     };
     runs.iter()
         .zip(&ordered)
         // A run whose stage failed while its process goes on to fix it still holds its slot.
-        .filter(|((_, _, events), _)| holds_run_slot(crate::run_status::summarize_live_run(events).phase))
+        .filter(|((_, _, events), _)| {
+            holds_run_slot(crate::run_status::summarize_live_run(events).phase)
+        })
         .filter(|((_, record, _), own)| !continued(record, own))
         .map(|((run_id, record, _), _)| (run_id.clone(), record.feature_id.clone()))
         .collect()
@@ -723,14 +873,27 @@ pub fn check_group_resume(store: &RunStore, repo: &Path, run_id: &str) -> Result
 
 /// [`check_group_resume`] for a resume that, with `fix_conflicts`, has a session resolve the rebase
 /// the run blocked on.
-pub fn check_group_resume_fixing(store: &RunStore, repo: &Path, run_id: &str, fix_conflicts: bool) -> Result<(), String> {
-    check_group_resume_as(store, run_id, &|record, members| plan_group_resume_fixing(store, repo, &record.project_id, members, fix_conflicts))
+pub fn check_group_resume_fixing(
+    store: &RunStore,
+    repo: &Path,
+    run_id: &str,
+    fix_conflicts: bool,
+) -> Result<(), String> {
+    check_group_resume_as(store, run_id, &|record, members| {
+        plan_group_resume_fixing(store, repo, &record.project_id, members, fix_conflicts)
+    })
 }
 
 /// [`check_group_resume_fixing`] for a resume asked to review the run again
 /// ([`plan_group_resume_reviewing_again`]).
-pub fn check_group_resume_reviewing_again(store: &RunStore, repo: &Path, run_id: &str) -> Result<(), String> {
-    check_group_resume_as(store, run_id, &|record, members| plan_group_resume_reviewing_again(store, repo, &record.project_id, members))
+pub fn check_group_resume_reviewing_again(
+    store: &RunStore,
+    repo: &Path,
+    run_id: &str,
+) -> Result<(), String> {
+    check_group_resume_as(store, run_id, &|record, members| {
+        plan_group_resume_reviewing_again(store, repo, &record.project_id, members)
+    })
 }
 
 fn check_group_resume_as(
@@ -738,14 +901,19 @@ fn check_group_resume_as(
     run_id: &str,
     plan: &dyn Fn(&RunRecord, &[String]) -> Result<ResumePlan, String>,
 ) -> Result<(), String> {
-    let record = store.load(run_id).map_err(|err| format!("cannot read the run: {err:?}"))?;
+    let record = store
+        .load(run_id)
+        .map_err(|err| format!("cannot read the run: {err:?}"))?;
     let members = run_members(store, run_id)?;
     // A later run named after the same feature took it over, whatever else it was for.
     if let Some((later, taken)) = later_run_of(store, run_id)? {
         return Err(if run_members(store, &later)? == members {
             format!("{later} is a later run of the same features; resume that one")
         } else {
-            format!("{later} is a later run that took {}; this run can no longer be resumed", taken.join(", "))
+            format!(
+                "{later} is a later run that took {}; this run can no longer be resumed",
+                taken.join(", ")
+            )
         });
     }
     plan(&record, &members).map(|_| ())
@@ -759,7 +927,12 @@ pub fn resume_check(store: &RunStore, repo: &Path, run_id: &str) -> Result<Strin
         .map_err(|err| format!("cannot read the run: {err:?}"))?;
     let stopped = store
         .events(run_id)
-        .map(|events| matches!(summarize_run(&events).phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview))
+        .map(|events| {
+            matches!(
+                summarize_run(&events).phase,
+                RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview
+            )
+        })
         .unwrap_or(false);
     if stopped {
         // The pipeline continues the latest run of these features, so that is what is checked.
@@ -767,5 +940,7 @@ pub fn resume_check(store: &RunStore, repo: &Path, run_id: &str) -> Result<Strin
         return Ok("where it stopped".to_string());
     }
     let checkpoint = crate::checkpoint::validate_checkpoint(store, repo, run_id)?;
-    Ok(checkpoint.next_stage.unwrap_or_else(|| "the end".to_string()))
+    Ok(checkpoint
+        .next_stage
+        .unwrap_or_else(|| "the end".to_string()))
 }

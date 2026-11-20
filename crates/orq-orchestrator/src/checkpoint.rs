@@ -201,14 +201,18 @@ pub fn mid_rebase_refusal(run_id: &str, worktree: &std::path::Path) -> String {
 /// The commit a run's rebase was replaying onto when it stopped on a conflict, if the run then
 /// blocked on it: its last rebase event is `rebase.conflict`, followed by `run.blocked`.
 pub fn blocked_on_conflict(events: &[Event]) -> Option<String> {
-    pending_conflict(events)?.payload["onto"].as_str().map(str::to_string)
+    pending_conflict(events)?.payload["onto"]
+        .as_str()
+        .map(str::to_string)
 }
 
 /// The `rebase.conflict` event a run blocked on, if it did: its last rebase event, followed by
 /// `run.blocked`.
 fn pending_conflict(events: &[Event]) -> Option<&Event> {
     let last = events.iter().rposition(|e| e.kind.starts_with("rebase."))?;
-    if events[last].kind != "rebase.conflict" || !events[last + 1..].iter().any(|e| e.kind == "run.blocked") {
+    if events[last].kind != "rebase.conflict"
+        || !events[last + 1..].iter().any(|e| e.kind == "run.blocked")
+    {
         return None;
     }
     Some(&events[last])
@@ -216,7 +220,11 @@ fn pending_conflict(events: &[Event]) -> Option<&Event> {
 
 /// A run resumed to finish the rebase `from_run_id` blocked on, still in progress, takes over that
 /// conflict: should it block on it too, it is resumed the same way.
-pub fn carry_conflict(store: &RunStore, record: &crate::store::RunRecord, from_run_id: &str) -> Result<(), StoreError> {
+pub fn carry_conflict(
+    store: &RunStore,
+    record: &crate::store::RunRecord,
+    from_run_id: &str,
+) -> Result<(), StoreError> {
     let events = store.events(from_run_id)?;
     let Some(conflict) = pending_conflict(&events) else {
         return Ok(());
@@ -229,7 +237,10 @@ pub fn carry_conflict(store: &RunStore, record: &crate::store::RunRecord, from_r
 /// Whether `worktree`'s HEAD contains `onto`, a full commit id: anything else, an option or a
 /// name, never reaches git and counts as not contained.
 pub fn head_contains(worktree: &std::path::Path, onto: &str) -> Result<bool, String> {
-    let full_id = matches!(onto.len(), 40 | 64) && onto.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let full_id = matches!(onto.len(), 40 | 64)
+        && onto
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
     if !full_id {
         return Ok(false);
     }
@@ -244,15 +255,31 @@ pub fn head_contains(worktree: &std::path::Path, onto: &str) -> Result<bool, Str
 
 /// A person finished the rebase a run blocked on, onto `onto`: recorded on `record`'s run, which
 /// resumes it, as that run's branch now sits on it.
-pub fn record_rebase_finished_by_hand(store: &RunStore, record: &crate::store::RunRecord, onto: &str) -> Result<(), StoreError> {
-    crate::rebase::record_event(store, record, "rebase.completed", serde_json::json!({ "resolved_by": "person", "target_sha": onto }))
+pub fn record_rebase_finished_by_hand(
+    store: &RunStore,
+    record: &crate::store::RunRecord,
+    onto: &str,
+) -> Result<(), StoreError> {
+    crate::rebase::record_event(
+        store,
+        record,
+        "rebase.completed",
+        serde_json::json!({ "resolved_by": "person", "target_sha": onto }),
+    )
 }
 
 /// Why a run's worktree, stopped part way through a rebase, cannot have that rebase finished for
 /// the run: it is not one of `repo`'s worktrees, or the rebase is not the one the run blocked on,
 /// of the run's `branch` onto `onto`.
-pub fn rebase_problem(repo: &std::path::Path, worktree: &std::path::Path, branch: &str, onto: &str) -> Result<Option<String>, String> {
-    if let Some(problem) = crate::reap::repository_problem(repo, worktree).map_err(|e| format!("cannot inspect the worktree: {e:?}"))? {
+pub fn rebase_problem(
+    repo: &std::path::Path,
+    worktree: &std::path::Path,
+    branch: &str,
+    onto: &str,
+) -> Result<Option<String>, String> {
+    if let Some(problem) = crate::reap::repository_problem(repo, worktree)
+        .map_err(|e| format!("cannot inspect the worktree: {e:?}"))?
+    {
         return Ok(Some(problem));
     }
     for dir in ["rebase-merge", "rebase-apply"] {
@@ -267,7 +294,9 @@ pub fn rebase_problem(repo: &std::path::Path, worktree: &std::path::Path, branch
             continue;
         };
         if name.trim() != format!("refs/heads/{branch}") {
-            return Ok(Some("the rebase in the worktree is not of the branch of the run".to_string()));
+            return Ok(Some(
+                "the rebase in the worktree is not of the branch of the run".to_string(),
+            ));
         }
         let replaying_onto = std::fs::read_to_string(dir.join("onto")).unwrap_or_default();
         if replaying_onto.trim() != onto {
@@ -277,5 +306,7 @@ pub fn rebase_problem(repo: &std::path::Path, worktree: &std::path::Path, branch
         }
         return Ok(None);
     }
-    Ok(Some("the worktree is not on the branch of the run".to_string()))
+    Ok(Some(
+        "the worktree is not on the branch of the run".to_string(),
+    ))
 }

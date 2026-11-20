@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use orq_orchestrator::{run_gate_stage, Event, Gate, RunRecord, RunStore};
 
 fn world(tag: &str) -> (RunStore, PathBuf) {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-gate-failed-tests-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!(
+        "orq-gate-failed-tests-{}-{tag}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&root);
     let worktree = root.join("worktree");
     fs::create_dir_all(&worktree).unwrap();
@@ -37,7 +40,13 @@ fn sh(script: &str) -> Vec<String> {
 }
 
 fn failed(store: &RunStore) -> Event {
-    store.events("run-1").unwrap().into_iter().rev().find(|event| event.kind == "stage.failed").expect("stage.failed")
+    store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.kind == "stage.failed")
+        .expect("stage.failed")
 }
 
 #[test]
@@ -50,23 +59,37 @@ fn a_failed_gate_step_records_its_failed_tests_by_name_with_their_output() {
                   echo \"thread 'saves' panicked at src/store.rs:4:5:\"; \
                   echo '  left: 1'; echo ' right: 2'; \
                   echo '        PASS [   0.004s] (2/2) orq-core::store loads'; exit 100";
-    let gate = Gate::Steps { steps: vec![sh(script)], notes: Vec::new() };
+    let gate = Gate::Steps {
+        steps: vec![sh(script)],
+        notes: Vec::new(),
+    };
 
     run_gate_stage(&store, "run-1", &gate, true, &log).unwrap();
 
     let event = failed(&store);
-    let tests = event.payload["failed_tests"].as_array().expect("failed_tests");
-    let names: Vec<&str> = tests.iter().map(|test| test["name"].as_str().unwrap()).collect();
+    let tests = event.payload["failed_tests"]
+        .as_array()
+        .expect("failed_tests");
+    let names: Vec<&str> = tests
+        .iter()
+        .map(|test| test["name"].as_str().unwrap())
+        .collect();
     assert_eq!(names, ["orq-core::store saves"]);
     let output = tests[0]["output"].as_str().unwrap();
-    assert!(output.contains("left: 1") && output.contains("right: 2"), "{output}");
+    assert!(
+        output.contains("left: 1") && output.contains("right: 2"),
+        "{output}"
+    );
     assert_eq!(event.payload["failed_tests_more"], 0);
 }
 
 #[test]
 fn a_gate_step_that_fails_without_naming_a_test_records_an_empty_list() {
     let (store, log) = world("build");
-    let gate = Gate::Steps { steps: vec![sh("echo 'error: could not compile'; exit 101")], notes: Vec::new() };
+    let gate = Gate::Steps {
+        steps: vec![sh("echo 'error: could not compile'; exit 101")],
+        notes: Vec::new(),
+    };
 
     run_gate_stage(&store, "run-1", &gate, true, &log).unwrap();
 

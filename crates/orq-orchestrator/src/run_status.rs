@@ -183,7 +183,11 @@ pub fn record_capability_skipped(
 
 /// How the run's MCP servers were set up: each server's version and where it came from, and the
 /// notes on what did not go as planned. Notes never carry secret values.
-pub fn record_mcp_setup(store: &RunStore, record: &RunRecord, report: &crate::McpSetupReport) -> Result<(), StoreError> {
+pub fn record_mcp_setup(
+    store: &RunStore,
+    record: &RunRecord,
+    report: &crate::McpSetupReport,
+) -> Result<(), StoreError> {
     let servers: Vec<serde_json::Value> = report
         .versions
         .iter()
@@ -245,7 +249,11 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             // A start with no result since the last one keeps what the run goes back to: it was accepting already.
             "run.accept_started" if summary.phase == RunPhase::Accepting => continue,
             "run.accept_started" => {
-                before_accept = Some((summary.phase, summary.reason.take(), summary.phase_at.take()));
+                before_accept = Some((
+                    summary.phase,
+                    summary.reason.take(),
+                    summary.phase_at.take(),
+                ));
                 summary.accept_failure = None;
                 RunPhase::Accepting
             }
@@ -253,8 +261,19 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
                 if let Some((phase, reason, at)) = before_accept.take() {
                     (summary.phase, summary.reason, summary.phase_at) = (phase, reason, at);
                 }
-                let text = |key: &str| event.payload.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-                summary.accept_failure = Some(AcceptFailure { reason: text("reason"), output: text("output"), at: event.occurred_at.clone() });
+                let text = |key: &str| {
+                    event
+                        .payload
+                        .get(key)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                summary.accept_failure = Some(AcceptFailure {
+                    reason: text("reason"),
+                    output: text("output"),
+                    at: event.occurred_at.clone(),
+                });
                 continue;
             }
             // A requested pause or a pause itself outlives the stages that finish around it.
@@ -283,7 +302,9 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
             // The explicit ending of the run: it wins over everything inferred before it.
             "run.completed" => match event.payload.get("ending").and_then(|e| e.as_str()) {
                 // `planned`: a planning run (Draft with Claude) that left its draft.
-                Some("review_ready" | "resumed" | "pushed" | "merged" | "planned") => RunPhase::Completed,
+                Some("review_ready" | "resumed" | "pushed" | "merged" | "planned") => {
+                    RunPhase::Completed
+                }
                 Some("failed") => RunPhase::Failed,
                 Some("blocked") => RunPhase::Blocked,
                 Some("needs_review") => RunPhase::NeedsReview,
@@ -295,7 +316,10 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
                 let unsuccessful =
                     event.payload.get("run_succeeded").and_then(|v| v.as_bool()) == Some(false);
                 if unsuccessful
-                    || matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview)
+                    || matches!(
+                        summary.phase,
+                        RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview
+                    )
                 {
                     continue;
                 }
@@ -326,9 +350,15 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
 /// running while the process that owns it (its latest `run.launched`) is `alive`: the pipeline goes
 /// on to fix the failure (a gate fix, a retry) and writes the run's ending itself. With the process
 /// gone, or none recorded, the failure stands.
-pub fn summarize_run_with(events: &[Event], alive: &dyn Fn(u32, Option<u64>) -> bool) -> RunSummary {
+pub fn summarize_run_with(
+    events: &[Event],
+    alive: &dyn Fn(u32, Option<u64>) -> bool,
+) -> RunSummary {
     let mut summary = summarize_run(events);
-    if summary.phase == RunPhase::Failed && last_word_is_a_failed_stage(events) && owner_alive(events, alive) {
+    if summary.phase == RunPhase::Failed
+        && last_word_is_a_failed_stage(events)
+        && owner_alive(events, alive)
+    {
         summary.phase = RunPhase::Running;
         summary.reason = None;
     }
@@ -342,13 +372,43 @@ pub fn summarize_live_run(events: &[Event]) -> RunSummary {
 
 /// Whether the latest event that ends or fails the run is a `stage.failed`, not the run's own ending.
 fn last_word_is_a_failed_stage(events: &[Event]) -> bool {
-    const ENDINGS: [&str; 6] = ["stage.failed", "run.failed", "run.completed", "run.blocked", "worktree.removed", "run.resumed"];
-    events.iter().rev().find(|event| ENDINGS.contains(&event.kind.as_str())).is_some_and(|event| event.kind == "stage.failed")
+    const ENDINGS: [&str; 6] = [
+        "stage.failed",
+        "run.failed",
+        "run.completed",
+        "run.blocked",
+        "worktree.removed",
+        "run.resumed",
+    ];
+    events
+        .iter()
+        .rev()
+        .find(|event| ENDINGS.contains(&event.kind.as_str()))
+        .is_some_and(|event| event.kind == "stage.failed")
 }
 
 /// Whether the process the run's latest `run.launched` names is still `alive`.
 fn owner_alive(events: &[Event], alive: &dyn Fn(u32, Option<u64>) -> bool) -> bool {
-    let Some(launch) = events.iter().rev().find(|event| event.kind == "run.launched") else { return false };
-    let Some(pid) = launch.payload.get("pid").and_then(|pid| pid.as_u64()).and_then(|pid| u32::try_from(pid).ok()) else { return false };
-    alive(pid, launch.payload.get("start_ticks").and_then(|ticks| ticks.as_u64()))
+    let Some(launch) = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "run.launched")
+    else {
+        return false;
+    };
+    let Some(pid) = launch
+        .payload
+        .get("pid")
+        .and_then(|pid| pid.as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
+    else {
+        return false;
+    };
+    alive(
+        pid,
+        launch
+            .payload
+            .get("start_ticks")
+            .and_then(|ticks| ticks.as_u64()),
+    )
 }

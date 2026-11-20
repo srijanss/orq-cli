@@ -58,14 +58,7 @@ pub fn plan_reap(
             tip: String::new(),
             verdict: ReapVerdict::Reap,
         };
-        item.verdict = judge(
-            store,
-            repo,
-            program_for,
-            timeout,
-            &record,
-            &mut item.tip,
-        )?;
+        item.verdict = judge(store, repo, program_for, timeout, &record, &mut item.tip)?;
         items.push(item);
     }
     Ok(items)
@@ -180,7 +173,10 @@ pub(crate) fn checkout_problem(
 }
 
 /// Why `worktree` is not one of `repo`'s worktrees, if it is not.
-pub(crate) fn repository_problem(repo: &Path, worktree: &Path) -> Result<Option<String>, StoreError> {
+pub(crate) fn repository_problem(
+    repo: &Path,
+    worktree: &Path,
+) -> Result<Option<String>, StoreError> {
     let common = |dir: &Path| -> Result<Option<PathBuf>, StoreError> {
         let out = git_raw(
             dir,

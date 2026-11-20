@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use orq_orchestrator::{
-    conflict_fix_task, fix_rebase_conflicts, rebase_onto_target, ConflictFixOutcome, ImplementSession, RebaseOutcome,
-    RunRecord, RunStore,
+    conflict_fix_task, fix_rebase_conflicts, rebase_onto_target, ConflictFixOutcome,
+    ImplementSession, RebaseOutcome, RunRecord, RunStore,
 };
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -481,15 +481,33 @@ fn the_task_names_the_conflicting_files_both_sides_commits_the_rules_and_the_reb
 
     let task = conflict_fix_task(&w.store, "run-1", &generated, Some(&rebuild)).unwrap();
 
-    assert!(task.starts_with("The rebase of this run's branch onto main"), "{task}");
+    assert!(
+        task.starts_with("The rebase of this run's branch onto main"),
+        "{task}"
+    );
     let onto = git(&w.root.join("remote.git"), &["rev-parse", "main"]);
     assert!(task.contains(&onto), "the commit replayed onto: {task}");
     assert!(task.contains("a.txt"), "the conflicting file: {task}");
-    assert!(task.contains("target a"), "the target's commit that touched it: {task}");
-    assert!(task.contains("edit a"), "the run's commit that touched it: {task}");
-    assert!(task.contains("keep main's and rename this run's"), "the rename rule: {task}");
-    assert!(task.contains("web/app.js") && task.contains("web/sw.js"), "the generated files: {task}");
-    assert!(task.contains("`node build.mjs`"), "the rebuild command: {task}");
+    assert!(
+        task.contains("target a"),
+        "the target's commit that touched it: {task}"
+    );
+    assert!(
+        task.contains("edit a"),
+        "the run's commit that touched it: {task}"
+    );
+    assert!(
+        task.contains("keep main's and rename this run's"),
+        "the rename rule: {task}"
+    );
+    assert!(
+        task.contains("web/app.js") && task.contains("web/sw.js"),
+        "the generated files: {task}"
+    );
+    assert!(
+        task.contains("`node build.mjs`"),
+        "the rebuild command: {task}"
+    );
     assert!(task.contains("git rebase --continue"), "{task}");
     assert!(task.contains("do not abort"), "{task}");
 }
@@ -500,12 +518,19 @@ fn without_generated_files_or_a_rebuild_command_the_task_asks_the_session_to_wor
 
     let task = conflict_fix_task(&w.store, "run-1", &[], None).unwrap();
 
-    assert!(task.contains("Generated files are never merged by hand"), "{task}");
-    assert!(task.contains("Work out from the repository which of the conflicting files are generated"), "{task}");
+    assert!(
+        task.contains("Generated files are never merged by hand"),
+        "{task}"
+    );
+    assert!(
+        task.contains("Work out from the repository which of the conflicting files are generated"),
+        "{task}"
+    );
 }
 
 #[test]
-fn a_conflicting_file_with_spaces_unicode_and_glob_characters_is_named_as_it_is_and_its_history_found() {
+fn a_conflicting_file_with_spaces_unicode_and_glob_characters_is_named_as_it_is_and_its_history_found(
+) {
     let name = " é [1].txt";
     let w = world_on("odd-name", true, name);
 
@@ -513,39 +538,74 @@ fn a_conflicting_file_with_spaces_unicode_and_glob_characters_is_named_as_it_is_
     assert_eq!(events[0].kind, "rebase.conflict");
     assert_eq!(events[0].payload["files"], serde_json::json!([name]));
     let task = conflict_fix_task(&w.store, "run-1", &[], None).unwrap();
-    assert!(task.contains(&format!("- {name}\n")), "the name as it is: {task}");
-    assert!(task.contains("target a") && task.contains("edit a"), "both sides' commits: {task}");
-    assert!(!task.contains("target decoy"), "a glob of the name matches no other file: {task}");
+    assert!(
+        task.contains(&format!("- {name}\n")),
+        "the name as it is: {task}"
+    );
+    assert!(
+        task.contains("target a") && task.contains("edit a"),
+        "both sides' commits: {task}"
+    );
+    assert!(
+        !task.contains("target decoy"),
+        "a glob of the name matches no other file: {task}"
+    );
 }
 
 #[test]
 fn the_rebuild_command_is_given_shell_quoted_so_each_word_stays_one_argument() {
     let w = world("task-quoted", true);
-    let rebuild: Vec<String> = ["sh", "-c", "echo $HOME; make it's", "two words", "plain-word_1.js"].iter().map(|w| w.to_string()).collect();
+    let rebuild: Vec<String> = [
+        "sh",
+        "-c",
+        "echo $HOME; make it's",
+        "two words",
+        "plain-word_1.js",
+    ]
+    .iter()
+    .map(|w| w.to_string())
+    .collect();
 
     let task = conflict_fix_task(&w.store, "run-1", &[], Some(&rebuild)).unwrap();
 
-    assert!(task.contains(r#"`sh -c 'echo $HOME; make it'\''s' 'two words' plain-word_1.js`"#), "{task}");
+    assert!(
+        task.contains(r#"`sh -c 'echo $HOME; make it'\''s' 'two words' plain-word_1.js`"#),
+        "{task}"
+    );
 }
 
 #[test]
-fn a_long_history_on_the_conflicting_files_is_cut_to_the_latest_commits_and_says_how_to_see_the_rest() {
+fn a_long_history_on_the_conflicting_files_is_cut_to_the_latest_commits_and_says_how_to_see_the_rest(
+) {
     let w = world("task-long", false);
     let other = w.root.join("other");
     let long_subject = "x".repeat(500);
     for i in 0..30 {
         fs::write(other.join("a.txt"), format!("theirs {i}\n")).unwrap();
-        let subject = if i == 29 { format!("target a {i:02} {long_subject}") } else { format!("target a {i:02}") };
+        let subject = if i == 29 {
+            format!("target a {i:02} {long_subject}")
+        } else {
+            format!("target a {i:02}")
+        };
         git(&other, &["commit", "-q", "-am", &subject]);
     }
     git(&other, &["push", "-q", "origin", "HEAD:main"]);
-    assert!(matches!(rebase_onto_target(&w.store, "run-1", true).unwrap(), RebaseOutcome::Conflict { .. }));
+    assert!(matches!(
+        rebase_onto_target(&w.store, "run-1", true).unwrap(),
+        RebaseOutcome::Conflict { .. }
+    ));
 
     let task = conflict_fix_task(&w.store, "run-1", &[], None).unwrap();
 
     assert!(task.contains("target a 28"), "the latest commits: {task}");
     assert!(!task.contains("target a 05"), "older ones are cut: {task}");
-    assert!(!task.contains(&long_subject), "a long subject is cut: {task}");
-    assert!(task.contains("more; `git log"), "how to see the rest: {task}");
+    assert!(
+        !task.contains(&long_subject),
+        "a long subject is cut: {task}"
+    );
+    assert!(
+        task.contains("more; `git log"),
+        "how to see the rest: {task}"
+    );
     assert!(task.len() < 6000, "{} bytes", task.len());
 }

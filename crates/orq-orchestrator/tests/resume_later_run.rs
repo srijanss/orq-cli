@@ -6,17 +6,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{check_group_resume, later_run_of, newest_run_of, record_group, resumable_members, RunRecord, RunStore};
+use orq_orchestrator::{
+    check_group_resume, later_run_of, newest_run_of, record_group, resumable_members, RunRecord,
+    RunStore,
+};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -26,7 +40,8 @@ struct World {
 }
 
 fn world(tag: &str) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-resume-later-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-resume-later-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
@@ -34,14 +49,27 @@ fn world(tag: &str) -> World {
     fs::write(repo.join("a.txt"), "a\n").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-q", "-m", "base"]);
-    World { store: RunStore::new(&root.join("state")), repo }
+    World {
+        store: RunStore::new(&root.join("state")),
+        repo,
+    }
 }
 
 /// A failed run of `feature` (its own branch and worktree) that started at `at`.
 fn failed_run(w: &World, run_id: &str, feature: &str, at: &str) -> RunRecord {
     let branch = format!("fix--{run_id}");
     let worktree = w.repo.join(".claude/worktrees").join(&branch);
-    git(&w.repo, &["worktree", "add", "-q", "-b", &branch, worktree.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &branch,
+            worktree.to_str().unwrap(),
+        ],
+    );
     let record = RunRecord {
         delivery: Default::default(),
         run_id: run_id.to_string(),
@@ -83,7 +111,12 @@ fn the_newest_run_of_a_feature_is_the_one_that_started_last_and_none_when_it_nev
     failed_run(&w, "run-1700000001-5", "COM-02", "2026-01-01T00:00:50Z");
     failed_run(&w, "run-1700000200-5", "COM-03", "2026-01-01T00:01:00Z");
 
-    assert_eq!(newest_run_of(&w.store, "repo-1", "COM-02").unwrap().as_deref(), Some("run-1700000001-5"));
+    assert_eq!(
+        newest_run_of(&w.store, "repo-1", "COM-02")
+            .unwrap()
+            .as_deref(),
+        Some("run-1700000001-5")
+    );
     assert_eq!(newest_run_of(&w.store, "repo-2", "COM-02").unwrap(), None);
     assert_eq!(newest_run_of(&w.store, "repo-1", "COM-09").unwrap(), None);
 }
@@ -93,11 +126,21 @@ fn an_earlier_run_whose_feature_a_later_group_run_took_is_refused_saying_so() {
     let w = world("taken");
     failed_run(&w, "run-1700000001-1", "COM-02", "2026-01-01T00:00:01Z");
     let later = failed_run(&w, "run-1700000002-1", "COM-02", "2026-01-01T00:00:02Z");
-    record_group(&w.store, &later, &["COM-02".to_string(), "COM-03".to_string()]).unwrap();
+    record_group(
+        &w.store,
+        &later,
+        &["COM-02".to_string(), "COM-03".to_string()],
+    )
+    .unwrap();
 
     let refused = check_group_resume(&w.store, &w.repo, "run-1700000001-1").unwrap_err();
 
-    assert!(refused.contains("run-1700000002-1") && refused.contains("later run") && refused.contains("COM-02"), "{refused}");
+    assert!(
+        refused.contains("run-1700000002-1")
+            && refused.contains("later run")
+            && refused.contains("COM-02"),
+        "{refused}"
+    );
 }
 
 fn names(list: &[&str]) -> Vec<String> {
@@ -111,24 +154,38 @@ fn a_resume_may_take_back_the_members_no_run_after_the_newest_took_whatever_led_
     // other is not later than it.
     failed_run(&w, "run-1700000001-1", "COM-02", "2026-01-01T00:00:01Z");
     failed_run(&w, "run-1700000001-2", "COM-02", "2026-01-01T00:00:01Z");
-    assert_eq!(resumable_members(&w.store, "repo-1", &names(&["COM-02", "COM-03"])).unwrap(), names(&["COM-02", "COM-03"]));
+    assert_eq!(
+        resumable_members(&w.store, "repo-1", &names(&["COM-02", "COM-03"])).unwrap(),
+        names(&["COM-02", "COM-03"])
+    );
 
     // A later group led by COM-04 took COM-03.
     let group = failed_run(&w, "run-1700000002-1", "COM-04", "2026-01-01T00:00:02Z");
     record_group(&w.store, &group, &names(&["COM-04", "COM-03"])).unwrap();
-    assert_eq!(resumable_members(&w.store, "repo-1", &names(&["COM-02", "COM-03"])).unwrap(), names(&["COM-02"]));
+    assert_eq!(
+        resumable_members(&w.store, "repo-1", &names(&["COM-02", "COM-03"])).unwrap(),
+        names(&["COM-02"])
+    );
 
     // A feature that never ran has nothing that took it.
-    assert_eq!(resumable_members(&w.store, "repo-1", &names(&["COM-09"])).unwrap(), names(&["COM-09"]));
+    assert_eq!(
+        resumable_members(&w.store, "repo-1", &names(&["COM-09"])).unwrap(),
+        names(&["COM-09"])
+    );
 }
 
 #[test]
-fn a_run_of_the_project_whose_history_cannot_be_read_stops_the_resume_rather_than_being_passed_over() {
+fn a_run_of_the_project_whose_history_cannot_be_read_stops_the_resume_rather_than_being_passed_over(
+) {
     let w = world("unreadable");
     failed_run(&w, "run-1700000001-1", "COM-02", "2026-01-01T00:00:01Z");
     let group = failed_run(&w, "run-1700000002-1", "COM-04", "2026-01-01T00:00:02Z");
     record_group(&w.store, &group, &names(&["COM-04", "COM-02"])).unwrap();
-    let events = w.repo.parent().unwrap().join("state/runs/run-1700000002-1/events.jsonl");
+    let events = w
+        .repo
+        .parent()
+        .unwrap()
+        .join("state/runs/run-1700000002-1/events.jsonl");
     let mut text = fs::read_to_string(&events).unwrap();
     text.push_str("not an event\n");
     fs::write(&events, text).unwrap();
@@ -142,7 +199,12 @@ fn a_run_of_the_project_whose_history_cannot_be_read_stops_the_resume_rather_tha
 fn later_run_of_names_the_later_run_of_a_run_s_feature_and_the_features_it_took() {
     let w = world("later-of");
     let group = failed_run(&w, "run-1700000001-5", "COM-02", "2026-01-01T00:00:01Z");
-    record_group(&w.store, &group, &["COM-02".to_string(), "COM-03".to_string()]).unwrap();
+    record_group(
+        &w.store,
+        &group,
+        &["COM-02".to_string(), "COM-03".to_string()],
+    )
+    .unwrap();
     failed_run(&w, "run-1700000099-5", "COM-02", "2026-01-01T00:00:50Z");
     failed_run(&w, "run-1700000200-5", "COM-09", "2026-01-01T00:01:00Z");
 

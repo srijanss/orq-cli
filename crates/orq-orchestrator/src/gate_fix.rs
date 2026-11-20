@@ -121,7 +121,16 @@ pub fn run_gate_with_fixes(
     max_attempts: u32,
     mut fixer: impl FnMut(u32, &Path) -> FixSessionSpec,
 ) -> Result<GateFixOutcome, StoreError> {
-    run_gate_with_fixes_env(store, run_id, gate, enabled, gate_log, max_attempts, &[], |attempt, log| Ok(fixer(attempt, log)))
+    run_gate_with_fixes_env(
+        store,
+        run_id,
+        gate,
+        enabled,
+        gate_log,
+        max_attempts,
+        &[],
+        |attempt, log| Ok(fixer(attempt, log)),
+    )
 }
 
 /// Like [`run_gate_with_fixes`], with `env` set for every run of the gate. A `fixer` that fails
@@ -137,7 +146,17 @@ pub fn run_gate_with_fixes_env(
     env: &[(String, String)],
     fixer: impl FnMut(u32, &Path) -> Result<FixSessionSpec, StoreError>,
 ) -> Result<GateFixOutcome, StoreError> {
-    run_gate_with_fixes_then(store, run_id, gate, enabled, gate_log, max_attempts, env, fixer, || {})
+    run_gate_with_fixes_then(
+        store,
+        run_id,
+        gate,
+        enabled,
+        gate_log,
+        max_attempts,
+        env,
+        fixer,
+        || {},
+    )
 }
 
 /// Like [`run_gate_with_fixes_env`], calling `after_session` as soon as each fix session ends, before
@@ -210,7 +229,11 @@ pub fn run_gate_with_fixes_then(
                 after_session();
                 ran?;
                 if let Some(summary) = read_report(&report) {
-                    return Ok(GateFixOutcome::Unrelated { fix_attempts, step, summary });
+                    return Ok(GateFixOutcome::Unrelated {
+                        fix_attempts,
+                        step,
+                        summary,
+                    });
                 }
             }
         }
@@ -239,10 +262,19 @@ pub fn rerun_gate(
     let record = store.load(run_id)?;
     match outcome {
         GateOutcome::Passed | GateOutcome::Skipped { .. } => {
-            record_event(store, &record, "gate.flaky", attempt, serde_json::json!({ "summary": summary, "step": step }))?;
+            record_event(
+                store,
+                &record,
+                "gate.flaky",
+                attempt,
+                serde_json::json!({ "summary": summary, "step": step }),
+            )?;
             Ok(true)
         }
-        GateOutcome::Failed { step: again, exit_code } => {
+        GateOutcome::Failed {
+            step: again,
+            exit_code,
+        } => {
             let payload = serde_json::json!({ "summary": summary, "step": step, "rerun_step": again, "exit_code": exit_code });
             record_event(store, &record, "gate.rerun_failed", attempt, payload)?;
             Ok(false)

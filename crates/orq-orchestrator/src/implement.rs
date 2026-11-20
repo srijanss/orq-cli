@@ -186,11 +186,18 @@ pub(crate) fn run_session_stage(
     };
     let ended = match &status {
         Ok(SessionEnd::Closed) => {
-            format!("{} was closed by orq after it wrote its exit marker", session.program)
+            format!(
+                "{} was closed by orq after it wrote its exit marker",
+                session.program
+            )
         }
         Ok(SessionEnd::Exited(status)) => match status.code() {
             Some(code) => format!("{} exited with status {code}", session.program),
-            None => format!("{} was stopped by {}", session.program, describe_signal(signal)),
+            None => format!(
+                "{} was stopped by {}",
+                session.program,
+                describe_signal(signal)
+            ),
         },
         Err(err) => format!("could not start {}: {err}", session.program),
     };
@@ -250,7 +257,8 @@ pub(crate) fn run_session_stage(
             serde_json::json!({ "exit_code": outcome.exit_code }),
         ),
         Some(reason) => {
-            let mut payload = serde_json::json!({ "exit_code": outcome.exit_code, "reason": reason });
+            let mut payload =
+                serde_json::json!({ "exit_code": outcome.exit_code, "reason": reason });
             if let Some(signal) = signal {
                 payload["signal"] = serde_json::json!(signal);
             }
@@ -260,7 +268,10 @@ pub(crate) fn run_session_stage(
     store.append_event(&closing)?;
     // Notes from a session that finished are kept for the report; a failed stage already says why.
     if let Some(notes) = notes.filter(|_| outcome.success) {
-        store.append_event(&event("session.notes", serde_json::json!({ "notes": notes })))?;
+        store.append_event(&event(
+            "session.notes",
+            serde_json::json!({ "notes": notes }),
+        ))?;
     }
     Ok(outcome)
 }
@@ -292,7 +303,9 @@ fn describe_signal(signal: Option<i32>) -> String {
     };
     match signal_name(number) {
         Some(name @ "SIGKILL") => {
-            format!("signal {number} ({name}) — often the kernel's out-of-memory killer; check dmesg")
+            format!(
+                "signal {number} ({name}) — often the kernel's out-of-memory killer; check dmesg"
+            )
         }
         Some(name) => format!("signal {number} ({name})"),
         None => format!("signal {number}"),
@@ -319,7 +332,10 @@ fn signal_name(number: i32) -> Option<&'static str> {
             (libc::SIGALRM, "SIGALRM"),
             (libc::SIGTERM, "SIGTERM"),
         ];
-        NAMES.iter().find(|(n, _)| *n == number).map(|(_, name)| *name)
+        NAMES
+            .iter()
+            .find(|(n, _)| *n == number)
+            .map(|(_, name)| *name)
     }
     #[cfg(not(unix))]
     {
@@ -375,24 +391,39 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         #[cfg(unix)]
-        Err(err) if err.raw_os_error() == Some(libc::ELOOP) => return Some(Marker::Problem(NOT_PLAIN.to_string())),
-        Err(err) => return Some(Marker::Problem(format!("its finish marker could not be read: {err}"))),
+        Err(err) if err.raw_os_error() == Some(libc::ELOOP) => {
+            return Some(Marker::Problem(NOT_PLAIN.to_string()))
+        }
+        Err(err) => {
+            return Some(Marker::Problem(format!(
+                "its finish marker could not be read: {err}"
+            )))
+        }
     };
     match file.metadata() {
         Ok(found) if found.is_file() => {}
         Ok(_) => return Some(Marker::Problem(NOT_PLAIN.to_string())),
-        Err(err) => return Some(Marker::Problem(format!("its finish marker could not be read: {err}"))),
+        Err(err) => {
+            return Some(Marker::Problem(format!(
+                "its finish marker could not be read: {err}"
+            )))
+        }
     }
     let mut bytes = Vec::new();
     if let Err(err) = file.take(MARKER_READ_LIMIT).read_to_end(&mut bytes) {
-        return Some(Marker::Problem(format!("its finish marker could not be read: {err}")));
+        return Some(Marker::Problem(format!(
+            "its finish marker could not be read: {err}"
+        )));
     }
     let redacted = orq_core::redact::redact(&String::from_utf8_lossy(&bytes));
     let text = redacted.trim_start();
     if text.is_empty() {
         // Blanks up to the read limit say nothing about what comes after them, so that is not a finish.
         return Some(if bytes.len() as u64 >= MARKER_READ_LIMIT {
-            Marker::Problem("its finish marker holds more than orq reads, and the part it read is blank".to_string())
+            Marker::Problem(
+                "its finish marker holds more than orq reads, and the part it read is blank"
+                    .to_string(),
+            )
         } else {
             Marker::Finished { notes: None }
         });
@@ -402,10 +433,15 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
     if first == "OK" {
         // Read up to the limit with no line end seen, the line may go on past it ("OK tests are failing").
         if after.is_empty() && !text.contains('\n') && bytes.len() as u64 >= MARKER_READ_LIMIT {
-            return Some(Marker::Problem("its finish marker holds more than orq reads, and its first line is cut".to_string()));
+            return Some(Marker::Problem(
+                "its finish marker holds more than orq reads, and its first line is cut"
+                    .to_string(),
+            ));
         }
         let notes = clean(after);
-        return Some(Marker::Finished { notes: (!notes.is_empty()).then_some(notes) });
+        return Some(Marker::Finished {
+            notes: (!notes.is_empty()).then_some(notes),
+        });
     }
     // `PROBLEM` alone, or followed by the reason on the same line or the lines after it.
     let reason = first
@@ -413,7 +449,9 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
         .filter(|rest| rest.is_empty() || rest.starts_with([' ', ':']))
         .map(|rest| clean(&format!("{} {after}", rest.trim_start_matches(':'))));
     Some(Marker::Problem(match reason {
-        Some(reason) if reason.is_empty() => "it reported a problem without saying what".to_string(),
+        Some(reason) if reason.is_empty() => {
+            "it reported a problem without saying what".to_string()
+        }
         Some(reason) => reason,
         None => clean(text),
     }))
@@ -421,7 +459,10 @@ fn marker_report_with(marker: &Path, between: impl FnOnce()) -> Option<Marker> {
 
 /// `text` as one line of at most `MARKER_REPORT_LIMIT` characters, with control characters as spaces.
 fn clean(text: &str) -> String {
-    let spaced: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let spaced: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     spaced.trim().chars().take(MARKER_REPORT_LIMIT).collect()
 }
 
@@ -649,7 +690,8 @@ mod tests {
 
     #[test]
     fn a_log_swapped_for_a_fifo_after_inspection_is_refused_without_blocking() {
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-open-log-fifo-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-open-log-fifo-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let log = dir.join("stage.log");
@@ -676,7 +718,8 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-open-log-{tag}-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-open-log-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -730,7 +773,8 @@ mod tests {
 
     #[test]
     fn a_marker_swapped_after_it_was_inspected_is_not_followed_and_does_not_block() {
-        let dir = orq_test_support::process_temp_dir().join(format!("orq-marker-swap-{}", std::process::id()));
+        let dir = orq_test_support::process_temp_dir()
+            .join(format!("orq-marker-swap-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let (marker, secret) = (dir.join("done"), dir.join("secret"));
@@ -758,7 +802,12 @@ mod tests {
             });
             let _ = sender.send(report);
         });
-        let report = answer.recv_timeout(std::time::Duration::from_secs(5)).expect("the read blocked on a pipe");
-        assert!(report.and_then(Marker::into_problem).is_some(), "a pipe is a problem to report");
+        let report = answer
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the read blocked on a pipe");
+        assert!(
+            report.and_then(Marker::into_problem).is_some(),
+            "a pipe is a problem to report"
+        );
     }
 }

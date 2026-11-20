@@ -118,9 +118,16 @@ impl CiFixSteps for Script {
         self.retry_refused.clone().map_or(Ok(()), Err)
     }
     fn fix_session_ended(&mut self) {
-        self.ended.push((self.worktree.join("fixed").exists(), self.worktree.join("gated").exists()));
+        self.ended.push((
+            self.worktree.join("fixed").exists(),
+            self.worktree.join("gated").exists(),
+        ));
     }
-    fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError> {
+    fn fix_session(
+        &mut self,
+        attempt: u32,
+        failure_log: &Path,
+    ) -> Result<FixSessionSpec, StoreError> {
         self.sessions.push(attempt);
         if let Some(why) = &self.fail_session {
             return Err(StoreError::Corrupt(why.clone()));
@@ -224,7 +231,11 @@ fn a_fix_session_that_cannot_be_prepared_is_not_started_and_the_loop_fails_sayin
     assert!(!w.worktree.join("fixed").exists(), "no session ran");
     assert_eq!(script.waited, [SHA1]);
     assert_eq!(script.pushed, 0);
-    assert!(kinds(&w).is_empty(), "no stage was started: {:?}", kinds(&w));
+    assert!(
+        kinds(&w).is_empty(),
+        "no stage was started: {:?}",
+        kinds(&w)
+    );
 }
 
 #[test]
@@ -759,16 +770,29 @@ fn reporting_unrelated(w: &World) -> String {
 }
 
 fn payloads(w: &World, kind: &str) -> Vec<(String, u32, serde_json::Value)> {
-    w.store.events("run-1").unwrap().into_iter().filter(|e| e.kind == kind).map(|e| (e.stage.unwrap_or_default(), e.attempt, e.payload)).collect()
+    w.store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == kind)
+        .map(|e| (e.stage.unwrap_or_default(), e.attempt, e.payload))
+        .collect()
 }
 
 #[test]
-fn a_fix_session_that_reports_an_unrelated_failure_gets_ci_retried_once_and_a_failed_retry_stops_the_loop() {
+fn a_fix_session_that_reports_an_unrelated_failure_gets_ci_retried_once_and_a_failed_retry_stops_the_loop(
+) {
     let w = world("unrelated");
     let gate = gate_needing_fixed();
-    let mut script = Script::new(&w, vec![red(&["lint"]), red(&["lint"])], vec![], &reporting_unrelated(&w));
+    let mut script = Script::new(
+        &w,
+        vec![red(&["lint"]), red(&["lint"])],
+        vec![],
+        &reporting_unrelated(&w),
+    );
 
-    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+    let outcome =
+        run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
 
     assert_eq!(
         outcome,
@@ -784,25 +808,43 @@ fn a_fix_session_that_reports_an_unrelated_failure_gets_ci_retried_once_and_a_fa
     assert_eq!(script.sessions, vec![1], "the retry starts no fix session");
     assert_eq!(
         payloads(&w, "ci.rerun_failed"),
-        vec![("ci".to_string(), 1, serde_json::json!({"summary": "deploy check is flaky", "failing": ["lint"], "rerun": "the re-run failed too", "started": true}))]
+        vec![(
+            "ci".to_string(),
+            1,
+            serde_json::json!({"summary": "deploy check is flaky", "failing": ["lint"], "rerun": "the re-run failed too", "started": true})
+        )]
     );
-    assert!(!kinds(&w).iter().any(|(_, kind)| kind == "run.failed"), "{:?}", kinds(&w));
+    assert!(
+        !kinds(&w).iter().any(|(_, kind)| kind == "run.failed"),
+        "{:?}",
+        kinds(&w)
+    );
 }
 
 #[test]
 fn a_ci_retry_that_passes_after_an_unrelated_report_is_a_pass_noted_as_a_flake() {
     let w = world("unrelated-flaky");
     let gate = gate_needing_fixed();
-    let mut script = Script::new(&w, vec![red(&["lint"]), CiOutcome::Passed], vec![], &reporting_unrelated(&w));
+    let mut script = Script::new(
+        &w,
+        vec![red(&["lint"]), CiOutcome::Passed],
+        vec![],
+        &reporting_unrelated(&w),
+    );
 
-    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+    let outcome =
+        run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
 
     assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
     assert_eq!(script.retried, vec![SHA1]);
     assert_eq!(script.pushed, 0);
     assert_eq!(
         payloads(&w, "ci.flaky"),
-        vec![("ci".to_string(), 1, serde_json::json!({"summary": "deploy check is flaky", "failing": ["lint"]}))]
+        vec![(
+            "ci".to_string(),
+            1,
+            serde_json::json!({"summary": "deploy check is flaky", "failing": ["lint"]})
+        )]
     );
 }
 
@@ -813,15 +855,29 @@ fn a_ci_retry_that_cannot_start_stops_the_loop_saying_why() {
     let mut script = Script::new(&w, vec![red(&["lint"])], vec![], &reporting_unrelated(&w));
     script.retry_refused = Some("no failed workflow run to re-run".to_string());
 
-    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+    let outcome =
+        run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
 
     let rerun = "the re-run could not be started: no failed workflow run to re-run".to_string();
-    assert_eq!(outcome, CiFixOutcome::Unrelated { fix_attempts: 1, summary: "deploy check is flaky".to_string(), rerun: rerun.clone() });
+    assert_eq!(
+        outcome,
+        CiFixOutcome::Unrelated {
+            fix_attempts: 1,
+            summary: "deploy check is flaky".to_string(),
+            rerun: rerun.clone()
+        }
+    );
     assert_eq!(script.waited, vec![SHA1], "nothing to wait on");
     let payload = payloads(&w, "ci.rerun_failed")[0].2.clone();
     assert_eq!(payload["rerun"], rerun.as_str());
-    assert_eq!(payload["started"], false, "the Timeline tells a refused retry from a failed one: {payload}");
-    assert_eq!(payload["reason"], "no failed workflow run to re-run", "{payload}");
+    assert_eq!(
+        payload["started"], false,
+        "the Timeline tells a refused retry from a failed one: {payload}"
+    );
+    assert_eq!(
+        payload["reason"], "no failed workflow run to re-run",
+        "{payload}"
+    );
 }
 
 #[test]
@@ -829,10 +885,20 @@ fn a_report_left_by_an_earlier_session_does_not_stop_a_ci_fix_that_works() {
     let w = world("unrelated-stale");
     let gate = gate_needing_fixed();
     fs::create_dir_all(w.worktree.join(".orq")).unwrap();
-    fs::write(w.worktree.join(".orq").join("unrelated-failure.txt"), "old news\n").unwrap();
-    let mut script = Script::new(&w, vec![red(&["lint"]), CiOutcome::Passed], vec![pushed(SHA2)], "touch fixed");
+    fs::write(
+        w.worktree.join(".orq").join("unrelated-failure.txt"),
+        "old news\n",
+    )
+    .unwrap();
+    let mut script = Script::new(
+        &w,
+        vec![red(&["lint"]), CiOutcome::Passed],
+        vec![pushed(SHA2)],
+        "touch fixed",
+    );
 
-    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
+    let outcome =
+        run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 2), &mut script).unwrap();
 
     assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
 }
@@ -846,9 +912,15 @@ fn the_fix_session_ended_step_runs_once_the_session_ends_before_the_gate() {
         steps: vec![sh("touch gated && test -f fixed")],
         notes: Vec::new(),
     };
-    let mut script = Script::new(&w, vec![red(&["build"]), CiOutcome::Passed], vec![pushed(SHA2)], "touch fixed");
+    let mut script = Script::new(
+        &w,
+        vec![red(&["build"]), CiOutcome::Passed],
+        vec![pushed(SHA2)],
+        "touch fixed",
+    );
 
-    let outcome = run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 1), &mut script).unwrap();
+    let outcome =
+        run_ci_fix_loop(&w.store, "run-1", SHA1, &config(&w, &gate, 1), &mut script).unwrap();
 
     assert_eq!(outcome, CiFixOutcome::Passed { fix_attempts: 1 });
     assert_eq!(script.ended, vec![(true, false)]);

@@ -4,10 +4,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use orq_orchestrator::{carry_fix_features, carry_session_references, features_no_later_run_took, fix_features, record_fix_features_added, Event, RunRecord, RunStore};
+use orq_orchestrator::{
+    carry_fix_features, carry_session_references, features_no_later_run_took, fix_features,
+    record_fix_features_added, Event, RunRecord, RunStore,
+};
 
 fn store(tag: &str) -> RunStore {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-fix-features-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir()
+        .join(format!("orq-fix-features-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     RunStore::new(&dir)
@@ -42,10 +46,20 @@ fn the_features_every_fix_session_added_are_read_back_once_each_in_order() {
     record_fix_features_added(&store, &record("run-1"), "gate_fix", &names(&["b", "a"])).unwrap();
     record_fix_features_added(&store, &record("run-1"), "ci_fix", &names(&["a", "c"])).unwrap();
 
-    assert_eq!(fix_features(&store, "run-1").unwrap(), names(&["b", "a", "c"]));
+    assert_eq!(
+        fix_features(&store, "run-1").unwrap(),
+        names(&["b", "a", "c"])
+    );
     let events = store.events("run-1").unwrap();
-    let added: Vec<_> = events.iter().filter(|e| e.kind == "fix.features_added").map(|e| e.payload.clone()).collect();
-    assert_eq!(added[0], serde_json::json!({ "session": "gate_fix", "features": ["b", "a"] }));
+    let added: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "fix.features_added")
+        .map(|e| e.payload.clone())
+        .collect();
+    assert_eq!(
+        added[0],
+        serde_json::json!({ "session": "gate_fix", "features": ["b", "a"] })
+    );
 }
 
 #[test]
@@ -72,7 +86,11 @@ fn a_feature_a_later_run_carried_on_from_a_fix_session_is_not_free_for_the_earli
 
     let free = features_no_later_run_took(&store, "run-1", &names(&["a", "b"])).unwrap();
 
-    assert_eq!(free, names(&["b"]), "run-2 took a on; b is still run-1's alone");
+    assert_eq!(
+        free,
+        names(&["b"]),
+        "run-2 took a on; b is still run-1's alone"
+    );
 }
 
 /// The run a run resumed is never a later run of its features, however their starts compare, so
@@ -83,7 +101,10 @@ fn a_feature_a_later_run_carried_on_from_a_fix_session_is_not_free_for_the_earli
 #[test]
 fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_carried_features() {
     let store = store("resumed-not-earlier");
-    let resuming = RunRecord { feature_id: "feat-2".to_string(), ..record("run-2") };
+    let resuming = RunRecord {
+        feature_id: "feat-2".to_string(),
+        ..record("run-2")
+    };
     store.start_run(&resuming).unwrap();
     store
         .append_event(&Event {
@@ -103,12 +124,27 @@ fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_carried_featu
     record_fix_features_added(&store, &record("run-1"), "gate_fix", &names(&["a"])).unwrap();
     store.finish_run("repo-1", "feat", "run-1").unwrap();
     carry_fix_features(&store, &resuming, "run-1").unwrap();
-    let started = |run: &str| store.events(run).unwrap().first().unwrap().occurred_at.clone();
-    assert!(started("run-1") >= started("run-2"), "run-1 did not start earlier than run-2");
+    let started = |run: &str| {
+        store
+            .events(run)
+            .unwrap()
+            .first()
+            .unwrap()
+            .occurred_at
+            .clone()
+    };
+    assert!(
+        started("run-1") >= started("run-2"),
+        "run-1 did not start earlier than run-2"
+    );
 
     let free = features_no_later_run_took(&store, "run-2", &names(&["a"])).unwrap();
 
-    assert_eq!(free, names(&["a"]), "run-1 is the run run-2 resumed, not a later one");
+    assert_eq!(
+        free,
+        names(&["a"]),
+        "run-1 is the run run-2 resumed, not a later one"
+    );
 }
 
 /// A resumed run whose fix sessions started nothing still carries on from the run it resumed: that
@@ -138,7 +174,11 @@ fn the_run_a_run_resumed_never_counts_as_a_later_run_that_took_its_feature() {
 
     let free = features_no_later_run_took(&store, "run-2", &names(&["feat"])).unwrap();
 
-    assert_eq!(free, names(&["feat"]), "run-1 is the run run-2 resumed, not a later one");
+    assert_eq!(
+        free,
+        names(&["feat"]),
+        "run-1 is the run run-2 resumed, not a later one"
+    );
 }
 
 /// A run resumed a run that had resumed another: run-2 resumed run-1 before its fix sessions started
@@ -160,5 +200,9 @@ fn a_run_resumed_by_the_run_a_run_carried_fix_features_from_is_an_ancestor_too()
 
     let free = features_no_later_run_took(&store, "run-3", &names(&["feat", "x"])).unwrap();
 
-    assert_eq!(free, names(&["feat", "x"]), "run-1 and run-2 are the runs run-3 resumed, not later ones");
+    assert_eq!(
+        free,
+        names(&["feat", "x"]),
+        "run-1 and run-2 are the runs run-3 resumed, not later ones"
+    );
 }

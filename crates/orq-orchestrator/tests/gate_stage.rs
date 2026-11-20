@@ -244,12 +244,46 @@ fn a_step_that_never_ends_fails_the_gate_at_the_limit_and_leaves_nothing_running
     let gate = steps(vec![sh(&script)]);
     let started = Instant::now();
 
-    let outcome = orq_orchestrator::run_gate_stage_with_limit(&w.store, "run-1", &gate, true, &w.log, &[], Duration::from_secs(1)).unwrap();
+    let outcome = orq_orchestrator::run_gate_stage_with_limit(
+        &w.store,
+        "run-1",
+        &gate,
+        true,
+        &w.log,
+        &[],
+        Duration::from_secs(1),
+    )
+    .unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(20), "the gate waited for the step");
-    assert!(matches!(outcome, GateOutcome::Failed { step: 0, exit_code: None }), "{outcome:?}");
-    let failed = w.store.events("run-1").unwrap().into_iter().find(|e| e.kind == "stage.failed").expect("a failure was recorded");
-    assert!(failed.payload["reason"].as_str().unwrap().contains("timed out"), "{:?}", failed.payload);
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the gate waited for the step"
+    );
+    assert!(
+        matches!(
+            outcome,
+            GateOutcome::Failed {
+                step: 0,
+                exit_code: None
+            }
+        ),
+        "{outcome:?}"
+    );
+    let failed = w
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "stage.failed")
+        .expect("a failure was recorded");
+    assert!(
+        failed.payload["reason"]
+            .as_str()
+            .unwrap()
+            .contains("timed out"),
+        "{:?}",
+        failed.payload
+    );
     std::thread::sleep(Duration::from_secs(4));
     assert!(!late.exists(), "a process the step started kept running");
 }
@@ -259,13 +293,25 @@ fn a_step_that_exits_early_takes_what_it_left_running_with_it_and_keeps_its_exit
     use std::time::Duration;
     let w = world("leftover");
     let late = w.root.join("late");
-    let gate = steps(vec![sh(&format!("(sleep 2; touch '{}') & exit 3", late.display()))]);
+    let gate = steps(vec![sh(&format!(
+        "(sleep 2; touch '{}') & exit 3",
+        late.display()
+    ))]);
 
     let outcome = run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
-    assert_eq!(outcome, GateOutcome::Failed { step: 0, exit_code: Some(3) });
+    assert_eq!(
+        outcome,
+        GateOutcome::Failed {
+            step: 0,
+            exit_code: Some(3)
+        }
+    );
     std::thread::sleep(Duration::from_secs(3));
-    assert!(!late.exists(), "a process the step left behind kept running");
+    assert!(
+        !late.exists(),
+        "a process the step left behind kept running"
+    );
 }
 
 /// A `cargo` on the PATH given to the gate that notes its arguments and then runs `script`.
@@ -282,11 +328,18 @@ fn fake_cargo(w: &World, script: &str) -> Vec<(String, String)> {
 }
 
 fn cargo_step(args: &[&str]) -> Vec<String> {
-    std::iter::once("cargo").chain(args.iter().copied()).map(str::to_string).collect()
+    std::iter::once("cargo")
+        .chain(args.iter().copied())
+        .map(str::to_string)
+        .collect()
 }
 
 fn cargo_calls(w: &World) -> Vec<String> {
-    fs::read_to_string(w.root.join("cargo-calls")).unwrap_or_default().lines().map(str::to_string).collect()
+    fs::read_to_string(w.root.join("cargo-calls"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 fn run_with(w: &World, gate: &Gate, env: &[(String, String)]) -> GateOutcome {
@@ -304,38 +357,81 @@ fn a_cargo_test_step_is_counted_across_its_binaries_before_it_runs() {
     let env = fake_cargo(&w, LISTING);
     let outcome = run_with(&w, &steps(vec![cargo_step(&["test", "--workspace"])]), &env);
     assert_eq!(outcome, GateOutcome::Passed);
-    assert_eq!(cargo_calls(&w), ["test --workspace -- --list", "test --workspace"]);
+    assert_eq!(
+        cargo_calls(&w),
+        ["test --workspace -- --list", "test --workspace"]
+    );
     let log = fs::read_to_string(&w.log).unwrap();
     let total = orq_orchestrator::test_total_line(Some(4));
     let at = log.find(&total).unwrap_or_else(|| panic!("{log}"));
     assert!(at < log.find("the-tests-ran").unwrap(), "{log}");
-    assert!(!log.contains("a::one"), "the listing is not test output: {log}");
-    let left: Vec<_> = fs::read_dir(&w.root).unwrap().flatten().map(|e| e.file_name()).collect();
-    assert!(left.iter().all(|name| !name.to_string_lossy().contains("list")), "{left:?}");
+    assert!(
+        !log.contains("a::one"),
+        "the listing is not test output: {log}"
+    );
+    let left: Vec<_> = fs::read_dir(&w.root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert!(
+        left.iter()
+            .all(|name| !name.to_string_lossy().contains("list")),
+        "{left:?}"
+    );
 }
 
 #[test]
 fn the_count_goes_to_the_test_binaries_alongside_their_own_arguments() {
     let w = world("count-args");
     let env = fake_cargo(&w, LISTING);
-    run_with(&w, &steps(vec![cargo_step(&["test", "-p", "x", "--", "--nocapture"])]), &env);
-    assert_eq!(cargo_calls(&w), ["test -p x -- --nocapture --list", "test -p x -- --nocapture"]);
+    run_with(
+        &w,
+        &steps(vec![cargo_step(&["test", "-p", "x", "--", "--nocapture"])]),
+        &env,
+    );
+    assert_eq!(
+        cargo_calls(&w),
+        [
+            "test -p x -- --nocapture --list",
+            "test -p x -- --nocapture"
+        ]
+    );
 }
 
 #[test]
 fn a_count_that_fails_leaves_the_total_unknown_and_the_tests_still_decide() {
     for (tag, script) in [
-        ("count-fails", "case \"$*\" in *--list*) echo partial; echo '3 tests, 0 benchmarks'; exit 101 ;; esac"),
-        ("count-empty", "case \"$*\" in *--list*) echo nothing-countable ;; esac"),
-        ("count-garbled", "case \"$*\" in *--list*) echo 'many tests, 0 benchmarks' ;; esac"),
-        ("count-overflow", "case \"$*\" in *--list*) echo '18446744073709551615 tests, 1 benchmark' ;; esac"),
+        (
+            "count-fails",
+            "case \"$*\" in *--list*) echo partial; echo '3 tests, 0 benchmarks'; exit 101 ;; esac",
+        ),
+        (
+            "count-empty",
+            "case \"$*\" in *--list*) echo nothing-countable ;; esac",
+        ),
+        (
+            "count-garbled",
+            "case \"$*\" in *--list*) echo 'many tests, 0 benchmarks' ;; esac",
+        ),
+        (
+            "count-overflow",
+            "case \"$*\" in *--list*) echo '18446744073709551615 tests, 1 benchmark' ;; esac",
+        ),
     ] {
         let w = world(tag);
         let env = fake_cargo(&w, script);
-        assert_eq!(run_with(&w, &steps(vec![cargo_step(&["test"])]), &env), GateOutcome::Passed, "{tag}");
+        assert_eq!(
+            run_with(&w, &steps(vec![cargo_step(&["test"])]), &env),
+            GateOutcome::Passed,
+            "{tag}"
+        );
         assert_eq!(cargo_calls(&w).len(), 2, "{tag}");
         let log = fs::read_to_string(&w.log).unwrap();
-        assert!(log.contains(&orq_orchestrator::test_total_line(None)), "{tag}: {log}");
+        assert!(
+            log.contains(&orq_orchestrator::test_total_line(None)),
+            "{tag}: {log}"
+        );
         assert_eq!(orq_orchestrator::test_progress(&log), None, "{tag}: {log}");
     }
 }
@@ -343,22 +439,39 @@ fn a_count_that_fails_leaves_the_total_unknown_and_the_tests_still_decide() {
 #[test]
 fn a_count_that_hangs_is_stopped_and_the_tests_still_run() {
     let w = world("count-hangs");
-    let env = fake_cargo(&w, "case \"$*\" in *--list*) sleep 30 ;; *) echo the-tests-ran ;; esac");
+    let env = fake_cargo(
+        &w,
+        "case \"$*\" in *--list*) sleep 30 ;; *) echo the-tests-ran ;; esac",
+    );
     let gate = steps(vec![cargo_step(&["test"])]);
     let limit = std::time::Duration::from_secs(1);
-    let outcome = orq_orchestrator::run_gate_stage_with_limit(&w.store, "run-1", &gate, true, &w.log, &env, limit).unwrap();
+    let outcome = orq_orchestrator::run_gate_stage_with_limit(
+        &w.store, "run-1", &gate, true, &w.log, &env, limit,
+    )
+    .unwrap();
     assert_eq!(outcome, GateOutcome::Passed);
     let log = fs::read_to_string(&w.log).unwrap();
-    assert!(log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"), "{log}");
+    assert!(
+        log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"),
+        "{log}"
+    );
 }
 
 #[test]
 fn only_a_plain_cargo_test_step_is_counted() {
     let w = world("not-counted");
     let env = fake_cargo(&w, "exit 0");
-    let gate = steps(vec![sh("echo cargo test"), cargo_step(&["clippy"]), cargo_step(&["test", "--", "--list"]), cargo_step(&["+nightly", "test"])]);
+    let gate = steps(vec![
+        sh("echo cargo test"),
+        cargo_step(&["clippy"]),
+        cargo_step(&["test", "--", "--list"]),
+        cargo_step(&["+nightly", "test"]),
+    ]);
     assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
-    assert_eq!(cargo_calls(&w), ["clippy", "test -- --list", "+nightly test"]);
+    assert_eq!(
+        cargo_calls(&w),
+        ["clippy", "test -- --list", "+nightly test"]
+    );
     assert!(!fs::read_to_string(&w.log).unwrap().contains("tests to run"));
 }
 
@@ -388,7 +501,10 @@ esac"#,
         assert_eq!(orq_orchestrator::test_progress(view), None, "{view}");
     }
     let finished = fs::read_to_string(&w.log).unwrap();
-    assert_eq!(orq_orchestrator::test_progress(&finished).map(|t| (t.done, t.total)), Some((1, 1)));
+    assert_eq!(
+        orq_orchestrator::test_progress(&finished).map(|t| (t.done, t.total)),
+        Some((1, 1))
+    );
 }
 
 /// A real crate in the worktree, built by the real cargo: `files` are (path, content) pairs.
@@ -417,7 +533,14 @@ fn a_test_target_with_its_own_harness_runs_once_and_leaves_the_total_unknown() {
     let outcome = run_with(&w, &steps(vec![cargo_step(&["test", "--workspace"])]), &[]);
     let log = fs::read_to_string(&w.log).unwrap();
     assert_eq!(outcome, GateOutcome::Passed, "{log}");
-    assert_eq!(fs::read_to_string(w.worktree.join("ran")).unwrap().lines().count(), 1, "{log}");
+    assert_eq!(
+        fs::read_to_string(w.worktree.join("ran"))
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "{log}"
+    );
     assert_eq!(orq_orchestrator::test_progress(&log), None, "{log}");
 }
 
@@ -443,7 +566,14 @@ fn every_way_toml_can_spell_a_custom_harness_runs_the_target_once() {
         let outcome = run_with(&w, &steps(vec![cargo_step(&["test", "--workspace"])]), &[]);
         let log = fs::read_to_string(&w.log).unwrap();
         assert_eq!(outcome, GateOutcome::Passed, "{tag}: {log}");
-        assert_eq!(fs::read_to_string(w.worktree.join("ran")).unwrap().lines().count(), 1, "{tag}: {log}");
+        assert_eq!(
+            fs::read_to_string(w.worktree.join("ran"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "{tag}: {log}"
+        );
     }
 }
 
@@ -457,7 +587,11 @@ fn a_comment_that_mentions_a_custom_harness_does_not_cost_the_percentage() {
     let outcome = run_with(&w, &steps(vec![cargo_step(&["test", "--lib"])]), &[]);
     let log = fs::read_to_string(&w.log).unwrap();
     assert_eq!(outcome, GateOutcome::Passed, "{log}");
-    assert_eq!(orq_orchestrator::test_progress(&log).map(|t| (t.done, t.total)), Some((1, 1)), "{log}");
+    assert_eq!(
+        orq_orchestrator::test_progress(&log).map(|t| (t.done, t.total)),
+        Some((1, 1)),
+        "{log}"
+    );
 }
 
 #[test]
@@ -468,9 +602,15 @@ fn a_manifest_that_cannot_be_parsed_is_not_listed_and_the_tests_still_run() {
     fs::write(&manifest, "not [ toml").unwrap();
     let bin = w.root.join("bin").join("cargo");
     let script = fs::read_to_string(&bin).unwrap();
-    let packages = format!("{{\"packages\":[{{\"manifest_path\":\"{}\"}}]}}", manifest.display());
+    let packages = format!(
+        "{{\"packages\":[{{\"manifest_path\":\"{}\"}}]}}",
+        manifest.display()
+    );
     fs::write(&bin, script.replace("{\"packages\":[]}", &packages)).unwrap();
-    assert_eq!(run_with(&w, &steps(vec![cargo_step(&["test"])]), &env), GateOutcome::Passed);
+    assert_eq!(
+        run_with(&w, &steps(vec![cargo_step(&["test"])]), &env),
+        GateOutcome::Passed
+    );
     assert_eq!(cargo_calls(&w), ["test"], "only the step itself ran");
 }
 
@@ -480,8 +620,19 @@ fn a_workspace_that_cannot_be_inspected_is_not_listed_and_the_tests_still_run() 
     let env = fake_cargo(&w, "");
     let bin = w.root.join("bin").join("cargo");
     let script = fs::read_to_string(&bin).unwrap();
-    fs::write(&bin, script.replacen("#!/bin/sh\n", "#!/bin/sh\ncase \"$1\" in metadata) exit 1 ;; esac\n", 1)).unwrap();
-    assert_eq!(run_with(&w, &steps(vec![cargo_step(&["test"])]), &env), GateOutcome::Passed);
+    fs::write(
+        &bin,
+        script.replacen(
+            "#!/bin/sh\n",
+            "#!/bin/sh\ncase \"$1\" in metadata) exit 1 ;; esac\n",
+            1,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        run_with(&w, &steps(vec![cargo_step(&["test"])]), &env),
+        GateOutcome::Passed
+    );
     assert_eq!(cargo_calls(&w), ["test"], "only the step itself ran");
 }
 
@@ -518,13 +669,25 @@ fn a_file_already_at_the_scratch_path_is_left_alone_and_only_costs_the_percentag
     let w = world("scratch-taken");
     let env = fake_cargo(&w, LISTING);
     // The names the scratch file has had or has: neither may be emptied or removed.
-    let taken = [w.log.with_extension("test-list"), w.log.with_extension(format!("test-list-{}", std::process::id()))];
+    let taken = [
+        w.log.with_extension("test-list"),
+        w.log
+            .with_extension(format!("test-list-{}", std::process::id())),
+    ];
     for path in &taken {
         fs::write(path, "someone else's").unwrap();
     }
-    assert_eq!(run_with(&w, &steps(vec![cargo_step(&["test"])]), &env), GateOutcome::Passed);
+    assert_eq!(
+        run_with(&w, &steps(vec![cargo_step(&["test"])]), &env),
+        GateOutcome::Passed
+    );
     for path in &taken {
-        assert_eq!(fs::read_to_string(path).unwrap(), "someone else's", "{}", path.display());
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "someone else's",
+            "{}",
+            path.display()
+        );
     }
     let log = fs::read_to_string(&w.log).unwrap();
     assert!(log.contains("the-tests-ran"), "{log}");
@@ -535,9 +698,18 @@ fn a_file_already_at_the_scratch_path_is_left_alone_and_only_costs_the_percentag
 fn a_step_aimed_at_another_manifest_is_not_counted() {
     let w = world("manifest-path");
     let env = fake_cargo(&w, "exit 0");
-    let gate = steps(vec![cargo_step(&["test", "--manifest-path", "other/Cargo.toml"]), cargo_step(&["test", "--manifest-path=other/Cargo.toml"])]);
+    let gate = steps(vec![
+        cargo_step(&["test", "--manifest-path", "other/Cargo.toml"]),
+        cargo_step(&["test", "--manifest-path=other/Cargo.toml"]),
+    ]);
     assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
-    assert_eq!(cargo_calls(&w), ["test --manifest-path other/Cargo.toml", "test --manifest-path=other/Cargo.toml"]);
+    assert_eq!(
+        cargo_calls(&w),
+        [
+            "test --manifest-path other/Cargo.toml",
+            "test --manifest-path=other/Cargo.toml"
+        ]
+    );
 }
 
 /// A `name` on the PATH given to the gate that notes its arguments in `<name>-calls` and then runs `script`.
@@ -547,14 +719,25 @@ fn fake_tool(w: &World, name: &str, script: &str) -> Vec<(String, String)> {
     fs::create_dir_all(&bin).unwrap();
     let calls = w.root.join(format!("{name}-calls"));
     let tool = bin.join(name);
-    fs::write(&tool, format!("#!/bin/sh\necho \"$*\" >> '{}'\n{script}\n", calls.display())).unwrap();
+    fs::write(
+        &tool,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n{script}\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     vec![("PATH".to_string(), path)]
 }
 
 fn tool_calls(w: &World, name: &str) -> Vec<String> {
-    fs::read_to_string(w.root.join(format!("{name}-calls"))).unwrap_or_default().lines().map(str::to_string).collect()
+    fs::read_to_string(w.root.join(format!("{name}-calls")))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 fn argv(words: &[&str]) -> Vec<String> {
@@ -578,22 +761,44 @@ fn a_js_run_step_is_counted_by_listing_its_tests_before_it_runs() {
     let total = orq_orchestrator::test_total_line(Some(3));
     let at = log.find(&total).unwrap_or_else(|| panic!("{log}"));
     assert!(at < log.find("src/a.test.ts").unwrap(), "{log}");
-    assert!(!log.contains("coupon > applies"), "the listing is not test output: {log}");
+    assert!(
+        !log.contains("coupon > applies"),
+        "the listing is not test output: {log}"
+    );
     let progress = orq_orchestrator::test_progress(&log).map(|t| (t.done, t.total, t.current));
-    assert_eq!(progress, Some((3, 3, Some("src/b.test.ts".to_string()))), "{log}");
+    assert_eq!(
+        progress,
+        Some((3, 3, Some("src/b.test.ts".to_string()))),
+        "{log}"
+    );
 }
 
 #[test]
 fn a_vitest_run_step_writes_its_listed_total_before_it_runs() {
     let w = world("vitest-total");
     let env = fake_tool(&w, "vitest", VITEST);
-    let outcome = run_with(&w, &steps(vec![argv(&["vitest", "run", "--reporter=default", "src/"])]), &env);
+    let outcome = run_with(
+        &w,
+        &steps(vec![argv(&["vitest", "run", "--reporter=default", "src/"])]),
+        &env,
+    );
     assert_eq!(outcome, GateOutcome::Passed);
-    assert_eq!(tool_calls(&w, "vitest"), ["list --json --reporter=default src/", "run --reporter=default src/"]);
+    assert_eq!(
+        tool_calls(&w, "vitest"),
+        [
+            "list --json --reporter=default src/",
+            "run --reporter=default src/"
+        ]
+    );
     let log = fs::read_to_string(&w.log).unwrap();
-    let at = log.find(&orq_orchestrator::test_total_line(Some(3))).unwrap_or_else(|| panic!("{log}"));
+    let at = log
+        .find(&orq_orchestrator::test_total_line(Some(3)))
+        .unwrap_or_else(|| panic!("{log}"));
     assert!(at < log.find("src/a.test.ts").unwrap(), "{log}");
-    assert!(!log.contains("coupon > applies"), "the listing is not test output: {log}");
+    assert!(
+        !log.contains("coupon > applies"),
+        "the listing is not test output: {log}"
+    );
 }
 
 /// An npm, pnpm or yarn that runs a package's `vitest` for `exec` and bin forms, and the `vitest run`
@@ -609,47 +814,98 @@ esac"#;
 fn a_vitest_run_through_a_package_runner_or_its_script_is_listed_through_the_same_runner() {
     let cases: [(&str, &[&str], &str); 11] = [
         ("npx", &["npx", "vitest", "run", "src/"], "list --json src/"),
-        ("pnpm-exec", &["pnpm", "exec", "vitest", "run"], "list --json"),
+        (
+            "pnpm-exec",
+            &["pnpm", "exec", "vitest", "run"],
+            "list --json",
+        ),
         ("pnpm-bin", &["pnpm", "vitest", "run"], "list --json"),
         ("yarn-bin", &["yarn", "vitest"], "list --json"),
         ("npm-run", &["npm", "run", "test"], "list --json"),
-        ("npm-run-args", &["npm", "run", "test", "--", "src/"], "list --json src/"),
+        (
+            "npm-run-args",
+            &["npm", "run", "test", "--", "src/"],
+            "list --json src/",
+        ),
         ("npm-test", &["npm", "test"], "list --json"),
         ("pnpm-test", &["pnpm", "test"], "list --json"),
-        ("pnpm-run", &["pnpm", "run", "unit"], "list --json --project unit"),
+        (
+            "pnpm-run",
+            &["pnpm", "run", "unit"],
+            "list --json --project unit",
+        ),
         ("yarn-test", &["yarn", "test"], "list --json"),
-        ("yarn-run", &["yarn", "run", "unit", "src/"], "list --json --project unit src/"),
+        (
+            "yarn-run",
+            &["yarn", "run", "unit", "src/"],
+            "list --json --project unit src/",
+        ),
     ];
     for (tag, step, listed) in cases {
         let w = world(&format!("runner-{tag}"));
-        fs::write(w.worktree.join("package.json"), r#"{"scripts":{"test":"vitest run","unit":"vitest --project unit"}}"#).unwrap();
+        fs::write(
+            w.worktree.join("package.json"),
+            r#"{"scripts":{"test":"vitest run","unit":"vitest --project unit"}}"#,
+        )
+        .unwrap();
         let env = fake_tool(&w, "vitest", VITEST);
         fake_tool(&w, step[0], RUNNER);
-        assert_eq!(run_with(&w, &steps(vec![argv(step)]), &env), GateOutcome::Passed, "{tag}");
+        assert_eq!(
+            run_with(&w, &steps(vec![argv(step)]), &env),
+            GateOutcome::Passed,
+            "{tag}"
+        );
         let calls = tool_calls(&w, "vitest");
-        assert_eq!(calls.first().map(String::as_str), Some(listed), "{tag}: {calls:?}");
+        assert_eq!(
+            calls.first().map(String::as_str),
+            Some(listed),
+            "{tag}: {calls:?}"
+        );
         assert_eq!(calls.len(), 2, "{tag}: {calls:?}");
         let log = fs::read_to_string(&w.log).unwrap();
-        assert!(log.contains(&orq_orchestrator::test_total_line(Some(3))), "{tag}: {log}");
+        assert!(
+            log.contains(&orq_orchestrator::test_total_line(Some(3))),
+            "{tag}: {log}"
+        );
     }
 }
 
 #[test]
 fn a_vitest_listing_that_fails_leaves_the_total_unknown_and_the_tests_still_decide() {
     for (tag, listing) in [
-        ("vitest-list-fails", r#"echo '[{"name":"a","file":"a.test.ts"}]'; exit 1"#),
+        (
+            "vitest-list-fails",
+            r#"echo '[{"name":"a","file":"a.test.ts"}]'; exit 1"#,
+        ),
         ("vitest-list-garbled", "echo 'no tests here'"),
         ("vitest-list-not-tests", "echo '[1, 2, 3]'"),
-        ("vitest-list-object", r#"echo '{"name":"a","file":"a.test.ts"}'"#),
+        (
+            "vitest-list-object",
+            r#"echo '{"name":"a","file":"a.test.ts"}'"#,
+        ),
         ("vitest-list-empty", "echo '[]'"),
     ] {
         let w = world(tag);
-        let env = fake_tool(&w, "vitest", &format!("case \"$1\" in list) {listing} ;; *) echo the-tests-ran; exit 4 ;; esac"));
+        let env = fake_tool(
+            &w,
+            "vitest",
+            &format!("case \"$1\" in list) {listing} ;; *) echo the-tests-ran; exit 4 ;; esac"),
+        );
         let outcome = run_with(&w, &steps(vec![argv(&["vitest", "run"])]), &env);
-        assert_eq!(outcome, GateOutcome::Failed { step: 0, exit_code: Some(4) }, "{tag}");
+        assert_eq!(
+            outcome,
+            GateOutcome::Failed {
+                step: 0,
+                exit_code: Some(4)
+            },
+            "{tag}"
+        );
         assert_eq!(tool_calls(&w, "vitest").len(), 2, "{tag}");
         let log = fs::read_to_string(&w.log).unwrap();
-        assert!(log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"), "{tag}: {log}");
+        assert!(
+            log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"),
+            "{tag}: {log}"
+        );
         assert_eq!(orq_orchestrator::test_progress(&log), None, "{tag}: {log}");
     }
 }
@@ -674,9 +930,21 @@ fn a_step_that_is_not_a_plain_vitest_run_gets_no_vitest_listing() {
         fs::write(w.worktree.join("package.json"), scripts).unwrap();
         let env = fake_tool(&w, "vitest", VITEST);
         fake_tool(&w, step[0], "exit 0");
-        assert_eq!(run_with(&w, &steps(vec![argv(step)]), &env), GateOutcome::Passed, "{tag}");
-        assert!(tool_calls(&w, "vitest").iter().all(|call| !call.starts_with("list")), "{tag}");
-        assert!(!fs::read_to_string(&w.log).unwrap().contains("tests to run"), "{tag}");
+        assert_eq!(
+            run_with(&w, &steps(vec![argv(step)]), &env),
+            GateOutcome::Passed,
+            "{tag}"
+        );
+        assert!(
+            tool_calls(&w, "vitest")
+                .iter()
+                .all(|call| !call.starts_with("list")),
+            "{tag}"
+        );
+        assert!(
+            !fs::read_to_string(&w.log).unwrap().contains("tests to run"),
+            "{tag}"
+        );
     }
 }
 
@@ -685,12 +953,23 @@ fn a_vitest_script_package_json_that_is_not_a_plain_file_is_not_read_and_the_ste
     use std::sync::mpsc;
     let w = world("package-fifo");
     let fifo = w.worktree.join("package.json");
-    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
     let env = fake_tool(&w, "npm", "echo the-tests-ran");
     let (sent, received) = mpsc::channel();
     let (store, log) = (RunStore::new(&w.root.join("state")), w.log.clone());
     std::thread::spawn(move || {
-        let outcome = orq_orchestrator::run_gate_stage_with_env(&store, "run-1", &steps(vec![argv(&["npm", "test"])]), true, &log, &env);
+        let outcome = orq_orchestrator::run_gate_stage_with_env(
+            &store,
+            "run-1",
+            &steps(vec![argv(&["npm", "test"])]),
+            true,
+            &log,
+            &env,
+        );
         let _ = sent.send(outcome.unwrap());
     });
     let outcome = received.recv_timeout(std::time::Duration::from_secs(20));
@@ -698,8 +977,14 @@ fn a_vitest_script_package_json_that_is_not_a_plain_file_is_not_read_and_the_ste
         // Let the stuck reader go, so the test process can end.
         let _ = fs::OpenOptions::new().write(true).open(&fifo);
     }
-    assert_eq!(outcome, Ok(GateOutcome::Passed), "the gate waited on the package.json");
-    assert!(fs::read_to_string(&w.log).unwrap().contains("the-tests-ran"));
+    assert_eq!(
+        outcome,
+        Ok(GateOutcome::Passed),
+        "the gate waited on the package.json"
+    );
+    assert!(fs::read_to_string(&w.log)
+        .unwrap()
+        .contains("the-tests-ran"));
 }
 
 /// An npm or npx with no vitest installed, that would fetch one from the registry for a listing
@@ -712,31 +997,68 @@ esac"#;
 
 #[test]
 fn a_vitest_listing_never_fetches_vitest_when_it_is_not_installed() {
-    for (tag, step) in [("npm", &["npm", "test"][..]), ("npx", &["npx", "vitest", "run"][..])] {
+    for (tag, step) in [
+        ("npm", &["npm", "test"][..]),
+        ("npx", &["npx", "vitest", "run"][..]),
+    ] {
         let w = world(&format!("vitest-no-fetch-{tag}"));
-        fs::write(w.worktree.join("package.json"), r#"{"scripts":{"test":"vitest run"}}"#).unwrap();
+        fs::write(
+            w.worktree.join("package.json"),
+            r#"{"scripts":{"test":"vitest run"}}"#,
+        )
+        .unwrap();
         let env = fake_tool(&w, step[0], FETCHING_RUNNER);
-        assert_eq!(run_with(&w, &steps(vec![argv(step)]), &env), GateOutcome::Passed, "{tag}");
-        assert!(!w.worktree.join("fetched").exists(), "{tag}: the listing fetched a package: {:?}", tool_calls(&w, step[0]));
+        assert_eq!(
+            run_with(&w, &steps(vec![argv(step)]), &env),
+            GateOutcome::Passed,
+            "{tag}"
+        );
+        assert!(
+            !w.worktree.join("fetched").exists(),
+            "{tag}: the listing fetched a package: {:?}",
+            tool_calls(&w, step[0])
+        );
         let log = fs::read_to_string(&w.log).unwrap();
-        assert!(log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"), "{tag}: {log}");
+        assert!(
+            log.contains(&orq_orchestrator::test_total_line(None)) && log.contains("the-tests-ran"),
+            "{tag}: {log}"
+        );
     }
 }
 
 #[test]
 fn a_vitest_script_with_a_bracket_glob_is_not_listed_since_its_shell_would_expand_it() {
-    for (tag, script) in [("class", "vitest run src/[ab].test.ts"), ("closing", "vitest run src/a].test.ts")] {
+    for (tag, script) in [
+        ("class", "vitest run src/[ab].test.ts"),
+        ("closing", "vitest run src/a].test.ts"),
+    ] {
         let w = world(&format!("vitest-bracket-{tag}"));
         for file in ["a.test.ts", "b.test.ts"] {
             fs::create_dir_all(w.worktree.join("src")).unwrap();
             fs::write(w.worktree.join("src").join(file), "").unwrap();
         }
-        fs::write(w.worktree.join("package.json"), format!(r#"{{"scripts":{{"test":"{script}"}}}}"#)).unwrap();
+        fs::write(
+            w.worktree.join("package.json"),
+            format!(r#"{{"scripts":{{"test":"{script}"}}}}"#),
+        )
+        .unwrap();
         let env = fake_tool(&w, "vitest", VITEST);
         fake_tool(&w, "npm", RUNNER);
-        assert_eq!(run_with(&w, &steps(vec![argv(&["npm", "test"])]), &env), GateOutcome::Passed, "{tag}");
-        assert!(tool_calls(&w, "vitest").iter().all(|call| !call.starts_with("list")), "{tag}");
-        assert!(!fs::read_to_string(&w.log).unwrap().contains("tests to run"), "{tag}");
+        assert_eq!(
+            run_with(&w, &steps(vec![argv(&["npm", "test"])]), &env),
+            GateOutcome::Passed,
+            "{tag}"
+        );
+        assert!(
+            tool_calls(&w, "vitest")
+                .iter()
+                .all(|call| !call.starts_with("list")),
+            "{tag}"
+        );
+        assert!(
+            !fs::read_to_string(&w.log).unwrap().contains("tests to run"),
+            "{tag}"
+        );
     }
 }
 
@@ -748,10 +1070,17 @@ fn the_gates_notes_open_its_log_so_a_fallback_to_cargo_test_is_said_first() {
         notes: vec!["cargo-nextest not found: running cargo test".to_string()],
     };
 
-    assert_eq!(run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap(), GateOutcome::Passed);
+    assert_eq!(
+        run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap(),
+        GateOutcome::Passed
+    );
 
     let log = fs::read_to_string(&w.log).unwrap();
-    assert_eq!(log.lines().next(), Some("orq: cargo-nextest not found: running cargo test"), "{log}");
+    assert_eq!(
+        log.lines().next(),
+        Some("orq: cargo-nextest not found: running cargo test"),
+        "{log}"
+    );
     assert!(log.contains("ran"), "{log}");
 }
 
@@ -773,7 +1102,14 @@ fn a_test_nextest_passed_only_on_a_retry_is_recorded_as_flaky_before_the_stage_e
 
     assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
 
-    assert_eq!(kinds(&w), [verify("stage.started"), verify("gate.flaky_tests"), verify("stage.completed")]);
+    assert_eq!(
+        kinds(&w),
+        [
+            verify("stage.started"),
+            verify("gate.flaky_tests"),
+            verify("stage.completed")
+        ]
+    );
     let flaky = &w.store.events("run-1").unwrap()[1];
     assert_eq!(
         flaky.payload["tests"],
@@ -793,14 +1129,22 @@ fn flaky_lines_from_a_step_that_is_not_nextest_are_not_looked_for() {
 
     assert_eq!(run_with(&w, &gate, &env), GateOutcome::Passed);
 
-    assert_eq!(kinds(&w), [verify("stage.started"), verify("stage.completed")]);
-    assert!(fs::read_to_string(&w.log).unwrap().contains("FLAKY 3/3"), "the step did print them");
+    assert_eq!(
+        kinds(&w),
+        [verify("stage.started"), verify("stage.completed")]
+    );
+    assert!(
+        fs::read_to_string(&w.log).unwrap().contains("FLAKY 3/3"),
+        "the step did print them"
+    );
 }
 
 #[test]
 fn a_gate_with_no_flaky_line_records_no_flaky_event_even_when_a_step_fails() {
     let w = world("steady");
-    let gate = steps(vec![sh("echo '        PASS [   0.002s] orq-core a_steady_one'; exit 4")]);
+    let gate = steps(vec![sh(
+        "echo '        PASS [   0.002s] orq-core a_steady_one'; exit 4",
+    )]);
 
     run_gate_stage(&w.store, "run-1", &gate, true, &w.log).unwrap();
 
@@ -828,7 +1172,16 @@ fn a_gate_start_records_how_many_lines_its_log_had_before_the_attempt_wrote_to_i
     // The attempt's part starts with its notes, so they belong to it.
     assert_eq!(start.payload["log_line"], 2, "{}", start.payload);
     // And the byte the part starts at, so it is read from there.
-    assert_eq!(start.payload["log_offset"], "earlier attempt\nits failure\n".len(), "{}", start.payload);
+    assert_eq!(
+        start.payload["log_offset"],
+        "earlier attempt\nits failure\n".len(),
+        "{}",
+        start.payload
+    );
     let log = fs::read_to_string(&w.log).unwrap();
-    assert_eq!(log.lines().nth(2), Some("orq: nextest is not installed"), "{log}");
+    assert_eq!(
+        log.lines().nth(2),
+        Some("orq: nextest is not installed"),
+        "{log}"
+    );
 }

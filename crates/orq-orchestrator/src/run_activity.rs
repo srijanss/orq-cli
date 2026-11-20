@@ -39,14 +39,25 @@ pub fn run_activity(events: &[Event], log: Option<&LogTail>, stuck_after: Durati
     let between_stages = events
         .iter()
         .rev()
-        .find(|e| matches!(e.kind.as_str(), "stage.started" | "stage.completed" | "stage.skipped"))
+        .find(|e| {
+            matches!(
+                e.kind.as_str(),
+                "stage.started" | "stage.completed" | "stage.skipped"
+            )
+        })
         .is_some_and(|e| e.kind != "stage.started");
     RunActivity {
         phase: summary.phase,
         stage: summary.stage.filter(|_| !(running && between_stages)),
-        attempt: events.iter().rev().find(|e| e.stage.is_some()).map_or(0, |e| e.attempt),
+        attempt: events
+            .iter()
+            .rev()
+            .find(|e| e.stage.is_some())
+            .map_or(0, |e| e.attempt),
         tests: log.and_then(|l| l.tests.clone()),
-        last_output: log.and_then(|l| l.last_line.as_deref()).map(orq_core::redact::redact),
+        last_output: log
+            .and_then(|l| l.last_line.as_deref())
+            .map(orq_core::redact::redact),
         quiet_for: log.map(|l| l.quiet_for),
         may_be_stuck: running && !between_stages && log.is_some_and(|l| l.quiet_for > stuck_after),
     }
@@ -94,7 +105,11 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
             continue;
         }
         // pytest colours its lines with `--color=yes` or `FORCE_COLOR`: they are read without it.
-        let plain = if line.contains('\u{1b}') { Cow::Owned(printable(line)) } else { Cow::Borrowed(line) };
+        let plain = if line.contains('\u{1b}') {
+            Cow::Owned(printable(line))
+        } else {
+            Cow::Borrowed(line)
+        };
         if let Some(total) = pytest_total(&plain) {
             progress = starting_count(total);
             listed = false;
@@ -109,7 +124,11 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
             // `pytest -q` prints no collection line: its own percentage is then counted in hundredths.
             let p = progress.get_or_insert_with(|| {
                 listed = false;
-                TestProgress { done: 0, total: 100, current: None }
+                TestProgress {
+                    done: 0,
+                    total: 100,
+                    current: None,
+                }
             });
             p.done = (p.total * percent / 100).min(p.total);
             p.current = None;
@@ -141,8 +160,12 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
                 continue;
             }
         }
-        let Some(result) = line.trim().strip_prefix("test ") else { continue };
-        let Some((name, outcome)) = result.rsplit_once(" ... ") else { continue };
+        let Some(result) = line.trim().strip_prefix("test ") else {
+            continue;
+        };
+        let Some((name, outcome)) = result.rsplit_once(" ... ") else {
+            continue;
+        };
         if matches!(outcome, "ok" | "FAILED" | "ignored") || outcome.starts_with("ignored,") {
             p.done = (p.done + 1).min(p.total);
             p.current = Some(name.to_string());
@@ -153,7 +176,11 @@ pub fn test_progress(text: &str) -> Option<TestProgress> {
 
 /// A count of none done out of `total`, or none at all when there is nothing to measure.
 fn starting_count(total: u64) -> Option<TestProgress> {
-    (total > 0).then_some(TestProgress { done: 0, total, current: None })
+    (total > 0).then_some(TestProgress {
+        done: 0,
+        total,
+        current: None,
+    })
 }
 
 /// The number of tests a pytest collection line says will run: `collected N items`, or the
@@ -164,7 +191,10 @@ fn pytest_total(line: &str) -> Option<u64> {
     if let Some(total) = xdist_total(line) {
         return Some(total);
     }
-    let rest = line.strip_prefix("collecting ... ").unwrap_or(line).strip_prefix("collected ")?;
+    let rest = line
+        .strip_prefix("collecting ... ")
+        .unwrap_or(line)
+        .strip_prefix("collected ")?;
     let mut parts = rest.split(" / ");
     let (count, unit) = parts.next()?.split_once(' ')?;
     if !matches!(unit, "items" | "item") {
@@ -205,8 +235,15 @@ pub(crate) fn nextest_flaky(line: &str) -> Option<(u64, &str)> {
 /// A finished-test line of cargo-nextest (see [`nextest_result`]): FLAKY's `<try>/<tries>`, and the name.
 fn nextest_finished(line: &str) -> Option<(Option<(u64, u64)>, &str)> {
     let (status, rest) = line.trim().split_once(' ')?;
-    let signal = status.strip_prefix("SIG").is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase()));
-    if !(signal || matches!(status, "PASS" | "FAIL" | "FLAKY" | "TIMEOUT" | "LEAK" | "LEAK-FAIL")) {
+    let signal = status
+        .strip_prefix("SIG")
+        .is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase()));
+    if !(signal
+        || matches!(
+            status,
+            "PASS" | "FAIL" | "FLAKY" | "TIMEOUT" | "LEAK" | "LEAK-FAIL"
+        ))
+    {
         return None;
     }
     let mut rest = rest.trim_start();
@@ -252,9 +289,15 @@ fn fraction(text: &str) -> Option<(u64, u64)> {
 fn xdist_total(line: &str) -> Option<u64> {
     let (workers, items) = line.strip_suffix(']')?.split_once(" [")?;
     let (count, unit) = workers.split_once(' ')?;
-    count.parse::<u32>().ok().filter(|_| matches!(unit, "workers" | "worker"))?;
+    count
+        .parse::<u32>()
+        .ok()
+        .filter(|_| matches!(unit, "workers" | "worker"))?;
     let (total, unit) = items.split_once(' ')?;
-    total.parse::<u64>().ok().filter(|_| matches!(unit, "items" | "item"))
+    total
+        .parse::<u64>()
+        .ok()
+        .filter(|_| matches!(unit, "items" | "item"))
 }
 
 /// What pytest prints for a finished test.
@@ -288,38 +331,58 @@ fn pytest_result(line: &str) -> Option<&str> {
 /// The percentage at the end of a row of quiet pytest output: `....F.s  [ 60%]`.
 fn pytest_quiet_percent(line: &str) -> Option<u64> {
     let (marks, percent) = before_progress_column(line.trim())?;
-    let quiet = !marks.is_empty() && marks.chars().all(|c| matches!(c, '.' | 'F' | 'E' | 's' | 'x' | 'X'));
+    let quiet = !marks.is_empty()
+        && marks
+            .chars()
+            .all(|c| matches!(c, '.' | 'F' | 'E' | 's' | 'x' | 'X'));
     quiet.then_some(percent)
 }
 
 /// What a pytest line holds before its progress column `[ nn%]`, and that percentage.
 fn before_progress_column(line: &str) -> Option<(&str, u64)> {
     let (before, column) = line.rsplit_once('[')?;
-    Some((before.trim_end(), pytest_percent(column.strip_suffix("%]")?)?))
+    Some((
+        before.trim_end(),
+        pytest_percent(column.strip_suffix("%]")?)?,
+    ))
 }
 
 /// The number in pytest's progress column, `[ nn%]`, without its brackets and sign.
 fn pytest_percent(text: &str) -> Option<u64> {
-    text.trim().parse::<u64>().ok().filter(|percent| *percent <= 100)
+    text.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|percent| *percent <= 100)
 }
 
 /// `name`, when `outcome` is one pytest prints for a finished test.
 fn finished_test<'a>(name: &'a str, outcome: &str) -> Option<&'a str> {
     let name = name.trim();
-    PYTEST_OUTCOMES.contains(&outcome).then_some(name).filter(|name| !name.is_empty())
+    PYTEST_OUTCOMES
+        .contains(&outcome)
+        .then_some(name)
+        .filter(|name| !name.is_empty())
 }
 
 /// The file and test count of what vitest's default reporter prints as a test file finishes:
 /// `<✓|❯|×|↓> <file> (<n> test[s][ | ...])[ <duration>...]`.
 fn vitest_file(line: &str) -> Option<(&str, u64)> {
-    let rest = line.trim().strip_prefix(['✓', '❯', '×', '↓'])?.strip_prefix(' ')?;
+    let rest = line
+        .trim()
+        .strip_prefix(['✓', '❯', '×', '↓'])?
+        .strip_prefix(' ')?;
     let (file, rest) = rest.rsplit_once(" (")?;
     let (counts, after) = rest.split_once(')')?;
     let tests = counts.split(" | ").next()?;
-    let count = tests.strip_suffix(" tests").or_else(|| tests.strip_suffix(" test"))?.parse::<u64>().ok()?;
+    let count = tests
+        .strip_suffix(" tests")
+        .or_else(|| tests.strip_suffix(" test"))?
+        .parse::<u64>()
+        .ok()?;
     let after = after.trim();
     let file = file.trim();
-    (!file.is_empty() && (after.is_empty() || after.split(' ').next().is_some_and(is_duration))).then_some((file, count))
+    (!file.is_empty() && (after.is_empty() || after.split(' ').next().is_some_and(is_duration)))
+        .then_some((file, count))
 }
 
 /// Whether `line` is vitest's closing count of tests, `Tests  2 failed | 14 passed (16)`: the run
@@ -329,7 +392,10 @@ fn vitest_summary(line: &str) -> bool {
         let rest = line.trim().strip_prefix("Tests ")?;
         let (counts, total) = rest.strip_suffix(')')?.rsplit_once(" (")?;
         total.parse::<u64>().ok()?;
-        let counted = |part: &str| part.split_once(' ').is_some_and(|(n, word)| n.parse::<u64>().is_ok() && !word.is_empty());
+        let counted = |part: &str| {
+            part.split_once(' ')
+                .is_some_and(|(n, word)| n.parse::<u64>().is_ok() && !word.is_empty())
+        };
         counts.trim().split(" | ").all(counted).then_some(())
     };
     summary().is_some()
@@ -339,7 +405,9 @@ fn vitest_summary(line: &str) -> bool {
 fn is_duration(word: &str) -> bool {
     word.strip_suffix("ms")
         .or_else(|| word.strip_suffix('s'))
-        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        .is_some_and(|digits| {
+            !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
 }
 
 /// How much of the end of a log is looked at, and the longest line shown.
@@ -358,8 +426,12 @@ pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
             continue;
         }
         // Links are not followed: a log is a plain file of the run's own.
-        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-        let Ok(modified) = meta.modified() else { continue };
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
         if meta.is_file() && newest.as_ref().is_none_or(|(at, ..)| modified > *at) {
             newest = Some((modified, path, meta.len()));
         }
@@ -378,47 +450,86 @@ pub fn newest_log_tail(dir: &std::path::Path) -> Option<LogTail> {
         return None;
     }
     let (modified, size) = (meta.modified().ok()?, meta.len());
-    file.seek(SeekFrom::Start(size.saturating_sub(TAIL_BYTES))).ok()?;
+    file.seek(SeekFrom::Start(size.saturating_sub(TAIL_BYTES)))
+        .ok()?;
     let mut bytes = Vec::new();
-    file.by_ref().take(TAIL_BYTES).read_to_end(&mut bytes).ok()?;
+    file.by_ref()
+        .take(TAIL_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
     let start = size.saturating_sub(TAIL_BYTES);
     let text = String::from_utf8_lossy(&bytes);
     // A tail that begins mid-file starts mid-line: that cut line is dropped, since a secret
     // cut at its front would no longer be recognised.
-    let text = if start > 0 { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+    let text = if start > 0 {
+        text.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        &text
+    };
     // Redacted whole, then cut for display: the other way round could leave a secret's tail.
     let last_line = text
         .lines()
         .rev()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| orq_core::redact::redact(line).chars().take(MAX_LINE_CHARS).collect());
+        .map(|line| {
+            orq_core::redact::redact(line)
+                .chars()
+                .take(MAX_LINE_CHARS)
+                .collect()
+        });
     // The count needs more than the tail: the end of the log, up to a larger bound.
     let scan_from = size.saturating_sub(TEST_SCAN_BYTES);
     let mut scanned = Vec::new();
     let tests = file
         .seek(SeekFrom::Start(scan_from))
-        .and_then(|_| file.by_ref().take(TEST_SCAN_BYTES).read_to_end(&mut scanned))
+        .and_then(|_| {
+            file.by_ref()
+                .take(TEST_SCAN_BYTES)
+                .read_to_end(&mut scanned)
+        })
         .ok()
         .and_then(|_| {
             let text = String::from_utf8_lossy(&scanned);
-            let text = if scan_from > 0 { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+            let text = if scan_from > 0 {
+                text.split_once('\n').map_or("", |(_, rest)| rest)
+            } else {
+                &text
+            };
             test_progress(text)
         })
         .map(|mut t| {
-            t.current = t.current.map(|name| orq_core::redact::redact(&name).chars().take(MAX_LINE_CHARS).collect());
+            t.current = t.current.map(|name| {
+                orq_core::redact::redact(&name)
+                    .chars()
+                    .take(MAX_LINE_CHARS)
+                    .collect()
+            });
             t
         });
-    Some(LogTail { size, quiet_for: modified.elapsed().unwrap_or_default(), last_line, tests })
+    Some(LogTail {
+        size,
+        quiet_for: modified.elapsed().unwrap_or_default(),
+        last_line,
+        tests,
+    })
 }
 
 /// The line to show for `current`, or none: a changed stage or last line of output is shown as it
 /// comes, and a run that has shown nothing for `heartbeat` says it is still going.
-pub fn activity_line(previous: Option<&RunActivity>, current: &RunActivity, since_last_line: Duration, heartbeat: Duration) -> Option<String> {
+pub fn activity_line(
+    previous: Option<&RunActivity>,
+    current: &RunActivity,
+    since_last_line: Duration,
+    heartbeat: Duration,
+) -> Option<String> {
     let stage = printable(current.stage.as_deref().unwrap_or("run"));
     let changed = match previous {
         None => true,
-        Some(p) => p.stage != current.stage || (current.last_output.is_some() && p.last_output != current.last_output),
+        Some(p) => {
+            p.stage != current.stage
+                || (current.last_output.is_some() && p.last_output != current.last_output)
+        }
     };
     if changed {
         return Some(match &current.last_output {
@@ -427,7 +538,9 @@ pub fn activity_line(previous: Option<&RunActivity>, current: &RunActivity, sinc
         });
     }
     if since_last_line >= heartbeat {
-        let quiet = current.quiet_for.map_or(String::new(), |q| format!(", no output for {}s", q.as_secs()));
+        let quiet = current.quiet_for.map_or(String::new(), |q| {
+            format!(", no output for {}s", q.as_secs())
+        });
         return Some(format!("orq: {stage} still running{quiet}"));
     }
     None
@@ -440,15 +553,29 @@ pub fn step_lines(current: &RunActivity) -> Option<Vec<String>> {
     match current.stage.as_deref()? {
         "verify" => Some(match &current.tests {
             Some(t) => {
-                let mut lines = vec![format!("Tests (Round {round}) - {}%", t.done * 100 / t.total.max(1))];
-                if let Some(name) = t.current.as_deref().map(printable).filter(|n| !n.is_empty()) {
+                let mut lines = vec![format!(
+                    "Tests (Round {round}) - {}%",
+                    t.done * 100 / t.total.max(1)
+                )];
+                if let Some(name) = t
+                    .current
+                    .as_deref()
+                    .map(printable)
+                    .filter(|n| !n.is_empty())
+                {
                     lines.push(format!("  - {name}"));
                 }
                 lines
             }
             None => vec![format!("Checks (Round {round})")],
         }),
-        "ci" if current.last_output.as_deref().is_some_and(|o| o.contains("no checks reported")) => Some(vec!["CI pending".to_string()]),
+        "ci" if current
+            .last_output
+            .as_deref()
+            .is_some_and(|o| o.contains("no checks reported")) =>
+        {
+            Some(vec!["CI pending".to_string()])
+        }
         "ci" => Some(vec![format!("CI running (Round {round})")]),
         _ => None,
     }

@@ -56,11 +56,15 @@ pub fn parse_needs_input(input: &str) -> Option<NeedsInput> {
                 .iter()
                 .filter_map(|question| question.get("question")?.as_str())
                 .collect();
-            (!asked.is_empty()).then(|| NeedsInput { kind: QUESTION, text: one_line(&asked.join(" ")) })
+            (!asked.is_empty()).then(|| NeedsInput {
+                kind: QUESTION,
+                text: one_line(&asked.join(" ")),
+            })
         }
-        "Notification" if field("notification_type")? == "permission_prompt" => {
-            Some(NeedsInput { kind: PERMISSION, text: one_line(field("message").unwrap_or_default()) })
-        }
+        "Notification" if field("notification_type")? == "permission_prompt" => Some(NeedsInput {
+            kind: PERMISSION,
+            text: one_line(field("message").unwrap_or_default()),
+        }),
         _ => None,
     }
 }
@@ -72,7 +76,8 @@ pub fn parse_waiting(input: &str, marker: &Path) -> Option<NeedsInput> {
     // A session that has left its marker is finishing, and orq is about to close it.
     // Claude's idle prompt is the same turn ended, seen later.
     let stopped = input["hook_event_name"] == "Stop"
-        || (input["hook_event_name"] == "Notification" && input["notification_type"] == "idle_prompt");
+        || (input["hook_event_name"] == "Notification"
+            && input["notification_type"] == "idle_prompt");
     if !stopped || marker.exists() {
         return None;
     }
@@ -82,7 +87,10 @@ pub fn parse_waiting(input: &str, marker: &Path) -> Option<NeedsInput> {
         .filter(|said| !said.trim().is_empty())
         .or_else(|| last_said(Path::new(input["transcript_path"].as_str()?)))
         .unwrap_or_else(|| STOPPED.to_string());
-    Some(NeedsInput { kind: WAITING, text: one_line(&said) })
+    Some(NeedsInput {
+        kind: WAITING,
+        text: one_line(&said),
+    })
 }
 
 /// What a waiting need says when nothing tells what the session last said.
@@ -100,32 +108,45 @@ fn last_said(transcript: &Path) -> Option<String> {
         return None;
     }
     let length = metadata.len();
-    file.seek(SeekFrom::Start(length.saturating_sub(TRANSCRIPT_TAIL_BYTES))).ok()?;
+    file.seek(SeekFrom::Start(
+        length.saturating_sub(TRANSCRIPT_TAIL_BYTES),
+    ))
+    .ok()?;
     let mut tail = Vec::new();
-    file.take(TRANSCRIPT_TAIL_BYTES).read_to_end(&mut tail).ok()?;
+    file.take(TRANSCRIPT_TAIL_BYTES)
+        .read_to_end(&mut tail)
+        .ok()?;
     // The first line may be cut, and is then no JSON: it is passed over like any other.
-    String::from_utf8_lossy(&tail).lines().rev().find_map(|line| {
-        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-        if entry["type"] != "assistant" {
-            return None;
-        }
-        let texts: Vec<&str> = match &entry["message"]["content"] {
-            serde_json::Value::String(text) => vec![text.as_str()],
-            serde_json::Value::Array(parts) => {
-                parts.iter().filter(|part| part["type"] == "text").filter_map(|part| part["text"].as_str()).collect()
+    String::from_utf8_lossy(&tail)
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+            if entry["type"] != "assistant" {
+                return None;
             }
-            _ => Vec::new(),
-        };
-        let said = texts.join(" ");
-        (!said.trim().is_empty()).then_some(said)
-    })
+            let texts: Vec<&str> = match &entry["message"]["content"] {
+                serde_json::Value::String(text) => vec![text.as_str()],
+                serde_json::Value::Array(parts) => parts
+                    .iter()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let said = texts.join(" ");
+            (!said.trim().is_empty()).then_some(said)
+        })
 }
 
 /// Opens `path` for reading without blocking on a FIFO that has no writer, as opening one would.
 #[cfg(unix)]
 fn open_without_waiting(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
 }
 
 #[cfg(not(unix))]
@@ -135,7 +156,9 @@ fn open_without_waiting(path: &Path) -> std::io::Result<std::fs::File> {
 
 /// Whether the JSON a Claude hook is given on stdin says a question has just been answered.
 pub fn question_was_answered(input: &str) -> bool {
-    let Ok(input) = serde_json::from_str::<serde_json::Value>(input) else { return false };
+    let Ok(input) = serde_json::from_str::<serde_json::Value>(input) else {
+        return false;
+    };
     input["hook_event_name"] == "PostToolUse" && input["tool_name"] == "AskUserQuestion"
 }
 
@@ -149,17 +172,28 @@ fn one_line(text: &str) -> String {
 
 /// Puts `need` on the run and returns the run's features to name when telling its person. `None`
 /// when it is the permission prompt of a question just recorded, which is already told about.
-pub fn record_needs_input(store: &RunStore, run_id: &str, need: &NeedsInput) -> Result<Option<String>, StoreError> {
+pub fn record_needs_input(
+    store: &RunStore,
+    run_id: &str,
+    need: &NeedsInput,
+) -> Result<Option<String>, StoreError> {
     let record = store.load(run_id)?;
     let events = store.events(run_id)?;
     if need.kind == PERMISSION && follows_a_question(&events) {
         return Ok(None);
     }
     // Stopping again before anyone answered is the same wait, already told about.
-    if need.kind == WAITING && open_need(&events).is_some_and(|need| need.payload["kind"] == WAITING) {
+    if need.kind == WAITING
+        && open_need(&events).is_some_and(|need| need.payload["kind"] == WAITING)
+    {
         return Ok(None);
     }
-    append(store, &record, EVENT, serde_json::json!({"kind": need.kind, "text": need.text}))?;
+    append(
+        store,
+        &record,
+        EVENT,
+        serde_json::json!({"kind": need.kind, "text": need.text}),
+    )?;
     Ok(Some(members_of(&record, &events).join(",")))
 }
 
@@ -171,7 +205,9 @@ pub fn record_input_given(store: &RunStore, run_id: &str) -> Result<(), StoreErr
 
 /// Whether the JSON a Claude hook is given on stdin says its person has just typed into the session.
 pub fn prompt_was_submitted(input: &str) -> bool {
-    let Ok(input) = serde_json::from_str::<serde_json::Value>(input) else { return false };
+    let Ok(input) = serde_json::from_str::<serde_json::Value>(input) else {
+        return false;
+    };
     input["hook_event_name"] == "UserPromptSubmit"
 }
 
@@ -187,10 +223,19 @@ pub fn record_prompt_submitted(store: &RunStore, run_id: &str) -> Result<(), Sto
 
 /// The run's latest need when nothing has answered it since.
 fn open_need(events: &[Event]) -> Option<&Event> {
-    events.iter().rev().find(|e| e.kind == EVENT || e.kind == ANSWERED_EVENT).filter(|e| e.kind == EVENT)
+    events
+        .iter()
+        .rev()
+        .find(|e| e.kind == EVENT || e.kind == ANSWERED_EVENT)
+        .filter(|e| e.kind == EVENT)
 }
 
-fn append(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json::Value) -> Result<(), StoreError> {
+fn append(
+    store: &RunStore,
+    record: &RunRecord,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),
@@ -206,8 +251,13 @@ fn append(store: &RunStore, record: &RunRecord, kind: &str, payload: serde_json:
 }
 
 fn follows_a_question(events: &[Event]) -> bool {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let latest = events.iter().rev().find(|e| e.kind == ANSWERED_EVENT || (e.kind == EVENT && e.payload["kind"] == QUESTION));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let latest = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == ANSWERED_EVENT || (e.kind == EVENT && e.payload["kind"] == QUESTION));
     latest
         .filter(|event| event.kind == EVENT)
         .and_then(|event| parse_rfc3339(&event.occurred_at))

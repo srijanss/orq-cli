@@ -67,7 +67,11 @@ pub fn last_review(worktree: &Path, base: &str) -> Result<Option<EscalatedReview
     latest_review(worktree, base, false)
 }
 
-fn latest_review(worktree: &Path, base: &str, escalated_only: bool) -> Result<Option<EscalatedReview>, String> {
+fn latest_review(
+    worktree: &Path,
+    base: &str,
+    escalated_only: bool,
+) -> Result<Option<EscalatedReview>, String> {
     let Some(rounds) = read_ledger(&worktree.join(ROUNDS_FILE))? else {
         return Ok(None);
     };
@@ -91,11 +95,14 @@ fn latest_review(worktree: &Path, base: &str, escalated_only: bool) -> Result<Op
     let mut in_order: HashMap<(&str, &str), bool> = HashMap::new();
     let mut latest = None;
     for (_, round) in candidates {
-        let Some(named_start) = text(round, "start") else { continue };
+        let Some(named_start) = text(round, "start") else {
+            continue;
+        };
         // A ledger may name a commit by an abbreviation; it counts as the run commit it names.
-        let (Some(start), Some(head)) =
-            (run_commit(&run_commits, named_start), text(round, "head").and_then(|h| run_commit(&run_commits, h)))
-        else {
+        let (Some(start), Some(head)) = (
+            run_commit(&run_commits, named_start),
+            text(round, "head").and_then(|h| run_commit(&run_commits, h)),
+        ) else {
             continue;
         };
         let ordered = match in_order.get(&(start, head)) {
@@ -111,7 +118,9 @@ fn latest_review(worktree: &Path, base: &str, escalated_only: bool) -> Result<Op
             break;
         }
     }
-    let Some((round, named_start, start, head)) = latest else { return Ok(None) };
+    let Some((round, named_start, start, head)) = latest else {
+        return Ok(None);
+    };
     let number = round.get("round").and_then(Value::as_u64).unwrap_or(0);
     let blocking: Vec<&Value> = round
         .get("findings")
@@ -133,14 +142,21 @@ fn latest_review(worktree: &Path, base: &str, escalated_only: bool) -> Result<Op
     let mut live_status: HashMap<&str, Option<&str>> = HashMap::new();
     for entry in live.into_iter().flatten() {
         if let Some(id) = text(entry, "id") {
-            live_status.entry(id).or_insert_with(|| text(entry, "status"));
+            live_status
+                .entry(id)
+                .or_insert_with(|| text(entry, "status"));
         }
     }
     let findings = blocking
         .iter()
         .map(|f| {
             let id = text(f, "id").unwrap_or("").to_string();
-            let status = live_status.get(id.as_str()).copied().flatten().unwrap_or("fixed").to_string();
+            let status = live_status
+                .get(id.as_str())
+                .copied()
+                .flatten()
+                .unwrap_or("fixed")
+                .to_string();
             EscalatedFinding {
                 severity: text(f, "severity").unwrap_or("").to_string(),
                 file: text(f, "file").map(str::to_string),
@@ -169,14 +185,20 @@ fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 /// Open and at medium severity or above: what keeps a review loop from ending.
 fn is_blocking(finding: &Value) -> bool {
     text(finding, "status") == Some("open")
-        && matches!(text(finding, "severity"), Some("medium" | "high" | "critical"))
+        && matches!(
+            text(finding, "severity"),
+            Some("medium" | "high" | "critical")
+        )
 }
 
 /// Read a ledger file, `None` when there is none. Opened without following a link and without
 /// waiting on a pipe, then judged by the handle, since the path may be swapped after a check.
 fn read_ledger(path: &Path) -> Result<Option<Value>, String> {
     use std::os::unix::fs::OpenOptionsExt;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -186,7 +208,9 @@ fn read_ledger(path: &Path) -> Result<Option<Value>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("cannot open {name}: {e}")),
     };
-    let meta = file.metadata().map_err(|e| format!("cannot read {name}: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("cannot read {name}: {e}"))?;
     if !meta.is_file() {
         return Err(format!("{name} is not a regular file"));
     }
@@ -197,7 +221,9 @@ fn read_ledger(path: &Path) -> Result<Option<Value>, String> {
     if bytes.len() as u64 > MAX_LEDGER_BYTES {
         return Err(format!("{name} is larger than {MAX_LEDGER_BYTES} bytes"));
     }
-    serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{name} is not valid JSON: {e}"))
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| format!("{name} is not valid JSON: {e}"))
 }
 
 /// The full names of the commits of this run's work: `base` and every commit after it that `HEAD`
@@ -209,7 +235,8 @@ fn run_commits(worktree: &Path, base: &str) -> Result<Option<BTreeSet<String>>, 
     let commit = format!("{base}^{{commit}}");
     // `base` is a hexadecimal name, so git cannot read it as an option; one it does not know is
     // a failure, and no review is of this run's work.
-    let names = git_raw(worktree, &["rev-parse", "--quiet", &commit, "HEAD"]).map_err(|e| e.to_string())?;
+    let names =
+        git_raw(worktree, &["rev-parse", "--quiet", &commit, "HEAD"]).map_err(|e| e.to_string())?;
     if !names.success {
         return Ok(None);
     }
@@ -218,9 +245,13 @@ fn run_commits(worktree: &Path, base: &str) -> Result<Option<BTreeSet<String>>, 
         return Ok(None);
     };
     let range = format!("{base}..{head}");
-    let out = git_raw(worktree, &["rev-list", "--ancestry-path", &range, "--"]).map_err(|e| e.to_string())?;
+    let out = git_raw(worktree, &["rev-list", "--ancestry-path", &range, "--"])
+        .map_err(|e| e.to_string())?;
     if !out.success {
-        return Err(format!("git rev-list {range} failed: {}", out.stderr.trim()));
+        return Err(format!(
+            "git rev-list {range} failed: {}",
+            out.stderr.trim()
+        ));
     }
     let mut commits: BTreeSet<String> = out.stdout.lines().map(str::to_string).collect();
     // An empty path means `HEAD` is `base` or does not have it.
@@ -238,7 +269,9 @@ fn run_commit<'a>(commits: &'a BTreeSet<String>, name: &str) -> Option<&'a str> 
         return None;
     }
     let name = name.to_ascii_lowercase();
-    let mut named = commits.range(name.clone()..).take_while(|c| c.starts_with(&name));
+    let mut named = commits
+        .range(name.clone()..)
+        .take_while(|c| c.starts_with(&name));
     let commit = named.next()?;
     named.next().is_none().then_some(commit.as_str())
 }
@@ -248,8 +281,11 @@ fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool
     if !is_commit_name(ancestor) || !is_commit_name(descendant) {
         return Ok(false);
     }
-    let out = git_raw(worktree, &["merge-base", "--is-ancestor", ancestor, descendant])
-        .map_err(|e| e.to_string())?;
+    let out = git_raw(
+        worktree,
+        &["merge-base", "--is-ancestor", ancestor, descendant],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(out.success)
 }
 
@@ -260,8 +296,11 @@ fn is_commit_name(name: &str) -> bool {
 
 fn commits_after(worktree: &Path, head: &str) -> Result<Vec<UnreviewedCommit>, String> {
     let range = format!("{head}..HEAD");
-    let out = git_raw(worktree, &["log", "--reverse", "--format=%H%x09%s", &range, "--"])
-        .map_err(|e| e.to_string())?;
+    let out = git_raw(
+        worktree,
+        &["log", "--reverse", "--format=%H%x09%s", &range, "--"],
+    )
+    .map_err(|e| e.to_string())?;
     if !out.success {
         return Err(format!("git log {range} failed: {}", out.stderr.trim()));
     }
@@ -269,6 +308,9 @@ fn commits_after(worktree: &Path, head: &str) -> Result<Vec<UnreviewedCommit>, S
         .stdout
         .lines()
         .filter_map(|line| line.split_once('\t'))
-        .map(|(sha, subject)| UnreviewedCommit { sha: sha.to_string(), subject: subject.to_string() })
+        .map(|(sha, subject)| UnreviewedCommit {
+            sha: sha.to_string(),
+            subject: subject.to_string(),
+        })
         .collect())
 }

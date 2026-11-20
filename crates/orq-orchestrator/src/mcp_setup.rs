@@ -46,7 +46,10 @@ pub struct McpTimeouts {
 
 impl Default for McpTimeouts {
     fn default() -> Self {
-        Self { install: Duration::from_secs(60), init: Duration::from_secs(30) }
+        Self {
+            install: Duration::from_secs(60),
+            init: Duration::from_secs(30),
+        }
     }
 }
 
@@ -83,20 +86,33 @@ pub struct McpSetupReport {
 pub fn run_mcp_setup(request: &McpSetupRequest<'_>) -> McpSetupReport {
     let mut report = McpSetupReport::default();
     let mut seen = std::collections::HashSet::new();
-    let names: Vec<&str> = request.servers.iter().map(String::as_str).filter(|name| seen.insert(*name)).collect();
+    let names: Vec<&str> = request
+        .servers
+        .iter()
+        .map(String::as_str)
+        .filter(|name| seen.insert(*name))
+        .collect();
     let machine_active = || {
-        let active = names.iter().map(|name| McpServerVersion { name: name.to_string(), version: None, source: "machine active".to_string() });
+        let active = names.iter().map(|name| McpServerVersion {
+            name: name.to_string(),
+            version: None,
+            source: "machine active".to_string(),
+        });
         active.collect()
     };
     let Some(program) = request.mcpctl else {
-        report.notes.push("mcpctl is not on PATH; the configured MCP servers were not set up".to_string());
+        report
+            .notes
+            .push("mcpctl is not on PATH; the configured MCP servers were not set up".to_string());
         report.versions = machine_active();
         return report;
     };
     // Setup rewrites the project's files: in the main checkout it would change the user's own.
     let same = |a: &Path, b: &Path| matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b);
     if same(request.main_checkout, request.worktree) {
-        report.notes.push("the worktree is the main checkout; MCP servers are not set up there".to_string());
+        report.notes.push(
+            "the worktree is the main checkout; MCP servers are not set up there".to_string(),
+        );
         report.versions = machine_active();
         return report;
     }
@@ -104,9 +120,16 @@ pub fn run_mcp_setup(request: &McpSetupRequest<'_>) -> McpSetupReport {
     let (install, init) = (request.timeouts.install, request.timeouts.init);
     let locked = request.worktree.join(MCPCTL_LOCK).exists();
     let done = if locked {
-        calls(request, program, &[(&["sync", "--locked"], install), (&["init"], init)]).map(|()| "locked")
+        calls(
+            request,
+            program,
+            &[(&["sync", "--locked"], install), (&["init"], init)],
+        )
+        .map(|()| "locked")
     } else {
-        let setup: Vec<&str> = std::iter::once("setup").chain(names.iter().flat_map(|name| ["--mcp", *name])).collect();
+        let setup: Vec<&str> = std::iter::once("setup")
+            .chain(names.iter().flat_map(|name| ["--mcp", *name]))
+            .collect();
         calls(request, program, &[(&setup, install)]).map(|()| "newest")
     };
     let done = match done {
@@ -138,7 +161,9 @@ pub fn run_mcp_setup(request: &McpSetupRequest<'_>) -> McpSetupReport {
     }
     // Even a failed call may have left files behind.
     if let Err(why) = exclude_created(request.worktree) {
-        report.notes.push(format!("the files MCP setup created could not all be kept out of git status: {why}"));
+        report.notes.push(format!(
+            "the files MCP setup created could not all be kept out of git status: {why}"
+        ));
     }
     report
 }
@@ -173,7 +198,11 @@ fn exclude_created(worktree: &Path) -> Result<(), String> {
     names.retain(|name| !tracked.contains(name));
     let unignored = |names: &[String]| -> Result<Vec<String>, String> {
         let ignored = git_listed(worktree, &["check-ignore", "-z", "--stdin"], names)?;
-        Ok(names.iter().filter(|name| !ignored.contains(*name)).cloned().collect())
+        Ok(names
+            .iter()
+            .filter(|name| !ignored.contains(*name))
+            .cloned()
+            .collect())
     };
     let missing = unignored(&names)?;
     if missing.is_empty() {
@@ -182,7 +211,12 @@ fn exclude_created(worktree: &Path) -> Result<(), String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(worktree)
-        .args(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"])
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ])
         .output()
         .ok()
         .filter(|out| out.status.success())
@@ -212,9 +246,17 @@ fn git_listed(worktree: &Path, args: &[&str], names: &[String]) -> Result<Vec<St
     let mut command = Command::new("git");
     command.arg("-C").arg(worktree).args(args);
     let out = if args.contains(&"--stdin") {
-        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(ran)?;
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(ran)?;
         let input: String = names.iter().map(|name| format!("{name}\0")).collect();
-        let written = child.stdin.take().map(|mut stdin| stdin.write_all(input.as_bytes()));
+        let written = child
+            .stdin
+            .take()
+            .map(|mut stdin| stdin.write_all(input.as_bytes()));
         let out = child.wait_with_output().map_err(ran)?;
         written.transpose().map_err(ran)?;
         out
@@ -225,36 +267,74 @@ fn git_listed(worktree: &Path, args: &[&str], names: &[String]) -> Result<Vec<St
         return Err(format!("git {} failed ({})", args[0], out.status));
     }
     let printed = String::from_utf8_lossy(&out.stdout);
-    Ok(printed.split('\0').filter(|name| !name.is_empty()).map(str::to_string).collect())
+    Ok(printed
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// Runs each call in turn, stopping at the first that fails.
-fn calls(request: &McpSetupRequest<'_>, program: &Path, steps: &[(&[&str], Duration)]) -> Result<(), Failed> {
-    steps.iter().try_for_each(|(args, limit)| call(request, program, args, *limit))
+fn calls(
+    request: &McpSetupRequest<'_>,
+    program: &Path,
+    steps: &[(&[&str], Duration)],
+) -> Result<(), Failed> {
+    steps
+        .iter()
+        .try_for_each(|(args, limit)| call(request, program, args, *limit))
 }
 
 /// Copies the main checkout's lock into a worktree that has none, kept out of git status.
 fn carry_lock(request: &McpSetupRequest<'_>, notes: &mut Vec<String>) {
-    let (source, target) = (request.main_checkout.join(MCPCTL_LOCK), request.worktree.join(MCPCTL_LOCK));
-    if std::fs::symlink_metadata(&target).is_ok() || !std::fs::symlink_metadata(&source).is_ok_and(|meta| meta.is_file()) {
+    let (source, target) = (
+        request.main_checkout.join(MCPCTL_LOCK),
+        request.worktree.join(MCPCTL_LOCK),
+    );
+    if std::fs::symlink_metadata(&target).is_ok()
+        || !std::fs::symlink_metadata(&source).is_ok_and(|meta| meta.is_file())
+    {
         return;
     }
     if let Err(why) = crate::local_files::exclude_locally(request.worktree, MCPCTL_LOCK) {
-        notes.push(format!("{MCPCTL_LOCK} is not carried into the worktree: {why}"));
+        notes.push(format!(
+            "{MCPCTL_LOCK} is not carried into the worktree: {why}"
+        ));
         return;
     }
     if let Err(err) = std::fs::copy(&source, &target) {
-        notes.push(format!("{MCPCTL_LOCK} could not be carried into the worktree ({:?})", err.kind()));
+        notes.push(format!(
+            "{MCPCTL_LOCK} could not be carried into the worktree ({:?})",
+            err.kind()
+        ));
     }
 }
 
 /// Runs `mcpctl <args>` in the worktree with its output appended to the log, stopped after `limit`.
-fn call(request: &McpSetupRequest<'_>, program: &Path, args: &[&str], limit: Duration) -> Result<(), Failed> {
+fn call(
+    request: &McpSetupRequest<'_>,
+    program: &Path,
+    args: &[&str],
+    limit: Duration,
+) -> Result<(), Failed> {
     let what = format!("mcpctl {}", args.join(" "));
-    let failed = |what: String| Failed { what, last_line: None };
-    let unopened = |err: std::io::Error| failed(format!("{what} was not run: its log could not be opened ({:?})", err.kind()));
-    let mut log = OpenOptions::new().create(true).append(true).open(request.log).map_err(unopened)?;
-    log.write_all(format!("$ {what}\n").as_bytes()).map_err(unopened)?;
+    let failed = |what: String| Failed {
+        what,
+        last_line: None,
+    };
+    let unopened = |err: std::io::Error| {
+        failed(format!(
+            "{what} was not run: its log could not be opened ({:?})",
+            err.kind()
+        ))
+    };
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(request.log)
+        .map_err(unopened)?;
+    log.write_all(format!("$ {what}\n").as_bytes())
+        .map_err(unopened)?;
     let before = std::fs::metadata(request.log).map_or(0, |meta| meta.len());
     let err_log = log.try_clone().map_err(unopened)?;
     let mut command = Command::new(program);
@@ -280,13 +360,19 @@ fn call(request: &McpSetupRequest<'_>, program: &Path, args: &[&str], limit: Dur
             Ok(false) if started.elapsed() >= limit => {
                 child.end_group();
                 let _ = child.reap();
-                break format!("{what} did not finish within {}s and was stopped", limit.as_secs());
+                break format!(
+                    "{what} did not finish within {}s and was stopped",
+                    limit.as_secs()
+                );
             }
             Ok(false) => std::thread::sleep(Duration::from_millis(20)),
             Err(err) => break format!("{what} could not be waited for ({:?})", err.kind()),
         }
     };
-    Err(Failed { what: why, last_line: last_line(request.log, before, request.env) })
+    Err(Failed {
+        what: why,
+        last_line: last_line(request.log, before, request.env),
+    })
 }
 
 /// The last non-empty line written to `log` after `from`, redacted, then cut to [`MAX_LINE`]
@@ -298,13 +384,22 @@ fn last_line(log: &Path, from: u64, env: &[(String, String)]) -> Option<String> 
     let start = from.max(end.saturating_sub(TAIL));
     // One byte before a tail that skipped output, to see whether the tail starts a line.
     let skipped = start > from;
-    file.seek(SeekFrom::Start(start - u64::from(skipped))).ok()?;
+    file.seek(SeekFrom::Start(start - u64::from(skipped)))
+        .ok()?;
     let mut written = Vec::new();
     file.take(TAIL + 1).read_to_end(&mut written).ok()?;
     let text = String::from_utf8_lossy(&written);
     // A line whose start was not read is never shown: what was cut off cannot be checked for secrets.
-    let text = if skipped { text.split_once('\n')?.1 } else { &text };
-    let line = text.lines().map(str::trim).filter(|line| !line.is_empty()).last()?;
+    let text = if skipped {
+        text.split_once('\n')?.1
+    } else {
+        &text
+    };
+    let line = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .last()?;
     // The line goes into notes that events, `orq runs` and the run page show, so it is redacted
     // whole before it is cut: a secret the cut crossed would otherwise show in part.
     Some(redact(line, env).chars().take(MAX_LINE).collect())
@@ -318,7 +413,11 @@ fn redact(line: &str, env: &[(String, String)]) -> String {
     const HIDDEN: &str = orq_core::redact::REDACTED;
     let mut text = line.to_string();
     // Longest first, so a value inside another is not left half shown.
-    let mut values: Vec<&str> = env.iter().map(|(_, value)| value.as_str()).filter(|value| value.len() >= 6).collect();
+    let mut values: Vec<&str> = env
+        .iter()
+        .map(|(_, value)| value.as_str())
+        .filter(|value| value.len() >= 6)
+        .collect();
     values.sort_by_key(|value| std::cmp::Reverse(value.len()));
     for value in values {
         text = text.replace(value, HIDDEN);
@@ -361,7 +460,11 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
         }
         i
     };
-    let word_char = |i: usize| bytes.get(i).is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+    let word_char = |i: usize| {
+        bytes
+            .get(i)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    };
     let (mut out, mut shown, mut from) = (String::with_capacity(text.len()), 0, 0);
     while let Some((found, name)) = NAMES
         .iter()
@@ -380,13 +483,20 @@ fn redact_named_values(text: &str, hidden: &str) -> String {
         let mut start = skip(after + 1, BLANK);
         // A value quoted with escaped quotes (`pwd=\"...\"`) sits inside another string.
         let escaped = bytes.get(start) == Some(&b'\\');
-        let quote = bytes.get(start + usize::from(escaped)).copied().filter(|b| matches!(b, b'"' | b'\''));
+        let quote = bytes
+            .get(start + usize::from(escaped))
+            .copied()
+            .filter(|b| matches!(b, b'"' | b'\''));
         let escaped = escaped && quote.is_some();
         start += usize::from(quote.is_some()) + usize::from(escaped);
         if name != "pwd" {
             // Only a scheme orq knows stays: any other word could itself be the credential.
-            let scheme = text[start..].find(|c: char| !c.is_ascii_alphabetic()).map_or(text.len(), |end| start + end);
-            let known = SCHEMES.iter().any(|known| text[start..scheme].eq_ignore_ascii_case(known));
+            let scheme = text[start..]
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .map_or(text.len(), |end| start + end);
+            let known = SCHEMES
+                .iter()
+                .any(|known| text[start..scheme].eq_ignore_ascii_case(known));
             if known && bytes.get(scheme).is_some_and(|b| BLANK.contains(b)) {
                 start = skip(scheme, BLANK);
             }
@@ -440,7 +550,10 @@ fn locked_versions(worktree: &Path, servers: &[&str], source: &str) -> Vec<McpSe
     let doc = std::fs::read_to_string(worktree.join(MCPCTL_LOCK))
         .ok()
         .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok());
-    let tables = doc.as_ref().and_then(|doc| doc.get("mcp")).and_then(|item| item.as_array_of_tables());
+    let tables = doc
+        .as_ref()
+        .and_then(|doc| doc.get("mcp"))
+        .and_then(|item| item.as_array_of_tables());
     servers
         .iter()
         .map(|name| {
@@ -449,7 +562,11 @@ fn locked_versions(worktree: &Path, servers: &[&str], source: &str) -> Vec<McpSe
                 .flat_map(|tables| tables.iter())
                 .find(|table| table.get("name").and_then(|v| v.as_str()) == Some(*name))
                 .and_then(|table| table.get("version")?.as_str().map(str::to_string));
-            McpServerVersion { name: name.to_string(), version, source: source.to_string() }
+            McpServerVersion {
+                name: name.to_string(),
+                version,
+                source: source.to_string(),
+            }
         })
         .collect()
 }

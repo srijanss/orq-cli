@@ -4,7 +4,12 @@ use crate::implement::{next_event_id, now_rfc3339};
 use crate::store::{Event, RunRecord, RunStore, StoreError};
 
 /// Record a `kind` event (such as `ledger.handed_back`) naming the `features` it touched.
-pub fn record_ledger_features(store: &RunStore, record: &RunRecord, kind: &str, features: &[String]) -> Result<(), StoreError> {
+pub fn record_ledger_features(
+    store: &RunStore,
+    record: &RunRecord,
+    kind: &str,
+    features: &[String],
+) -> Result<(), StoreError> {
     store.append_event(&Event {
         schema_version: 1,
         event_id: next_event_id(&record.run_id),

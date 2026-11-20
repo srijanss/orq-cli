@@ -4,10 +4,16 @@
 
 use std::collections::BTreeMap;
 
-use orq_orchestrator::{machine_disk_refusal, machine_limit_refusal, Event, FreeDisk, RunLimits, RunRecord, RunStore, StoreError};
+use orq_orchestrator::{
+    machine_disk_refusal, machine_limit_refusal, Event, FreeDisk, RunLimits, RunRecord, RunStore,
+    StoreError,
+};
 
 fn store(tag: &str) -> RunStore {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-machine-run-limit-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir().join(format!(
+        "orq-machine-run-limit-{}-{tag}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     RunStore::new(&root)
 }
@@ -64,18 +70,48 @@ fn the_machine_counts_active_runs_of_every_project_and_refuses_a_start_at_its_li
     started(&store, "orq-cli-11111111", "run-a", "A");
     started(&store, "giftcard-display-22222222", "run-b", "A");
     let ended = started(&store, "orq-cli-11111111", "run-c", "C");
-    event(&store, &ended, "run.completed", serde_json::json!({"ending": "review_ready"}));
-    let expected = vec![pair("orq-cli-11111111", "run-a"), pair("giftcard-display-22222222", "run-b")];
+    event(
+        &store,
+        &ended,
+        "run.completed",
+        serde_json::json!({"ending": "review_ready"}),
+    );
+    let expected = vec![
+        pair("orq-cli-11111111", "run-a"),
+        pair("giftcard-display-22222222", "run-b"),
+    ];
     assert_eq!(store.active_machine_runs().unwrap(), expected);
 
-    let limits = RunLimits { project: None, machine: Some(2) };
-    match store.start_group_run_within(&record("third-33333333", "run-d", "D"), &["D".to_string()], limits) {
+    let limits = RunLimits {
+        project: None,
+        machine: Some(2),
+    };
+    match store.start_group_run_within(
+        &record("third-33333333", "run-d", "D"),
+        &["D".to_string()],
+        limits,
+    ) {
         Err(StoreError::MachineAtLimit { active }) => assert_eq!(active, expected),
         other => panic!("expected the machine limit, got {other:?}"),
     }
     assert!(store.load("run-d").is_err(), "nothing was recorded");
-    store.start_group_run_within(&record("third-33333333", "run-d", "D"), &["D".to_string()], RunLimits { project: None, machine: Some(3) }).unwrap();
-    store.start_group_run_within(&record("third-33333333", "run-e", "E"), &["E".to_string()], RunLimits::default()).unwrap();
+    store
+        .start_group_run_within(
+            &record("third-33333333", "run-d", "D"),
+            &["D".to_string()],
+            RunLimits {
+                project: None,
+                machine: Some(3),
+            },
+        )
+        .unwrap();
+    store
+        .start_group_run_within(
+            &record("third-33333333", "run-e", "E"),
+            &["E".to_string()],
+            RunLimits::default(),
+        )
+        .unwrap();
 }
 
 #[test]
@@ -90,15 +126,31 @@ fn of_two_starts_at_once_in_two_projects_on_a_machine_allowing_one_exactly_one_p
                 std::thread::spawn(move || {
                     let run = record(project, &format!("run-{project}"), "A");
                     barrier.wait();
-                    store.start_group_run_within(&run, &["A".to_string()], RunLimits { project: None, machine: Some(1) })
+                    store.start_group_run_within(
+                        &run,
+                        &["A".to_string()],
+                        RunLimits {
+                            project: None,
+                            machine: Some(1),
+                        },
+                    )
                 })
             })
             .collect::<Vec<_>>()
             .into_iter()
             .map(|thread| thread.join().unwrap())
             .collect();
-        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1, "{outcomes:?}");
-        assert!(outcomes.iter().any(|outcome| matches!(outcome, Err(StoreError::MachineAtLimit { .. }))), "{outcomes:?}");
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+            1,
+            "{outcomes:?}"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, Err(StoreError::MachineAtLimit { .. }))),
+            "{outcomes:?}"
+        );
     }
 }
 
@@ -109,19 +161,33 @@ fn a_refusal_names_the_machine_its_active_runs_by_project_and_the_setting_to_rai
         machine_limit_refusal(Some(1), &one).as_deref(),
         Some("this machine already has 1 active run (orq-cli run-a): wait for it to finish, or raise [runs] max_active"),
     );
-    let two = vec![pair("orq-cli-1a2b3c4d", "run-a"), pair("giftcard-display-0f0f0f0f", "run-b")];
+    let two = vec![
+        pair("orq-cli-1a2b3c4d", "run-a"),
+        pair("giftcard-display-0f0f0f0f", "run-b"),
+    ];
     assert_eq!(
         machine_limit_refusal(Some(2), &two).as_deref(),
         Some("this machine already has 2 active runs (orq-cli run-a, giftcard-display run-b): wait for one to finish, or raise [runs] max_active"),
     );
-    assert_eq!(machine_limit_refusal(Some(3), &two), None, "under the limit");
+    assert_eq!(
+        machine_limit_refusal(Some(3), &two),
+        None,
+        "under the limit"
+    );
     assert_eq!(machine_limit_refusal(None, &two), None, "no limit");
 
-    let free = |bytes: u64| FreeDisk { bytes, mount: std::path::PathBuf::from("/") };
+    let free = |bytes: u64| FreeDisk {
+        bytes,
+        mount: std::path::PathBuf::from("/"),
+    };
     assert_eq!(
         machine_disk_refusal(Some(15), &free(9_800_000_000)).as_deref(),
         Some("only 9.8 GB free on / (this machine needs 15 GB to start a run): free some space, or lower [runs] min_free_disk_gb"),
     );
-    assert_eq!(machine_disk_refusal(Some(15), &free(15_000_000_000)), None, "exactly the floor is enough");
+    assert_eq!(
+        machine_disk_refusal(Some(15), &free(15_000_000_000)),
+        None,
+        "exactly the floor is enough"
+    );
     assert_eq!(machine_disk_refusal(None, &free(0)), None, "no floor");
 }

@@ -4,8 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use orq_orchestrator::{
-    rerun_gate, run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then, FixSessionSpec, Gate, GateFixOutcome, RunRecord,
-    RunStore,
+    rerun_gate, run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then,
+    FixSessionSpec, Gate, GateFixOutcome, RunRecord, RunStore,
 };
 
 struct World {
@@ -463,9 +463,20 @@ fn every_gate_run_in_the_fix_loop_gets_the_run_environment() {
 fn a_fix_session_that_cannot_be_prepared_is_not_started_and_the_loop_fails_saying_why() {
     let w = world("unprepared");
 
-    let result = run_gate_with_fixes_env(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, &[], |_, _| {
-        Err(orq_orchestrator::StoreError::Corrupt("the settings still allow Bash(node a.mjs)".to_string()))
-    });
+    let result = run_gate_with_fixes_env(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        &[],
+        |_, _| {
+            Err(orq_orchestrator::StoreError::Corrupt(
+                "the settings still allow Bash(node a.mjs)".to_string(),
+            ))
+        },
+    );
 
     let why = format!("{:?}", result.expect_err("no session may start"));
     assert!(why.contains("Bash(node a.mjs)"), "{why}");
@@ -479,14 +490,26 @@ fn a_fix_session_that_leaves_its_marker_is_closed_and_the_gate_runs_again() {
     let script = format!("touch fixed; touch '{}'; sleep 30", marker.display());
     let started = std::time::Instant::now();
 
-    let outcome = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |_, _| FixSessionSpec {
-        exit_marker: Some(marker.clone()),
-        ..spec(&w, &script)
-    })
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |_, _| FixSessionSpec {
+            exit_marker: Some(marker.clone()),
+            ..spec(&w, &script)
+        },
+    )
     .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
-    assert!(started.elapsed() < std::time::Duration::from_secs(20), "the session was left open: {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the session was left open: {:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
@@ -495,10 +518,25 @@ fn a_marker_left_by_the_first_fix_session_does_not_close_the_second() {
     let marker = w.root.join("gate-fix.done");
     let gave_up = format!("touch '{}'; sleep 30", marker.display());
 
-    let outcome = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 2, |attempt, _| FixSessionSpec {
-        exit_marker: Some(marker.clone()),
-        ..spec(&w, if attempt == 1 { &gave_up } else { "sleep 2; touch fixed" })
-    })
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        |attempt, _| FixSessionSpec {
+            exit_marker: Some(marker.clone()),
+            ..spec(
+                &w,
+                if attempt == 1 {
+                    &gave_up
+                } else {
+                    "sleep 2; touch fixed"
+                },
+            )
+        },
+    )
     .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 2 });
@@ -510,17 +548,26 @@ fn a_marker_from_before_the_loop_does_not_close_the_first_fix_session() {
     let marker = w.root.join("gate-fix.done");
     fs::write(&marker, "").unwrap();
 
-    let outcome = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 1, |_, _| FixSessionSpec {
-        exit_marker: Some(marker.clone()),
-        ..spec(&w, "sleep 2; touch fixed")
-    })
+    let outcome = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| FixSessionSpec {
+            exit_marker: Some(marker.clone()),
+            ..spec(&w, "sleep 2; touch fixed")
+        },
+    )
     .unwrap();
 
     assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
 }
 
 #[test]
-fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_fixing_or_failing_the_run() {
+fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_fixing_or_failing_the_run(
+) {
     let w = world("unrelated");
     let calls = RefCell::new(0);
     let report = w.root.join("unrelated-failure.txt");
@@ -536,7 +583,10 @@ fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_fixing
             *calls.borrow_mut() += 1;
             spec(
                 &w,
-                &format!("printf 'billing clock test is flaky\\n' > {}", report.display()),
+                &format!(
+                    "printf 'billing clock test is flaky\\n' > {}",
+                    report.display()
+                ),
             )
         },
     )
@@ -551,13 +601,21 @@ fn a_fix_session_that_reports_an_unrelated_failure_stops_the_loop_without_fixing
         }
     );
     assert_eq!(*calls.borrow(), 1);
-    assert!(!kinds(&w).contains(&pair("gate", "run.failed")), "{:?}", kinds(&w));
+    assert!(
+        !kinds(&w).contains(&pair("gate", "run.failed")),
+        "{:?}",
+        kinds(&w)
+    );
 }
 
 #[test]
 fn a_report_left_by_an_earlier_session_does_not_stop_a_loop_whose_fix_works() {
     let w = world("stale-report");
-    fs::write(w.root.join("unrelated-failure.txt"), "billing clock test is flaky\n").unwrap();
+    fs::write(
+        w.root.join("unrelated-failure.txt"),
+        "billing clock test is flaky\n",
+    )
+    .unwrap();
 
     let outcome = run_gate_with_fixes(
         &w.store,
@@ -585,7 +643,12 @@ fn an_empty_or_blank_report_is_no_report_and_the_gate_reruns() {
         true,
         &w.gate_log,
         1,
-        |_, _| spec(&w, &format!("printf ' \\n\\n' > '{}'; touch fixed", report.display())),
+        |_, _| {
+            spec(
+                &w,
+                &format!("printf ' \\n\\n' > '{}'; touch fixed", report.display()),
+            )
+        },
     )
     .unwrap();
 
@@ -604,12 +667,19 @@ fn a_report_that_is_not_text_is_still_reported_without_failing() {
         true,
         &w.gate_log,
         1,
-        |_, _| spec(&w, &format!("printf 'flaky \\377 clock\\n' > '{}'", report.display())),
+        |_, _| {
+            spec(
+                &w,
+                &format!("printf 'flaky \\377 clock\\n' > '{}'", report.display()),
+            )
+        },
     )
     .unwrap();
 
     match outcome {
-        GateFixOutcome::Unrelated { summary, .. } => assert!(summary.starts_with("flaky"), "{summary}"),
+        GateFixOutcome::Unrelated { summary, .. } => {
+            assert!(summary.starts_with("flaky"), "{summary}")
+        }
         other => panic!("expected Unrelated, got {other:?}"),
     }
 }
@@ -647,7 +717,14 @@ fn a_directory_left_as_the_report_does_not_stop_the_next_fix_attempt() {
         2,
         |attempt, _| {
             if attempt == 1 {
-                spec(&w, &format!("mkdir -p '{}/inner'; touch '{}/inner/f'", report.display(), report.display()))
+                spec(
+                    &w,
+                    &format!(
+                        "mkdir -p '{}/inner'; touch '{}/inner/f'",
+                        report.display(),
+                        report.display()
+                    ),
+                )
             } else {
                 spec(&w, "touch fixed")
             }
@@ -704,10 +781,18 @@ fn an_earlier_report_that_cannot_be_cleared_is_an_error_and_no_fix_session_start
 
     locked(&report);
     let calls = RefCell::new(0);
-    let result = run_gate_with_fixes(&w.store, "run-1", &gate_needing_fixed(), true, &w.gate_log, 1, |_, _| {
-        *calls.borrow_mut() += 1;
-        spec(&w, "touch fixed")
-    });
+    let result = run_gate_with_fixes(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        1,
+        |_, _| {
+            *calls.borrow_mut() += 1;
+            spec(&w, "touch fixed")
+        },
+    );
     unlock(&report);
 
     assert!(result.is_err(), "{result:?}");
@@ -731,7 +816,10 @@ fn a_named_pipe_left_as_the_report_is_not_waited_on() {
     )
     .unwrap();
 
-    assert!(matches!(outcome, GateFixOutcome::Failed { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, GateFixOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
 }
 
 #[test]
@@ -750,14 +838,26 @@ fn a_huge_report_is_cut_to_one_short_line() {
         true,
         &w.gate_log,
         1,
-        |_, _| spec(&w, &format!("cp '{}' '{}'", w.root.join("big.txt").display(), report.display())),
+        |_, _| {
+            spec(
+                &w,
+                &format!(
+                    "cp '{}' '{}'",
+                    w.root.join("big.txt").display(),
+                    report.display()
+                ),
+            )
+        },
     )
     .unwrap();
 
     match outcome {
         GateFixOutcome::Unrelated { summary, .. } => {
             assert!(summary.chars().count() <= 500, "{} chars", summary.len());
-            assert!(!summary.contains('\n') && !summary.contains("second line"), "{summary}");
+            assert!(
+                !summary.contains('\n') && !summary.contains("second line"),
+                "{summary}"
+            );
         }
         other => panic!("expected Unrelated, got {other:?}"),
     }
@@ -777,7 +877,12 @@ fn a_report_that_is_a_link_to_another_file_is_not_read() {
         true,
         &w.gate_log,
         1,
-        |_, _| spec(&w, &format!("ln -s '{}' '{}'", secret.display(), report.display())),
+        |_, _| {
+            spec(
+                &w,
+                &format!("ln -s '{}' '{}'", secret.display(), report.display()),
+            )
+        },
     )
     .unwrap();
 
@@ -794,10 +899,16 @@ fn the_after_session_step_runs_once_each_session_ends_before_the_gate_reruns() {
     let w = world("after-session");
     let seq = w.root.join("seq");
     let gate = Gate::Steps {
-        steps: vec![sh(&format!("echo gate >> '{}' && test -f fixed2", seq.display()))],
+        steps: vec![sh(&format!(
+            "echo gate >> '{}' && test -f fixed2",
+            seq.display()
+        ))],
         notes: Vec::new(),
     };
-    let fixes = format!("echo session >> '{}'; if test -f fixed; then touch fixed2; else touch fixed; fi", seq.display());
+    let fixes = format!(
+        "echo session >> '{}'; if test -f fixed; then touch fixed2; else touch fixed; fi",
+        seq.display()
+    );
 
     let outcome = run_gate_with_fixes_then(
         &w.store,
@@ -826,22 +937,57 @@ fn the_after_session_step_runs_once_each_session_ends_before_the_gate_reruns() {
 /// After a fix session reports the failure unrelated, the gate runs once more with no change, as
 /// the next attempt: a pass is recorded as a flake, a second failure as a failed re-run.
 #[test]
-fn a_re_run_after_an_unrelated_report_records_a_flake_when_it_passes_and_a_failed_re_run_when_not() {
-    for (tag, gate, passed, kind) in [("rerun-green", "true", true, "gate.flaky"), ("rerun-red", "false", false, "gate.rerun_failed")] {
+fn a_re_run_after_an_unrelated_report_records_a_flake_when_it_passes_and_a_failed_re_run_when_not()
+{
+    for (tag, gate, passed, kind) in [
+        ("rerun-green", "true", true, "gate.flaky"),
+        ("rerun-red", "false", false, "gate.rerun_failed"),
+    ] {
         let w = world(tag);
-        let gate = Gate::Steps { steps: vec![sh("true"), sh(gate)], notes: Vec::new() };
+        let gate = Gate::Steps {
+            steps: vec![sh("true"), sh(gate)],
+            notes: Vec::new(),
+        };
 
-        let outcome = rerun_gate(&w.store, "run-1", &gate, true, &w.gate_log, &[], 1, 1, "billing clock test is flaky").unwrap();
+        let outcome = rerun_gate(
+            &w.store,
+            "run-1",
+            &gate,
+            true,
+            &w.gate_log,
+            &[],
+            1,
+            1,
+            "billing clock test is flaky",
+        )
+        .unwrap();
 
         assert_eq!(outcome, passed, "{tag}");
         let events = w.store.events("run-1").unwrap();
         let noted: Vec<_> = events.iter().filter(|e| e.kind == kind).collect();
         assert_eq!(noted.len(), 1, "{tag}: {:?}", kinds(&w));
         assert_eq!(noted[0].stage.as_deref(), Some("verify"), "{tag}");
-        assert_eq!(noted[0].attempt, 2, "{tag}: the re-run is the attempt after the fix session's");
-        assert_eq!(noted[0].payload["summary"], "billing clock test is flaky", "{tag}");
-        assert_eq!(noted[0].payload["step"], 1, "{tag}: the step that failed first");
-        assert!(!events.iter().any(|e| e.kind == "run.failed"), "{tag}: the re-run alone does not fail the run");
-        assert!(events.iter().any(|e| e.kind == "stage.started" && e.attempt == 2), "{tag}: the gate ran again");
+        assert_eq!(
+            noted[0].attempt, 2,
+            "{tag}: the re-run is the attempt after the fix session's"
+        );
+        assert_eq!(
+            noted[0].payload["summary"], "billing clock test is flaky",
+            "{tag}"
+        );
+        assert_eq!(
+            noted[0].payload["step"], 1,
+            "{tag}: the step that failed first"
+        );
+        assert!(
+            !events.iter().any(|e| e.kind == "run.failed"),
+            "{tag}: the re-run alone does not fail the run"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == "stage.started" && e.attempt == 2),
+            "{tag}: the gate ran again"
+        );
     }
 }

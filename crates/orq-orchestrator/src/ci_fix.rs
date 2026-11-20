@@ -27,7 +27,11 @@ pub trait CiFixSteps {
     fn failure_log(&mut self, failing: &[String]) -> String;
     /// The fix session of attempt `attempt` (from 1), given the file holding the failure log; an
     /// error starts no session and stops the loop with it.
-    fn fix_session(&mut self, attempt: u32, failure_log: &Path) -> Result<FixSessionSpec, StoreError>;
+    fn fix_session(
+        &mut self,
+        attempt: u32,
+        failure_log: &Path,
+    ) -> Result<FixSessionSpec, StoreError>;
     /// The fix session just ended, before anything else runs: what it sees is the session's doing
     /// and nothing the gate or a later step did.
     fn fix_session_ended(&mut self) {}
@@ -220,7 +224,11 @@ fn retry_unrelated(
     steps: &mut impl CiFixSteps,
 ) -> Result<CiFixOutcome, StoreError> {
     let (rerun, started, refusal) = match steps.retry(head) {
-        Err(reason) => (format!("the re-run could not be started: {reason}"), false, Some(reason)),
+        Err(reason) => (
+            format!("the re-run could not be started: {reason}"),
+            false,
+            Some(reason),
+        ),
         Ok(()) => match steps.wait(head)? {
             CiOutcome::Passed => {
                 let payload = serde_json::json!({ "summary": summary, "failing": failing });
@@ -229,7 +237,12 @@ fn retry_unrelated(
             }
             CiOutcome::Skipped => return Ok(CiFixOutcome::Skipped),
             CiOutcome::TimedOut => return Ok(CiFixOutcome::TimedOut { fix_attempts }),
-            CiOutcome::Errored { reason } => return Ok(CiFixOutcome::Errored { fix_attempts, reason }),
+            CiOutcome::Errored { reason } => {
+                return Ok(CiFixOutcome::Errored {
+                    fix_attempts,
+                    reason,
+                })
+            }
             CiOutcome::Failed { .. } => ("the re-run failed too".to_string(), true, None),
         },
     };
@@ -239,7 +252,11 @@ fn retry_unrelated(
         payload["reason"] = reason.into();
     }
     record_ci_event(store, run_id, "ci.rerun_failed", fix_attempts, payload)?;
-    Ok(CiFixOutcome::Unrelated { fix_attempts, summary, rerun })
+    Ok(CiFixOutcome::Unrelated {
+        fix_attempts,
+        summary,
+        rerun,
+    })
 }
 
 /// An event under the CI stage, where the Timeline shows what became of CI.

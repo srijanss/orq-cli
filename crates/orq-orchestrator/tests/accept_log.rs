@@ -9,8 +9,17 @@ use orq_orchestrator::{accept_run_by, run_steps, Event, RunRecord, RunStore};
 use orq_test_support::GitFixture;
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
@@ -21,8 +30,20 @@ fn failed_run(tag: &str) -> (GitFixture, PathBuf, RunStore) {
     let worktree = repo.add_linked_worktree("orq-run-1");
     std::fs::write(worktree.join("work.txt"), "work").unwrap();
     git(&worktree, &["add", "."]);
-    git(&worktree, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work"]);
-    let root = orq_test_support::process_temp_dir().join(format!("orq-accept-log-{}-{tag}", std::process::id()));
+    git(
+        &worktree,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "work",
+        ],
+    );
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-accept-log-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let store = RunStore::new(&root);
     let record = RunRecord {
@@ -78,7 +99,10 @@ fn nextest_script() -> String {
 }
 
 fn failing_tests(worktree: &Path) -> Result<(), String> {
-    run_steps(worktree, &[vec!["sh".into(), "-c".into(), nextest_script()]])
+    run_steps(
+        worktree,
+        &[vec!["sh".into(), "-c".into(), nextest_script()]],
+    )
 }
 
 fn last_event(store: &RunStore) -> Event {
@@ -86,24 +110,42 @@ fn last_event(store: &RunStore) -> Event {
 }
 
 #[test]
-fn a_failing_accept_writes_its_whole_output_to_accept_1_log_and_the_event_names_it_and_its_failed_tests() {
+fn a_failing_accept_writes_its_whole_output_to_accept_1_log_and_the_event_names_it_and_its_failed_tests(
+) {
     let (_repo, root, store) = failed_run("first");
 
     accept_run_by(&store, "run-1", "web", &failing_tests).unwrap_err();
 
     let log = root.join("logs").join("run-1").join("accept-1.log");
     let text = std::fs::read_to_string(&log).expect("accept-1.log");
-    assert!(text.contains("first line of the run"), "the whole output, its start included");
-    assert!(text.contains("panicked at tests/ui_status.rs:12:5"), "{text}");
+    assert!(
+        text.contains("first line of the run"),
+        "the whole output, its start included"
+    );
+    assert!(
+        text.contains("panicked at tests/ui_status.rs:12:5"),
+        "{text}"
+    );
     assert!(text.contains("(401/401) orq-core::suite last"), "{text}");
     let failed = last_event(&store);
     assert_eq!(failed.kind, "run.accept_failed");
-    assert_eq!(failed.payload["log"].as_str().map(Path::new), Some(log.as_path()));
+    assert_eq!(
+        failed.payload["log"].as_str().map(Path::new),
+        Some(log.as_path())
+    );
     assert_eq!(failed.payload["failed_tests"][0]["name"], FAILING);
-    let output = failed.payload["failed_tests"][0]["output"].as_str().unwrap();
-    assert!(output.contains("left: 1") && output.contains("right: 2"), "{output}");
+    let output = failed.payload["failed_tests"][0]["output"]
+        .as_str()
+        .unwrap();
+    assert!(
+        output.contains("left: 1") && output.contains("right: 2"),
+        "{output}"
+    );
     assert_eq!(failed.payload["failed_tests_more"], 0);
-    assert_eq!(failed.payload["reason"], format!("1 test failed: {FAILING}"));
+    assert_eq!(
+        failed.payload["reason"],
+        format!("1 test failed: {FAILING}")
+    );
 }
 
 #[test]
@@ -111,13 +153,22 @@ fn a_second_accept_writes_accept_2_log_and_a_passing_one_names_its_log_too() {
     let (_repo, root, store) = failed_run("second");
     accept_run_by(&store, "run-1", "web", &failing_tests).unwrap_err();
 
-    accept_run_by(&store, "run-1", "web", &|dir: &Path| run_steps(dir, &[vec!["sh".into(), "-c".into(), "echo all good".into()]])).unwrap();
+    accept_run_by(&store, "run-1", "web", &|dir: &Path| {
+        run_steps(
+            dir,
+            &[vec!["sh".into(), "-c".into(), "echo all good".into()]],
+        )
+    })
+    .unwrap();
 
     let log = root.join("logs").join("run-1").join("accept-2.log");
     assert!(std::fs::read_to_string(&log).unwrap().contains("all good"));
     let completed = last_event(&store);
     assert_eq!(completed.kind, "run.completed");
-    assert_eq!(completed.payload["log"].as_str().map(Path::new), Some(log.as_path()));
+    assert_eq!(
+        completed.payload["log"].as_str().map(Path::new),
+        Some(log.as_path())
+    );
 }
 
 #[test]
@@ -126,9 +177,15 @@ fn the_reason_is_never_a_pass_line_and_without_test_names_says_how_the_step_ende
     // The step's own command must not carry the word, only what it prints.
     let script = "printf '        P%sS [   0.004s] (1/2) orq-core::suite one\\n' AS; echo 'error: could not compile `orq-core`'; exit 101";
 
-    accept_run_by(&store, "run-1", "web", &|dir: &Path| run_steps(dir, &[vec!["sh".into(), "-c".into(), script.into()]])).unwrap_err();
+    accept_run_by(&store, "run-1", "web", &|dir: &Path| {
+        run_steps(dir, &[vec!["sh".into(), "-c".into(), script.into()]])
+    })
+    .unwrap_err();
 
-    let reason = last_event(&store).payload["reason"].as_str().unwrap().to_string();
+    let reason = last_event(&store).payload["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(!reason.contains("PASS"), "{reason}");
     assert!(reason.ends_with("exited with status 101"), "{reason}");
 }
@@ -150,16 +207,23 @@ fn secrets_in_the_command_and_its_output_are_kept_out_of_the_accept_log_and_its_
          echo 'login failed'; exit 100"
     );
 
-    accept_run_by(&store, "run-1", "web", &|dir: &Path| run_steps(dir, &[vec!["sh".into(), "-c".into(), script.clone()]])).unwrap_err();
+    accept_run_by(&store, "run-1", "web", &|dir: &Path| {
+        run_steps(dir, &[vec!["sh".into(), "-c".into(), script.clone()]])
+    })
+    .unwrap_err();
 
-    let text = std::fs::read_to_string(root.join("logs").join("run-1").join("accept-1.log")).unwrap();
+    let text =
+        std::fs::read_to_string(root.join("logs").join("run-1").join("accept-1.log")).unwrap();
     assert!(text.contains("login failed"), "{text}");
     assert!(!text.contains(TOKEN) && !text.contains(KEY_BODY), "{text}");
     let failed = last_event(&store);
     let payload = failed.payload.to_string();
     assert_eq!(failed.payload["failed_tests"][0]["name"], "suite auth");
     assert!(payload.contains("login failed"), "{payload}");
-    assert!(!payload.contains(TOKEN) && !payload.contains(KEY_BODY), "{payload}");
+    assert!(
+        !payload.contains(TOKEN) && !payload.contains(KEY_BODY),
+        "{payload}"
+    );
 }
 
 #[test]
@@ -169,9 +233,17 @@ fn a_test_that_failed_a_try_but_passed_on_retry_is_not_listed() {
                   echo '   TRY 2 PASS [   0.010s] (1/2) suite flaky'; \
                   echo '        FAIL [   0.010s] (2/2) suite broken'; exit 100";
 
-    accept_run_by(&store, "run-1", "web", &|dir: &Path| run_steps(dir, &[vec!["sh".into(), "-c".into(), script.into()]])).unwrap_err();
+    accept_run_by(&store, "run-1", "web", &|dir: &Path| {
+        run_steps(dir, &[vec!["sh".into(), "-c".into(), script.into()]])
+    })
+    .unwrap_err();
 
     let failed = last_event(&store);
-    let names: Vec<&str> = failed.payload["failed_tests"].as_array().unwrap().iter().map(|test| test["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = failed.payload["failed_tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|test| test["name"].as_str().unwrap())
+        .collect();
     assert_eq!(names, ["suite broken"]);
 }

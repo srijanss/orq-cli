@@ -210,22 +210,37 @@ fn an_adopted_review_lists_its_link_and_a_run_without_profiles_lists_no_models()
 #[test]
 fn a_run_whose_group_note_does_not_start_with_its_own_feature_is_a_run_of_that_feature_alone() {
     let s = store("bad-group");
-    for (run_id, members) in [("run-empty", vec![]), ("run-other", vec!["COM-09".to_string()])] {
+    for (run_id, members) in [
+        ("run-empty", vec![]),
+        ("run-other", vec!["COM-09".to_string()]),
+    ] {
         let r = record(run_id, "p1", "COM-01");
         s.create(&r).unwrap();
         orq_orchestrator::record_group(&s, &r, &members).unwrap();
     }
     let good = record("run-good", "p1", "COM-01");
     s.create(&good).unwrap();
-    orq_orchestrator::record_group(&s, &good, &["COM-01".to_string(), "COM-02".to_string()]).unwrap();
+    orq_orchestrator::record_group(&s, &good, &["COM-01".to_string(), "COM-02".to_string()])
+        .unwrap();
 
     let runs = list_runs(&s, "p1").unwrap();
 
-    let members: Vec<(&str, Vec<&str>)> =
-        runs.iter().map(|run| (run.run_id.as_str(), run.members.iter().map(String::as_str).collect())).collect();
+    let members: Vec<(&str, Vec<&str>)> = runs
+        .iter()
+        .map(|run| {
+            (
+                run.run_id.as_str(),
+                run.members.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
     assert_eq!(
         members,
-        [("run-empty", vec!["COM-01"]), ("run-good", vec!["COM-01", "COM-02"]), ("run-other", vec!["COM-01"])]
+        [
+            ("run-empty", vec!["COM-01"]),
+            ("run-good", vec!["COM-01", "COM-02"]),
+            ("run-other", vec!["COM-01"])
+        ]
     );
 }
 
@@ -237,12 +252,29 @@ fn an_unattended_run_is_listed_as_unattended() {
     let by_hand = record("run-b", "repo-1", "COM-02");
     s.create(&queued).unwrap();
     s.create(&by_hand).unwrap();
-    s.append_event(&event(&queued, orq_orchestrator::UNATTENDED_EVENT, "implement_and_review", serde_json::json!({}))).unwrap();
-    s.append_event(&event(&by_hand, "stage.started", "implement_and_review", serde_json::json!({}))).unwrap();
+    s.append_event(&event(
+        &queued,
+        orq_orchestrator::UNATTENDED_EVENT,
+        "implement_and_review",
+        serde_json::json!({}),
+    ))
+    .unwrap();
+    s.append_event(&event(
+        &by_hand,
+        "stage.started",
+        "implement_and_review",
+        serde_json::json!({}),
+    ))
+    .unwrap();
 
     let runs = list_runs(&s, "repo-1").unwrap();
 
-    let unattended: Vec<(&str, bool)> = runs.iter().map(|r| (r.run_id.as_str(), r.unattended)).collect();
+    let unattended: Vec<(&str, bool)> = runs
+        .iter()
+        .map(|r| (r.run_id.as_str(), r.unattended))
+        .collect();
     assert_eq!(unattended, vec![("run-a", true), ("run-b", false)]);
-    assert!(orq_orchestrator::was_unattended(&s.events("run-a").unwrap()));
+    assert!(orq_orchestrator::was_unattended(
+        &s.events("run-a").unwrap()
+    ));
 }

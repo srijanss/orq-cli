@@ -44,7 +44,14 @@ fn detected(dir: &Path, nextest: bool) -> Result<Gate, GateError> {
     )
 }
 
-const NEXTEST: &[&str] = &["cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass"];
+const NEXTEST: &[&str] = &[
+    "cargo",
+    "nextest",
+    "run",
+    "--workspace",
+    "--no-fail-fast",
+    "--no-tests=pass",
+];
 
 const PACKAGE: &str =
     r#"{"scripts": {"typecheck": "tsc --noEmit", "test": "vitest run", "lint": "eslint ."}}"#;
@@ -104,9 +111,14 @@ fn a_rust_workspace_runs_nextest_when_it_is_there() {
 fn a_rust_workspace_with_no_tests_passes_under_nextest_as_it_does_without_it() {
     let dir = worktree("rust-no-tests");
     touch(&dir, "Cargo.toml", "[workspace]\n");
-    let Ok(Gate::Steps { steps, .. }) = detected(&dir, true) else { panic!("a Rust workspace has steps") };
+    let Ok(Gate::Steps { steps, .. }) = detected(&dir, true) else {
+        panic!("a Rust workspace has steps")
+    };
     // nextest exits non-zero when it finds no test where the plain runner passes; the gate must pass too.
-    assert!(steps[0].iter().any(|word| word == "--no-tests=pass"), "{steps:?}");
+    assert!(
+        steps[0].iter().any(|word| word == "--no-tests=pass"),
+        "{steps:?}"
+    );
 }
 
 #[test]
@@ -116,31 +128,62 @@ fn left_unset_nextest_is_looked_for_by_asking_cargo_in_the_worktree() {
     // Whatever this host has, the probe settles on one of the two whole gates, never a mix; its success,
     // failure and time limit are covered by the bounded runner's own tests in gate.rs.
     let probed = choose_gate(&dir, None);
-    assert!(probed == detected(&dir, true) || probed == detected(&dir, false), "{probed:?}");
+    assert!(
+        probed == detected(&dir, true) || probed == detected(&dir, false),
+        "{probed:?}"
+    );
 }
 
 const DOC: &[&str] = &["cargo", "test", "--workspace", "--doc"];
 
 fn package(dir: &Path, name: &str, extra: &str) {
-    touch(dir, &format!("crates/{name}/Cargo.toml"), &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{extra}"));
+    touch(
+        dir,
+        &format!("crates/{name}/Cargo.toml"),
+        &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n{extra}"),
+    );
 }
 
 #[test]
 fn a_library_cargo_would_doc_test_adds_the_doc_test_step_since_nextest_runs_none() {
     let dir = worktree("rust-doc");
-    touch(&dir, "Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n");
+    touch(
+        &dir,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n",
+    );
     // A binary is never doc-tested, nor a library that turns doc tests off; target/ is not a member.
     package(&dir, "tool", "");
-    touch(&dir, "crates/tool/src/main.rs", "/// ```\n/// assert!(true);\n/// ```\nfn main() {}\n");
+    touch(
+        &dir,
+        "crates/tool/src/main.rs",
+        "/// ```\n/// assert!(true);\n/// ```\nfn main() {}\n",
+    );
     package(&dir, "quiet", "[lib]\ndoctest = false\n");
-    touch(&dir, "crates/quiet/src/lib.rs", "/// ```\n/// assert!(true);\n/// ```\npub fn f() {}\n");
-    touch(&dir, "target/package/x/Cargo.toml", "[package]\nname = \"x\"\nversion = \"0.1.0\"\n");
+    touch(
+        &dir,
+        "crates/quiet/src/lib.rs",
+        "/// ```\n/// assert!(true);\n/// ```\npub fn f() {}\n",
+    );
+    touch(
+        &dir,
+        "target/package/x/Cargo.toml",
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+    );
     touch(&dir, "target/package/x/src/lib.rs", "pub fn f() {}\n");
-    assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST])), "nothing Cargo would doc-test");
+    assert_eq!(
+        detected(&dir, true),
+        Ok(run(&[NEXTEST])),
+        "nothing Cargo would doc-test"
+    );
 
     // Cargo doc-tests a library wherever its [lib] path points, whatever its doc comments look like.
     package(&dir, "api", "[lib]\npath = \"src/api.rs\"\n");
-    touch(&dir, "crates/api/src/api.rs", "/** Block docs.\n\n    let indented = 1;\n*/\npub fn f() {}\n");
+    touch(
+        &dir,
+        "crates/api/src/api.rs",
+        "/** Block docs.\n\n    let indented = 1;\n*/\npub fn f() {}\n",
+    );
     assert_eq!(detected(&dir, true), Ok(run(&[NEXTEST, DOC])));
     assert_eq!(
         detected(&dir, false),
@@ -383,11 +426,7 @@ fn a_django_project_checks_migrations_and_then_runs_pytest() {
 
     assert_eq!(
         detected(&dir, true),
-        Ok(run(&[
-            MIGRATIONS,
-            &["uv", "run", "pytest"],
-            NEXTEST
-        ]))
+        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"], NEXTEST]))
     );
 }
 
@@ -891,7 +930,11 @@ fn django_configured_in_src(tag: &str) -> PathBuf {
 #[test]
 fn pytest_settings_beside_manage_py_run_pytest_from_src_after_the_migrations_check() {
     let dir = django_configured_in_src("django-src-ini");
-    touch(&dir, "src/pytest.ini", "[pytest]\nDJANGO_SETTINGS_MODULE = config.settings\n");
+    touch(
+        &dir,
+        "src/pytest.ini",
+        "[pytest]\nDJANGO_SETTINGS_MODULE = config.settings\n",
+    );
 
     assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, PYTEST_IN_SRC])));
 }
@@ -899,13 +942,25 @@ fn pytest_settings_beside_manage_py_run_pytest_from_src_after_the_migrations_che
 #[test]
 fn setup_cfg_tox_ini_or_a_conftest_beside_manage_py_are_pytest_settings_too() {
     for (tag, name, text) in [
-        ("setup-cfg", "src/setup.cfg", "[metadata]\nname = shop\n\n[tool:pytest]\naddopts = --reuse-db\n"),
-        ("tox-ini", "src/tox.ini", "[tox]\nenvlist = py312\n\n[pytest]\naddopts = --reuse-db\n"),
+        (
+            "setup-cfg",
+            "src/setup.cfg",
+            "[metadata]\nname = shop\n\n[tool:pytest]\naddopts = --reuse-db\n",
+        ),
+        (
+            "tox-ini",
+            "src/tox.ini",
+            "[tox]\nenvlist = py312\n\n[pytest]\naddopts = --reuse-db\n",
+        ),
         ("conftest", "src/conftest.py", ""),
     ] {
         let dir = django_configured_in_src(&format!("django-src-{tag}"));
         touch(&dir, name, text);
-        assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, PYTEST_IN_SRC])), "{tag}");
+        assert_eq!(
+            detected(&dir, true),
+            Ok(run(&[MIGRATIONS, PYTEST_IN_SRC])),
+            "{tag}"
+        );
     }
 }
 
@@ -913,8 +968,16 @@ fn setup_cfg_tox_ini_or_a_conftest_beside_manage_py_are_pytest_settings_too() {
 #[test]
 fn setup_cfg_or_tox_ini_without_a_pytest_section_are_not_pytest_settings() {
     for (tag, name, text) in [
-        ("setup-cfg-other", "src/setup.cfg", "[flake8]\nmax-line-length = 100\n# [tool:pytest] comes later\n"),
-        ("tox-ini-other", "src/tox.ini", "[tox]\nenvlist = py312\n[testenv:pytest]\n"),
+        (
+            "setup-cfg-other",
+            "src/setup.cfg",
+            "[flake8]\nmax-line-length = 100\n# [tool:pytest] comes later\n",
+        ),
+        (
+            "tox-ini-other",
+            "src/tox.ini",
+            "[tox]\nenvlist = py312\n[testenv:pytest]\n",
+        ),
     ] {
         let dir = django_configured_in_src(&format!("django-src-{tag}"));
         touch(&dir, name, text);
@@ -928,11 +991,25 @@ fn run_from_src_pytest_is_handed_the_changed_tested_apps_relative_to_src() {
     let dir = django_configured_in_src("django-src-scoped");
     touch(&dir, "src/pytest.ini", "[pytest]\n");
     touch(&dir, "src/billing/tests.py", "");
-    let changed = ["src/shop/views.py".to_string(), "src/billing/models.py".to_string()];
+    let changed = [
+        "src/shop/views.py".to_string(),
+        "src/billing/models.py".to_string(),
+    ];
 
     assert_eq!(
         choose_gate_scoped(&dir, None, Some(&changed)),
-        Ok(run(&[MIGRATIONS, &["uv", "run", "--directory", "src", "pytest", "billing/tests.py", "shop"]]))
+        Ok(run(&[
+            MIGRATIONS,
+            &[
+                "uv",
+                "run",
+                "--directory",
+                "src",
+                "pytest",
+                "billing/tests.py",
+                "shop"
+            ]
+        ]))
     );
 }
 
@@ -942,10 +1019,14 @@ fn root_pytest_settings_win_over_those_beside_manage_py() {
     let dir = django("django-root-and-src");
     touch(&dir, "src/pytest.ini", "[pytest]\n");
 
-    assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])));
+    assert_eq!(
+        detected(&dir, true),
+        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]]))
+    );
 }
 
-const PYTEST_UNSET: &str = "pytest is a dependency but no pytest settings were found; the tests were not run";
+const PYTEST_UNSET: &str =
+    "pytest is a dependency but no pytest settings were found; the tests were not run";
 
 /// pytest among the dependencies with no settings anywhere the gate looks is said, not skipped silently.
 #[test]
@@ -970,8 +1051,14 @@ fn pytest_as_a_dependency_without_settings_is_a_note_not_a_silent_skip() {
 #[test]
 fn without_pytest_among_the_dependencies_there_is_no_note() {
     for (tag, pyproject) in [
-        ("none", "[project]\nname = \"shop\"\ndependencies = [\"django>=5\"]\n"),
-        ("plugin-only", "[project]\nname = \"shop\"\ndependencies = [\"pytest-django\"]\n"),
+        (
+            "none",
+            "[project]\nname = \"shop\"\ndependencies = [\"django>=5\"]\n",
+        ),
+        (
+            "plugin-only",
+            "[project]\nname = \"shop\"\ndependencies = [\"pytest-django\"]\n",
+        ),
     ] {
         let dir = django_configured_in_src(&format!("django-no-note-{tag}"));
         touch(&dir, "pyproject.toml", pyproject);
@@ -990,7 +1077,17 @@ fn an_app_named_like_an_option_is_still_a_path_when_pytest_runs_from_src() {
 
     assert_eq!(
         choose_gate_scoped(&dir, None, Some(&changed)),
-        Ok(run(&[MIGRATIONS, &["uv", "run", "--directory", "src", "pytest", "./--ignore=shop"]]))
+        Ok(run(&[
+            MIGRATIONS,
+            &[
+                "uv",
+                "run",
+                "--directory",
+                "src",
+                "pytest",
+                "./--ignore=shop"
+            ]
+        ]))
     );
 }
 
@@ -1015,7 +1112,11 @@ fn root_setup_cfg_or_tox_ini_settings_win_over_those_beside_manage_py() {
         let dir = django_configured_in_src(&format!("django-root-{tag}-and-src"));
         touch(&dir, "src/pytest.ini", "[pytest]\n");
         touch(&dir, name, text);
-        assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])), "{tag}");
+        assert_eq!(
+            detected(&dir, true),
+            Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])),
+            "{tag}"
+        );
     }
 }
 
@@ -1030,5 +1131,8 @@ fn a_root_conftest_py_does_not_hide_settings_beside_manage_py() {
 
     let dir = django_configured_in_src("django-root-conftest-only");
     touch(&dir, "conftest.py", "");
-    assert_eq!(detected(&dir, true), Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]])));
+    assert_eq!(
+        detected(&dir, true),
+        Ok(run(&[MIGRATIONS, &["uv", "run", "pytest"]]))
+    );
 }

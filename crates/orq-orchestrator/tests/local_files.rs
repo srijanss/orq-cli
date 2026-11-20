@@ -88,7 +88,10 @@ fn the_tdd_server_is_pointed_at_the_main_checkouts_files_even_when_the_worktree_
     let features = repo.root().join(".tdd-features.json").display().to_string();
     assert_eq!(
         pairs(&found.env),
-        [("TDD_CONFIG_PATH", config.as_str()), ("TDD_FEATURES_PATH", features.as_str())]
+        [
+            ("TDD_CONFIG_PATH", config.as_str()),
+            ("TDD_FEATURES_PATH", features.as_str())
+        ]
     );
     assert_eq!(
         fs::read_to_string(worktree.join(".tdd-features.json")).unwrap(),

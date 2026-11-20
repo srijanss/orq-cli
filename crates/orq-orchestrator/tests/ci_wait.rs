@@ -223,7 +223,10 @@ fn a_repository_with_no_ci_config_and_no_checks_is_skipped_after_the_grace_perio
     let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
 
     assert_eq!(outcome, CiOutcome::Skipped);
-    assert!(started.elapsed() < Duration::from_secs(10), "it waited out the CI timeout");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "it waited out the CI timeout"
+    );
     let events = w.store.events("run-1").unwrap();
     let last = events.last().unwrap();
     assert_eq!(last.kind, "stage.skipped");
@@ -260,14 +263,21 @@ fn the_skip_never_happens_before_the_grace_period_has_passed() {
 
     let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &cfg).unwrap();
 
-    assert_eq!(outcome, CiOutcome::TimedOut, "skipped inside the grace period");
+    assert_eq!(
+        outcome,
+        CiOutcome::TimedOut,
+        "skipped inside the grace period"
+    );
 }
 
 #[test]
 fn checks_that_appear_during_the_grace_period_are_waited_on_not_skipped() {
     let w = world("grace-appear", "github", "https://github.example/o/r.git");
     let green = "{\"total_count\":1,\"check_runs\":[{\"name\":\"test\",\"status\":\"completed\",\"conclusion\":\"success\"}]}\n";
-    let provider = github_provider().reply_once(&["api"], &gh_checks("", 0)).reply(&["api"], green).build();
+    let provider = github_provider()
+        .reply_once(&["api"], &gh_checks("", 0))
+        .reply(&["api"], green)
+        .build();
     let cfg = CiWaitConfig {
         timeout: Duration::from_secs(5),
         no_ci_grace: Duration::from_secs(30),
@@ -281,26 +291,44 @@ fn checks_that_appear_during_the_grace_period_are_waited_on_not_skipped() {
 
 #[test]
 fn a_gitlab_repository_without_a_pipeline_file_is_skipped_and_with_one_keeps_waiting() {
-    let w = world("glab-absent", "gitlab", "https://gitlab.example/group/r.git");
+    let w = world(
+        "glab-absent",
+        "gitlab",
+        "https://gitlab.example/group/r.git",
+    );
     let provider = FakeProvider::builder().reply(&["api"], "[]\n").build();
     let cfg = CiWaitConfig {
         timeout: Duration::from_millis(400),
         no_ci_grace: Duration::from_millis(50),
         ..config()
     };
-    assert_eq!(wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &cfg).unwrap(), CiOutcome::Skipped);
+    assert_eq!(
+        wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &cfg).unwrap(),
+        CiOutcome::Skipped
+    );
 
-    let w = world("glab-present", "gitlab", "https://gitlab.example/group/r.git");
+    let w = world(
+        "glab-present",
+        "gitlab",
+        "https://gitlab.example/group/r.git",
+    );
     let worktree = w.store.load("run-1").unwrap().worktree;
     fs::write(worktree.join(".gitlab-ci.yml"), "test:\n  script: [true]\n").unwrap();
     let provider = FakeProvider::builder().reply(&["api"], "[]\n").build();
-    assert_eq!(wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &cfg).unwrap(), CiOutcome::TimedOut);
+    assert_eq!(
+        wait_for_ci(&w.store, "run-1", &provider.glab(), SHA, &cfg).unwrap(),
+        CiOutcome::TimedOut
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn a_gitlab_config_that_cannot_be_inspected_is_not_taken_for_absent() {
-    let w = world("glab-unreadable", "gitlab", "https://gitlab.example/group/r.git");
+    let w = world(
+        "glab-unreadable",
+        "gitlab",
+        "https://gitlab.example/group/r.git",
+    );
     let worktree = w.store.load("run-1").unwrap().worktree;
     // A symlink loop: the path exists but cannot be inspected (ELOOP, not NotFound).
     std::os::unix::fs::symlink(".gitlab-ci.yml", worktree.join(".gitlab-ci.yml")).unwrap();
@@ -796,22 +824,42 @@ fn a_repeated_git_suffix_is_a_different_repository_from_the_pinned_one() {
 #[test]
 fn each_look_at_unfinished_checks_leaves_a_line_saying_what_is_awaited() {
     let w = world("logged", "github", "https://github.example/o/r.git");
-    let provider = github_provider().reply(&["api"], &gh_checks(RUNNING, 1)).build();
-    let short = CiWaitConfig { timeout: Duration::from_millis(400), ..config() };
-    let log = orq_test_support::process_temp_dir().join(format!("orq-ci-log-{}", std::process::id()));
+    let provider = github_provider()
+        .reply(&["api"], &gh_checks(RUNNING, 1))
+        .build();
+    let short = CiWaitConfig {
+        timeout: Duration::from_millis(400),
+        ..config()
+    };
+    let log =
+        orq_test_support::process_temp_dir().join(format!("orq-ci-log-{}", std::process::id()));
     let _ = fs::remove_file(&log);
 
-    orq_orchestrator::wait_for_ci_logged(&w.store, "run-1", &provider.gh(), SHA, &short, Some(&log)).unwrap();
+    orq_orchestrator::wait_for_ci_logged(
+        &w.store,
+        "run-1",
+        &provider.gh(),
+        SHA,
+        &short,
+        Some(&log),
+    )
+    .unwrap();
 
     let text = fs::read_to_string(&log).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines.len() > 1, "{text}");
-    assert!(lines.iter().all(|l| l.contains("CI") && l.contains("waiting")), "{text}");
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.contains("CI") && l.contains("waiting")),
+        "{text}"
+    );
     assert!(lines.last().unwrap().contains("timed out"), "{text}");
 }
 
 fn log_path(tag: &str) -> std::path::PathBuf {
-    let log = orq_test_support::process_temp_dir().join(format!("orq-ci-log-{tag}-{}", std::process::id()));
+    let log = orq_test_support::process_temp_dir()
+        .join(format!("orq-ci-log-{tag}-{}", std::process::id()));
     let _ = fs::remove_file(&log);
     log
 }
@@ -819,11 +867,24 @@ fn log_path(tag: &str) -> std::path::PathBuf {
 #[test]
 fn a_log_that_cannot_be_written_never_changes_the_outcome() {
     let w = world("unwritable", "github", "https://github.example/o/r.git");
-    let provider = github_provider().reply(&["api"], &gh_checks(RUNNING, 1)).build();
-    let short = CiWaitConfig { timeout: Duration::from_millis(300), ..config() };
+    let provider = github_provider()
+        .reply(&["api"], &gh_checks(RUNNING, 1))
+        .build();
+    let short = CiWaitConfig {
+        timeout: Duration::from_millis(300),
+        ..config()
+    };
     let directory = std::env::temp_dir();
 
-    let outcome = orq_orchestrator::wait_for_ci_logged(&w.store, "run-1", &provider.gh(), SHA, &short, Some(&directory)).unwrap();
+    let outcome = orq_orchestrator::wait_for_ci_logged(
+        &w.store,
+        "run-1",
+        &provider.gh(),
+        SHA,
+        &short,
+        Some(&directory),
+    )
+    .unwrap();
 
     assert_eq!(outcome, CiOutcome::TimedOut);
 }
@@ -832,17 +893,38 @@ fn a_log_that_cannot_be_written_never_changes_the_outcome() {
 fn a_commit_with_no_checks_yet_and_a_provider_that_errs_are_each_said_in_the_log() {
     let none = world("log-none", "github", "https://github.example/o/r.git");
     let provider = github_provider().reply(&["api"], &gh_checks("", 0)).build();
-    let short = CiWaitConfig { timeout: Duration::from_millis(300), ..config() };
+    let short = CiWaitConfig {
+        timeout: Duration::from_millis(300),
+        ..config()
+    };
     let log = log_path("none");
-    orq_orchestrator::wait_for_ci_logged(&none.store, "run-1", &provider.gh(), SHA, &short, Some(&log)).unwrap();
+    orq_orchestrator::wait_for_ci_logged(
+        &none.store,
+        "run-1",
+        &provider.gh(),
+        SHA,
+        &short,
+        Some(&log),
+    )
+    .unwrap();
     assert!(fs::read_to_string(&log).unwrap().contains("CI waiting"));
 
     let err = world("log-err", "github", "https://github.example/o/r.git");
     let provider = github_provider().fail(&["api"], 1, "HTTP 502\n").build();
     let log = log_path("err");
-    let outcome = orq_orchestrator::wait_for_ci_logged(&err.store, "run-1", &provider.gh(), SHA, &config(), Some(&log)).unwrap();
+    let outcome = orq_orchestrator::wait_for_ci_logged(
+        &err.store,
+        "run-1",
+        &provider.gh(),
+        SHA,
+        &config(),
+        Some(&log),
+    )
+    .unwrap();
     assert!(matches!(outcome, CiOutcome::Errored { .. }));
-    assert!(fs::read_to_string(&log).unwrap().contains("did not answer usably"));
+    assert!(fs::read_to_string(&log)
+        .unwrap()
+        .contains("did not answer usably"));
 }
 
 const FAILED_RUNS: &str = "[{\"databaseId\":42,\"conclusion\":\"failure\"}]\n";
@@ -850,7 +932,9 @@ const FAILED_RUNS: &str = "[{\"databaseId\":42,\"conclusion\":\"failure\"}]\n";
 /// A GitHub fake whose failed workflow run 42 can be re-run, answering the check-run listing with `checks`
 /// in turn (one-shot) and `then` from there on.
 fn retryable_github(checks: &[String], then: &str) -> FakeProvider {
-    let mut builder = github_provider().reply(&["run", "list"], FAILED_RUNS).reply(&["run", "rerun"], "");
+    let mut builder = github_provider()
+        .reply(&["run", "list"], FAILED_RUNS)
+        .reply(&["run", "rerun"], "");
     for answer in checks {
         builder = builder.reply_once(&["api"], answer);
     }
@@ -867,10 +951,20 @@ fn a_retry_waits_until_the_provider_no_longer_shows_the_old_failure_before_ci_is
     retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
     let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
 
-    assert_eq!(outcome, CiOutcome::Passed, "the old failure is not taken for the re-run's");
+    assert_eq!(
+        outcome,
+        CiOutcome::Passed,
+        "the old failure is not taken for the re-run's"
+    );
     let calls: Vec<Vec<String>> = provider.calls().into_iter().map(|c| c.args).collect();
-    let rerun = calls.iter().position(|a| a[..2] == ["run", "rerun"]).unwrap();
-    assert!(calls[..rerun].iter().all(|a| a[0] != "api"), "CI is read only after the retry starts: {calls:?}");
+    let rerun = calls
+        .iter()
+        .position(|a| a[..2] == ["run", "rerun"])
+        .unwrap();
+    assert!(
+        calls[..rerun].iter().all(|a| a[0] != "api"),
+        "CI is read only after the retry starts: {calls:?}"
+    );
 }
 
 #[test]
@@ -881,8 +975,15 @@ fn a_retry_whose_restart_never_shows_waits_no_longer_than_the_ci_timeout() {
 
     let unseen = retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap_err();
 
-    assert!(started.elapsed() < config().timeout + Duration::from_secs(2), "{:?}", started.elapsed());
-    assert!(unseen.contains("still showed only the failure"), "a restart never seen is not taken for one: {unseen}");
+    assert!(
+        started.elapsed() < config().timeout + Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        unseen.contains("still showed only the failure"),
+        "a restart never seen is not taken for one: {unseen}"
+    );
 }
 
 const RUNNING_CHECK: &str = "{\"name\":\"build\",\"status\":\"in_progress\",\"conclusion\":null}";
@@ -904,18 +1005,34 @@ fn a_provider_error_while_a_retry_restarts_does_not_end_the_wait_for_the_restart
     retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
     let outcome = wait_for_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap();
 
-    assert_eq!(outcome, CiOutcome::Passed, "the stale failure after the error is not read as the re-run's");
+    assert_eq!(
+        outcome,
+        CiOutcome::Passed,
+        "the stale failure after the error is not read as the re-run's"
+    );
 }
 
 #[test]
 fn a_retry_whose_restart_cannot_be_read_at_all_is_an_error_within_the_ci_timeout() {
-    let w = world("retry-unreadable", "github", "https://github.example/o/r.git");
-    let provider = github_provider().reply(&["run", "list"], FAILED_RUNS).reply(&["run", "rerun"], "").fail(&["api"], 1, "HTTP 502 Bad Gateway").build();
+    let w = world(
+        "retry-unreadable",
+        "github",
+        "https://github.example/o/r.git",
+    );
+    let provider = github_provider()
+        .reply(&["run", "list"], FAILED_RUNS)
+        .reply(&["run", "rerun"], "")
+        .fail(&["api"], 1, "HTTP 502 Bad Gateway")
+        .build();
     let started = std::time::Instant::now();
 
     let unread = retry_ci(&w.store, "run-1", &provider.gh(), SHA, &config()).unwrap_err();
 
-    assert!(started.elapsed() < config().timeout + Duration::from_secs(2), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < config().timeout + Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
     assert!(unread.contains("could not be read"), "{unread}");
 }
 
@@ -923,8 +1040,14 @@ const GLAB_POST: [&str; 5] = ["api", "--hostname", "gitlab.example", "--method",
 
 /// Pipelines of the commit, as (id, status), plus one of another commit that failed later.
 fn gitlab_pipelines(rows: &[(u64, &str)]) -> String {
-    let mut listed: Vec<String> = rows.iter().map(|(id, status)| format!("{{\"id\":{id},\"sha\":\"{SHA}\",\"status\":\"{status}\"}}")).collect();
-    listed.push(format!("{{\"id\":99,\"sha\":\"{}\",\"status\":\"failed\"}}", "f".repeat(40)));
+    let mut listed: Vec<String> = rows
+        .iter()
+        .map(|(id, status)| format!("{{\"id\":{id},\"sha\":\"{SHA}\",\"status\":\"{status}\"}}"))
+        .collect();
+    listed.push(format!(
+        "{{\"id\":99,\"sha\":\"{}\",\"status\":\"failed\"}}",
+        "f".repeat(40)
+    ));
     format!("[{}]\n", listed.join(","))
 }
 
@@ -933,45 +1056,111 @@ fn gitlab_args(provider: &FakeProvider) -> Vec<Vec<String>> {
 }
 
 #[test]
-fn a_gitlab_retry_posts_a_retry_of_the_latest_failed_pipeline_of_a_nested_project_and_nothing_else() {
-    let w = world("glab-retry", "gitlab", "https://gitlab.example/group/sub/r.git");
+fn a_gitlab_retry_posts_a_retry_of_the_latest_failed_pipeline_of_a_nested_project_and_nothing_else()
+{
+    let w = world(
+        "glab-retry",
+        "gitlab",
+        "https://gitlab.example/group/sub/r.git",
+    );
     let provider = FakeProvider::builder()
         .reply_once(&["api"], &gitlab_pipelines(&[(7, "failed"), (9, "failed")]))
-        .reply(&["api"], &gitlab_pipelines(&[(7, "failed"), (9, "running")]))
+        .reply(
+            &["api"],
+            &gitlab_pipelines(&[(7, "failed"), (9, "running")]),
+        )
         .reply(&GLAB_POST, "{}\n")
         .build();
 
     retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap();
 
     let calls = gitlab_args(&provider);
-    assert_eq!(calls[0], ["api", "--hostname", "gitlab.example", &format!("projects/group%2Fsub%2Fr/pipelines?sha={SHA}&per_page=30")], "{calls:?}");
-    let posts: Vec<_> = calls.iter().filter(|a| a.len() > 4 && a[..5] == GLAB_POST).collect();
+    assert_eq!(
+        calls[0],
+        [
+            "api",
+            "--hostname",
+            "gitlab.example",
+            &format!("projects/group%2Fsub%2Fr/pipelines?sha={SHA}&per_page=30")
+        ],
+        "{calls:?}"
+    );
+    let posts: Vec<_> = calls
+        .iter()
+        .filter(|a| a.len() > 4 && a[..5] == GLAB_POST)
+        .collect();
     assert_eq!(posts.len(), 1, "one pipeline is retried: {calls:?}");
-    assert_eq!(posts[0][5], "projects/group%2Fsub%2Fr/pipelines/9/retry", "{calls:?}");
+    assert_eq!(
+        posts[0][5], "projects/group%2Fsub%2Fr/pipelines/9/retry",
+        "{calls:?}"
+    );
 }
 
 #[test]
 fn a_gitlab_commit_whose_latest_pipeline_did_not_fail_is_not_retried() {
-    let w = world("glab-retry-green", "gitlab", "https://gitlab.example/group/sub/r.git");
-    let provider = FakeProvider::builder().reply(&["api"], &gitlab_pipelines(&[(7, "failed"), (9, "success")])).reply(&GLAB_POST, "{}\n").build();
+    let w = world(
+        "glab-retry-green",
+        "gitlab",
+        "https://gitlab.example/group/sub/r.git",
+    );
+    let provider = FakeProvider::builder()
+        .reply(
+            &["api"],
+            &gitlab_pipelines(&[(7, "failed"), (9, "success")]),
+        )
+        .reply(&GLAB_POST, "{}\n")
+        .build();
 
     let refused = retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap_err();
 
-    assert!(refused.contains("pipeline 9") && refused.contains("success"), "{refused}");
-    assert!(gitlab_args(&provider).iter().all(|a| !a.contains(&"POST".to_string())), "an older failed pipeline is never retried");
+    assert!(
+        refused.contains("pipeline 9") && refused.contains("success"),
+        "{refused}"
+    );
+    assert!(
+        gitlab_args(&provider)
+            .iter()
+            .all(|a| !a.contains(&"POST".to_string())),
+        "an older failed pipeline is never retried"
+    );
 }
 
 #[test]
 fn a_gitlab_listing_or_retry_request_that_fails_is_an_error_never_a_started_retry() {
-    let w = world("glab-retry-list-fails", "gitlab", "https://gitlab.example/group/sub/r.git");
-    let provider = FakeProvider::builder().fail(&["api"], 1, "HTTP 500").build();
-    assert!(retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).is_err(), "a listing that fails");
-    assert!(gitlab_args(&provider).iter().all(|a| !a.contains(&"POST".to_string())), "nothing is posted without a listing");
+    let w = world(
+        "glab-retry-list-fails",
+        "gitlab",
+        "https://gitlab.example/group/sub/r.git",
+    );
+    let provider = FakeProvider::builder()
+        .fail(&["api"], 1, "HTTP 500")
+        .build();
+    assert!(
+        retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).is_err(),
+        "a listing that fails"
+    );
+    assert!(
+        gitlab_args(&provider)
+            .iter()
+            .all(|a| !a.contains(&"POST".to_string())),
+        "nothing is posted without a listing"
+    );
 
-    let w = world("glab-retry-post-fails", "gitlab", "https://gitlab.example/group/sub/r.git");
-    let provider = FakeProvider::builder().reply(&["api"], &gitlab_pipelines(&[(9, "failed")])).fail(&GLAB_POST, 1, "HTTP 403 Forbidden").build();
+    let w = world(
+        "glab-retry-post-fails",
+        "gitlab",
+        "https://gitlab.example/group/sub/r.git",
+    );
+    let provider = FakeProvider::builder()
+        .reply(&["api"], &gitlab_pipelines(&[(9, "failed")]))
+        .fail(&GLAB_POST, 1, "HTTP 403 Forbidden")
+        .build();
     let refused = retry_ci(&w.store, "run-1", &provider.glab(), SHA, &config()).unwrap_err();
     assert!(!refused.is_empty(), "a refused retry says why");
     let calls = gitlab_args(&provider);
-    assert_eq!(calls.last().unwrap()[..5], GLAB_POST, "CI is not read again after a refused retry: {calls:?}");
+    assert_eq!(
+        calls.last().unwrap()[..5],
+        GLAB_POST,
+        "CI is not read again after a refused retry: {calls:?}"
+    );
 }

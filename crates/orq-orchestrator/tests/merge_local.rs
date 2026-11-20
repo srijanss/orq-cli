@@ -6,17 +6,30 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{merge_into_base, merge_setting_aside, Event, MergeOutcome, RunRecord, RunStore, SetAsideOutcome};
+use orq_orchestrator::{
+    merge_into_base, merge_setting_aside, Event, MergeOutcome, RunRecord, RunStore, SetAsideOutcome,
+};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -34,7 +47,8 @@ fn world(tag: &str) -> World {
 
 /// [`world`], with `files` in the base commit as well.
 fn world_with(tag: &str, files: &[(&str, &str)]) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-merge-local-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-merge-local-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
@@ -47,7 +61,17 @@ fn world_with(tag: &str, files: &[(&str, &str)]) -> World {
     git(&repo, &["commit", "-q", "-m", "base"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
     let worktree = root.join("worktree");
-    git(&repo, &["worktree", "add", "-q", "-b", "fix--COM-02", worktree.to_str().unwrap()]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix--COM-02",
+            worktree.to_str().unwrap(),
+        ],
+    );
     fs::write(worktree.join("mine.txt"), "mine\n").unwrap();
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-q", "-m", "mine"]);
@@ -69,7 +93,12 @@ fn world_with(tag: &str, files: &[(&str, &str)]) -> World {
             profiles: BTreeMap::new(),
         })
         .unwrap();
-    World { store, repo, worktree, base }
+    World {
+        store,
+        repo,
+        worktree,
+        base,
+    }
 }
 
 #[test]
@@ -77,11 +106,30 @@ fn a_checked_out_base_branch_is_fast_forwarded_in_its_own_checkout() {
     let w = world("checked-out");
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::Merged {
+            head_sha: head.clone()
+        }
+    );
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
-    assert!(w.repo.join("mine.txt").exists(), "the checkout was updated, not just its ref");
-    assert_eq!(git(&w.repo, &["status", "--porcelain"]), "", "the checkout is clean afterwards");
-    assert_eq!(git(&w.repo, &["rev-list", "--merges", &format!("{}..main", w.base)]), "", "no merge commit");
+    assert!(
+        w.repo.join("mine.txt").exists(),
+        "the checkout was updated, not just its ref"
+    );
+    assert_eq!(
+        git(&w.repo, &["status", "--porcelain"]),
+        "",
+        "the checkout is clean afterwards"
+    );
+    assert_eq!(
+        git(
+            &w.repo,
+            &["rev-list", "--merges", &format!("{}..main", w.base)]
+        ),
+        "",
+        "no merge commit"
+    );
 }
 
 #[test]
@@ -90,27 +138,61 @@ fn a_base_branch_no_checkout_has_is_moved_from_where_the_run_started() {
     git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::Merged {
+            head_sha: head.clone()
+        }
+    );
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
-    assert_eq!(git(&w.repo, &["symbolic-ref", "HEAD"]), "refs/heads/elsewhere", "the checkout stays where it was");
-    assert_eq!(git(&w.repo, &["rev-parse", "elsewhere"]), w.base, "and so does its branch");
+    assert_eq!(
+        git(&w.repo, &["symbolic-ref", "HEAD"]),
+        "refs/heads/elsewhere",
+        "the checkout stays where it was"
+    );
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "elsewhere"]),
+        w.base,
+        "and so does its branch"
+    );
     assert!(!w.repo.join("mine.txt").exists(), "nothing was checked out");
 }
 
 #[test]
-fn a_checkout_with_uncommitted_changes_to_files_the_run_does_not_change_is_merged_and_the_changes_kept() {
+fn a_checkout_with_uncommitted_changes_to_files_the_run_does_not_change_is_merged_and_the_changes_kept(
+) {
     let w = world("dirty-unrelated");
     fs::write(w.repo.join("a.txt"), "edited\n").unwrap();
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::Merged {
+            head_sha: head.clone()
+        }
+    );
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
     assert!(w.repo.join("mine.txt").exists(), "the checkout was updated");
-    assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "edited\n", "the edit is kept");
-    assert_eq!(git(&w.repo, &["status", "--porcelain", "--untracked-files=no"]), "M a.txt", "and still uncommitted");
+    assert_eq!(
+        fs::read_to_string(w.repo.join("a.txt")).unwrap(),
+        "edited\n",
+        "the edit is kept"
+    );
+    assert_eq!(
+        git(&w.repo, &["status", "--porcelain", "--untracked-files=no"]),
+        "M a.txt",
+        "and still uncommitted"
+    );
     let events = w.store.events("run-1").unwrap();
-    let completed = events.iter().find(|e| e.kind == "merge.completed").expect("the merge is recorded");
-    assert_eq!(completed.payload["kept_dirty"], 1, "{:?}", completed.payload);
+    let completed = events
+        .iter()
+        .find(|e| e.kind == "merge.completed")
+        .expect("the merge is recorded");
+    assert_eq!(
+        completed.payload["kept_dirty"], 1,
+        "{:?}",
+        completed.payload
+    );
 }
 
 #[test]
@@ -130,12 +212,29 @@ fn a_checkout_with_uncommitted_changes_to_a_file_the_run_changes_is_refused_and_
         ),
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
-    assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "edited\n", "the edit is left alone");
-    assert!(!w.repo.join("mine.txt").exists(), "nothing of the run was checked out");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "main did not move"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("a.txt")).unwrap(),
+        "edited\n",
+        "the edit is left alone"
+    );
+    assert!(
+        !w.repo.join("mine.txt").exists(),
+        "nothing of the run was checked out"
+    );
     let events = w.store.events("run-1").unwrap();
-    let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
-    assert_eq!(refused.payload, serde_json::json!({ "reason": "dirty_checkout", "files": ["a.txt"] }));
+    let refused = events
+        .iter()
+        .find(|e| e.kind == "merge.refused")
+        .expect("the refusal is recorded");
+    assert_eq!(
+        refused.payload,
+        serde_json::json!({ "reason": "dirty_checkout", "files": ["a.txt"] })
+    );
     assert!(!events.iter().any(|e| e.kind == "merge.completed"));
 }
 
@@ -159,7 +258,10 @@ fn a_refusal_names_at_most_five_overlapping_files_and_its_event_lists_them_all()
         other => panic!("expected a refusal, got {other:?}"),
     }
     let events = w.store.events("run-1").unwrap();
-    let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
+    let refused = events
+        .iter()
+        .find(|e| e.kind == "merge.refused")
+        .expect("the refusal is recorded");
     assert_eq!(refused.payload["files"], serde_json::json!(names));
 }
 
@@ -173,12 +275,21 @@ fn a_rename_in_the_checkout_counts_both_its_paths() {
     git(&w.repo, &["mv", "a.txt", "moved.txt"]);
 
     match merge_into_base(&w.store, "run-1").unwrap() {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("files this run changes: a.txt, moved.txt;"), "{reason}"),
+        MergeOutcome::Refused { reason } => assert!(
+            reason.contains("files this run changes: a.txt, moved.txt;"),
+            "{reason}"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
     let events = w.store.events("run-1").unwrap();
-    let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
-    assert_eq!(refused.payload["files"], serde_json::json!(["a.txt", "moved.txt"]));
+    let refused = events
+        .iter()
+        .find(|e| e.kind == "merge.refused")
+        .expect("the refusal is recorded");
+    assert_eq!(
+        refused.payload["files"],
+        serde_json::json!(["a.txt", "moved.txt"])
+    );
 }
 
 #[test]
@@ -189,10 +300,17 @@ fn a_run_that_renames_a_file_with_uncommitted_changes_overlaps_it() {
     fs::write(w.repo.join("a.txt"), "edited\n").unwrap();
 
     match merge_into_base(&w.store, "run-1").unwrap() {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("files this run changes: a.txt;"), "{reason}"),
+        MergeOutcome::Refused { reason } => assert!(
+            reason.contains("files this run changes: a.txt;"),
+            "{reason}"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "edited\n", "the edit is left alone");
+    assert_eq!(
+        fs::read_to_string(w.repo.join("a.txt")).unwrap(),
+        "edited\n",
+        "the edit is left alone"
+    );
 }
 
 #[test]
@@ -207,26 +325,48 @@ fn an_overlapping_file_name_with_control_characters_is_escaped_in_the_reason_and
 
     match merge_into_base(&w.store, "run-1").unwrap() {
         MergeOutcome::Refused { reason } => {
-            assert!(reason.contains("files this run changes: bad\\nname\\u{1b}[2J.txt;"), "{reason}");
-            assert!(!reason.contains('\n') && !reason.contains('\u{1b}'), "{reason:?}");
+            assert!(
+                reason.contains("files this run changes: bad\\nname\\u{1b}[2J.txt;"),
+                "{reason}"
+            );
+            assert!(
+                !reason.contains('\n') && !reason.contains('\u{1b}'),
+                "{reason:?}"
+            );
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
     let events = w.store.events("run-1").unwrap();
-    let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
-    assert_eq!(refused.payload["files"], serde_json::json!(["bad\\nname\\u{1b}[2J.txt"]));
+    let refused = events
+        .iter()
+        .find(|e| e.kind == "merge.refused")
+        .expect("the refusal is recorded");
+    assert_eq!(
+        refused.payload["files"],
+        serde_json::json!(["bad\\nname\\u{1b}[2J.txt"])
+    );
 }
 
 #[test]
-fn a_checked_out_base_branch_that_moved_since_the_run_started_is_left_and_named_for_a_rebase_onto_it() {
+fn a_checked_out_base_branch_that_moved_since_the_run_started_is_left_and_named_for_a_rebase_onto_it(
+) {
     let w = world("moved");
     fs::write(w.repo.join("theirs.txt"), "theirs\n").unwrap();
     git(&w.repo, &["add", "."]);
     git(&w.repo, &["commit", "-q", "-m", "theirs"]);
     let moved = git(&w.repo, &["rev-parse", "HEAD"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::BaseMoved { base_sha: moved.clone() });
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::BaseMoved {
+            base_sha: moved.clone()
+        }
+    );
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        moved,
+        "main stays where it moved to"
+    );
 }
 
 /// The run was rebased onto a fetched target that is ahead of the local base branch, as when the
@@ -258,13 +398,19 @@ fn rebased_onto_a_target_ahead_of_local_main(w: &World) -> String {
 }
 
 #[test]
-fn a_base_branch_no_checkout_has_and_behind_the_fetched_target_is_fast_forwarded_from_where_it_is() {
+fn a_base_branch_no_checkout_has_and_behind_the_fetched_target_is_fast_forwarded_from_where_it_is()
+{
     let w = world("behind-fetched");
     git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
     rebased_onto_a_target_ahead_of_local_main(&w);
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::Merged {
+            head_sha: head.clone()
+        }
+    );
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
 }
 
@@ -275,11 +421,22 @@ fn an_ignored_local_file_the_run_would_overwrite_is_refused_and_kept() {
     fs::write(w.repo.join("mine.txt"), "my local notes\n").unwrap();
 
     match merge_into_base(&w.store, "run-1").unwrap() {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("mine.txt"), "the reason names the file: {reason}"),
+        MergeOutcome::Refused { reason } => assert!(
+            reason.contains("mine.txt"),
+            "the reason names the file: {reason}"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(fs::read_to_string(w.repo.join("mine.txt")).unwrap(), "my local notes\n", "the local file is kept");
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
+    assert_eq!(
+        fs::read_to_string(w.repo.join("mine.txt")).unwrap(),
+        "my local notes\n",
+        "the local file is kept"
+    );
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "main did not move"
+    );
 }
 
 #[test]
@@ -287,12 +444,23 @@ fn a_base_branch_checked_out_at_a_path_with_a_newline_is_fast_forwarded_there() 
     let w = world("odd-path");
     git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
     let odd = w.repo.parent().unwrap().join("main\ncheckout");
-    git(&w.repo, &["worktree", "add", "-q", odd.to_str().unwrap(), "main"]);
+    git(
+        &w.repo,
+        &["worktree", "add", "-q", odd.to_str().unwrap(), "main"],
+    );
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::Merged {
+            head_sha: head.clone()
+        }
+    );
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
-    assert!(odd.join("mine.txt").exists(), "the checkout at that path was updated");
+    assert!(
+        odd.join("mine.txt").exists(),
+        "the checkout at that path was updated"
+    );
 }
 
 #[test]
@@ -305,10 +473,17 @@ fn a_base_ref_update_that_fails_after_the_checks_is_refused_and_main_kept() {
     fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
     match merge_into_base(&w.store, "run-1").unwrap() {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("main is locked by another update"), "git's reason is passed on: {reason}"),
+        MergeOutcome::Refused { reason } => assert!(
+            reason.contains("main is locked by another update"),
+            "git's reason is passed on: {reason}"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "main did not move"
+    );
 }
 
 #[test]
@@ -319,19 +494,39 @@ fn the_base_ref_is_only_moved_from_the_commit_that_was_checked() {
     // was made conditional on the ref still being at that commit.
     let seen = w.repo.parent().unwrap().join("transaction.txt");
     let hook = w.repo.join(".git/hooks/reference-transaction");
-    fs::write(&hook, format!("#!/bin/sh\n[ \"$1\" = prepared ] && cat >> '{}'\nexit 0\n", seen.display())).unwrap();
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = prepared ] && cat >> '{}'\nexit 0\n",
+            seen.display()
+        ),
+    )
+    .unwrap();
     fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::Merged {
+            head_sha: head.clone()
+        }
+    );
     let transaction = fs::read_to_string(&seen).unwrap();
-    assert!(transaction.contains(&format!("{} {head} refs/heads/main", w.base)), "main moves only if it is still at {}: {transaction}", w.base);
+    assert!(
+        transaction.contains(&format!("{} {head} refs/heads/main", w.base)),
+        "main moves only if it is still at {}: {transaction}",
+        w.base
+    );
 }
 
 #[test]
 fn a_merge_retried_after_main_already_moved_to_the_run_succeeds_again() {
     for checked_out in [true, false] {
-        let w = world(if checked_out { "retry-checked-out" } else { "retry-ref-only" });
+        let w = world(if checked_out {
+            "retry-checked-out"
+        } else {
+            "retry-ref-only"
+        });
         if !checked_out {
             git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
         }
@@ -342,9 +537,22 @@ fn a_merge_retried_after_main_already_moved_to_the_run_succeeds_again() {
             git(&w.repo, &["reset", "-q", "--hard", &head]);
         }
 
-        assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() }, "checked out: {checked_out}");
+        assert_eq!(
+            merge_into_base(&w.store, "run-1").unwrap(),
+            MergeOutcome::Merged {
+                head_sha: head.clone()
+            },
+            "checked out: {checked_out}"
+        );
         assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
-        assert!(w.store.events("run-1").unwrap().iter().any(|e| e.kind == "merge.completed"), "the retry records the merge");
+        assert!(
+            w.store
+                .events("run-1")
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == "merge.completed"),
+            "the retry records the merge"
+        );
     }
 }
 
@@ -352,7 +560,11 @@ fn a_merge_retried_after_main_already_moved_to_the_run_succeeds_again() {
 /// commit, as another process would between the ancestry check and the fast-forward. The returned
 /// file then holds the commit `main` was moved to.
 fn move_main_during_the_first_update(w: &World) -> PathBuf {
-    let hooks = PathBuf::from(git(&w.repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"])).join("hooks");
+    let hooks = PathBuf::from(git(
+        &w.repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ))
+    .join("hooks");
     fs::create_dir_all(&hooks).unwrap();
     let mark = w.repo.with_file_name("late-mark");
     let late = w.repo.with_file_name("late-sha");
@@ -378,32 +590,59 @@ fn move_main_during_the_first_update(w: &World) -> PathBuf {
 }
 
 #[test]
-fn a_base_branch_no_checkout_has_that_moves_during_the_fast_forward_is_named_for_a_rebase_onto_it() {
+fn a_base_branch_no_checkout_has_that_moves_during_the_fast_forward_is_named_for_a_rebase_onto_it()
+{
     let w = world("late-not-checked-out");
     git(&w.repo, &["checkout", "-q", "-b", "elsewhere"]);
     let late = move_main_during_the_first_update(&w);
 
     let outcome = merge_into_base(&w.store, "run-1").unwrap();
 
-    let moved = fs::read_to_string(&late).expect("main was moved during the fast-forward").trim().to_string();
-    assert_eq!(outcome, MergeOutcome::BaseMoved { base_sha: moved.clone() });
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
+    let moved = fs::read_to_string(&late)
+        .expect("main was moved during the fast-forward")
+        .trim()
+        .to_string();
+    assert_eq!(
+        outcome,
+        MergeOutcome::BaseMoved {
+            base_sha: moved.clone()
+        }
+    );
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        moved,
+        "main stays where it moved to"
+    );
 }
 
 #[test]
-fn a_checked_out_base_branch_that_moves_during_the_fast_forward_and_leaves_its_checkout_changed_is_refused_for_a_person_to_check() {
+fn a_checked_out_base_branch_that_moves_during_the_fast_forward_and_leaves_its_checkout_changed_is_refused_for_a_person_to_check(
+) {
     let w = world("late-checked-out");
     let late = move_main_during_the_first_update(&w);
 
     let outcome = merge_into_base(&w.store, "run-1").unwrap();
 
-    let moved = fs::read_to_string(&late).expect("main was moved during the fast-forward").trim().to_string();
+    let moved = fs::read_to_string(&late)
+        .expect("main was moved during the fast-forward")
+        .trim()
+        .to_string();
     match outcome {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("moved while") && reason.contains("left with changes"), "{reason}"),
+        MergeOutcome::Refused { reason } => assert!(
+            reason.contains("moved while") && reason.contains("left with changes"),
+            "{reason}"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
-    assert!(w.repo.join("mine.txt").exists(), "what the failed fast-forward left is kept for a person to check");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        moved,
+        "main stays where it moved to"
+    );
+    assert!(
+        w.repo.join("mine.txt").exists(),
+        "what the failed fast-forward left is kept for a person to check"
+    );
 }
 
 /// Moves `main` on by one commit with the same tree the first time git reads the checkout's
@@ -429,22 +668,42 @@ fn move_main_when_the_checkout_is_first_read(w: &World) -> PathBuf {
     )
     .unwrap();
     fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    git(&w.repo, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &["config", "core.fsmonitor", hook.to_str().unwrap()],
+    );
     late
 }
 
 #[test]
-fn a_checked_out_base_branch_that_moves_before_the_fast_forward_with_an_unrelated_file_dirty_is_named_for_a_rebase_onto_it() {
+fn a_checked_out_base_branch_that_moves_before_the_fast_forward_with_an_unrelated_file_dirty_is_named_for_a_rebase_onto_it(
+) {
     let w = world("early-dirty-unrelated");
     fs::write(w.repo.join("a.txt"), "edited\n").unwrap();
     let late = move_main_when_the_checkout_is_first_read(&w);
 
     let outcome = merge_into_base(&w.store, "run-1").unwrap();
 
-    let moved = fs::read_to_string(&late).expect("main was moved before the fast-forward").trim().to_string();
-    assert_eq!(outcome, MergeOutcome::BaseMoved { base_sha: moved.clone() });
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), moved, "main stays where it moved to");
-    assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "edited\n", "the edit is kept");
+    let moved = fs::read_to_string(&late)
+        .expect("main was moved before the fast-forward")
+        .trim()
+        .to_string();
+    assert_eq!(
+        outcome,
+        MergeOutcome::BaseMoved {
+            base_sha: moved.clone()
+        }
+    );
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        moved,
+        "main stays where it moved to"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("a.txt")).unwrap(),
+        "edited\n",
+        "the edit is kept"
+    );
 }
 
 #[test]
@@ -454,14 +713,27 @@ fn a_checkout_whose_uncommitted_changes_cannot_be_read_is_refused_with_gits_erro
 
     match merge_into_base(&w.store, "run-1").unwrap() {
         MergeOutcome::Refused { reason } => {
-            let prefix = format!("cannot read the uncommitted changes at {}: ", w.repo.display());
+            let prefix = format!(
+                "cannot read the uncommitted changes at {}: ",
+                w.repo.display()
+            );
             assert!(reason.starts_with(&prefix), "{reason}");
-            assert!(reason.len() > prefix.len(), "git's error is carried: {reason}");
+            assert!(
+                reason.len() > prefix.len(),
+                "git's error is carried: {reason}"
+            );
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
-    assert!(!w.repo.join("mine.txt").exists(), "nothing of the run was checked out");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "main did not move"
+    );
+    assert!(
+        !w.repo.join("mine.txt").exists(),
+        "nothing of the run was checked out"
+    );
     let events = w.store.events("run-1").unwrap();
     assert!(!events.iter().any(|e| e.kind == "merge.completed"));
 }
@@ -474,7 +746,10 @@ fn made_unreadable(file: &Path) -> bool {
     fs::set_permissions(file, fs::Permissions::from_mode(0o000)).unwrap();
     if fs::File::open(file).is_ok() {
         fs::set_permissions(file, fs::Permissions::from_mode(0o644)).unwrap();
-        eprintln!("skipped: {} is still readable without permissions (running as root?)", file.display());
+        eprintln!(
+            "skipped: {} is still readable without permissions (running as root?)",
+            file.display()
+        );
         return false;
     }
     true
@@ -498,12 +773,21 @@ fn an_overlap_is_refused_without_reading_the_other_uncommitted_files() {
     let outcome = merge_into_base(&w.store, "run-1").unwrap();
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     match outcome {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("files this run changes: a.txt;"), "{reason}"),
+        MergeOutcome::Refused { reason } => assert!(
+            reason.contains("files this run changes: a.txt;"),
+            "{reason}"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
     let events = w.store.events("run-1").unwrap();
-    let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
-    assert_eq!(refused.payload, serde_json::json!({ "reason": "dirty_checkout", "files": ["a.txt"] }));
+    let refused = events
+        .iter()
+        .find(|e| e.kind == "merge.refused")
+        .expect("the refusal is recorded");
+    assert_eq!(
+        refused.payload,
+        serde_json::json!({ "reason": "dirty_checkout", "files": ["a.txt"] })
+    );
 }
 
 #[cfg(unix)]
@@ -522,13 +806,26 @@ fn an_uncommitted_file_that_cannot_be_read_refuses_the_merge_with_gits_error() {
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     match outcome {
         MergeOutcome::Refused { reason } => {
-            let prefix = format!("cannot read the uncommitted changes at {}: ", w.repo.display());
-            assert!(reason.starts_with(&prefix) && reason.contains("secret.txt"), "{reason}");
+            let prefix = format!(
+                "cannot read the uncommitted changes at {}: ",
+                w.repo.display()
+            );
+            assert!(
+                reason.starts_with(&prefix) && reason.contains("secret.txt"),
+                "{reason}"
+            );
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main did not move");
-    assert!(!w.repo.join("mine.txt").exists(), "nothing of the run was checked out");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "main did not move"
+    );
+    assert!(
+        !w.repo.join("mine.txt").exists(),
+        "nothing of the run was checked out"
+    );
 }
 
 #[cfg(unix)]
@@ -545,12 +842,28 @@ fn file_names_that_are_not_utf8_are_told_apart_by_their_bytes() {
     fs::write(w.repo.join(OsStr::from_bytes(b"a\xfe.txt")), "mine\n").unwrap();
     git(&w.repo, &["add", "-A"]);
 
-    assert_eq!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Merged { head_sha: head.clone() });
+    assert_eq!(
+        merge_into_base(&w.store, "run-1").unwrap(),
+        MergeOutcome::Merged {
+            head_sha: head.clone()
+        }
+    );
     assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head);
-    assert_eq!(fs::read_to_string(w.repo.join(OsStr::from_bytes(b"a\xfe.txt"))).unwrap(), "mine\n", "the staged file is kept");
+    assert_eq!(
+        fs::read_to_string(w.repo.join(OsStr::from_bytes(b"a\xfe.txt"))).unwrap(),
+        "mine\n",
+        "the staged file is kept"
+    );
     let events = w.store.events("run-1").unwrap();
-    let completed = events.iter().find(|e| e.kind == "merge.completed").expect("the merge is recorded");
-    assert_eq!(completed.payload["kept_dirty"], 1, "{:?}", completed.payload);
+    let completed = events
+        .iter()
+        .find(|e| e.kind == "merge.completed")
+        .expect("the merge is recorded");
+    assert_eq!(
+        completed.payload["kept_dirty"], 1,
+        "{:?}",
+        completed.payload
+    );
 }
 
 #[cfg(unix)]
@@ -569,18 +882,38 @@ fn an_overlapping_file_name_that_is_not_utf8_is_refused_and_shown_readably() {
     fs::write(w.repo.join(name), "mine\n").unwrap();
 
     match merge_into_base(&w.store, "run-1").unwrap() {
-        MergeOutcome::Refused { reason } => assert!(reason.contains("files this run changes: a\u{FFFD}.txt;"), "{reason}"),
+        MergeOutcome::Refused { reason } => assert!(
+            reason.contains("files this run changes: a\u{FFFD}.txt;"),
+            "{reason}"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(fs::read(w.repo.join(name)).unwrap(), b"mine\n", "the edit is left alone");
+    assert_eq!(
+        fs::read(w.repo.join(name)).unwrap(),
+        b"mine\n",
+        "the edit is left alone"
+    );
     let events = w.store.events("run-1").unwrap();
-    let refused = events.iter().find(|e| e.kind == "merge.refused").expect("the refusal is recorded");
-    assert_eq!(refused.payload, serde_json::json!({ "reason": "dirty_checkout", "files": ["a\u{FFFD}.txt"] }));
+    let refused = events
+        .iter()
+        .find(|e| e.kind == "merge.refused")
+        .expect("the refusal is recorded");
+    assert_eq!(
+        refused.payload,
+        serde_json::json!({ "reason": "dirty_checkout", "files": ["a\u{FFFD}.txt"] })
+    );
 }
 
 /// Ten numbered lines, with the ones named replaced.
 fn lines(replaced: &[(usize, &str)]) -> String {
-    (1..=10).map(|n| replaced.iter().find(|(at, _)| *at == n).map_or_else(|| format!("line {n}\n"), |(_, text)| format!("{text}\n"))).collect()
+    (1..=10)
+        .map(|n| {
+            replaced
+                .iter()
+                .find(|(at, _)| *at == n)
+                .map_or_else(|| format!("line {n}\n"), |(_, text)| format!("{text}\n"))
+        })
+        .collect()
 }
 
 /// A run that edits line 1 of `lines.txt`, refused because the checkout has its own uncommitted
@@ -593,9 +926,18 @@ fn refused_over_lines(tag: &str, edit: &str) -> World {
 fn refused_over_line(tag: &str, at: usize, edit: &str) -> World {
     let w = world_with(tag, &[("lines.txt", &lines(&[]))]);
     fs::write(w.worktree.join("lines.txt"), lines(&[(at, "theirs")])).unwrap();
-    git(&w.worktree, &["commit", "-q", "-am", &format!("edit line {at}")]);
+    git(
+        &w.worktree,
+        &["commit", "-q", "-am", &format!("edit line {at}")],
+    );
     fs::write(w.repo.join("lines.txt"), edit).unwrap();
-    assert!(matches!(merge_into_base(&w.store, "run-1").unwrap(), MergeOutcome::Refused { .. }), "the overlap is refused first");
+    assert!(
+        matches!(
+            merge_into_base(&w.store, "run-1").unwrap(),
+            MergeOutcome::Refused { .. }
+        ),
+        "the overlap is refused first"
+    );
     w
 }
 
@@ -604,7 +946,8 @@ fn stash_list(dir: &Path) -> String {
 }
 
 #[test]
-fn set_aside_changes_that_apply_cleanly_after_the_merge_are_restored_and_their_stash_entry_dropped() {
+fn set_aside_changes_that_apply_cleanly_after_the_merge_are_restored_and_their_stash_entry_dropped()
+{
     let w = refused_over_lines("set-aside-clean", &lines(&[(10, "mine")]));
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
 
@@ -615,14 +958,33 @@ fn set_aside_changes_that_apply_cleanly_after_the_merge_are_restored_and_their_s
         }
         other => panic!("expected a merge, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head, "main was fast-forwarded");
-    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (10, "mine")]), "the edit is back, over the run's");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        head,
+        "main was fast-forwarded"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("lines.txt")).unwrap(),
+        lines(&[(1, "theirs"), (10, "mine")]),
+        "the edit is back, over the run's"
+    );
     assert_eq!(stash_list(&w.repo), "", "no stash entry is left");
     let events = w.store.events("run-1").unwrap();
-    let set_aside = events.iter().find(|e| e.kind == "merge.set_aside").expect("the set-aside is recorded");
-    assert_eq!(set_aside.payload["restored"], true, "{:?}", set_aside.payload);
+    let set_aside = events
+        .iter()
+        .find(|e| e.kind == "merge.set_aside")
+        .expect("the set-aside is recorded");
+    assert_eq!(
+        set_aside.payload["restored"], true,
+        "{:?}",
+        set_aside.payload
+    );
     let stash = set_aside.payload["stash"].as_str().unwrap_or_default();
-    assert!(stash.len() == 40 && stash.bytes().all(|b| b.is_ascii_hexdigit()), "the entry's commit: {:?}", set_aside.payload);
+    assert!(
+        stash.len() == 40 && stash.bytes().all(|b| b.is_ascii_hexdigit()),
+        "the entry's commit: {:?}",
+        set_aside.payload
+    );
 }
 
 #[test]
@@ -637,7 +999,11 @@ fn set_aside_changes_that_conflict_after_the_merge_are_kept_in_their_stash_entry
         }
         other => panic!("expected a merge, got {other:?}"),
     };
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), head, "main was fast-forwarded: the run's commits are in");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        head,
+        "main was fast-forwarded: the run's commits are in"
+    );
     let listed = stash_list(&w.repo);
     let (stash, message) = listed.split_once(' ').expect("the stash entry is kept");
     assert!(message.contains(": orq set-aside run-1 "), "{listed}");
@@ -646,12 +1012,25 @@ fn set_aside_changes_that_conflict_after_the_merge_are_kept_in_their_stash_entry
         format!("your changes to lines.txt conflicted with this run and are in stash {stash} (orq set-aside run-1); the checkout has conflict markers in lines.txt")
     );
     let file = fs::read_to_string(w.repo.join("lines.txt")).unwrap();
-    assert!(file.contains("<<<<<<<") && file.contains("mine") && file.contains("theirs"), "{file}");
+    assert!(
+        file.contains("<<<<<<<") && file.contains("mine") && file.contains("theirs"),
+        "{file}"
+    );
     let events = w.store.events("run-1").unwrap();
-    let set_aside = events.iter().find(|e| e.kind == "merge.set_aside").expect("the set-aside is recorded");
-    assert_eq!(set_aside.payload["restored"], false, "{:?}", set_aside.payload);
+    let set_aside = events
+        .iter()
+        .find(|e| e.kind == "merge.set_aside")
+        .expect("the set-aside is recorded");
+    assert_eq!(
+        set_aside.payload["restored"], false,
+        "{:?}",
+        set_aside.payload
+    );
     assert_eq!(set_aside.payload["stash"], stash);
-    assert_eq!(set_aside.payload["conflicted"], serde_json::json!(["lines.txt"]));
+    assert_eq!(
+        set_aside.payload["conflicted"],
+        serde_json::json!(["lines.txt"])
+    );
     assert_eq!(set_aside.payload["note"], note.as_str());
 }
 
@@ -667,13 +1046,30 @@ fn set_aside_changes_are_put_back_as_they_were_when_the_merge_fails_after_stashi
     let main = git(&w.repo, &["rev-parse", "refs/heads/main"]);
 
     match merge_setting_aside(&w.store, "run-1").unwrap() {
-        SetAsideOutcome::Refused { reason } => assert!(reason.contains("could not be fast-forwarded"), "{reason}"),
+        SetAsideOutcome::Refused { reason } => {
+            assert!(reason.contains("could not be fast-forwarded"), "{reason}")
+        }
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), main, "main stayed where it was");
-    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(10, "mine")]), "the edit is back");
-    assert_eq!(git(&w.repo, &["diff", "--cached", "--name-only"]), "lines.txt", "and still staged");
-    assert_eq!(fs::read_to_string(w.repo.join("new.txt")).unwrap(), "the person's\n");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        main,
+        "main stayed where it was"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("lines.txt")).unwrap(),
+        lines(&[(10, "mine")]),
+        "the edit is back"
+    );
+    assert_eq!(
+        git(&w.repo, &["diff", "--cached", "--name-only"]),
+        "lines.txt",
+        "and still staged"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("new.txt")).unwrap(),
+        "the person's\n"
+    );
     assert_eq!(stash_list(&w.repo), "", "no stash entry is left");
 }
 
@@ -682,10 +1078,16 @@ fn set_aside_is_refused_for_a_run_not_waiting_on_a_dirty_checkout() {
     let w = world("set-aside-not-waiting");
 
     match merge_setting_aside(&w.store, "run-1").unwrap() {
-        SetAsideOutcome::Refused { reason } => assert_eq!(reason, "this run is not waiting on a dirty checkout"),
+        SetAsideOutcome::Refused { reason } => {
+            assert_eq!(reason, "this run is not waiting on a dirty checkout")
+        }
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.repo, &["rev-parse", "refs/heads/main"]), w.base, "main stayed where it was");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "main stayed where it was"
+    );
     assert_eq!(stash_list(&w.repo), "");
 }
 
@@ -694,11 +1096,25 @@ fn set_aside_stashes_only_the_overlapping_files_and_leaves_an_unrelated_edit_alo
     let w = refused_over_lines("set-aside-unrelated", &lines(&[(10, "mine")]));
     fs::write(w.repo.join("a.txt"), "my own\n").unwrap();
 
-    assert!(matches!(merge_setting_aside(&w.store, "run-1").unwrap(), SetAsideOutcome::Merged { note: None, .. }));
-    assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "my own\n", "the unrelated edit is untouched");
+    assert!(matches!(
+        merge_setting_aside(&w.store, "run-1").unwrap(),
+        SetAsideOutcome::Merged { note: None, .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(w.repo.join("a.txt")).unwrap(),
+        "my own\n",
+        "the unrelated edit is untouched"
+    );
     let events = w.store.events("run-1").unwrap();
-    let set_aside = events.iter().find(|e| e.kind == "merge.set_aside").expect("the set-aside is recorded");
-    assert_eq!(set_aside.payload["files"], serde_json::json!(["lines.txt"]), "only the overlap was stashed");
+    let set_aside = events
+        .iter()
+        .find(|e| e.kind == "merge.set_aside")
+        .expect("the set-aside is recorded");
+    assert_eq!(
+        set_aside.payload["files"],
+        serde_json::json!(["lines.txt"]),
+        "only the overlap was stashed"
+    );
 }
 
 #[cfg(unix)]
@@ -708,25 +1124,58 @@ fn set_aside_drops_its_own_entry_when_another_one_was_pushed_on_top_meanwhile() 
     fs::write(w.repo.join("a.txt"), "someone else's\n").unwrap();
     // Someone else stashes while the fast-forward runs: the hook runs once it is done, before
     // the set-aside entry is applied and dropped.
-    hook(&w.repo, "post-merge", "#!/bin/sh\nexec git stash push -q -m \"someone else's\" -- a.txt\n");
+    hook(
+        &w.repo,
+        "post-merge",
+        "#!/bin/sh\nexec git stash push -q -m \"someone else's\" -- a.txt\n",
+    );
 
-    assert!(matches!(merge_setting_aside(&w.store, "run-1").unwrap(), SetAsideOutcome::Merged { note: None, .. }));
-    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (10, "mine")]), "its own entry was applied");
+    assert!(matches!(
+        merge_setting_aside(&w.store, "run-1").unwrap(),
+        SetAsideOutcome::Merged { note: None, .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(w.repo.join("lines.txt")).unwrap(),
+        lines(&[(1, "theirs"), (10, "mine")]),
+        "its own entry was applied"
+    );
     let listed = stash_list(&w.repo);
     assert_eq!(listed.lines().count(), 1, "{listed}");
-    assert!(listed.ends_with(": someone else's"), "the other entry is untouched: {listed}");
-    assert_eq!(fs::read_to_string(w.repo.join("a.txt")).unwrap(), "a\n", "and its change is still only in it");
+    assert!(
+        listed.ends_with(": someone else's"),
+        "the other entry is untouched: {listed}"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("a.txt")).unwrap(),
+        "a\n",
+        "and its change is still only in it"
+    );
 }
 
 #[test]
 fn set_aside_changes_restored_after_the_merge_keep_what_was_staged_apart_from_what_was_not() {
     let w = refused_over_lines("set-aside-staged", &lines(&[(10, "staged")]));
     git(&w.repo, &["add", "lines.txt"]);
-    fs::write(w.repo.join("lines.txt"), lines(&[(9, "unstaged"), (10, "staged")])).unwrap();
+    fs::write(
+        w.repo.join("lines.txt"),
+        lines(&[(9, "unstaged"), (10, "staged")]),
+    )
+    .unwrap();
 
-    assert!(matches!(merge_setting_aside(&w.store, "run-1").unwrap(), SetAsideOutcome::Merged { note: None, .. }));
-    assert_eq!(git(&w.repo, &["show", ":lines.txt"]) + "\n", lines(&[(1, "theirs"), (10, "staged")]), "the staged edit is staged again");
-    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (9, "unstaged"), (10, "staged")]), "and the unstaged one is not");
+    assert!(matches!(
+        merge_setting_aside(&w.store, "run-1").unwrap(),
+        SetAsideOutcome::Merged { note: None, .. }
+    ));
+    assert_eq!(
+        git(&w.repo, &["show", ":lines.txt"]) + "\n",
+        lines(&[(1, "theirs"), (10, "staged")]),
+        "the staged edit is staged again"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("lines.txt")).unwrap(),
+        lines(&[(1, "theirs"), (9, "unstaged"), (10, "staged")]),
+        "and the unstaged one is not"
+    );
     assert_eq!(stash_list(&w.repo), "", "no stash entry is left");
 }
 
@@ -758,9 +1207,19 @@ fn set_aside_changes_are_put_back_when_the_merge_fails_before_the_fast_forward()
     // Once the changes are set aside, the run can no longer be read.
     hook(&w.repo, "post-index-change", &format!("#!/bin/sh\ngit stash list --format=%gs | grep -q 'orq set-aside' && chmod 000 '{}'\nexit 0\n", run.display()));
 
-    let error = merge_setting_aside(&w.store, "run-1").unwrap_err().to_string();
-    assert_eq!(git(&w.repo, &["rev-parse", "main"]), w.base, "main did not move");
-    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(10, "mine")]), "the changes are back");
+    let error = merge_setting_aside(&w.store, "run-1")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "main"]),
+        w.base,
+        "main did not move"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("lines.txt")).unwrap(),
+        lines(&[(10, "mine")]),
+        "the changes are back"
+    );
     assert_eq!(stash_list(&w.repo), "", "and their entry is dropped");
     assert!(error.contains("your changes were put back"), "{error}");
 }
@@ -772,37 +1231,78 @@ fn set_aside_changes_are_put_back_and_the_merge_named_when_it_cannot_be_recorded
     if !permissions_hold(&w) {
         return;
     }
-    let events = w.repo.parent().unwrap().join("state/runs/run-1/events.jsonl");
+    let events = w
+        .repo
+        .parent()
+        .unwrap()
+        .join("state/runs/run-1/events.jsonl");
     // The fast-forward goes through, and only then can nothing more be recorded.
-    hook(&w.repo, "post-merge", &format!("#!/bin/sh\nexec chmod 444 '{}'\n", events.display()));
+    hook(
+        &w.repo,
+        "post-merge",
+        &format!("#!/bin/sh\nexec chmod 444 '{}'\n", events.display()),
+    );
 
-    let error = merge_setting_aside(&w.store, "run-1").unwrap_err().to_string();
+    let error = merge_setting_aside(&w.store, "run-1")
+        .unwrap_err()
+        .to_string();
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
-    assert_eq!(git(&w.repo, &["rev-parse", "main"]), head, "main was fast-forwarded");
-    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(1, "theirs"), (10, "mine")]), "the changes are back over it");
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "main"]),
+        head,
+        "main was fast-forwarded"
+    );
+    assert_eq!(
+        fs::read_to_string(w.repo.join("lines.txt")).unwrap(),
+        lines(&[(1, "theirs"), (10, "mine")]),
+        "the changes are back over it"
+    );
     assert_eq!(stash_list(&w.repo), "", "and their entry is dropped");
-    assert!(error.contains(&format!("main was fast-forwarded to {head}")) && error.contains("your changes were put back"), "{error}");
+    assert!(
+        error.contains(&format!("main was fast-forwarded to {head}"))
+            && error.contains("your changes were put back"),
+        "{error}"
+    );
 }
 
 #[test]
-fn set_aside_staged_changes_that_cannot_be_staged_again_after_the_merge_go_back_unstaged_with_their_entry_kept() {
+fn set_aside_staged_changes_that_cannot_be_staged_again_after_the_merge_go_back_unstaged_with_their_entry_kept(
+) {
     // Line 7 changes under the staged edit of line 10: it merges into the file, but its patch no
     // longer applies to the index as it was staged.
     let w = refused_over_line("set-aside-restaged", 7, &lines(&[(10, "staged")]));
     git(&w.repo, &["add", "lines.txt"]);
 
-    let SetAsideOutcome::Merged { note: Some(note), .. } = merge_setting_aside(&w.store, "run-1").unwrap() else {
+    let SetAsideOutcome::Merged {
+        note: Some(note), ..
+    } = merge_setting_aside(&w.store, "run-1").unwrap()
+    else {
         panic!("a merge with a note was expected")
     };
     let listed = stash_list(&w.repo);
     assert_eq!(listed.lines().count(), 1, "its entry is kept: {listed}");
     let stash = listed.split(' ').next().unwrap();
     assert_eq!(note, format!("your changes to lines.txt were put back but no longer staged; as they were staged they are in stash {stash} (orq set-aside run-1)"));
-    assert_eq!(fs::read_to_string(w.repo.join("lines.txt")).unwrap(), lines(&[(7, "theirs"), (10, "staged")]), "the changes are back");
-    assert_eq!(git(&w.repo, &["diff", "--cached", "--name-only"]), "", "but nothing is staged");
-    assert_eq!(git(&w.repo, &["show", &format!("{stash}^2:lines.txt")]) + "\n", lines(&[(10, "staged")]), "the entry still holds what was staged");
+    assert_eq!(
+        fs::read_to_string(w.repo.join("lines.txt")).unwrap(),
+        lines(&[(7, "theirs"), (10, "staged")]),
+        "the changes are back"
+    );
+    assert_eq!(
+        git(&w.repo, &["diff", "--cached", "--name-only"]),
+        "",
+        "but nothing is staged"
+    );
+    assert_eq!(
+        git(&w.repo, &["show", &format!("{stash}^2:lines.txt")]) + "\n",
+        lines(&[(10, "staged")]),
+        "the entry still holds what was staged"
+    );
     let events = w.store.events("run-1").unwrap();
-    let set_aside = events.iter().find(|event| event.kind == "merge.set_aside").expect("a merge.set_aside event");
+    let set_aside = events
+        .iter()
+        .find(|event| event.kind == "merge.set_aside")
+        .expect("a merge.set_aside event");
     assert_eq!(set_aside.payload["restored"], true);
     assert_eq!(set_aside.payload["staged"], false);
     assert_eq!(set_aside.payload["note"], note);
@@ -813,7 +1313,10 @@ fn set_aside_staged_changes_that_conflict_after_the_merge_are_kept_in_their_entr
     let w = refused_over_lines("set-aside-staged-conflict", &lines(&[(1, "mine")]));
     git(&w.repo, &["add", "lines.txt"]);
 
-    let SetAsideOutcome::Merged { note: Some(note), .. } = merge_setting_aside(&w.store, "run-1").unwrap() else {
+    let SetAsideOutcome::Merged {
+        note: Some(note), ..
+    } = merge_setting_aside(&w.store, "run-1").unwrap()
+    else {
         panic!("a merge with a note was expected")
     };
     let listed = stash_list(&w.repo);
@@ -823,5 +1326,9 @@ fn set_aside_staged_changes_that_conflict_after_the_merge_are_kept_in_their_entr
         note,
         format!("your changes to lines.txt conflicted with this run and are in stash {stash} (orq set-aside run-1); the checkout has conflict markers in lines.txt")
     );
-    assert_eq!(git(&w.repo, &["show", &format!("{stash}^2:lines.txt")]) + "\n", lines(&[(1, "mine")]), "the entry still holds what was staged");
+    assert_eq!(
+        git(&w.repo, &["show", &format!("{stash}^2:lines.txt")]) + "\n",
+        lines(&[(1, "mine")]),
+        "the entry still holds what was staged"
+    );
 }

@@ -24,7 +24,11 @@ impl TestFailures {
     pub fn headline(&self) -> Option<String> {
         let total = self.tests.len() + self.more;
         let first = self.tests.first()?;
-        let mut line = format!("{total} {} failed: {}", if total == 1 { "test" } else { "tests" }, first.name);
+        let mut line = format!(
+            "{total} {} failed: {}",
+            if total == 1 { "test" } else { "tests" },
+            first.name
+        );
         if let Some(second) = self.tests.get(1) {
             line.push_str(", ");
             line.push_str(&second.name);
@@ -37,7 +41,11 @@ impl TestFailures {
 
     /// What an event records of them: `failed_tests` (each `{name, output}`) and `failed_tests_more`.
     pub fn add_to(&self, payload: &mut serde_json::Value) {
-        let tests: Vec<_> = self.tests.iter().map(|test| serde_json::json!({ "name": test.name, "output": test.output })).collect();
+        let tests: Vec<_> = self
+            .tests
+            .iter()
+            .map(|test| serde_json::json!({ "name": test.name, "output": test.output }))
+            .collect();
         payload["failed_tests"] = serde_json::Value::Array(tests);
         payload["failed_tests_more"] = self.more.into();
     }
@@ -106,7 +114,11 @@ pub fn find_test_failures(output: &str) -> TestFailures {
 
 /// The test a libtest `---- <test> stdout ----` header opens the output of.
 fn libtest_block_start(line: &str) -> Option<String> {
-    let name = line.trim_end().strip_prefix("---- ")?.strip_suffix(" stdout ----")?.trim();
+    let name = line
+        .trim_end()
+        .strip_prefix("---- ")?
+        .strip_suffix(" stdout ----")?
+        .trim();
     (!name.is_empty()).then(|| name.to_string())
 }
 
@@ -147,12 +159,19 @@ impl Found {
 
     fn finish(mut self) -> TestFailures {
         let named = std::mem::take(&mut self.named);
-        let names: Vec<String> = std::mem::take(&mut self.names).into_iter().filter(|(name, at)| named.get(name) == Some(at)).map(|(name, _)| name).collect();
+        let names: Vec<String> = std::mem::take(&mut self.names)
+            .into_iter()
+            .filter(|(name, at)| named.get(name) == Some(at))
+            .map(|(name, _)| name)
+            .collect();
         let more = names.len().saturating_sub(FAILED_TESTS_KEPT);
         let tests = names
             .iter()
             .take(FAILED_TESTS_KEPT)
-            .map(|name| FailedTest { name: orq_core::redact::redact(name), output: kept_output(&self.outputs.remove(name).unwrap_or_default()) })
+            .map(|name| FailedTest {
+                name: orq_core::redact::redact(name),
+                output: kept_output(&self.outputs.remove(name).unwrap_or_default()),
+            })
             .collect();
         TestFailures { tests, more }
     }
@@ -176,7 +195,11 @@ fn kept_output(text: &str) -> String {
     for (at, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
         let after_panic = at > 0 && lines[at - 1].contains("panicked at");
-        if line.contains("panicked at") || after_panic || trimmed.starts_with("left:") || trimmed.starts_with("right:") {
+        if line.contains("panicked at")
+            || after_panic
+            || trimmed.starts_with("left:")
+            || trimmed.starts_with("right:")
+        {
             if key.len() + line.len() + 1 > KEY_LINES_KEPT {
                 break;
             }
@@ -209,10 +232,14 @@ fn nextest_block_start(line: &str) -> Option<String> {
         return None;
     }
     let rest = match rest.strip_prefix("TRY ") {
-        Some(retry) => retry.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start(),
+        Some(retry) => retry
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start(),
         None => rest,
     };
-    let name = rest.strip_prefix("STDOUT:").or_else(|| rest.strip_prefix("STDERR:"))?;
+    let name = rest
+        .strip_prefix("STDOUT:")
+        .or_else(|| rest.strip_prefix("STDERR:"))?;
     let name = name.trim().trim_end_matches(['-', '─']).trim();
     (!name.is_empty()).then(|| name.to_string())
 }
@@ -230,12 +257,19 @@ enum Status {
 /// A nextest status line (`PASS [ … ]`, `FAIL [ … ] (n/m) <test>`, `TRY 2 PASS [ … ]`, `Summary [ … ]`, a separator).
 fn nextest_status(line: &str) -> Option<Status> {
     let trimmed = line.trim();
-    if trimmed.len() >= 3 && trimmed.chars().all(|c| c == '─' || c == '-') && !trimmed.starts_with("---- ") {
+    if trimmed.len() >= 3
+        && trimmed.chars().all(|c| c == '─' || c == '-')
+        && !trimmed.starts_with("---- ")
+    {
         return Some(Status::Other);
     }
     let (word, rest) = trimmed.split_once(" [")?;
     let status = word.split(' ').next_back()?;
-    let is_status = word == "Summary" || (!word.is_empty() && word.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' '));
+    let is_status = word == "Summary"
+        || (!word.is_empty()
+            && word
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' '));
     if !is_status {
         return None;
     }
@@ -253,5 +287,9 @@ fn nextest_status(line: &str) -> Option<Status> {
     if name.is_empty() {
         return Some(Status::Other);
     }
-    Some(if passed_on_retry { Status::PassedOnRetry(name.to_string()) } else { Status::Failed(name.to_string()) })
+    Some(if passed_on_retry {
+        Status::PassedOnRetry(name.to_string())
+    } else {
+        Status::Failed(name.to_string())
+    })
 }

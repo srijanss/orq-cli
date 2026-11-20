@@ -1,7 +1,8 @@
 use orq_orchestrator::{run_steps, run_worktree_tests};
 
 fn dir(tag: &str) -> std::path::PathBuf {
-    let dir = orq_test_support::process_temp_dir().join(format!("orq-accept-tests-{}-{tag}", std::process::id()));
+    let dir = orq_test_support::process_temp_dir()
+        .join(format!("orq-accept-tests-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -13,7 +14,11 @@ fn a_configured_command_that_succeeds_passes_and_one_that_fails_says_what_it_pri
     let pass = vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()];
     assert_eq!(run_worktree_tests(&worktree, Some(pass.as_slice())), Ok(()));
 
-    let fail = vec!["sh".to_string(), "-c".to_string(), "echo 2 tests failed; exit 1".to_string()];
+    let fail = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "echo 2 tests failed; exit 1".to_string(),
+    ];
     let err = run_worktree_tests(&worktree, Some(fail.as_slice())).unwrap_err();
     assert!(err.contains("2 tests failed"), "{err}");
 }
@@ -22,8 +27,15 @@ fn a_configured_command_that_succeeds_passes_and_one_that_fails_says_what_it_pri
 fn the_command_runs_in_the_worktree() {
     let worktree = dir("cwd");
     std::fs::write(worktree.join("marker.txt"), "x").unwrap();
-    let check = vec!["sh".to_string(), "-c".to_string(), "test -f marker.txt".to_string()];
-    assert_eq!(run_worktree_tests(&worktree, Some(check.as_slice())), Ok(()));
+    let check = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "test -f marker.txt".to_string(),
+    ];
+    assert_eq!(
+        run_worktree_tests(&worktree, Some(check.as_slice())),
+        Ok(())
+    );
 }
 
 #[test]
@@ -39,8 +51,14 @@ fn a_failing_command_that_prints_a_lot_says_only_the_end_of_it_in_the_order_it_w
     let noisy = vec!["sh".to_string(), "-c".to_string(), script.to_string()];
     let err = run_worktree_tests(&worktree, Some(noisy.as_slice())).unwrap_err();
     assert!(err.len() < 4000, "{} bytes", err.len());
-    assert!(err.contains("final-out") && err.contains("final-err"), "{err}");
-    assert!(err.find("final-out") < err.find("final-err"), "the end of the output is in the order it was printed: {err}");
+    assert!(
+        err.contains("final-out") && err.contains("final-err"),
+        "{err}"
+    );
+    assert!(
+        err.find("final-out") < err.find("final-err"),
+        "the end of the output is in the order it was printed: {err}"
+    );
     assert!(!err.contains("out line 0 "), "{err}");
 }
 
@@ -53,13 +71,24 @@ fn every_step_runs_in_order_and_the_first_failure_stops_the_rest() {
     let worktree = dir("steps");
     let all_pass = [sh("echo a >> log"), sh("echo b >> log")];
     assert_eq!(run_steps(&worktree, &all_pass), Ok(()));
-    assert_eq!(std::fs::read_to_string(worktree.join("log")).unwrap(), "a\nb\n");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("log")).unwrap(),
+        "a\nb\n"
+    );
 
     let worktree = dir("steps-fail");
-    let failing = [sh("echo a >> log"), sh("echo b >> log; echo broke; exit 1"), sh("echo c >> log")];
+    let failing = [
+        sh("echo a >> log"),
+        sh("echo b >> log; echo broke; exit 1"),
+        sh("echo c >> log"),
+    ];
     let err = run_steps(&worktree, &failing).unwrap_err();
     assert!(err.contains("broke"), "{err}");
-    assert_eq!(std::fs::read_to_string(worktree.join("log")).unwrap(), "a\nb\n", "the step after the failure did not run");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("log")).unwrap(),
+        "a\nb\n",
+        "the step after the failure did not run"
+    );
 }
 
 #[test]

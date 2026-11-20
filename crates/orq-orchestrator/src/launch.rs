@@ -49,7 +49,12 @@ fn record(store: &RunStore, run_id: &str, pid: u32, log: Option<&Path>) -> Resul
 
 /// Record on each of `run_ids` that orq.db was upgraded from schema `from` to `to` while it ran under an Orq that
 /// cannot use the upgraded database, so its failures to record reviews read as what they are.
-pub fn record_upgraded_under_runs(store: &RunStore, run_ids: &[String], from: u32, to: u32) -> Result<(), StoreError> {
+pub fn record_upgraded_under_runs(
+    store: &RunStore,
+    run_ids: &[String],
+    from: u32,
+    to: u32,
+) -> Result<(), StoreError> {
     for run_id in run_ids {
         let record = store.load(run_id)?;
         store.append_event(&Event {

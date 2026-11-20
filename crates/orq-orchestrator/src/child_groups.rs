@@ -43,7 +43,10 @@ pub(crate) fn spawn(command: &mut Command) -> io::Result<TrackedChild> {
 
 /// `spawn`, running `before_tracking` between the start and the tracking, so a test can stop the
 /// process at exactly that point.
-fn spawn_with(command: &mut Command, before_tracking: impl FnOnce(&Child)) -> io::Result<TrackedChild> {
+fn spawn_with(
+    command: &mut Command,
+    before_tracking: impl FnOnce(&Child),
+) -> io::Result<TrackedChild> {
     let start = Start::begin();
     let old_mask = start.old_mask;
     // Safety: the closure only makes async-signal-safe calls, on a copy of the mask.
@@ -63,8 +66,15 @@ fn spawn_with(command: &mut Command, before_tracking: impl FnOnce(&Child)) -> io
     let child = command.spawn()?;
     before_tracking(&child);
     let group = child.id() as i32;
-    let slot = GROUPS.iter().find(|slot| slot.compare_exchange(0, group, Ordering::SeqCst, Ordering::SeqCst).is_ok());
-    Ok(TrackedChild { child, slot, reaped: false })
+    let slot = GROUPS.iter().find(|slot| {
+        slot.compare_exchange(0, group, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    });
+    Ok(TrackedChild {
+        child,
+        slot,
+        reaped: false,
+    })
 }
 
 /// The time between starting a child and tracking it, during which this thread does not take the
@@ -127,7 +137,14 @@ impl TrackedChild {
             // Safety: an all-zero siginfo is valid for waitid to fill in.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             // Safety: `info` is valid for the call; the child is ours and not yet reaped.
-            let status = unsafe { libc::waitid(libc::P_PID, self.id() as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+            let status = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.id() as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            };
             if status == 0 {
                 return Ok(());
             }
@@ -194,7 +211,10 @@ pub fn end_children_with_this_process() {
 /// raised again with its default action, so this process ends the way it would have without a handler.
 extern "C" fn end_groups_and_die(signal: libc::c_int) {
     ENDING.store(true, Ordering::SeqCst);
-    let tick = libc::timespec { tv_sec: 0, tv_nsec: START_WAIT_TICK_NANOS };
+    let tick = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: START_WAIT_TICK_NANOS,
+    };
     for _ in 0..START_WAIT_TICKS {
         if STARTING.load(Ordering::SeqCst) == 0 {
             break;
@@ -222,7 +242,9 @@ mod tests {
     use std::os::unix::process::CommandExt;
 
     fn is_tracked(pid: u32) -> bool {
-        GROUPS.iter().any(|slot| slot.load(Ordering::SeqCst) == pid as i32)
+        GROUPS
+            .iter()
+            .any(|slot| slot.load(Ordering::SeqCst) == pid as i32)
     }
 
     #[test]
@@ -235,7 +257,11 @@ mod tests {
         assert!(is_tracked(pid));
         // A reaped process's id is free to be reused; signal 0 only checks that the id is still its own.
         // Safety: plain system call.
-        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, 0, "waiting for the exit reaped it");
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            0,
+            "waiting for the exit reaped it"
+        );
 
         assert!(child.reap().unwrap().success());
 
@@ -244,24 +270,34 @@ mod tests {
 
     fn running(pid: i32) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            let state = stat.rfind(')').and_then(|at| stat[at + 1..].split_whitespace().next().map(str::to_string));
+            let state = stat
+                .rfind(')')
+                .and_then(|at| stat[at + 1..].split_whitespace().next().map(str::to_string));
             !matches!(state.as_deref(), Some("Z" | "X" | "x"))
         })
     }
 
     fn scratch_file(tag: &str) -> std::path::PathBuf {
-        orq_test_support::process_temp_dir().join(format!("orq-child-groups-{}-{tag}", std::process::id()))
+        orq_test_support::process_temp_dir()
+            .join(format!("orq-child-groups-{}-{tag}", std::process::id()))
     }
 
     /// Waits for a program to write the id of what it started.
     fn written_pid(file: &std::path::Path) -> i32 {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            if let Some(pid) = std::fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok()) {
+            if let Some(pid) = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
                 let _ = std::fs::remove_file(file);
                 return pid;
             }
-            assert!(std::time::Instant::now() < until, "nothing was written to {}", file.display());
+            assert!(
+                std::time::Instant::now() < until,
+                "nothing was written to {}",
+                file.display()
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
@@ -312,7 +348,10 @@ mod tests {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !child.has_exited().unwrap() {
             // Dropping the child on this failure ends it.
-            assert!(std::time::Instant::now() < until, "the child did not take the signal");
+            assert!(
+                std::time::Instant::now() < until,
+                "the child did not take the signal"
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(child.reap().unwrap().signal(), Some(libc::SIGTERM));
@@ -325,7 +364,9 @@ mod tests {
     #[test]
     #[ignore = "only run by a_stop_while_a_child_is_starting_still_ends_it"]
     fn stopped_while_starting_a_child() {
-        let Ok(file) = std::env::var(PID_FILE_VARIABLE) else { return };
+        let Ok(file) = std::env::var(PID_FILE_VARIABLE) else {
+            return;
+        };
         end_children_with_this_process();
 
         let _child = spawn_with(Command::new("sleep").arg("300").process_group(0), |child| {
@@ -342,7 +383,11 @@ mod tests {
         let file = scratch_file("starting");
 
         let status = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "child_groups::tests::stopped_while_starting_a_child", "--ignored"])
+            .args([
+                "--exact",
+                "child_groups::tests::stopped_while_starting_a_child",
+                "--ignored",
+            ])
             .env(PID_FILE_VARIABLE, &file)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -355,7 +400,11 @@ mod tests {
             // Safety: plain system call, so the test leaves nothing behind.
             unsafe { libc::kill(started, libc::SIGKILL) };
         }
-        assert_eq!(status.signal(), Some(libc::SIGTERM), "the stop ended the process");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGTERM),
+            "the stop ended the process"
+        );
         assert!(gone, "the child outlived the stop");
     }
 
@@ -365,7 +414,9 @@ mod tests {
     /// Whether the process is still an exited child nothing has reaped.
     fn unreaped(pid: u32) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            let state = stat.rfind(')').and_then(|at| stat[at + 1..].split_whitespace().next().map(str::to_string));
+            let state = stat
+                .rfind(')')
+                .and_then(|at| stat[at + 1..].split_whitespace().next().map(str::to_string));
             state.as_deref() == Some("Z")
         })
     }
@@ -400,13 +451,21 @@ mod tests {
     #[test]
     fn a_child_is_not_reaped_once_the_process_is_ending() {
         let status = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "child_groups::tests::reaping_while_ending", "--ignored"])
+            .args([
+                "--exact",
+                "child_groups::tests::reaping_while_ending",
+                "--ignored",
+            ])
             .env(ENDING_VARIABLE, "1")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .unwrap();
 
-        assert_eq!(status.code(), Some(NOTHING_WAS_REAPED), "a child was reaped while the process was ending");
+        assert_eq!(
+            status.code(),
+            Some(NOTHING_WAS_REAPED),
+            "a child was reaped while the process was ending"
+        );
     }
 }

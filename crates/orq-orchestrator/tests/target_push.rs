@@ -8,7 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use orq_orchestrator::{push_target, target_push_state, Event, RunRecord, RunStore, TargetPush, TargetPushOutcome, TARGET_FETCH_LIMIT};
+use orq_orchestrator::{
+    push_target, target_push_state, Event, RunRecord, RunStore, TargetPush, TargetPushOutcome,
+    TARGET_FETCH_LIMIT,
+};
 use orq_test_support::FakeProvider;
 
 const ORIGIN: &str = "https://github.com/acme/widgets.git";
@@ -17,13 +20,24 @@ const LOOKUP: [&str; 2] = ["api", "repos/acme/widgets/branches/main"];
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -44,12 +58,23 @@ struct World {
 
 /// A checkout on `main` level with its origin, then `ahead` commits of its own on `main`.
 fn world(tag: &str, ahead: usize) -> World {
-    let root = orq_test_support::process_temp_dir().join(format!("orq-target-push-{}-{tag}", std::process::id()));
+    let root = orq_test_support::process_temp_dir()
+        .join(format!("orq-target-push-{}-{tag}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let origin = root.join("origin.git");
     let repo = root.join("repo");
     fs::create_dir_all(&repo).unwrap();
-    git(&root, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+    git(
+        &root,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            origin.to_str().unwrap(),
+        ],
+    );
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["remote", "add", "origin", ORIGIN]);
     let local = format!("url.file://{}.insteadOf", origin.display());
@@ -61,11 +86,19 @@ fn world(tag: &str, ahead: usize) -> World {
         commit(&repo, &format!("f{n}.txt"), &format!("change {n}"));
     }
     let store = RunStore::new(&root.join("state"));
-    World { root, repo, origin, store, base }
+    World {
+        root,
+        repo,
+        origin,
+        store,
+        base,
+    }
 }
 
 fn unprotected() -> FakeProvider {
-    FakeProvider::builder().reply(&LOOKUP, r#"{"name":"main","protected":false}"#).build()
+    FakeProvider::builder()
+        .reply(&LOOKUP, r#"{"name":"main","protected":false}"#)
+        .build()
 }
 
 fn request<'a>(w: &'a World, gh: &'a FakeProvider) -> TargetPush<'a> {
@@ -89,13 +122,23 @@ fn a_target_two_commits_ahead_and_not_protected_is_pushed_and_origin_then_equals
 
     let state = target_push_state(&push);
     assert_eq!(state.reason, None, "{state:?}");
-    assert_eq!((state.count, state.sha.as_deref()), (2, Some(head.as_str())), "{state:?}");
+    assert_eq!(
+        (state.count, state.sha.as_deref()),
+        (2, Some(head.as_str())),
+        "{state:?}"
+    );
 
     match push_target(&push, &head) {
-        TargetPushOutcome::Pushed { from, to, count, .. } => assert_eq!((from, to, count), (w.base.clone(), head.clone(), 2)),
+        TargetPushOutcome::Pushed {
+            from, to, count, ..
+        } => assert_eq!((from, to, count), (w.base.clone(), head.clone(), 2)),
         other => panic!("expected a push, got {other:?}"),
     }
-    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), head, "origin now has the local target");
+    assert_eq!(
+        git(&w.origin, &["rev-parse", "refs/heads/main"]),
+        head,
+        "origin now has the local target"
+    );
 }
 
 #[test]
@@ -107,46 +150,89 @@ fn only_the_target_is_pushed_even_when_the_checkout_follows_tags() {
     let push = request(&w, &gh);
     let head = git(&w.repo, &["rev-parse", "main"]);
 
-    assert!(matches!(push_target(&push, &head), TargetPushOutcome::Pushed { .. }));
+    assert!(matches!(
+        push_target(&push, &head),
+        TargetPushOutcome::Pushed { .. }
+    ));
     assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), head);
-    assert_eq!(git(&w.origin, &["tag", "--list"]), "", "no tag went with the push");
+    assert_eq!(
+        git(&w.origin, &["tag", "--list"]),
+        "",
+        "no tag went with the push"
+    );
 }
 
 #[test]
 fn a_branch_github_reports_protected_is_refused_after_one_rest_lookup_and_never_graphql() {
     let w = world("protected", 2);
-    let gh = FakeProvider::builder().reply(&LOOKUP, r#"{"name":"main","protected":true}"#).build();
+    let gh = FakeProvider::builder()
+        .reply(&LOOKUP, r#"{"name":"main","protected":true}"#)
+        .build();
     let push = request(&w, &gh);
     let head = git(&w.repo, &["rev-parse", "main"]);
 
     let state = target_push_state(&push);
-    assert_eq!(state.reason.as_deref(), Some("main is protected on GitHub: deliver by review instead"), "{state:?}");
+    assert_eq!(
+        state.reason.as_deref(),
+        Some("main is protected on GitHub: deliver by review instead"),
+        "{state:?}"
+    );
     assert_eq!(state.count, 2, "the commits are still listed: {state:?}");
     match push_target(&push, &head) {
-        TargetPushOutcome::Refused(reason) => assert_eq!(reason, "main is protected on GitHub: deliver by review instead"),
+        TargetPushOutcome::Refused(reason) => assert_eq!(
+            reason,
+            "main is protected on GitHub: deliver by review instead"
+        ),
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "nothing was pushed");
+    assert_eq!(
+        git(&w.origin, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "nothing was pushed"
+    );
     let calls = gh.calls();
     assert!(!calls.is_empty(), "GitHub was asked");
     for call in calls {
-        assert_eq!((call.program.as_str(), call.args.as_slice()), ("gh", &LOOKUP.map(String::from)[..]), "only the REST lookup is made");
+        assert_eq!(
+            (call.program.as_str(), call.args.as_slice()),
+            ("gh", &LOOKUP.map(String::from)[..]),
+            "only the REST lookup is made"
+        );
     }
 }
 
 #[test]
 fn a_failed_branch_lookup_is_refused_with_its_reason_and_protection_is_never_assumed_away() {
-    let failing = FakeProvider::builder().fail(&LOOKUP, 1, "HTTP 401: Bad credentials").build();
-    let garbled = FakeProvider::builder().reply(&LOOKUP, "<html>nope</html>").build();
-    for (tag, gh, why) in [("lookup-fails", &failing, "HTTP 401: Bad credentials"), ("lookup-garbled", &garbled, "GitHub's answer was not JSON")] {
+    let failing = FakeProvider::builder()
+        .fail(&LOOKUP, 1, "HTTP 401: Bad credentials")
+        .build();
+    let garbled = FakeProvider::builder()
+        .reply(&LOOKUP, "<html>nope</html>")
+        .build();
+    for (tag, gh, why) in [
+        ("lookup-fails", &failing, "HTTP 401: Bad credentials"),
+        ("lookup-garbled", &garbled, "GitHub's answer was not JSON"),
+    ] {
         let w = world(tag, 1);
         let push = request(&w, gh);
         let head = git(&w.repo, &["rev-parse", "main"]);
         let expected = format!("GitHub could not say whether main is protected: {why}");
 
-        assert_eq!(target_push_state(&push).reason, Some(expected.clone()), "{tag}");
-        assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(expected), "{tag}");
-        assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "{tag}: nothing was pushed");
+        assert_eq!(
+            target_push_state(&push).reason,
+            Some(expected.clone()),
+            "{tag}"
+        );
+        assert_eq!(
+            push_target(&push, &head),
+            TargetPushOutcome::Refused(expected),
+            "{tag}"
+        );
+        assert_eq!(
+            git(&w.origin, &["rev-parse", "refs/heads/main"]),
+            w.base,
+            "{tag}: nothing was pushed"
+        );
     }
 }
 
@@ -155,20 +241,49 @@ fn a_gitlab_project_is_refused_with_deliver_by_mr_review_and_glab_is_never_run()
     let w = world("gitlab", 1);
     let gitlab = "https://gitlab.com/acme/widgets.git";
     git(&w.repo, &["remote", "set-url", "origin", gitlab]);
-    git(&w.repo, &["config", &format!("url.file://{}.insteadOf", w.origin.display()), gitlab]);
+    git(
+        &w.repo,
+        &[
+            "config",
+            &format!("url.file://{}.insteadOf", w.origin.display()),
+            gitlab,
+        ],
+    );
     let gh = unprotected();
     let push = request(&w, &gh);
     let head = git(&w.repo, &["rev-parse", "main"]);
 
     let state = target_push_state(&push);
-    assert_eq!((state.provider.as_deref(), state.reason.as_deref()), (Some("gitlab"), Some("GitLab: deliver by MR review")), "{state:?}");
-    assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused("GitLab: deliver by MR review".to_string()));
-    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "nothing was pushed");
-    assert_eq!(gh.calls(), vec![], "no provider CLI runs for a GitLab project");
+    assert_eq!(
+        (state.provider.as_deref(), state.reason.as_deref()),
+        (Some("gitlab"), Some("GitLab: deliver by MR review")),
+        "{state:?}"
+    );
+    assert_eq!(
+        push_target(&push, &head),
+        TargetPushOutcome::Refused("GitLab: deliver by MR review".to_string())
+    );
+    assert_eq!(
+        git(&w.origin, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "nothing was pushed"
+    );
+    assert_eq!(
+        gh.calls(),
+        vec![],
+        "no provider CLI runs for a GitLab project"
+    );
 
     let github = request(&w, &gh);
-    let forced = TargetPush { forge: Some("gh"), ..github };
-    assert_eq!(target_push_state(&forced).provider.as_deref(), Some("github"), "the project's forge setting wins");
+    let forced = TargetPush {
+        forge: Some("gh"),
+        ..github
+    };
+    assert_eq!(
+        target_push_state(&forced).provider.as_deref(),
+        Some("github"),
+        "the project's forge setting wins"
+    );
 }
 
 /// A merge-local run `id` of the project, pinned to `repository`, that merged at `head` from `base`.
@@ -215,36 +330,83 @@ fn an_origin_url_other_than_the_one_the_projects_runs_use_is_refused() {
     let refusal = "origin pushes to https://github.com/acme/widgets.git, not https://github.com/acme/other that this project's runs use";
 
     assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal));
-    assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()));
-    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "nothing was pushed");
+    assert_eq!(
+        push_target(&push, &head),
+        TargetPushOutcome::Refused(refusal.to_string())
+    );
+    assert_eq!(
+        git(&w.origin, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "nothing was pushed"
+    );
 
     let w = world("same-remote", 1);
     let head = git(&w.repo, &["rev-parse", "main"]);
     merged_run(&w, "run-1", REPOSITORY, &w.base, &head);
     let push = request(&w, &gh);
-    assert_eq!(target_push_state(&push).reason, None, "the runs' own repository is pushed to");
+    assert_eq!(
+        target_push_state(&push).reason,
+        None,
+        "the runs' own repository is pushed to"
+    );
 }
 
 #[test]
 fn an_origin_that_pushes_to_more_than_one_address_is_refused_and_neither_gets_the_commits() {
     let refusal = "origin pushes to more than one address: give it one push address first";
     // Two push urls, or two urls and no push url: `git push origin` would send to both.
-    for (tag, key) in [("two-pushurls", "remote.origin.pushurl"), ("two-urls", "remote.origin.url")] {
+    for (tag, key) in [
+        ("two-pushurls", "remote.origin.pushurl"),
+        ("two-urls", "remote.origin.url"),
+    ] {
         let w = world(tag, 1);
         let mirror = w.root.join("mirror.git");
-        git(&w.root, &["clone", "-q", "--bare", w.origin.to_str().unwrap(), mirror.to_str().unwrap()]);
+        git(
+            &w.root,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                w.origin.to_str().unwrap(),
+                mirror.to_str().unwrap(),
+            ],
+        );
         if key == "remote.origin.pushurl" {
             git(&w.repo, &["config", "--add", key, ORIGIN]);
         }
-        git(&w.repo, &["config", "--add", key, &format!("file://{}", mirror.display())]);
+        git(
+            &w.repo,
+            &[
+                "config",
+                "--add",
+                key,
+                &format!("file://{}", mirror.display()),
+            ],
+        );
         let gh = unprotected();
         let push = request(&w, &gh);
         let head = git(&w.repo, &["rev-parse", "main"]);
 
-        assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal), "{tag}");
-        assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()), "{tag}");
-        assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "{tag}: nothing was pushed");
-        assert_eq!(git(&mirror, &["rev-parse", "refs/heads/main"]), w.base, "{tag}: nothing was pushed to the other address");
+        assert_eq!(
+            target_push_state(&push).reason.as_deref(),
+            Some(refusal),
+            "{tag}"
+        );
+        assert_eq!(
+            push_target(&push, &head),
+            TargetPushOutcome::Refused(refusal.to_string()),
+            "{tag}"
+        );
+        assert_eq!(
+            git(&w.origin, &["rev-parse", "refs/heads/main"]),
+            w.base,
+            "{tag}: nothing was pushed"
+        );
+        assert_eq!(
+            git(&mirror, &["rev-parse", "refs/heads/main"]),
+            w.base,
+            "{tag}: nothing was pushed to the other address"
+        );
     }
 }
 
@@ -253,20 +415,55 @@ fn an_origin_that_fetches_from_one_repository_and_pushes_to_another_is_refused()
     let w = world("split-remote", 1);
     let fork = "https://github.com/acme/fork.git";
     let forked = w.root.join("fork.git");
-    git(&w.root, &["clone", "-q", "--bare", w.origin.to_str().unwrap(), forked.to_str().unwrap()]);
+    git(
+        &w.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            w.origin.to_str().unwrap(),
+            forked.to_str().unwrap(),
+        ],
+    );
     git(&w.repo, &["config", "remote.origin.pushurl", fork]);
-    git(&w.repo, &["config", &format!("url.file://{}.insteadOf", forked.display()), fork]);
-    let gh = FakeProvider::builder().reply(&["api", "repos/acme/fork/branches/main"], r#"{"name":"main","protected":false}"#).build();
+    git(
+        &w.repo,
+        &[
+            "config",
+            &format!("url.file://{}.insteadOf", forked.display()),
+            fork,
+        ],
+    );
+    let gh = FakeProvider::builder()
+        .reply(
+            &["api", "repos/acme/fork/branches/main"],
+            r#"{"name":"main","protected":false}"#,
+        )
+        .build();
     let push = request(&w, &gh);
     let head = git(&w.repo, &["rev-parse", "main"]);
     let refusal = "origin fetches from https://github.com/acme/widgets.git but pushes to https://github.com/acme/fork.git: the commits shown would not be the ones pushed";
 
     assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal));
-    assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()));
-    assert_eq!(git(&forked, &["rev-parse", "refs/heads/main"]), w.base, "nothing was pushed");
+    assert_eq!(
+        push_target(&push, &head),
+        TargetPushOutcome::Refused(refusal.to_string())
+    );
+    assert_eq!(
+        git(&forked, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "nothing was pushed"
+    );
 
     // The same repository written another way is one repository.
-    git(&w.repo, &["config", "remote.origin.pushurl", "https://github.com/acme/widgets"]);
+    git(
+        &w.repo,
+        &[
+            "config",
+            "remote.origin.pushurl",
+            "https://github.com/acme/widgets",
+        ],
+    );
     let gh = unprotected();
     assert_eq!(target_push_state(&request(&w, &gh)).reason, None);
 }
@@ -276,20 +473,42 @@ fn an_origin_git_rewrites_to_another_repository_is_refused_before_anything_is_fe
     let evil = "https://github.com/acme/evil.git";
     let refusal = "origin's address https://github.com/acme/widgets.git is rewritten by git to https://github.com/acme/evil.git: only the repository checked may get the commits";
     // pushInsteadOf rewrites only the push; insteadOf rewrites the fetch and the push.
-    for (tag, key) in [("push-instead-of", "pushInsteadOf"), ("instead-of", "insteadOf")] {
+    for (tag, key) in [
+        ("push-instead-of", "pushInsteadOf"),
+        ("instead-of", "insteadOf"),
+    ] {
         let w = world(tag, 1);
         if key == "insteadOf" {
-            git(&w.repo, &["config", "--unset", &format!("url.file://{}.insteadOf", w.origin.display())]);
+            git(
+                &w.repo,
+                &[
+                    "config",
+                    "--unset",
+                    &format!("url.file://{}.insteadOf", w.origin.display()),
+                ],
+            );
         }
         git(&w.repo, &["config", &format!("url.{evil}.{key}"), ORIGIN]);
         let gh = unprotected();
         let push = request(&w, &gh);
         let head = git(&w.repo, &["rev-parse", "main"]);
 
-        assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal), "{tag}");
-        assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()), "{tag}");
+        assert_eq!(
+            target_push_state(&push).reason.as_deref(),
+            Some(refusal),
+            "{tag}"
+        );
+        assert_eq!(
+            push_target(&push, &head),
+            TargetPushOutcome::Refused(refusal.to_string()),
+            "{tag}"
+        );
         assert!(gh.calls().is_empty(), "{tag}: nothing was asked of GitHub");
-        assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "{tag}: nothing was pushed");
+        assert_eq!(
+            git(&w.origin, &["rev-parse", "refs/heads/main"]),
+            w.base,
+            "{tag}: nothing was pushed"
+        );
     }
 }
 
@@ -297,15 +516,32 @@ fn an_origin_git_rewrites_to_another_repository_is_refused_before_anything_is_fe
 fn an_origin_git_rewrites_to_a_network_address_whose_repository_cannot_be_named_is_refused() {
     let refusal = "origin's address https://github.com/acme/widgets.git is rewritten by git to an address that is not a repository: only the repository checked may get the commits";
     // A query or fragment hides which repository a network address is; git still sends to it.
-    for (tag, rewritten) in [("query-rewrite", "https://other.example/repo.git?token=secret"), ("fragment-rewrite", "ssh://git@other.example/repo.git#main")] {
+    for (tag, rewritten) in [
+        (
+            "query-rewrite",
+            "https://other.example/repo.git?token=secret",
+        ),
+        ("fragment-rewrite", "ssh://git@other.example/repo.git#main"),
+    ] {
         let w = world(tag, 1);
-        git(&w.repo, &["config", &format!("url.{rewritten}.pushInsteadOf"), ORIGIN]);
+        git(
+            &w.repo,
+            &["config", &format!("url.{rewritten}.pushInsteadOf"), ORIGIN],
+        );
         let gh = unprotected();
         let push = request(&w, &gh);
         let head = git(&w.repo, &["rev-parse", "main"]);
 
-        assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal), "{tag}");
-        assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()), "{tag}");
+        assert_eq!(
+            target_push_state(&push).reason.as_deref(),
+            Some(refusal),
+            "{tag}"
+        );
+        assert_eq!(
+            push_target(&push, &head),
+            TargetPushOutcome::Refused(refusal.to_string()),
+            "{tag}"
+        );
         assert!(gh.calls().is_empty(), "{tag}: nothing was asked of GitHub");
     }
 }
@@ -314,19 +550,58 @@ fn an_origin_git_rewrites_to_a_network_address_whose_repository_cannot_be_named_
 fn a_refusal_naming_origins_addresses_never_shows_the_credentials_in_them() {
     let w = world("split-credentials", 1);
     let forked = w.root.join("fork.git");
-    git(&w.root, &["clone", "-q", "--bare", w.origin.to_str().unwrap(), forked.to_str().unwrap()]);
+    git(
+        &w.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            w.origin.to_str().unwrap(),
+            forked.to_str().unwrap(),
+        ],
+    );
     let fork = "https://x-access-token:ghp_secret123@github.com/acme/fork.git";
     git(&w.repo, &["config", "remote.origin.pushurl", fork]);
-    git(&w.repo, &["config", &format!("url.file://{}.insteadOf", forked.display()), fork]);
-    git(&w.repo, &["config", "remote.origin.url", "https://bot:hunter2@github.com/acme/widgets.git"]);
-    git(&w.repo, &["config", "--add", &format!("url.file://{}.insteadOf", w.origin.display()), "https://bot:hunter2@github.com/acme/widgets.git"]);
-    let gh = FakeProvider::builder().reply(&["api", "repos/acme/fork/branches/main"], r#"{"name":"main","protected":false}"#).build();
+    git(
+        &w.repo,
+        &[
+            "config",
+            &format!("url.file://{}.insteadOf", forked.display()),
+            fork,
+        ],
+    );
+    git(
+        &w.repo,
+        &[
+            "config",
+            "remote.origin.url",
+            "https://bot:hunter2@github.com/acme/widgets.git",
+        ],
+    );
+    git(
+        &w.repo,
+        &[
+            "config",
+            "--add",
+            &format!("url.file://{}.insteadOf", w.origin.display()),
+            "https://bot:hunter2@github.com/acme/widgets.git",
+        ],
+    );
+    let gh = FakeProvider::builder()
+        .reply(
+            &["api", "repos/acme/fork/branches/main"],
+            r#"{"name":"main","protected":false}"#,
+        )
+        .build();
     let push = request(&w, &gh);
     let head = git(&w.repo, &["rev-parse", "main"]);
     let refusal = "origin fetches from https://github.com/acme/widgets.git but pushes to https://github.com/acme/fork.git: the commits shown would not be the ones pushed";
 
     assert_eq!(target_push_state(&push).reason.as_deref(), Some(refusal));
-    assert_eq!(push_target(&push, &head), TargetPushOutcome::Refused(refusal.to_string()));
+    assert_eq!(
+        push_target(&push, &head),
+        TargetPushOutcome::Refused(refusal.to_string())
+    );
 }
 
 #[test]
@@ -335,15 +610,34 @@ fn a_fetch_that_writes_much_to_stderr_still_finishes_and_is_not_taken_for_a_time
     let w = world("noisy-fetch", 1);
     // Origin's upload-pack writes 200 KB of diagnostics, more than a pipe holds, before serving.
     let noisy = w.root.join("noisy-upload-pack");
-    fs::write(&noisy, "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' x >&2\nexec git-upload-pack \"$@\"\n").unwrap();
+    fs::write(
+        &noisy,
+        "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' x >&2\nexec git-upload-pack \"$@\"\n",
+    )
+    .unwrap();
     fs::set_permissions(&noisy, fs::Permissions::from_mode(0o755)).unwrap();
-    git(&w.repo, &["config", "remote.origin.uploadpack", noisy.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            noisy.to_str().unwrap(),
+        ],
+    );
     let gh = unprotected();
     let started = std::time::Instant::now();
 
     let state = target_push_state(&request(&w, &gh));
-    assert_eq!((state.reason.as_deref(), state.count), (None, 1), "{state:?}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fetch was not held up: {:?}", started.elapsed());
+    assert_eq!(
+        (state.reason.as_deref(), state.count),
+        (None, 1),
+        "{state:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the fetch was not held up: {:?}",
+        started.elapsed()
+    );
 }
 
 /// Whether process `pid` has ended within a few seconds. A zombie has ended: once killed it only
@@ -353,9 +647,15 @@ fn a_fetch_that_writes_much_to_stderr_still_finishes_and_is_not_taken_for_a_time
 fn ended(pid: &str) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let out = Command::new("ps").args(["-o", "stat=", "-p", pid]).output().unwrap();
+        let out = Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .unwrap();
         let complaint = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        assert!(complaint.is_empty(), "ps could not inspect process {pid}: {complaint}");
+        assert!(
+            complaint.is_empty(),
+            "ps could not inspect process {pid}: {complaint}"
+        );
         let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if stat.is_empty() || stat.starts_with('Z') {
             return true;
@@ -380,18 +680,39 @@ fn a_fetch_whose_transport_leaves_a_process_holding_its_stderr_finishes_and_ends
     // Origin's upload-pack leaves a process behind that keeps the fetch's stderr open after git exits.
     let pidfile = w.root.join("lingering.pid");
     let lingering = w.root.join("lingering-upload-pack");
-    let script = format!("#!/bin/sh\nsleep 45 </dev/null >/dev/null &\necho $! > {}\nexec git-upload-pack \"$@\"\n", pidfile.display());
+    let script = format!(
+        "#!/bin/sh\nsleep 45 </dev/null >/dev/null &\necho $! > {}\nexec git-upload-pack \"$@\"\n",
+        pidfile.display()
+    );
     fs::write(&lingering, script).unwrap();
     fs::set_permissions(&lingering, fs::Permissions::from_mode(0o755)).unwrap();
-    git(&w.repo, &["config", "remote.origin.uploadpack", lingering.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            lingering.to_str().unwrap(),
+        ],
+    );
     let gh = unprotected();
     let started = std::time::Instant::now();
 
     let state = target_push_state(&request(&w, &gh));
-    assert_eq!((state.reason.as_deref(), state.count), (None, 1), "{state:?}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(30), "the fetch was not held up: {:?}", started.elapsed());
+    assert_eq!(
+        (state.reason.as_deref(), state.count),
+        (None, 1),
+        "{state:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the fetch was not held up: {:?}",
+        started.elapsed()
+    );
     let pid = fs::read_to_string(&pidfile).unwrap();
-    assert!(ended(pid.trim()), "the process the transport left behind was ended");
+    assert!(
+        ended(pid.trim()),
+        "the process the transport left behind was ended"
+    );
 }
 
 #[test]
@@ -401,16 +722,41 @@ fn a_fetch_whose_transport_hangs_is_ended_at_the_limit_with_its_process_group() 
     // Origin's upload-pack never answers.
     let pidfile = w.root.join("hanging.pid");
     let hanging = w.root.join("hanging-upload-pack");
-    fs::write(&hanging, format!("#!/bin/sh\nsleep 45 &\necho $! > {}\nwait\n", pidfile.display())).unwrap();
+    fs::write(
+        &hanging,
+        format!(
+            "#!/bin/sh\nsleep 45 &\necho $! > {}\nwait\n",
+            pidfile.display()
+        ),
+    )
+    .unwrap();
     fs::set_permissions(&hanging, fs::Permissions::from_mode(0o755)).unwrap();
-    git(&w.repo, &["config", "remote.origin.uploadpack", hanging.to_str().unwrap()]);
+    git(
+        &w.repo,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            hanging.to_str().unwrap(),
+        ],
+    );
     let gh = unprotected();
-    let push = TargetPush { fetch_limit: std::time::Duration::from_secs(2), ..request(&w, &gh) };
+    let push = TargetPush {
+        fetch_limit: std::time::Duration::from_secs(2),
+        ..request(&w, &gh)
+    };
     let started = std::time::Instant::now();
 
     let state = target_push_state(&push);
-    assert_eq!(state.reason.as_deref(), Some("origin/main could not be fetched within 2 seconds"), "{state:?}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(20), "the fetch was ended at its limit: {:?}", started.elapsed());
+    assert_eq!(
+        state.reason.as_deref(),
+        Some("origin/main could not be fetched within 2 seconds"),
+        "{state:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the fetch was ended at its limit: {:?}",
+        started.elapsed()
+    );
     assert!(gh.calls().is_empty(), "nothing was asked of GitHub");
     let pid = fs::read_to_string(&pidfile).unwrap();
     assert!(ended(pid.trim()), "the hung transport was ended");
@@ -424,12 +770,20 @@ fn a_branch_that_moved_after_confirmation_is_refused() {
     let confirmed = target_push_state(&push).sha.unwrap();
     commit(&w.repo, "late.txt", "late");
 
-    assert_eq!(push_target(&push, &confirmed), TargetPushOutcome::Refused("the branch changed: review again".to_string()));
-    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "nothing was pushed");
+    assert_eq!(
+        push_target(&push, &confirmed),
+        TargetPushOutcome::Refused("the branch changed: review again".to_string())
+    );
+    assert_eq!(
+        git(&w.origin, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "nothing was pushed"
+    );
 }
 
 #[test]
-fn commits_link_to_the_run_they_came_from_others_are_not_from_orq_and_pushed_runs_get_target_pushed() {
+fn commits_link_to_the_run_they_came_from_others_are_not_from_orq_and_pushed_runs_get_target_pushed(
+) {
     let w = world("runs", 0);
     merged_run(&w, "run-0", REPOSITORY, &w.base, &w.base);
     let first = commit(&w.repo, "r1.txt", "run work 1");
@@ -440,8 +794,19 @@ fn commits_link_to_the_run_they_came_from_others_are_not_from_orq_and_pushed_run
     let push = request(&w, &gh);
 
     let state = target_push_state(&push);
-    let listed: Vec<(&str, Option<&str>)> = state.commits.iter().map(|c| (c.sha.as_str(), c.run.as_deref())).collect();
-    assert_eq!(listed, vec![(by_hand.as_str(), None), (run_head.as_str(), Some("run-1")), (first.as_str(), Some("run-1"))]);
+    let listed: Vec<(&str, Option<&str>)> = state
+        .commits
+        .iter()
+        .map(|c| (c.sha.as_str(), c.run.as_deref()))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            (by_hand.as_str(), None),
+            (run_head.as_str(), Some("run-1")),
+            (first.as_str(), Some("run-1"))
+        ]
+    );
     assert_eq!(state.commits[0].short, by_hand[..7]);
     assert_eq!(state.commits[0].subject, "fix typo by hand");
 
@@ -449,10 +814,26 @@ fn commits_link_to_the_run_they_came_from_others_are_not_from_orq_and_pushed_run
         TargetPushOutcome::Pushed { runs, .. } => assert_eq!(runs, vec!["run-1".to_string()]),
         other => panic!("expected a push, got {other:?}"),
     }
-    let pushed: Vec<Event> = w.store.events("run-1").unwrap().into_iter().filter(|e| e.kind == "target.pushed").collect();
+    let pushed: Vec<Event> = w
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "target.pushed")
+        .collect();
     assert_eq!(pushed.len(), 1, "{pushed:?}");
-    assert_eq!(pushed[0].payload, serde_json::json!({ "sha": by_hand, "remote": "origin", "target": "main" }));
-    assert!(!w.store.events("run-0").unwrap().iter().any(|e| e.kind == "target.pushed"), "a run with nothing in the push is left alone");
+    assert_eq!(
+        pushed[0].payload,
+        serde_json::json!({ "sha": by_hand, "remote": "origin", "target": "main" })
+    );
+    assert!(
+        !w.store
+            .events("run-0")
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "target.pushed"),
+        "a run with nothing in the push is left alone"
+    );
 }
 
 #[test]
@@ -469,21 +850,48 @@ fn a_push_origin_rejects_after_the_checks_pass_shows_gits_reason_and_records_not
 
     assert_eq!(target_push_state(&push).reason, None, "the checks pass");
     match push_target(&push, &run_head) {
-        TargetPushOutcome::Refused(reason) => assert!(reason.contains("denied by policy"), "{reason}"),
+        TargetPushOutcome::Refused(reason) => {
+            assert!(reason.contains("denied by policy"), "{reason}")
+        }
         other => panic!("expected a refusal, got {other:?}"),
     }
-    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "origin keeps its tip");
-    assert!(!w.store.events("run-1").unwrap().iter().any(|e| e.kind == "target.pushed"), "no push is recorded");
+    assert_eq!(
+        git(&w.origin, &["rev-parse", "refs/heads/main"]),
+        w.base,
+        "origin keeps its tip"
+    );
+    assert!(
+        !w.store
+            .events("run-1")
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "target.pushed"),
+        "no push is recorded"
+    );
 }
 
 #[test]
 fn a_target_that_is_not_a_plain_branch_name_is_refused_before_anything_is_fetched_or_asked() {
     let w = world("odd-target", 1);
     let gh = unprotected();
-    for target in ["main:refs/heads/x", "-main", "+main", "ma in", "", "refs/../main"] {
-        let push = TargetPush { target, ..request(&w, &gh) };
+    for target in [
+        "main:refs/heads/x",
+        "-main",
+        "+main",
+        "ma in",
+        "",
+        "refs/../main",
+    ] {
+        let push = TargetPush {
+            target,
+            ..request(&w, &gh)
+        };
         let reason = target_push_state(&push).reason.unwrap_or_default();
-        assert_eq!(reason, format!("{target:?} is not a plain branch name"), "{target:?}");
+        assert_eq!(
+            reason,
+            format!("{target:?} is not a plain branch name"),
+            "{target:?}"
+        );
     }
     assert_eq!(gh.calls(), vec![], "GitHub was not asked");
 }
@@ -491,7 +899,15 @@ fn a_target_that_is_not_a_plain_branch_name_is_refused_before_anything_is_fetche
 /// Someone else pushes a commit to origin's `main`, which the checkout has not fetched.
 fn origin_moves_on(w: &World) -> String {
     let other = w.root.join("other");
-    git(&w.root, &["clone", "-q", w.origin.to_str().unwrap(), other.to_str().unwrap()]);
+    git(
+        &w.root,
+        &[
+            "clone",
+            "-q",
+            w.origin.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
     let sha = commit(&other, "theirs.txt", "theirs");
     git(&other, &["push", "-q", "origin", "main"]);
     sha
@@ -507,12 +923,27 @@ fn origin_ahead_or_diverged_is_refused_and_nothing_is_force_pushed() {
         let head = git(&w.repo, &["rev-parse", "main"]);
 
         let state = target_push_state(&push);
-        assert_eq!(state.reason.as_deref(), Some("origin/main has commits you don't have: pull first"), "{tag}: {state:?}");
+        assert_eq!(
+            state.reason.as_deref(),
+            Some("origin/main has commits you don't have: pull first"),
+            "{tag}: {state:?}"
+        );
         match push_target(&push, &head) {
-            TargetPushOutcome::Refused(reason) => assert_eq!(reason, "origin/main has commits you don't have: pull first", "{tag}"),
+            TargetPushOutcome::Refused(reason) => assert_eq!(
+                reason, "origin/main has commits you don't have: pull first",
+                "{tag}"
+            ),
             other => panic!("{tag}: expected a refusal, got {other:?}"),
         }
-        assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), theirs, "{tag}: origin keeps its own commit");
-        assert_eq!(git(&w.repo, &["rev-parse", "main"]), head, "{tag}: the local target is left alone");
+        assert_eq!(
+            git(&w.origin, &["rev-parse", "refs/heads/main"]),
+            theirs,
+            "{tag}: origin keeps its own commit"
+        );
+        assert_eq!(
+            git(&w.repo, &["rev-parse", "main"]),
+            head,
+            "{tag}: the local target is left alone"
+        );
     }
 }

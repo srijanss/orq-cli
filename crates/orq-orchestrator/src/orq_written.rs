@@ -54,8 +54,13 @@ pub fn record_orq_written(worktree: &Path) -> Vec<String> {
     // Every file `mcpctl init` lists as scaffolded is orq's too, except the TDD config: that is orq's
     // only as the copy orq carried in, which carrying recorded when it copied it. A config the
     // worktree already had stays the worktree's own, whatever it holds or lists it.
-    let scaffolded = crate::mcp_setup::scaffolded_files(worktree).into_iter().filter(|name| name != TDD_CONFIG);
-    let names = CANDIDATES.iter().map(|name| name.to_string()).chain(scaffolded);
+    let scaffolded = crate::mcp_setup::scaffolded_files(worktree)
+        .into_iter()
+        .filter(|name| name != TDD_CONFIG);
+    let names = CANDIDATES
+        .iter()
+        .map(|name| name.to_string())
+        .chain(scaffolded);
     let mut recorded: BTreeMap<String, String> = names
         .filter_map(|name| fingerprint(worktree, &name).map(|print| (name, print)))
         .collect();
@@ -115,7 +120,10 @@ impl Recorded {
     /// The record; empty when it is missing or malformed, so nothing is taken for orq's.
     pub(crate) fn load(worktree: &Path) -> Self {
         let text = manifest_path(worktree).and_then(|path| std::fs::read_to_string(path).ok());
-        Self(text.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default())
+        Self(
+            text.and_then(|text| serde_json::from_str(&text).ok())
+                .unwrap_or_default(),
+        )
     }
 
     /// The TDD config's fingerprint while it is still the copy orq carried in and recorded.

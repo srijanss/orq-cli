@@ -744,7 +744,15 @@ fn flaky_transport(w: &World, failures: u32) {
     fake_ssh();
     fs::write(w.root.join("ssh-failures"), failures.to_string()).unwrap();
     let remote = w.remote.to_str().unwrap();
-    git(&w.worktree, &["remote", "set-url", "origin", &format!("git@forge.example:{remote}")]);
+    git(
+        &w.worktree,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("git@forge.example:{remote}"),
+        ],
+    );
 }
 
 fn pushes_seen(w: &World) -> u32 {
@@ -758,20 +766,36 @@ fn a_push_that_fails_on_a_network_error_is_retried_with_a_growing_wait_and_succe
     let w = world("retry-ok", "fix--COM-02", "main", Some("origin"));
     flaky_transport(&w, 2);
     let waits = std::cell::RefCell::new(Vec::new());
-    let policy = orq_orchestrator::RetryPolicy { max_attempts: 4, base: std::time::Duration::from_secs(2) };
+    let policy = orq_orchestrator::RetryPolicy {
+        max_attempts: 4,
+        base: std::time::Duration::from_secs(2),
+    };
 
     let outcome =
-        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
-            .unwrap();
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| {
+            waits.borrow_mut().push(d)
+        })
+        .unwrap();
 
     assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
-    assert_eq!(pushes_seen(&w), 3, "two transient failures, then the push that landed");
+    assert_eq!(
+        pushes_seen(&w),
+        3,
+        "two transient failures, then the push that landed"
+    );
     assert_eq!(
         *waits.borrow(),
-        [std::time::Duration::from_secs(2), std::time::Duration::from_secs(4)],
+        [
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(4)
+        ],
         "the wait doubles"
     );
-    assert_eq!(kinds(&w), ["stage.started", "stage.completed"], "one stage, however many attempts");
+    assert_eq!(
+        kinds(&w),
+        ["stage.started", "stage.completed"],
+        "one stage, however many attempts"
+    );
 }
 
 #[test]
@@ -779,11 +803,16 @@ fn a_push_that_keeps_failing_on_the_network_gives_up_after_the_bound() {
     let w = world("retry-bounded", "fix--COM-02", "main", Some("origin"));
     flaky_transport(&w, 100);
     let waits = std::cell::RefCell::new(Vec::new());
-    let policy = orq_orchestrator::RetryPolicy { max_attempts: 3, base: std::time::Duration::from_secs(1) };
+    let policy = orq_orchestrator::RetryPolicy {
+        max_attempts: 3,
+        base: std::time::Duration::from_secs(1),
+    };
 
     let outcome =
-        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
-            .unwrap();
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| {
+            waits.borrow_mut().push(d)
+        })
+        .unwrap();
 
     assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
     assert_eq!(pushes_seen(&w), 3, "exactly the bound");
@@ -796,30 +825,52 @@ fn a_push_the_remote_refuses_is_not_retried() {
     let w = world("retry-refused", "fix--COM-02", "main", None);
     flaky_remote(&w, 100, "policy: this branch is protected");
     let waits = std::cell::RefCell::new(Vec::new());
-    let policy = orq_orchestrator::RetryPolicy { max_attempts: 4, base: std::time::Duration::from_secs(1) };
+    let policy = orq_orchestrator::RetryPolicy {
+        max_attempts: 4,
+        base: std::time::Duration::from_secs(1),
+    };
 
     let outcome =
-        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
-            .unwrap();
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| {
+            waits.borrow_mut().push(d)
+        })
+        .unwrap();
 
     assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
-    assert_eq!(pushes_seen(&w), 1, "a refusal will not change by asking again");
+    assert_eq!(
+        pushes_seen(&w),
+        1,
+        "a refusal will not change by asking again"
+    );
     assert!(waits.borrow().is_empty());
 }
 
 #[test]
 fn a_hook_rejection_is_not_retried_even_when_its_message_names_a_network_error() {
     let w = world("retry-hook-words", "fix--COM-02", "main", None);
-    flaky_remote(&w, 100, "policy: Could not resolve host of the ticket tracker");
+    flaky_remote(
+        &w,
+        100,
+        "policy: Could not resolve host of the ticket tracker",
+    );
     let waits = std::cell::RefCell::new(Vec::new());
-    let policy = orq_orchestrator::RetryPolicy { max_attempts: 4, base: std::time::Duration::from_secs(1) };
+    let policy = orq_orchestrator::RetryPolicy {
+        max_attempts: 4,
+        base: std::time::Duration::from_secs(1),
+    };
 
     let outcome =
-        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
-            .unwrap();
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| {
+            waits.borrow_mut().push(d)
+        })
+        .unwrap();
 
     assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
-    assert_eq!(pushes_seen(&w), 1, "the remote answered; asking again repeats its hook");
+    assert_eq!(
+        pushes_seen(&w),
+        1,
+        "the remote answered; asking again repeats its hook"
+    );
     assert!(waits.borrow().is_empty());
 }
 
@@ -834,17 +885,26 @@ fn a_huge_backoff_is_capped_instead_of_overflowing() {
     };
 
     let outcome =
-        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| waits.borrow_mut().push(d))
-            .unwrap();
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|d| {
+            waits.borrow_mut().push(d)
+        })
+        .unwrap();
 
     assert!(matches!(outcome, PushOutcome::Failed { .. }), "{outcome:?}");
     assert_eq!(waits.borrow().len(), 3);
     assert!(
-        waits.borrow().iter().all(|d| *d <= std::time::Duration::from_secs(60)),
+        waits
+            .borrow()
+            .iter()
+            .all(|d| *d <= std::time::Duration::from_secs(60)),
         "no wait is longer than a minute: {:?}",
         waits.borrow()
     );
-    assert_eq!(kinds(&w), ["stage.started", "stage.failed"], "the stage is not left started");
+    assert_eq!(
+        kinds(&w),
+        ["stage.started", "stage.failed"],
+        "the stage is not left started"
+    );
 }
 
 #[test]
@@ -853,15 +913,37 @@ fn a_push_the_remote_took_but_whose_acknowledgement_was_lost_succeeds_on_retry()
     fake_ssh();
     fs::write(w.root.join("ssh-ack-lost"), "").unwrap();
     let remote = w.remote.to_str().unwrap();
-    git(&w.worktree, &["remote", "set-url", "origin", &format!("git@forge.example:{remote}")]);
+    git(
+        &w.worktree,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("git@forge.example:{remote}"),
+        ],
+    );
     let head = git(&w.worktree, &["rev-parse", "HEAD"]);
-    let policy = orq_orchestrator::RetryPolicy { max_attempts: 3, base: std::time::Duration::from_secs(1) };
+    let policy = orq_orchestrator::RetryPolicy {
+        max_attempts: 3,
+        base: std::time::Duration::from_secs(1),
+    };
 
     let outcome =
-        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|_| {}).unwrap();
+        orq_orchestrator::push_run_branch_with(&w.store, "run-1", &w.log, &policy, &|_| {})
+            .unwrap();
 
     assert!(matches!(outcome, PushOutcome::Pushed { .. }), "{outcome:?}");
-    assert!(w.root.join("ack-lost-done").exists(), "the first attempt reached the remote");
-    assert_eq!(git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]), head);
-    assert_eq!(kinds(&w), ["stage.started", "stage.completed"], "one terminal event");
+    assert!(
+        w.root.join("ack-lost-done").exists(),
+        "the first attempt reached the remote"
+    );
+    assert_eq!(
+        git(&w.remote, &["rev-parse", "refs/heads/fix--COM-02"]),
+        head
+    );
+    assert_eq!(
+        kinds(&w),
+        ["stage.started", "stage.completed"],
+        "one terminal event"
+    );
 }

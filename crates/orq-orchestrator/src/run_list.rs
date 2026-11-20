@@ -67,7 +67,9 @@ pub fn list_runs_report(store: &RunStore, project_id: &str) -> Result<RunList, S
         };
         let summary = summarize_run(&events);
         // Only a run that ended handed over is shown as continued; a resumed pause that runs on is not.
-        let resumed_as = summary.resumed_as.filter(|_| summary.phase == RunPhase::Completed);
+        let resumed_as = summary
+            .resumed_as
+            .filter(|_| summary.phase == RunPhase::Completed);
         let reason = match &resumed_as {
             Some(id) => Some(format!("continued as {id}")),
             None => summary.reason,
@@ -105,8 +107,16 @@ pub fn was_unattended(events: &[crate::store::Event]) -> bool {
 
 /// The notes of the run's latest `mcp.setup` event; none when it has no such event.
 fn mcp_notes(events: &[crate::store::Event]) -> Vec<String> {
-    let notes = events.iter().rev().find(|e| e.kind == "mcp.setup").and_then(|e| e.payload.get("notes")?.as_array().cloned());
-    notes.unwrap_or_default().iter().filter_map(|n| n.as_str().map(str::to_string)).collect()
+    let notes = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "mcp.setup")
+        .and_then(|e| e.payload.get("notes")?.as_array().cloned());
+    notes
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|n| n.as_str().map(str::to_string))
+        .collect()
 }
 
 /// Show as [`RunPhase::Merged`] each failed or review-waiting run of `list` whose work is on its
@@ -117,7 +127,10 @@ pub fn mark_merged_runs(store: &RunStore, list: &mut RunList, repo: &Path) {
         if !matches!(run.phase, RunPhase::Failed | RunPhase::NeedsReview) {
             continue;
         }
-        if store.load(&run.run_id).is_ok_and(|record| work_is_on_target(repo, &record)) {
+        if store
+            .load(&run.run_id)
+            .is_ok_and(|record| work_is_on_target(repo, &record))
+        {
             run.phase = RunPhase::Merged;
         }
     }
@@ -138,9 +151,24 @@ pub(crate) fn work_on_target(repo: &Path, record: &RunRecord) -> Result<bool, St
     }
     let branch = format!("refs/heads/{}", record.branch);
     let target = format!("refs/heads/{}", record.target_branch);
-    let failed = |e: String| format!("could not tell whether {}'s work is on its target branch {}: {e}", record.run_id, record.target_branch);
+    let failed = |e: String| {
+        format!(
+            "could not tell whether {}'s work is on its target branch {}: {e}",
+            record.run_id, record.target_branch
+        )
+    };
     for rev in [&branch, &record.base_sha, &target] {
-        let out = git_raw(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{rev}^{{commit}}")]).map_err(|e| failed(e.to_string()))?;
+        let out = git_raw(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{rev}^{{commit}}"),
+            ],
+        )
+        .map_err(|e| failed(e.to_string()))?;
         // With --quiet, a revision that does not exist exits 1 and says nothing; anything else is git failing.
         match out.code {
             Some(0) => {}
@@ -150,7 +178,17 @@ pub(crate) fn work_on_target(repo: &Path, record: &RunRecord) -> Result<bool, St
     }
     // Whether the branch has any commit `not` lacks: git stops at the first one it finds.
     let has_commit_past = |not: &str| -> Result<bool, String> {
-        let out = git_raw(repo, &["rev-list", "--max-count=1", "--end-of-options", &branch, &format!("^{not}")]).map_err(|e| failed(e.to_string()))?;
+        let out = git_raw(
+            repo,
+            &[
+                "rev-list",
+                "--max-count=1",
+                "--end-of-options",
+                &branch,
+                &format!("^{not}"),
+            ],
+        )
+        .map_err(|e| failed(e.to_string()))?;
         if !out.success {
             return Err(failed(out.stderr.trim().to_string()));
         }

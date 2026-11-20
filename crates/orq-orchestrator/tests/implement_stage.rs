@@ -195,7 +195,10 @@ fn a_session_killed_by_a_signal_is_failed_without_an_exit_code_and_says_so() {
     assert_eq!(failed.payload["exit_code"], serde_json::Value::Null);
     assert_eq!(failed.payload["signal"], 15);
     // Only SIGKILL points at the out-of-memory killer.
-    assert_eq!(failed.payload["reason"], "sh was stopped by signal 15 (SIGTERM)");
+    assert_eq!(
+        failed.payload["reason"],
+        "sh was stopped by signal 15 (SIGTERM)"
+    );
 }
 
 #[test]
@@ -300,7 +303,10 @@ fn a_terminal_session_leaves_a_log_saying_when_it_started_and_how_it_ended() {
             && lines[0].ends_with(&format!("in {}", s.cwd.display())),
         "{log}"
     );
-    assert!(lines[1].starts_with("[orq ") && lines[1].ends_with("sh exited with status 0"), "{log}");
+    assert!(
+        lines[1].starts_with("[orq ") && lines[1].ends_with("sh exited with status 0"),
+        "{log}"
+    );
 }
 
 #[cfg(unix)]
@@ -319,7 +325,10 @@ fn a_terminal_session_killed_by_a_signal_logs_the_same_reason_as_its_event() {
         .to_string();
     let log = fs::read_to_string(&s.log).unwrap();
     let last = log.lines().last().unwrap();
-    assert!(last.starts_with("[orq ") && last.ends_with(&format!("] {reason}")), "{log}");
+    assert!(
+        last.starts_with("[orq ") && last.ends_with(&format!("] {reason}")),
+        "{log}"
+    );
 }
 
 #[test]
@@ -357,18 +366,27 @@ fn a_terminal_session_that_cannot_start_logs_why_and_no_start_line() {
     let failed = &s.store.events("run-1").unwrap()[1];
     assert_eq!(failed.kind, "stage.failed");
     let reason = failed.payload["reason"].as_str().unwrap();
-    assert!(reason.starts_with("could not start /nonexistent/orq-no-such-program: "), "{reason}");
+    assert!(
+        reason.starts_with("could not start /nonexistent/orq-no-such-program: "),
+        "{reason}"
+    );
     let log = fs::read_to_string(&s.log).unwrap();
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 1, "{log}");
-    assert!(lines[0].starts_with("[orq ") && lines[0].ends_with(&format!("] {reason}")), "{log}");
+    assert!(
+        lines[0].starts_with("[orq ") && lines[0].ends_with(&format!("] {reason}")),
+        "{log}"
+    );
 }
 
 #[test]
 fn a_terminal_session_whose_marker_reports_a_problem_logs_how_it_ended_and_the_problem() {
     let s = setup("terminal-problem");
     let marker = s.cwd.join("done");
-    let script = format!("printf 'PROBLEM\\nthe tests fail\\n' > {}; sleep 30", marker.display());
+    let script = format!(
+        "printf 'PROBLEM\\nthe tests fail\\n' > {}; sleep 30",
+        marker.display()
+    );
     let args = argv(&["-c", &script]);
     let mut request = session(&s, &args, &[]);
     request.terminal = true;
@@ -386,7 +404,10 @@ fn a_terminal_session_whose_marker_reports_a_problem_logs_how_it_ended_and_the_p
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 3, "{log}");
     assert!(lines[0].contains("started sh (pid "), "{log}");
-    assert!(lines[1].ends_with("] sh was closed by orq after it wrote its exit marker"), "{log}");
+    assert!(
+        lines[1].ends_with("] sh was closed by orq after it wrote its exit marker"),
+        "{log}"
+    );
     assert!(lines[2].ends_with(&format!("] {reason}")), "{log}");
 }
 
@@ -416,5 +437,8 @@ fn a_session_start_records_how_many_lines_its_log_already_has() {
         .filter(|e| e.kind == "stage.started")
         .map(|e| e.payload["log_offset"].clone())
         .collect();
-    assert_eq!(offsets, [serde_json::json!(0), serde_json::json!("one\ntwo\n".len())]);
+    assert_eq!(
+        offsets,
+        [serde_json::json!(0), serde_json::json!("one\ntwo\n".len())]
+    );
 }

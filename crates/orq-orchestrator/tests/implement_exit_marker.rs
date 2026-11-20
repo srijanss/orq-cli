@@ -235,7 +235,10 @@ fn terminal_session_descendants_do_not_outlive_a_closed_or_exited_session() {
 
 fn stage_failure_reason(store: &RunStore) -> String {
     let events = store.events("run-1").unwrap();
-    let failed = events.iter().find(|e| e.kind == "stage.failed").expect("the stage failed");
+    let failed = events
+        .iter()
+        .find(|e| e.kind == "stage.failed")
+        .expect("the stage failed");
     failed.payload["reason"].as_str().unwrap().to_string()
 }
 
@@ -243,7 +246,10 @@ fn stage_failure_reason(store: &RunStore) -> String {
 fn a_session_that_writes_a_problem_into_its_marker_fails_the_stage_with_that_problem() {
     let (store, root) = setup("reported");
     let marker = root.join("worktree/done.marker");
-    let args = args(&format!("echo 'the review could not run' > {}; sleep 30", marker.display()));
+    let args = args(&format!(
+        "echo 'the review could not run' > {}; sleep 30",
+        marker.display()
+    ));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
@@ -255,7 +261,10 @@ fn a_session_that_writes_a_problem_into_its_marker_fails_the_stage_with_that_pro
 fn a_session_that_writes_a_problem_and_exits_by_itself_fails_the_stage_too() {
     let (store, root) = setup("reported-exit");
     let marker = root.join("worktree/done.marker");
-    let args = args(&format!("echo 'the review could not run' > {}; exit 0", marker.display()));
+    let args = args(&format!(
+        "echo 'the review could not run' > {}; exit 0",
+        marker.display()
+    ));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
@@ -270,7 +279,8 @@ fn a_marker_that_is_not_a_plain_file_fails_the_stage_and_is_not_followed() {
         let marker = root.join("worktree/done.marker");
         let args = args(&format!("{make} {}; sleep 30", marker.display()));
 
-        let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+        let outcome =
+            run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
         assert!(!outcome.success, "{tag}: {outcome:?}");
         let reason = stage_failure_reason(&store);
@@ -294,8 +304,15 @@ fn what_a_session_reports_is_cleaned_before_it_is_recorded() {
     let reason = stage_failure_reason(&store);
     assert!(reason.contains("first"), "{reason}");
     assert!(!reason.chars().any(char::is_control), "{reason:?}");
-    assert!(!reason.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "{reason}");
-    assert!(reason.chars().count() < 2500,"{} chars", reason.chars().count());
+    assert!(
+        !reason.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+        "{reason}"
+    );
+    assert!(
+        reason.chars().count() < 2500,
+        "{} chars",
+        reason.chars().count()
+    );
 }
 
 #[test]
@@ -312,7 +329,10 @@ fn a_report_of_a_few_paragraphs_is_recorded_whole() {
 
     assert!(!outcome.success, "{outcome:?}");
     let reason = stage_failure_reason(&store);
-    assert!(reason.contains("HEADMARK") && reason.contains("TAILMARK"), "{reason}");
+    assert!(
+        reason.contains("HEADMARK") && reason.contains("TAILMARK"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -329,7 +349,8 @@ fn blanks_alone_count_as_finished_but_a_report_after_them_still_fails_the_stage(
         );
         let args = args(&script);
 
-        let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+        let outcome =
+            run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
         assert!(!outcome.success, "{tag}: {outcome:?}");
         let reason = stage_failure_reason(&store);
@@ -347,28 +368,42 @@ fn blanks_alone_count_as_finished_but_a_report_after_them_still_fails_the_stage(
 fn a_session_that_failed_by_its_exit_status_keeps_that_failure_whatever_its_marker_says() {
     let (store, root) = setup("reported-and-exit-3");
     let marker = root.join("worktree/done.marker");
-    let args = args(&format!("echo 'the review could not run' > {}; exit 3", marker.display()));
+    let args = args(&format!(
+        "echo 'the review could not run' > {}; exit 3",
+        marker.display()
+    ));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
     assert!(!outcome.success, "{outcome:?}");
     assert_eq!(outcome.exit_code, Some(3));
     assert_eq!(outcome.reported, None);
-    assert!(stage_failure_reason(&store).contains('3'), "{}", stage_failure_reason(&store));
+    assert!(
+        stage_failure_reason(&store).contains('3'),
+        "{}",
+        stage_failure_reason(&store)
+    );
 }
 
 #[test]
 fn a_session_killed_by_a_signal_keeps_that_failure_whatever_its_marker_says() {
     let (store, root) = setup("reported-and-killed");
     let marker = root.join("worktree/done.marker");
-    let args = args(&format!("echo 'the review could not run' > {}; kill -9 $$", marker.display()));
+    let args = args(&format!(
+        "echo 'the review could not run' > {}; kill -9 $$",
+        marker.display()
+    ));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
     assert!(!outcome.success, "{outcome:?}");
     assert_eq!(outcome.exit_code, None);
     assert_eq!(outcome.reported, None);
-    assert!(!stage_failure_reason(&store).contains("reported a problem"), "{}", stage_failure_reason(&store));
+    assert!(
+        !stage_failure_reason(&store).contains("reported a problem"),
+        "{}",
+        stage_failure_reason(&store)
+    );
 }
 
 #[test]
@@ -378,7 +413,10 @@ fn a_marker_that_cannot_be_read_fails_an_otherwise_successful_session() {
     let folder = root.join("worktree/markers");
     fs::create_dir_all(&folder).unwrap();
     let marker = folder.join("done.marker");
-    let args = args(&format!("rmdir {f}; touch {f}; exit 0", f = folder.display()));
+    let args = args(&format!(
+        "rmdir {f}; touch {f}; exit 0",
+        f = folder.display()
+    ));
 
     let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
@@ -414,7 +452,10 @@ fn a_marker_saying_ok_with_notes_passes_the_stage_and_records_the_notes() {
     let notes = notes_events(&store);
     assert_eq!(notes.len(), 1, "{notes:?}");
     assert!(notes[0].contains("one low finding"), "{notes:?}");
-    assert!(!notes[0].contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "{notes:?}");
+    assert!(
+        !notes[0].contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),
+        "{notes:?}"
+    );
     assert!(!notes[0].chars().any(char::is_control), "{notes:?}");
 }
 
@@ -426,17 +467,30 @@ fn only_the_first_line_decides_and_anything_but_ok_or_empty_is_a_problem() {
         ("OK\\n", true, ""),
         ("OK", true, ""),
         ("  OK  \\n\\nnothing else to report\\n", true, ""),
-        ("PROBLEM\\nthe review never ended done\\n", false, "the review never ended done"),
+        (
+            "PROBLEM\\nthe review never ended done\\n",
+            false,
+            "the review never ended done",
+        ),
         ("PROBLEM: tests are failing\\n", false, "tests are failing"),
-        ("all done, one low left open\\n", false, "all done, one low left open"),
-        ("a note first\\nPROBLEM the build is red\\n", false, "the build is red"),
+        (
+            "all done, one low left open\\n",
+            false,
+            "all done, one low left open",
+        ),
+        (
+            "a note first\\nPROBLEM the build is red\\n",
+            false,
+            "the build is red",
+        ),
     ];
     for (n, (text, passes, says)) in cases.into_iter().enumerate() {
         let (store, root) = setup(&format!("first-line-{n}"));
         let marker = root.join("worktree/done.marker");
         let args = args(&format!("printf '{text}' > {}; sleep 30", marker.display()));
 
-        let outcome = run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
+        let outcome =
+            run_implement_stage(&store, "run-1", &session(&root, &args, &marker)).unwrap();
 
         assert_eq!(outcome.success, passes, "{text:?}: {outcome:?}");
         if !passes {
@@ -450,8 +504,12 @@ fn only_the_first_line_decides_and_anything_but_ok_or_empty_is_a_problem() {
 fn a_problem_or_a_failed_stage_records_no_notes_and_a_bare_problem_says_it_had_no_reason() {
     let (store, root) = setup("bare-problem");
     let marker = root.join("worktree/done.marker");
-    let bare_args = args(&format!("printf 'PROBLEM\\n' > {}; sleep 30", marker.display()));
-    let outcome = run_implement_stage(&store, "run-1", &session(&root, &bare_args, &marker)).unwrap();
+    let bare_args = args(&format!(
+        "printf 'PROBLEM\\n' > {}; sleep 30",
+        marker.display()
+    ));
+    let outcome =
+        run_implement_stage(&store, "run-1", &session(&root, &bare_args, &marker)).unwrap();
     assert!(!outcome.success, "{outcome:?}");
     assert!(stage_failure_reason(&store).contains("without saying what"));
     assert!(notes_events(&store).is_empty());

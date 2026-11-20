@@ -79,7 +79,9 @@ pub(crate) fn run_gate_attempt(
     attempt: u32,
     env: &[(String, String)],
 ) -> Result<GateOutcome, StoreError> {
-    run_gate_attempt_limited(store, run_id, gate, enabled, log_path, attempt, env, STEP_LIMIT)
+    run_gate_attempt_limited(
+        store, run_id, gate, enabled, log_path, attempt, env, STEP_LIMIT,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -130,7 +132,10 @@ fn run_gate_attempt_limited(
     }
     record_event(store, &record, "stage.started", attempt, started)?;
 
-    let listings: Vec<Option<Listing>> = steps.iter().map(|argv| step_listing(argv, &record.worktree)).collect();
+    let listings: Vec<Option<Listing>> = steps
+        .iter()
+        .map(|argv| step_listing(argv, &record.worktree))
+        .collect();
     let counts_tests = listings.iter().any(Option::is_some);
     let mut flaky: Vec<(String, u64)> = Vec::new();
     for (index, (argv, listing)) in steps.iter().zip(&listings).enumerate() {
@@ -140,7 +145,10 @@ fn run_gate_attempt_limited(
             // The log is kept across rounds: an earlier step's total says nothing about this one.
             writeln!(log, "{}", test_total_line(None))?;
         }
-        if let Some(total) = listing.as_ref().and_then(|listing| count_listed(&record, listing, log_path, &log, env, limit)) {
+        if let Some(total) = listing
+            .as_ref()
+            .and_then(|listing| count_listed(&record, listing, log_path, &log, env, limit))
+        {
             writeln!(log, "{}", test_total_line(Some(total)))?;
         }
         let (exit_code, failure) = run_step(&record, argv, &log, &log, env, limit)?;
@@ -152,7 +160,13 @@ fn run_gate_attempt_limited(
                 .iter()
                 .map(|(name, retry)| serde_json::json!({ "name": name, "retry": retry }))
                 .collect();
-            record_event(store, &record, "gate.flaky_tests", attempt, serde_json::json!({ "tests": tests }))?;
+            record_event(
+                store,
+                &record,
+                "gate.flaky_tests",
+                attempt,
+                serde_json::json!({ "tests": tests }),
+            )?;
         }
         if let Some(failure) = failure {
             let reason = format!(
@@ -191,16 +205,25 @@ fn step_output(log_path: &Path, start: u64) -> String {
     let end = file.metadata().map_or(start, |meta| meta.len());
     let from = start.max(end.saturating_sub(STEP_OUTPUT_READ));
     let mut bytes = Vec::new();
-    if file.seek(SeekFrom::Start(from)).is_err() || file.take(end - from).read_to_end(&mut bytes).is_err() {
+    if file.seek(SeekFrom::Start(from)).is_err()
+        || file.take(end - from).read_to_end(&mut bytes).is_err()
+    {
         return String::new();
     }
     // Line by line: `printable` takes out newlines too.
-    String::from_utf8_lossy(&bytes).lines().map(|line| printable(line) + "\n").collect()
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .map(|line| printable(line) + "\n")
+        .collect()
 }
 
 /// The commit checked out in `worktree`; `None` when git cannot say.
 fn worktree_head(worktree: &Path) -> Option<String> {
-    let out = std::process::Command::new("git").args(["rev-parse", "--verify", "HEAD"]).current_dir(worktree).output().ok()?;
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(worktree)
+        .output()
+        .ok()?;
     let sha = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !sha.is_empty()).then_some(sha)
 }
@@ -215,7 +238,9 @@ enum Listing {
 
 /// How the tests of `argv`, run in `worktree`, are listed, when it is a test run orq knows how to count.
 fn step_listing(argv: &[String], worktree: &Path) -> Option<Listing> {
-    listing_argv(argv).map(Listing::Cargo).or_else(|| vitest_listing(argv, worktree).map(Listing::Vitest))
+    listing_argv(argv)
+        .map(Listing::Cargo)
+        .or_else(|| vitest_listing(argv, worktree).map(Listing::Vitest))
 }
 
 /// What lists the tests of a vitest step, through the same package runner and with the same
@@ -223,12 +248,19 @@ fn step_listing(argv: &[String], worktree: &Path) -> Option<Listing> {
 /// npm, pnpm or yarn script of the worktree's `package.json` that is a vitest run.
 fn vitest_listing(argv: &[String], worktree: &Path) -> Option<Vec<String>> {
     let (program, rest) = argv.split_first()?;
-    let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+    let words = |words: &[&str]| {
+        words
+            .iter()
+            .map(|word| word.to_string())
+            .collect::<Vec<_>>()
+    };
     let (runner, args) = match (program.as_str(), rest) {
         ("vitest", args) => (Vec::new(), args),
         // `--no`: a listing never fetches a vitest that is not installed.
         ("npx", [bin, args @ ..]) if bin == "vitest" => (words(&["npx", "--no"]), args),
-        ("pnpm", [exec, bin, args @ ..]) if exec == "exec" && bin == "vitest" => (words(&["pnpm", "exec"]), args),
+        ("pnpm", [exec, bin, args @ ..]) if exec == "exec" && bin == "vitest" => {
+            (words(&["pnpm", "exec"]), args)
+        }
         ("pnpm" | "yarn", [bin, args @ ..]) if bin == "vitest" => (vec![program.clone()], args),
         ("npm" | "pnpm" | "yarn", args) => return script_listing(program, args, worktree),
         _ => return None,
@@ -321,7 +353,9 @@ fn count_listed(
 ) -> Option<u64> {
     match listing {
         Listing::Cargo(argv) => count_tests(record, argv, log_path, log, env, limit),
-        Listing::Vitest(argv) => vitest_listed_total(&captured_stdout(record, argv, log_path, log, env, limit)?),
+        Listing::Vitest(argv) => {
+            vitest_listed_total(&captured_stdout(record, argv, log_path, log, env, limit)?)
+        }
     }
 }
 
@@ -329,7 +363,8 @@ fn count_listed(
 /// per test. Anything else is not counted.
 fn vitest_listed_total(json: &[u8]) -> Option<u64> {
     let entries: Vec<serde_json::Value> = serde_json::from_slice(json).ok()?;
-    let is_test = |entry: &serde_json::Value| entry.get("name").is_some_and(serde_json::Value::is_string);
+    let is_test =
+        |entry: &serde_json::Value| entry.get("name").is_some_and(serde_json::Value::is_string);
     if !entries.iter().all(is_test) {
         return None;
     }
@@ -339,7 +374,9 @@ fn vitest_listed_total(json: &[u8]) -> Option<u64> {
 
 /// What lists the tests of a `cargo test` step, with the same selection; `None` for any other step.
 fn listing_argv(argv: &[String]) -> Option<Vec<String>> {
-    let [program, subcommand, ..] = argv else { return None };
+    let [program, subcommand, ..] = argv else {
+        return None;
+    };
     // Aimed at another manifest, the workspace looked at below would not be the one that runs.
     let unsuited = |arg: &String| arg == "--list" || arg.starts_with("--manifest-path");
     if program != "cargo" || subcommand != "test" || argv.iter().any(unsuited) {
@@ -390,13 +427,17 @@ fn all_targets_can_list(metadata: &[u8]) -> Option<bool> {
 /// Whether `harness = false` is set anywhere under `item`, in any form TOML allows for a target.
 fn turns_off_harness(item: &toml_edit::Item) -> bool {
     if let Some(table) = item.as_table_like() {
-        return table
-            .iter()
-            .any(|(key, value)| (key == "harness" && value.as_bool() == Some(false)) || turns_off_harness(value));
+        return table.iter().any(|(key, value)| {
+            (key == "harness" && value.as_bool() == Some(false)) || turns_off_harness(value)
+        });
     }
     match item {
-        toml_edit::Item::ArrayOfTables(tables) => tables.iter().any(|table| turns_off_harness(&toml_edit::Item::Table(table.clone()))),
-        toml_edit::Item::Value(toml_edit::Value::Array(values)) => values.iter().any(|value| turns_off_harness(&toml_edit::Item::Value(value.clone()))),
+        toml_edit::Item::ArrayOfTables(tables) => tables
+            .iter()
+            .any(|table| turns_off_harness(&toml_edit::Item::Table(table.clone()))),
+        toml_edit::Item::Value(toml_edit::Value::Array(values)) => values
+            .iter()
+            .any(|value| turns_off_harness(&toml_edit::Item::Value(value.clone()))),
         _ => false,
     }
 }
@@ -448,8 +489,16 @@ fn listed_total(text: &str) -> Option<u64> {
 /// `Some` when `line` is a binary's summary; inside it, `None` when its count does not fit.
 fn listed_count(line: &str) -> Option<Option<u64>> {
     let (tests, benchmarks) = line.split_once(", ")?;
-    let tests: u64 = tests.strip_suffix(" tests").or_else(|| tests.strip_suffix(" test"))?.parse().ok()?;
-    let benchmarks: u64 = benchmarks.strip_suffix(" benchmarks").or_else(|| benchmarks.strip_suffix(" benchmark"))?.parse().ok()?;
+    let tests: u64 = tests
+        .strip_suffix(" tests")
+        .or_else(|| tests.strip_suffix(" test"))?
+        .parse()
+        .ok()?;
+    let benchmarks: u64 = benchmarks
+        .strip_suffix(" benchmarks")
+        .or_else(|| benchmarks.strip_suffix(" benchmark"))?
+        .parse()
+        .ok()?;
     Some(tests.checked_add(benchmarks))
 }
 
@@ -509,7 +558,13 @@ fn run_step(
     child.end_group();
     let status = child.reap()?;
     if !exited {
-        return Ok((None, Some(format!("timed out after {}s and was stopped", limit.as_secs()))));
+        return Ok((
+            None,
+            Some(format!(
+                "timed out after {}s and was stopped",
+                limit.as_secs()
+            )),
+        ));
     }
     Ok(match status {
         status if status.success() => (status.code(), None),
@@ -577,13 +632,17 @@ fn note_flaky_since(log: &fs::File, path: &Path, start: u64, flaky: &mut Vec<(St
     loop {
         line.clear();
         // Keep at most FLAKY_LINE_LIMIT bytes of a line, then skip to its end.
-        let Ok(read) = (&mut reader).take(FLAKY_LINE_LIMIT as u64).read_until(b'\n', &mut line) else {
+        let Ok(read) = (&mut reader)
+            .take(FLAKY_LINE_LIMIT as u64)
+            .read_until(b'\n', &mut line)
+        else {
             return;
         };
         if read == 0 {
             return;
         }
-        if line.last() != Some(&b'\n') && line.len() == FLAKY_LINE_LIMIT && !skip_line(&mut reader) {
+        if line.last() != Some(&b'\n') && line.len() == FLAKY_LINE_LIMIT && !skip_line(&mut reader)
+        {
             return;
         }
         let plain = printable(&String::from_utf8_lossy(&line));

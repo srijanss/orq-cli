@@ -369,18 +369,25 @@ fn a_run_records_its_delivery_as_text_and_older_records_without_one_read_as_revi
     store.create(&merged).unwrap();
     let json = fs::read_to_string(root_of(&dir, "run-merge")).unwrap();
     assert!(json.contains("\"delivery\": \"merge_local\""), "{json}");
-    assert_eq!(store.load("run-merge").unwrap().delivery, Delivery::MergeLocal);
+    assert_eq!(
+        store.load("run-merge").unwrap().delivery,
+        Delivery::MergeLocal
+    );
 
     store.create(&record("run-old")).unwrap();
     let path = root_of(&dir, "run-old");
-    let mut value: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     value.as_object_mut().unwrap().remove("delivery");
     fs::write(&path, value.to_string()).unwrap();
     assert_eq!(store.load("run-old").unwrap().delivery, Delivery::Review);
 
     value["delivery"] = serde_json::json!("ship");
     fs::write(&path, value.to_string()).unwrap();
-    assert!(matches!(store.load("run-old"), Err(StoreError::Corrupt(_))), "an unknown delivery is never read as another");
+    assert!(
+        matches!(store.load("run-old"), Err(StoreError::Corrupt(_))),
+        "an unknown delivery is never read as another"
+    );
 }
 
 fn root_of(dir: &Path, run_id: &str) -> PathBuf {

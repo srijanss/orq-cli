@@ -318,8 +318,16 @@ fn world_without_worktree(tag: &str, main_remote: Option<&str>) -> (RunStore, st
     let worktree = main.join(".claude").join("worktrees").join("fix--COM-02");
     if let Some(remote) = main_remote {
         fs::create_dir_all(&main).unwrap();
-        for args in [&["init", "-q", "-b", "main"][..], &["remote", "add", "origin", remote][..]] {
-            let out = std::process::Command::new("git").arg("-C").arg(&main).args(args).output().unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["remote", "add", "origin", remote][..],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&main)
+                .args(args)
+                .output()
+                .unwrap();
             assert!(out.status.success());
         }
     }
@@ -344,31 +352,50 @@ fn world_without_worktree(tag: &str, main_remote: Option<&str>) -> (RunStore, st
 }
 
 fn repo_arg(args: &[String]) -> Option<&str> {
-    args.iter().position(|a| a == "--repo").map(|i| args[i + 1].as_str())
+    args.iter()
+        .position(|a| a == "--repo")
+        .map(|i| args[i + 1].as_str())
 }
 
 #[test]
 fn without_its_worktree_a_run_is_observed_through_the_main_repository() {
     let (store, main) = world_without_worktree("main", Some("git@github.example:o/r.git"));
     record_created(&store, "7");
-    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[row(7, "OPEN", OLD)])).build();
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], &listing(&[row(7, "OPEN", OLD)]))
+        .build();
 
-    let seen = observe_review(&store, "run-1", &provider.gh(), WAIT).unwrap().unwrap();
+    let seen = observe_review(&store, "run-1", &provider.gh(), WAIT)
+        .unwrap()
+        .unwrap();
     assert_eq!(seen.observation.state, ProviderState::Open);
     let calls = provider.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    assert_eq!(repo_arg(&calls[0].args).map(|r| r.trim_end_matches(".git")), Some(REPO), "{:?}", calls[0].args);
-    assert_eq!(calls[0].cwd.canonicalize().unwrap(), main.canonicalize().unwrap());
+    assert_eq!(
+        repo_arg(&calls[0].args).map(|r| r.trim_end_matches(".git")),
+        Some(REPO),
+        "{:?}",
+        calls[0].args
+    );
+    assert_eq!(
+        calls[0].cwd.canonicalize().unwrap(),
+        main.canonicalize().unwrap()
+    );
 }
 
 #[test]
 fn without_its_worktree_a_main_repository_pointing_elsewhere_is_refused() {
     let (store, _main) = world_without_worktree("elsewhere", Some("https://evil.example/o/r.git"));
     record_created(&store, "7");
-    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[row(7, "OPEN", OLD)])).build();
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], &listing(&[row(7, "OPEN", OLD)]))
+        .build();
 
     let refused = observe_review(&store, "run-1", &provider.gh(), WAIT);
-    assert!(matches!(refused, Err(StoreError::Corrupt(ref why)) if why.contains("evil.example")), "{refused:?}");
+    assert!(
+        matches!(refused, Err(StoreError::Corrupt(ref why)) if why.contains("evil.example")),
+        "{refused:?}"
+    );
     assert!(provider.calls().is_empty());
 }
 
@@ -376,9 +403,13 @@ fn without_its_worktree_a_main_repository_pointing_elsewhere_is_refused() {
 fn without_its_worktree_or_main_repository_the_pinned_repository_is_used() {
     let (store, _main) = world_without_worktree("nomain", None);
     record_created(&store, "7");
-    let provider = FakeProvider::builder().reply(&["pr", "list"], &listing(&[row(7, "MERGED", OLD)])).build();
+    let provider = FakeProvider::builder()
+        .reply(&["pr", "list"], &listing(&[row(7, "MERGED", OLD)]))
+        .build();
 
-    let seen = observe_review(&store, "run-1", &provider.gh(), WAIT).unwrap().unwrap();
+    let seen = observe_review(&store, "run-1", &provider.gh(), WAIT)
+        .unwrap()
+        .unwrap();
     assert_eq!(seen.observation.state, ProviderState::Merged);
     let calls = provider.calls();
     assert_eq!(repo_arg(&calls[0].args), Some(REPO), "{:?}", calls[0].args);

@@ -36,7 +36,10 @@ pub fn free_disk(path: &Path) -> io::Result<FreeDisk> {
 /// existing ancestor (the filesystem it will be made on).
 pub fn worktrees_free_disk(project_root: &Path) -> io::Result<FreeDisk> {
     let worktrees = project_root.join(orq_core::naming::WORKTREES_DIR);
-    let existing = worktrees.ancestors().find(|path| path.exists()).unwrap_or(project_root);
+    let existing = worktrees
+        .ancestors()
+        .find(|path| path.exists())
+        .unwrap_or(project_root);
     free_disk(existing)
 }
 
@@ -75,13 +78,25 @@ fn available_bytes(path: &Path) -> io::Result<u64> {
 
 /// Why `project` may not start another run with `active` (run id, feature id) runs active under
 /// a limit of `max_active`; `None` when it may.
-pub fn limit_refusal(project: &str, max_active: Option<u8>, active: &[(String, String)]) -> Option<String> {
+pub fn limit_refusal(
+    project: &str,
+    max_active: Option<u8>,
+    active: &[(String, String)],
+) -> Option<String> {
     let max_active = usize::from(max_active?);
     if active.len() < max_active {
         return None;
     }
-    let runs = active.iter().map(|(run, feature)| format!("{run}, {feature}")).collect::<Vec<_>>().join("; ");
-    let (noun, wait) = if active.len() == 1 { ("run", "it") } else { ("runs", "one") };
+    let runs = active
+        .iter()
+        .map(|(run, feature)| format!("{run}, {feature}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let (noun, wait) = if active.len() == 1 {
+        ("run", "it")
+    } else {
+        ("runs", "one")
+    };
     Some(format!(
         "{project} already has {} active {noun} ({runs}): wait for {wait} to finish, or raise the limit in project settings",
         active.len()
@@ -104,12 +119,23 @@ pub fn disk_refusal(project: &str, floor_gb: Option<u32>, free: &FreeDisk) -> Op
 
 /// Why the machine may not start another run with `active` (project id, run id) runs active
 /// across every project under a limit of `max_active`; `None` when it may.
-pub fn machine_limit_refusal(max_active: Option<usize>, active: &[(String, String)]) -> Option<String> {
+pub fn machine_limit_refusal(
+    max_active: Option<usize>,
+    active: &[(String, String)],
+) -> Option<String> {
     if active.len() < max_active? {
         return None;
     }
-    let runs = active.iter().map(|(project, run)| format!("{} {run}", project_name(project))).collect::<Vec<_>>().join(", ");
-    let (noun, wait) = if active.len() == 1 { ("run", "it") } else { ("runs", "one") };
+    let runs = active
+        .iter()
+        .map(|(project, run)| format!("{} {run}", project_name(project)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (noun, wait) = if active.len() == 1 {
+        ("run", "it")
+    } else {
+        ("runs", "one")
+    };
     Some(format!(
         "this machine already has {} active {noun} ({runs}): wait for {wait} to finish, or raise [runs] max_active",
         active.len()
@@ -133,7 +159,13 @@ pub fn machine_disk_refusal(floor_gb: Option<u32>, free: &FreeDisk) -> Option<St
 /// A project's name from its id, `<name>-<8 hex digits>`; an id of another shape as it is.
 fn project_name(project_id: &str) -> &str {
     match project_id.rsplit_once('-') {
-        Some((name, hash)) if !name.is_empty() && hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_hexdigit()) => name,
+        Some((name, hash))
+            if !name.is_empty()
+                && hash.len() == 8
+                && hash.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            name
+        }
         _ => project_id,
     }
 }

@@ -135,7 +135,11 @@ fn scenario(tag: &str, case: Case) -> Planned {
     }
     if case.deps != Deps::None {
         fs::create_dir_all(worktree.join("web/node_modules/.bin")).unwrap();
-        fs::write(worktree.join("web/node_modules/.bin/esbuild"), "installed\n").unwrap();
+        fs::write(
+            worktree.join("web/node_modules/.bin/esbuild"),
+            "installed\n",
+        )
+        .unwrap();
     }
 
     let store = RunStore::new(&root.join("state"));
@@ -204,14 +208,7 @@ fn scenario(tag: &str, case: Case) -> Planned {
             .build()
     };
     let gh = provider.gh();
-    let items = plan_reap(
-        &store,
-        &repo,
-        "repo-1",
-        &|_| Some(gh.clone()),
-        WAIT,
-    )
-    .unwrap();
+    let items = plan_reap(&store, &repo, "repo-1", &|_| Some(gh.clone()), WAIT).unwrap();
     assert_eq!(items.len(), 1, "{items:?}");
     let item = items.into_iter().next().unwrap();
     Planned {
