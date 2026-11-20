@@ -699,7 +699,7 @@ mod tests {
     }
 
     fn roots(label: &str) -> StorageRoots {
-        let base = std::env::temp_dir().join(format!("orq-web-push-unit-{}-{label}", std::process::id()));
+        let base = orq_test_support::process_temp_dir().join(format!("orq-web-push-unit-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let roots = StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
         roots.create_all().unwrap();
