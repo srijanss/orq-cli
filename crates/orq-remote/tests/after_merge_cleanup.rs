@@ -859,7 +859,15 @@ fn commits_on_the_target_not_pushed_are_shown_on_the_project_card_and_page() {
         std::fs::write(s.repo.join("README"), subject).unwrap();
         git(&s.repo, &["commit", "-q", "-am", subject]);
     }
-    let shown = json!({"target": "main", "count": 2, "message": "2 commits on main not pushed", "subjects": ["rotate [REDACTED]", "tidy readme"]});
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "main"])
+        .current_dir(&s.repo)
+        .output()
+        .unwrap();
+    let head = String::from_utf8(head.stdout).unwrap().trim().to_string();
+    // The line also names the commit a push would send and the origin's provider, which a
+    // local origin does not have.
+    let shown = json!({"target": "main", "sha": head, "count": 2, "message": "2 commits on main not pushed", "subjects": ["rotate [REDACTED]", "tidy readme"], "provider": null});
     assert_eq!(project_card(&s)["unpushed"], shown);
     assert_eq!(project_page(&s)["unpushed"], shown);
     git(&s.repo, &["push", "-q", "origin", "main"]);
