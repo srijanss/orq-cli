@@ -100,6 +100,126 @@ impl AfterMergeCommands {
     }
 }
 
+/// Whether a project's merge-local merges get a release commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReleaseOnMerge {
+    #[default]
+    Off,
+    Auto,
+}
+
+/// What a project's `.orq/run.toml` `[release]` table asks for after a merge-local merge: the file and
+/// key holding the version, and the argv lists run in the release worktree after the bump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseSettings {
+    pub release_on_merge: ReleaseOnMerge,
+    pub version_file: String,
+    pub version_key: String,
+    pub commands: Vec<Vec<String>>,
+}
+
+impl ReleaseSettings {
+    /// The `[release]` table of `run.toml` text: `None` when it has none, and an error naming the key
+    /// when a value is not what the key takes.
+    pub fn parse(text: &str) -> std::result::Result<Option<ReleaseSettings>, String> {
+        let doc: toml_edit::DocumentMut = text.parse().map_err(|error| format!("run.toml is not valid TOML: {error}"))?;
+        let Some(table) = doc.get("release") else { return Ok(None) };
+        let Some(table) = table.as_table_like() else { return Err("release must be a table".to_string()) };
+        let release_on_merge = match table.get("release_on_merge") {
+            None => ReleaseOnMerge::Off,
+            Some(value) => match value.as_str() {
+                Some("off") => ReleaseOnMerge::Off,
+                Some("auto") => ReleaseOnMerge::Auto,
+                _ => return Err("release.release_on_merge must be \"off\" or \"auto\"".to_string()),
+            },
+        };
+        let text_of = |key: &str, default: &str| -> std::result::Result<String, String> {
+            match table.get(key) {
+                None => Ok(default.to_string()),
+                Some(value) => match value.as_str() {
+                    Some(text) if !text.is_empty() => Ok(text.to_string()),
+                    _ => Err(format!("release.{key} must be a non-empty string")),
+                },
+            }
+        };
+        let version_file = text_of("version_file", "Cargo.toml")?;
+        let version_key = text_of("version_key", "workspace.package.version")?;
+        let mut commands = Vec::new();
+        if let Some(list) = table.get("commands") {
+            let Some(list) = list.as_array() else { return Err("release.commands must be a list of argv lists".to_string()) };
+            for (i, argv) in list.iter().enumerate() {
+                let key = format!("release.commands[{i}]");
+                let Some(argv) = argv.as_array() else { return Err(format!("{key} must be a list of strings, not shell text")) };
+                let mut words = Vec::new();
+                for (j, word) in argv.iter().enumerate() {
+                    let Some(word) = word.as_str() else { return Err(format!("{key}[{j}] must be a string")) };
+                    words.push(word.to_string());
+                }
+                if words.first().is_none_or(|program| program.is_empty()) {
+                    return Err(format!("{key} must start with a program name"));
+                }
+                commands.push(words);
+            }
+        }
+        Ok(Some(ReleaseSettings { release_on_merge, version_file, version_key, commands }))
+    }
+}
+
+/// The version string at dotted `key` of `text`, a TOML (`.toml`) or JSON (`.json`) file called `file`.
+pub fn version_in(file: &str, text: &str, key: &str) -> std::result::Result<String, String> {
+    let parts: Vec<&str> = key.split('.').collect();
+    if file.ends_with(".toml") {
+        let doc: toml_edit::DocumentMut = text.parse().map_err(|error| format!("{file} is not valid TOML: {error}"))?;
+        let mut item = doc.as_item();
+        for part in &parts {
+            item = item.get(part).ok_or_else(|| format!("{file} has no {key}"))?;
+        }
+        item.as_str().map(str::to_string).ok_or_else(|| format!("{key} in {file} is not a string"))
+    } else if file.ends_with(".json") {
+        let doc: serde_json::Value = serde_json::from_str(text).map_err(|error| format!("{file} is not valid JSON: {error}"))?;
+        let mut value = &doc;
+        for part in &parts {
+            value = value.get(part).ok_or_else(|| format!("{file} has no {key}"))?;
+        }
+        value.as_str().map(str::to_string).ok_or_else(|| format!("{key} in {file} is not a string"))
+    } else {
+        Err(format!("the version file {file} is neither .toml nor .json"))
+    }
+}
+
+/// `text` with the version at dotted `key` replaced by `version`, the rest of the file as it was.
+pub fn with_version(file: &str, text: &str, key: &str, version: &str) -> std::result::Result<String, String> {
+    let old = version_in(file, text, key)?;
+    if file.ends_with(".toml") {
+        let mut doc: toml_edit::DocumentMut = text.parse().map_err(|error| format!("{file} is not valid TOML: {error}"))?;
+        let mut item = doc.as_item_mut();
+        for part in key.split('.') {
+            item = item.get_mut(part).ok_or_else(|| format!("{file} has no {key}"))?;
+        }
+        let value = item.as_value_mut().ok_or_else(|| format!("{key} in {file} is not a string"))?;
+        let decor = value.decor().clone();
+        *value = toml_edit::Value::from(version);
+        *value.decor_mut() = decor;
+        Ok(doc.to_string())
+    } else {
+        // JSON is edited as text, so its layout and key order stay: the one `"name": "old"` pair.
+        let name = key.rsplit('.').next().unwrap_or(key);
+        let (quoted_name, quoted_old) = (format!("\"{name}\""), format!("\"{old}\""));
+        let mut found = Vec::new();
+        for (at, _) in text.match_indices(&quoted_name) {
+            let rest = text[at + quoted_name.len()..].trim_start();
+            let Some(rest) = rest.strip_prefix(':') else { continue };
+            if rest.trim_start().starts_with(&quoted_old) {
+                found.push(text.len() - rest.trim_start().len());
+            }
+        }
+        match found.as_slice() {
+            [start] => Ok(format!("{}\"{version}\"{}", &text[..*start], &text[start + quoted_old.len()..])),
+            _ => Err(format!("{key} in {file} is not written once as \"{name}\": \"{old}\"")),
+        }
+    }
+}
+
 /// The agent a project uses for one role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectAgent {

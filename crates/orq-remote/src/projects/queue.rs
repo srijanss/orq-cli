@@ -21,6 +21,8 @@ use super::{carried_on, discover, read_ledger, start_blocked, Launch, ResumeRequ
 // Declared here, not in projects.rs, so the commands a merge-local run's merge sets off live in their own file.
 #[path = "after_merge.rs"]
 mod after_merge;
+#[path = "release.rs"]
+pub(super) mod release;
 
 /// What a round of the queue needs to know about now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +174,7 @@ impl StoreProjects {
                     self.lift_failure_pause(store, id, root, &run, &what, "recovered and waits for review").map_err(failed)?;
                 }
                 Settled::Done => {
-                    after_merge::settled(&self.roots.state, &runs, root, &run);
+                    after_merge::settled(&self.roots.state, &runs, root, &run, &|| self.release_env(root, &settings));
                     store.queue_remove(root, &entry.feature).map_err(failed)?;
                     self.lift_failure_pause(store, id, root, &run, &what, "recovered and merged").map_err(failed)?;
                 }
@@ -200,7 +202,8 @@ impl StoreProjects {
             }
         }
         let queue = store.queue(root).map_err(failed)?;
-        if queue.paused.is_some() || round.restart_pending || in_review {
+        // A merge's release lands, or is refused, before the next run starts: its worktree is cut from the target.
+        if queue.paused.is_some() || round.restart_pending || in_review || after_merge::release_pending(root) {
             return Ok(false);
         }
         if let Some(hours) = &settings.queue_hours {
@@ -362,6 +365,23 @@ impl StoreProjects {
     /// Lifts the pause of project `id`'s queue at `root` when it is the one the failure of `run`, the
     /// run of `what`, caused, and records the lift like a resume, saying how the run `recovered`. A
     /// pause a person set, or one another run's failure caused, is kept.
+    /// What a release needs: the project's implementer picks the level, through the injected agent when
+    /// there is one.
+    fn release_env(&self, root: &Path, settings: &orq_core::project_settings::ProjectSettings) -> release::Env {
+        let (harness, model, thinking) = match &settings.implementer {
+            Some(agent) => (agent.harness.clone(), agent.model.clone(), agent.effort.clone()),
+            None => {
+                let fallback = self.model_profiles(root).ok().and_then(|profiles| orq_features::role_fallback(&profiles, &orq_features::TddReviewerConfig::default(), orq_features::AgentRole::Implementer).ok());
+                match fallback {
+                    Some((model, _)) => (model.harness, model.model, model.thinking),
+                    None => ("claude".to_string(), "sonnet".to_string(), None),
+                }
+            }
+        };
+        let agent = self.release_agent.clone().unwrap_or_else(|| std::sync::Arc::new(release::HarnessAgent));
+        release::Env { roots: self.roots.clone(), agent, harness, model, thinking }
+    }
+
     fn lift_failure_pause(&self, store: &Store, id: &str, root: &Path, run: &str, what: &str, recovered: &str) -> std::io::Result<()> {
         let caused = orq_core::redact::redact(&format!("the run {run} of {what} failed"));
         let Some(paused) = store.queue(root)?.paused else { return Ok(()) };

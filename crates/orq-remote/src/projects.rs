@@ -9,6 +9,7 @@ mod cleanup;
 mod plan;
 mod push_target;
 mod queue;
+pub use queue::release::{HarnessAgent, ReleaseAgent};
 pub use queue::{action_label, change_queue, project_queue_json, queue_json, start_queue_rounds, QueueRound, QueueRounds, QUEUE_ROUND_EVERY};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -480,6 +481,8 @@ pub struct StoreProjects {
     roots: orq_core::storage::StorageRoots,
     scan_root: std::path::PathBuf,
     launcher: Option<std::sync::Arc<dyn RunLauncher + Send + Sync>>,
+    /// Picks the level of a release; the project's implementer harness itself when unset.
+    release_agent: Option<std::sync::Arc<dyn ReleaseAgent>>,
     agent_options: Option<AgentOptions>,
     storage: Option<std::sync::Arc<dyn StorageCleanup + Send + Sync>>,
     run_logs: std::sync::Mutex<LogCache>,
@@ -578,6 +581,7 @@ impl StoreProjects {
             roots,
             scan_root,
             launcher: None,
+            release_agent: None,
             agent_options: None,
             storage: None,
             run_logs: Default::default(),
@@ -745,6 +749,12 @@ impl StoreProjects {
     /// Lets this provider start runs through `launcher`; without one it says it cannot.
     pub fn with_launcher(mut self, launcher: std::sync::Arc<dyn RunLauncher + Send + Sync>) -> Self {
         self.launcher = Some(launcher);
+        self
+    }
+
+    /// Has the level of each release picked by `agent` instead of the implementer harness.
+    pub fn with_release_agent(mut self, agent: std::sync::Arc<dyn ReleaseAgent>) -> Self {
+        self.release_agent = Some(agent);
         self
     }
 
