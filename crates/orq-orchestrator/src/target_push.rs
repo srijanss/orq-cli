@@ -220,18 +220,31 @@ fn repository_identity(url: &str) -> &str {
 
 /// The raw url origin is pushed to, as configured (its pushurls, else its urls). `git push origin`
 /// sends to every one of them, so an origin with more than one is refused: only the one address
-/// checked here may get the commits.
+/// checked here may get the commits. A push url of another repository than the url origin is
+/// fetched from is refused too: the fetched branch, the commits listed and the ancestry checked
+/// would not be the destination's.
 fn origin_push_url(dir: &Path) -> Result<String, String> {
-    for key in [format!("remote.{REMOTE}.pushurl"), format!("remote.{REMOTE}.url")] {
-        let out = git(dir, &["config", "--get-all", &key])?;
-        let urls: Vec<&str> = if out.success { out.stdout.lines().map(str::trim).filter(|url| !url.is_empty()).collect() } else { Vec::new() };
-        match urls.as_slice() {
-            [] => continue,
-            [url] => return Ok(url.to_string()),
-            _ => return Err(format!("{REMOTE} pushes to more than one address: give it one push address first")),
+    let urls = config_all(dir, &format!("remote.{REMOTE}.url"))?;
+    let pushurls = config_all(dir, &format!("remote.{REMOTE}.pushurl"))?;
+    let pushed = if pushurls.is_empty() { &urls } else { &pushurls };
+    let url = match pushed.as_slice() {
+        [] => return Err(format!("the main checkout has no remote {REMOTE}")),
+        [url] => url,
+        _ => return Err(format!("{REMOTE} pushes to more than one address: give it one push address first")),
+    };
+    if let Some(fetched) = urls.first().filter(|fetched| *fetched != url) {
+        let identity = |url: &str| crate::review_request::normalize_remote(url).map(|address| repository_identity(&address).to_string());
+        if identity(fetched).is_none() || identity(fetched) != identity(url) {
+            return Err(format!("{REMOTE} fetches from {fetched} but pushes to {url}: the commits shown would not be the ones pushed"));
         }
     }
-    Err(format!("the main checkout has no remote {REMOTE}"))
+    Ok(url.clone())
+}
+
+/// Every value of git config `key` in `dir`, in order.
+fn config_all(dir: &Path, key: &str) -> Result<Vec<String>, String> {
+    let out = git(dir, &["config", "--get-all", key])?;
+    Ok(if out.success { out.stdout.lines().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string).collect() } else { Vec::new() })
 }
 
 /// The `owner/name` on its host of the repository at push url `url`.
