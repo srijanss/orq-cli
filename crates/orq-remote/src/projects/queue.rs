@@ -378,7 +378,7 @@ impl StoreProjects {
                 }
             }
         };
-        let agent = self.release_agent.clone().unwrap_or_else(|| std::sync::Arc::new(release::HarnessAgent));
+        let agent = self.release_agent.clone().unwrap_or_else(|| std::sync::Arc::new(release::HarnessAgent::default()));
         release::Env { roots: self.roots.clone(), agent, harness, model, thinking }
     }
 

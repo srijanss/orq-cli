@@ -378,6 +378,20 @@ fn a_target_that_changes_while_the_agent_thinks_is_refused_and_no_branch_is_move
 }
 
 #[test]
+fn a_harness_that_exits_but_leaves_its_output_open_is_cut_off_by_the_deadline() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = web_deps::private_temp_dir("lingering-harness");
+    let script = dir.join("harness.sh");
+    std::fs::write(&script, "#!/bin/sh\nsleep 30 &\necho '{}'\nexit 0\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let started = Instant::now();
+    let answer = orq_remote::projects::HarnessAgent::with_timeout(Duration::from_secs(1)).ask(script.to_str().unwrap(), &[]);
+    assert!(started.elapsed() < Duration::from_secs(10), "it waited {:?}", started.elapsed());
+    let why = answer.expect_err("an answer that never ends is not an answer");
+    assert!(why.contains("timed out"), "{why}");
+}
+
+#[test]
 fn a_release_that_is_off_or_a_review_delivery_does_nothing() {
     for (off, delivery) in [(true, Delivery::MergeLocal), (false, Delivery::Review)] {
         let agent = answering("patch");

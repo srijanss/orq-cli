@@ -27,8 +27,23 @@ pub trait ReleaseAgent: Send + Sync {
     fn ask(&self, harness: &str, argv: &[String]) -> Result<String, String>;
 }
 
-/// Starts the harness program itself, with no input and a time limit.
-pub struct HarnessAgent;
+/// Starts the harness program itself, with no input and a time limit that covers the answer's end too.
+pub struct HarnessAgent {
+    timeout: Duration,
+}
+
+impl HarnessAgent {
+    /// An agent whose call may take `timeout`.
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self { timeout }
+    }
+}
+
+impl Default for HarnessAgent {
+    fn default() -> Self {
+        Self::with_timeout(CALL_TIMEOUT)
+    }
+}
 
 impl ReleaseAgent for HarnessAgent {
     fn ask(&self, harness: &str, argv: &[String]) -> Result<String, String> {
@@ -40,23 +55,32 @@ impl ReleaseAgent for HarnessAgent {
             .spawn()
             .map_err(|error| format!("{harness} could not start: {}", error.kind()))?;
         let Some(out) = child.stdout.take() else { return Err(format!("{harness} gave no output")) };
-        let reader = std::thread::spawn(move || {
+        let (sender, answers) = std::sync::mpsc::channel();
+        // Detached: a program that left the output open keeps this thread until it closes it, not the caller.
+        std::thread::spawn(move || {
             let mut answer = Vec::new();
             let _ = out.take(MAX_ANSWER).read_to_end(&mut answer);
-            answer
+            let _ = sender.send(answer);
         });
-        let until = Instant::now() + CALL_TIMEOUT;
+        let until = Instant::now() + self.timeout;
+        let timed_out = || format!("{harness} timed out after {} seconds", self.timeout.as_secs());
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let answer = reader.join().unwrap_or_default();
-                    return if status.success() { Ok(String::from_utf8_lossy(&answer).into_owned()) } else { Err(format!("{harness} failed: {status}")) };
+                    if !status.success() {
+                        return Err(format!("{harness} failed: {status}"));
+                    }
+                    // The program is gone, but something it started may still hold its output open.
+                    return match answers.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                        Ok(answer) => Ok(String::from_utf8_lossy(&answer).into_owned()),
+                        Err(_) => Err(timed_out()),
+                    };
                 }
                 Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(50)),
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("{harness} timed out after {} seconds", CALL_TIMEOUT.as_secs()));
+                    return Err(timed_out());
                 }
                 Err(error) => {
                     let _ = child.kill();
