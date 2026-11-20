@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use orq_core::remote_inbox::{handle_with_body, handle_with_confirm, RemoteConfig, Request};
+use orq_core::project_settings::Delivery;
 use orq_core::storage::StorageRoots;
 use orq_orchestrator::{Event, RunRecord, RunStore};
 use orq_remote::projects::StoreProjects;
@@ -54,6 +55,11 @@ fn commit(dir: &Path, name: &str, subject: &str) -> String {
 /// Project `alpha` on `main`, level with origin, then one commit merged locally from run `RUN` and one
 /// made by hand; `origin_url` is what origin is set to, `gh` answers the branch lookup.
 fn setup(label: &str, origin_url: &str, gh: FakeProvider) -> Setup {
+    setup_with(label, origin_url, gh, Delivery::MergeLocal)
+}
+
+/// As [`setup`], with run `RUN` delivered by `delivery`.
+fn setup_with(label: &str, origin_url: &str, gh: FakeProvider, delivery: Delivery) -> Setup {
     let base_dir = web_deps::private_temp_dir(label);
     let roots = StorageRoots {
         data: base_dir.join("data"),
@@ -83,7 +89,7 @@ fn setup(label: &str, origin_url: &str, gh: FakeProvider) -> Setup {
     let store = RunStore::new(&roots.state);
     store
         .create(&RunRecord {
-            delivery: Default::default(),
+            delivery,
             run_id: RUN.into(),
             project_id: orq_git::project_id(&orq_git::resolve_project(&repo).unwrap()),
             feature_id: "PUSH-01".into(),
@@ -206,6 +212,34 @@ fn the_not_pushed_line_names_the_project_provider_so_only_github_offers_the_push
     assert_eq!(card["provider"], "gitlab", "{card}");
     assert_eq!(queue["provider"], "gitlab", "{queue}");
     assert!(s.gh.calls().is_empty(), "the line asks GitHub nothing");
+}
+
+fn run_page(s: &Setup) -> Value {
+    let config = RemoteConfig { token: "tok".into() };
+    let path = format!("/api/projects/alpha/runs/{RUN}");
+    handle_with_body(&s.roots, &config, "server-project", "server", &request("GET", &path), b"", &provider(s)).body
+}
+
+#[test]
+fn a_delivered_merge_local_run_page_shows_the_not_pushed_line_and_its_timeline_names_the_push() {
+    let s = github("push-target-run-page");
+    let page = run_page(&s);
+    assert_eq!((page["run"]["unpushed"]["count"].as_u64(), page["run"]["unpushed"]["provider"].as_str()), (Some(2), Some("github")), "{page}");
+
+    let body = json!({"sha": s.by_hand}).to_string();
+    let (status, answer) = send_with_passkey(&s, body.as_bytes());
+    assert_eq!(status, 200, "{answer}");
+    let page = run_page(&s);
+    assert_eq!(page["run"]["unpushed"], Value::Null, "nothing is left to push: {page}");
+    let pushed = page["events"].as_array().unwrap().iter().find(|event| event["kind"] == "target.pushed").cloned().unwrap();
+    assert_eq!(pushed["pushed"], json!({"remote": "origin", "target": "main"}), "{pushed}");
+}
+
+#[test]
+fn a_run_page_of_a_run_not_merged_locally_has_no_not_pushed_line() {
+    let s = setup_with("push-target-run-review", ORIGIN, FakeProvider::builder().build(), Delivery::Review);
+    let page = run_page(&s);
+    assert_eq!(page["run"]["unpushed"], Value::Null, "{page}");
 }
 
 #[test]

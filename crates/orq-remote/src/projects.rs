@@ -1925,6 +1925,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if event.kind == "target.pull_warning" {
                     listed["target_pull"] = target_pull_shown(&event.payload);
                 }
+                if event.kind == "target.pushed" {
+                    listed["pushed"] = serde_json::json!({"remote": event.payload["remote"], "target": event.payload["target"]});
+                }
                 if event.kind.ends_with(".failed") {
                     if let Some(failure) = failure_shown(&events, start + n, &logs_dir) {
                         listed["failure"] = failure;
@@ -1958,6 +1961,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         }
         if cleanup::merged_review(&self.roots, run).is_some() {
             shown["cleanup"] = cleanup::card(&events);
+        }
+        // A run merged locally may have left its target ahead of origin: the page's Push.
+        let merged_locally = record.delivery == orq_core::project_settings::Delivery::MergeLocal && events.iter().any(|event| event.kind == "merge.completed");
+        if merged_locally {
+            let root = orq_git::resolve_project(&project.path).ok().and_then(|git| orq_git::main_checkout_root(&git)).unwrap_or_else(|| project.path.clone());
+            if let Some(unpushed) = cleanup::unpushed(&root) {
+                shown["unpushed"] = unpushed;
+            }
         }
         Ok(Some(serde_json::json!({
             "run": shown,
