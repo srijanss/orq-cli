@@ -438,6 +438,27 @@ fn a_failing_release_command_refuses_the_release_and_leaves_no_worktree_branch_o
 }
 
 #[test]
+fn a_feature_commit_behind_many_long_subjects_still_makes_the_fallback_minor() {
+    let s = setup("long-subjects", replying(Err("exited with 1".to_string()), Duration::ZERO), "auto");
+    round(&s);
+    round(&s);
+    git(&s.repo, &["commit", "-q", "--allow-empty", "-m", "feat: the one that matters"]);
+    for i in 0..30 {
+        git(&s.repo, &["commit", "-q", "--allow-empty", "-m", &format!("fix: {i} {}", "x".repeat(500))]);
+    }
+    let head = git(&s.repo, &["rev-parse", "HEAD"]);
+    let run = "run-1-COM-01";
+    let store = RunStore::new(&s.roots.state);
+    event(&store, run, "merge.completed", json!({"head_sha": head, "target_branch": "main"}));
+    event(&store, run, "run.completed", json!({"ending": "merged"}));
+    round(&s);
+    let created = wait_for(&s, run, "release.created").expect("the release was recorded");
+    assert_eq!(created.payload["decided_by"], "fallback");
+    assert_eq!(created.payload["level"], "minor");
+    assert_eq!(created.payload["version"], "0.2.0");
+}
+
+#[test]
 fn a_release_that_is_off_or_a_review_delivery_does_nothing() {
     for (off, delivery) in [(true, Delivery::MergeLocal), (false, Delivery::Review)] {
         let agent = answering("patch");

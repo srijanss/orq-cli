@@ -230,7 +230,9 @@ pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) 
     let (proposed, reason, decided_by) = match ask_level(env, &evidence) {
         Ok(level) => (level.level, level.reason, "claude"),
         Err(why) => {
-            let level = if subjects.lines().any(|subject| subject.starts_with("feat")) { "minor" } else { "patch" };
+            // Asked of git itself: the subjects shown to the agent are cut, and a feature may lie past the cut.
+            let features = git_head(root, &["log", "--format=%s", "--grep=^feat", &range], MAX_LIST_BYTES);
+            let level = if features.lines().any(|subject| subject.starts_with("feat")) { "minor" } else { "patch" };
             (level.to_string(), format!("chosen by commit subjects: {why}"), "fallback")
         }
     };
