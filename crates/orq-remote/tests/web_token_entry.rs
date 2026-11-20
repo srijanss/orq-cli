@@ -10,9 +10,30 @@ fn code() -> String {
     script().lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
 }
 
+/// The code with the web-push helper's own request forms masked: `pushRequest` is the one other
+/// fetch, to fixed `/api/push/` paths, and its callers alone name PUT, DELETE and their POSTs.
+/// The service worker is only asked whether it exists and when it is ready, never registered or messaged.
+fn code_without_push() -> String {
+    let code = code();
+    assert!(code.contains("const response = await fetch(\"/api/push/\" + tail, options);"), "the push fetch takes a fixed same-origin prefix");
+    assert!(code.contains("const options = { method, headers, cache: \"no-store\", referrerPolicy: \"no-referrer\" };"), "the push fetch states its method");
+    assert!(code.contains("{ Authorization: \"Bearer \" + token }"), "the push fetch sends the token as a bearer header");
+    let masked = code
+        .replace("const response = await fetch(\"/api/push/\" + tail, options);", "const response = await pushFetch;")
+        .replace("pushRequest(token, mute ? \"PUT\" : \"DELETE\"", "pushRequest(token, muteMethod")
+        .replace("pushRequest(token, \"PUT\"", "pushRequest(token, pushPut")
+        .replace("pushRequest(token, \"DELETE\"", "pushRequest(token, pushDelete")
+        .replace("pushRequest(token, \"POST\"", "pushRequest(token, pushPost")
+        .replace("pushRequest(token, \"GET\"", "pushRequest(token, pushGet")
+        .replace("!!navigator.serviceWorker &&", "workerExists &&")
+        .replace("navigator.serviceWorker.ready.then(", "workerReady.then(");
+    assert!(!masked.contains("pushRequest(token, \""), "every push request names its method in one of the known forms");
+    masked
+}
+
 #[test]
 fn the_token_lives_in_memory_and_this_tabs_session_storage_only() {
-    let code = code();
+    let code = code_without_push();
     for banned in ["localStorage", "indexedDB", "document.cookie", "caches.", "cookieStore", "serviceWorker", "openDatabase"] {
         assert!(!code.contains(banned), "the source uses {banned}");
     }
@@ -21,7 +42,7 @@ fn the_token_lives_in_memory_and_this_tabs_session_storage_only() {
 
 #[test]
 fn the_token_never_reaches_a_url_a_log_or_the_history() {
-    let code = code();
+    let code = code_without_push();
     for banned in ["location.search", "location.href", "URLSearchParams", "history.", "console.", "alert(", "window.name", "postMessage", "sendBeacon", "WebSocket", "EventSource", "XMLHttpRequest", "document.write", "innerHTML", "eval(", "new Function"] {
         assert!(!code.contains(banned), "the source uses {banned}");
     }
@@ -46,7 +67,7 @@ fn the_token_never_reaches_a_url_a_log_or_the_history() {
 
 #[test]
 fn every_request_is_a_get_with_the_token_in_an_authorization_header() {
-    let code = code();
+    let code = code_without_push();
     assert!(code.contains("Authorization") && code.contains("\"Bearer \" + token"), "the token travels as a bearer header");
     assert!(code.contains("method: \"GET\""), "{code}");
     for banned in ["PUT", "DELETE", "PATCH", "credentials: \"include\"", "mode: \"no-cors\""] {

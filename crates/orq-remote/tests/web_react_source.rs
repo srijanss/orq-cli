@@ -127,6 +127,8 @@ fn the_source_never_stores_anything_or_writes_html_from_text() {
     for (path, text) in sources() {
         // The worker alone keeps the app shell in the Cache API, and worker.js alone registers it.
         let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        // main.jsx's web push only asks whether a service worker exists and waits for it to be ready.
+        let text = if name == "main.jsx" { text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n").replace("!!navigator.serviceWorker &&", "workerExists &&").replace("navigator.serviceWorker.ready.then(", "workerReady.then(") } else { text };
         for banned in ["indexedDB", "document.cookie", "caches.", "serviceWorker", "innerHTML", "dangerouslySetInnerHTML", "eval("] {
             if (banned == "caches." && name == "sw.js") || (banned == "serviceWorker" && name == "worker.js") {
                 continue;

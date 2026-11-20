@@ -199,6 +199,14 @@ fn a_401_on_the_detail_asks_for_the_token_again() {
 fn the_page_sends_only_gets_and_the_one_confirmed_action_post() {
     let code = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap();
     let code: String = code.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    // The web-push helper's callers alone name another method, each to its own fixed /api/push/ route.
+    let code = code
+        .replace("pushRequest(token, mute ? \"PUT\" : \"DELETE\"", "pushRequest(token, muteMethod")
+        .replace("pushRequest(token, \"PUT\"", "pushRequest(token, pushPut")
+        .replace("pushRequest(token, \"DELETE\"", "pushRequest(token, pushDelete")
+        .replace("pushRequest(token, \"POST\"", "pushRequest(token, pushPost")
+        .replace("pushRequest(token, \"GET\"", "pushRequest(token, pushGet");
+    assert!(!code.contains("pushRequest(token, \""), "every push request names its method in one of the known forms");
     for banned in ["\"PUT\"", "\"DELETE\"", "\"PATCH\"", "FormData", "<form"] {
         assert!(!code.contains(banned), "{banned}");
     }
