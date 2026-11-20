@@ -56,11 +56,15 @@ fn count(frame: &Value, selector: &str) -> u64 {
 const SELECTORS: [&str; 5] = ["[data-feature-open]", "[data-project-select]", "[data-feature-status]", "[data-back=\"features\"]", "[data-dependency]"];
 
 fn page(url: &str, responses: Value, steps: Value) -> Option<Value> {
+    page_with_archive(url, responses, json!([]), steps)
+}
+
+fn page_with_archive(url: &str, responses: Value, archived: Value, steps: Value) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": url, "responses": responses, "steps": steps, "selectors": SELECTORS});
+    let scenario = json!({"url": url, "responses": responses, "archived": archived, "steps": steps, "selectors": SELECTORS});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -213,7 +217,8 @@ fn a_feature_without_dependencies_or_runs_says_so_and_an_unknown_one_is_not_foun
     let Some(out) = page("/projects/alpha/features/sketch", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}, {"nav": "[data-feature-tab=\"dependencies\"]"}, {"nav": "[data-feature-tab=\"runs\"]"}])) else { return };
     assert!(shown(&out["frames"][2]).iter().any(|t| t == "No dependencies."), "{out}");
     assert!(shown(&out["frames"][3]).iter().any(|t| t == "No runs for this feature yet."), "{out}");
-    let Some(out) = page("/projects/alpha/features/nothing-here", json!([ledger(), no_runs(), projects()]), json!([{"submit": TOKEN}])) else { return };
+    // An unknown name is looked up in the archive too; scripted apart, an empty archive means "not found".
+    let Some(out) = page_with_archive("/projects/alpha/features/nothing-here", json!([ledger(), no_runs(), projects()]), json!([{"status": 200, "json": {"archived": []}}]), json!([{"submit": TOKEN}])) else { return };
     assert!(shown(&out["frames"][1]).iter().any(|t| t == "Not found"), "{out}");
     assert!(!shown(&out["frames"][1]).iter().any(|t| t == "<b>bold</b> idea"), "{out}");
 }
