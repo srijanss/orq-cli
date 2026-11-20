@@ -72,8 +72,9 @@ pub(crate) fn vapid_key(roots: &StorageRoots) -> Result<SigningKey> {
 
 /// How long one push may take, connecting included.
 pub const SEND_TIMEOUT_SECS: u64 = 10;
-/// The most a push message carries (RFC 8291's record size, less its own overhead).
-const MAX_PAYLOAD: usize = 4096 - 86 - 1;
+/// The most a push message carries (RFC 8291 §4): a 4096-byte body less the 86-byte header, the 16-byte
+/// AES-GCM tag and the padding delimiter.
+const MAX_PAYLOAD: usize = 4096 - 86 - 16 - 1;
 
 /// A device's push subscription as the browser gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -156,6 +156,21 @@ fn an_endpoint_with_curl_glob_characters_is_one_literal_request() {
     assert_eq!(paths, vec!["/push/{a,b}[1-2]".to_string()], "the endpoint is taken literally, never expanded");
 }
 
+#[test]
+fn the_longest_message_fills_a_4096_byte_body_and_one_more_byte_is_refused() {
+    let roots = roots("push-limit");
+    let (service, device) = (FakePush::start(), Device::new());
+    let subscription = device.subscription(service.endpoint("one"));
+    // RFC 8291: 4096 less the 86-byte header, the 16-byte tag and the padding delimiter.
+    orq_remote::web_push::send(&roots, &subscription, &[b'x'; 3993]).expect("the longest message is sent");
+    let requests = service.requests();
+    assert_eq!(requests[0].body.len(), 4096);
+    assert_eq!(device.decrypt(&requests[0].body).len(), 3993);
+
+    assert!(orq_remote::web_push::send(&roots, &subscription, &[b'x'; 3994]).is_err());
+    assert_eq!(service.requests().len(), 1, "a message too long for a 4096-byte body is never sent");
+}
+
 fn b64(text: &str) -> Vec<u8> {
     orq_remote::web_push::base64url_decode(text).expect("base64url")
 }
