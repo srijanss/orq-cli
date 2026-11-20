@@ -151,7 +151,8 @@ fn kinds_and_mutes_need_a_passkey_session_and_are_what_notify_reads() {
 
 const FAILED_ON: &str = "input[data-push-kind=\"failed\"]:checked";
 const BETA_MUTED: &str = "[data-push-muted=\"beta\"]";
-const SELECTORS: [&str; 8] = ["[data-push-device]", "[data-push-enable]", "input[data-push-kind]", "input[data-push-kind]:checked", "[data-push-mute]", "[data-push-muted]", FAILED_ON, BETA_MUTED];
+const ENABLE_OFF: &str = "[data-push-enable]:disabled";
+const SELECTORS: [&str; 9] = ["[data-push-device]", "[data-push-enable]", "input[data-push-kind]", "input[data-push-kind]:checked", "[data-push-mute]", "[data-push-muted]", FAILED_ON, BETA_MUTED, ENABLE_OFF];
 const FIREFOX: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
 
 fn page(scenario: Value) -> Option<Value> {
@@ -249,6 +250,19 @@ fn a_denied_permission_or_a_browser_without_push_says_so_and_sends_nothing() {
     let Some(out) = settings_page(json!({"supported": false}), json!({}), steps) else { return };
     let last = out["frames"].as_array().unwrap().last().unwrap();
     assert!(shown(last).iter().any(|t| t == "This browser cannot show notifications from this page."), "{out}");
+    assert!(sent(&out, "POST").is_empty(), "nothing sent: {out}");
+}
+
+#[test]
+fn enable_gives_up_when_no_service_worker_becomes_ready() {
+    let subscription = json!({"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "au"}});
+    let steps = json!([{"click": "[data-push-enable]"}, {"expire": 8000}]);
+    let Some(out) = settings_page(json!({"permission": "granted", "subscription": subscription, "ready": "never"}), json!({}), steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[1], ENABLE_OFF), 1, "busy while the worker is awaited: {out}");
+    assert_eq!(count(&frames[2], ENABLE_OFF), 0, "Enable can be tried again: {out}");
+    assert!(shown(&frames[2]).iter().any(|t| t == "This page's service worker did not start, so notifications cannot be set up. Reload the page and try again."), "{out}");
+    assert_eq!(out["pushed"]["subscribed"], json!([]), "{out}");
     assert!(sent(&out, "POST").is_empty(), "nothing sent: {out}");
 }
 

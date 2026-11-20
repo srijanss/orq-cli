@@ -1916,6 +1916,27 @@ function keyBytes(text) {
 // Asks the browser to show notifications, subscribes with the server's key and sends the subscription.
 // Resolves null when this device is subscribed, otherwise the reason it is not; nothing is sent unless the
 // browser can and may show notifications.
+const PUSH_NO_WORKER = "This page's service worker did not start, so notifications cannot be set up. Reload the page and try again.";
+const WORKER_READY_MS = 8000;
+
+// The page's active service worker registration, or null when none is ready within WORKER_READY_MS:
+// serviceWorker.ready never settles when no worker activates.
+function workerReady() {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), WORKER_READY_MS);
+    navigator.serviceWorker.ready.then(
+      (registration) => {
+        clearTimeout(timer);
+        resolve(registration);
+      },
+      (failed) => {
+        clearTimeout(timer);
+        reject(failed);
+      },
+    );
+  });
+}
+
 async function enablePush(token) {
   if (!pushSupported()) return PUSH_UNSUPPORTED;
   let permission = "denied";
@@ -1928,7 +1949,8 @@ async function enablePush(token) {
   try {
     const key = await pushRequest(token, "GET", "key");
     if (!key.ok || key.data === null || typeof key.data.public_key !== "string") return pushRefusal(key, PUSH_FAILED);
-    const registration = await navigator.serviceWorker.ready;
+    const registration = await workerReady();
+    if (registration === null) return PUSH_NO_WORKER;
     const subscription = (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key.data.public_key) })).toJSON();
     const stored = await pushRequest(token, "POST", "subscriptions", { endpoint: subscription.endpoint, keys: subscription.keys, label: deviceLabel(navigator.userAgent) });
     return stored.ok ? null : pushRefusal(stored, PUSH_FAILED);
@@ -2045,8 +2067,12 @@ function PushCard({ token }) {
   const enable = async () => {
     setBusy(true);
     setNote("");
-    const refused = await enablePush(token);
-    setBusy(false);
+    let refused = PUSH_FAILED;
+    try {
+      refused = await enablePush(token);
+    } finally {
+      setBusy(false);
+    }
     setNote(refused === null ? "Notifications are on for this device." : refused);
     if (refused === null) load();
   };

@@ -170,7 +170,7 @@ if (scenario.service_worker) {
 }
 // A scenario may give `user_agent`, what navigator.userAgent says.
 if (typeof scenario.user_agent === "string") Object.defineProperty(window.navigator, "userAgent", { value: scenario.user_agent, configurable: true });
-// A scenario may give `push`: {permission, subscription, supported}. A browser with web push (unless `supported`
+// A scenario may give `push`: {permission, subscription, supported, ready}. A browser with web push (unless `supported`
 // is false): Notification.requestPermission() answers `permission`, and the service worker's pushManager
 // subscribes with `subscription` (what its toJSON() gives). `pushed` in the output lists the permission asks
 // and the subscribe options, the key as an array of bytes.
@@ -195,7 +195,8 @@ if (scenario.push) {
     };
     Object.defineProperty(window.navigator, "serviceWorker", {
       configurable: true,
-      value: { controller: null, ready: Promise.resolve(registration), register: () => Promise.resolve(registration), addEventListener: () => {} },
+      // `ready: "never"`: no worker ever activates, so serviceWorker.ready never settles.
+      value: { controller: null, ready: spec.ready === "never" ? new Promise(() => {}) : Promise.resolve(registration), register: () => Promise.resolve(registration), addEventListener: () => {} },
     });
   }
 }
