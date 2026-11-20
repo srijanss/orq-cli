@@ -380,11 +380,16 @@ const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 #[test]
 fn the_person_started_target_push_allows_only_one_sha_refspec_without_force_or_multi_ref_forms() {
     let refspec = format!("{SHA}:refs/heads/main");
-    assert_eq!(allowed_target_push(&args(&["push", "origin", &refspec]), SHA, "main"), Ok(()));
+    // The one option it takes keeps a checkout's push.followTags from sending tags along.
+    assert_eq!(allowed_target_push(&args(&["push", "--no-follow-tags", "origin", &refspec]), SHA, "main"), Ok(()));
+    assert!(allowed_target_push(&args(&["push", "origin", &refspec]), SHA, "main").is_err(), "without --no-follow-tags, tags could follow");
     let forced = format!("+{refspec}");
     let other_branch = format!("{SHA}:refs/heads/release");
     let other_sha = "fedcba9876543210fedcba9876543210fedcba98:refs/heads/main".to_string();
     for bad in [
+        vec!["push", "--no-follow-tags", "--force", "origin", refspec.as_str()],
+        vec!["push", "--follow-tags", "origin", refspec.as_str()],
+        vec!["push", "origin", "--no-follow-tags", refspec.as_str()],
         vec!["push", "--force", "origin", refspec.as_str()],
         vec!["push", "-f", "origin", refspec.as_str()],
         vec!["push", "--force-with-lease", "origin", refspec.as_str()],

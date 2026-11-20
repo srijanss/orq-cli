@@ -98,6 +98,20 @@ fn a_target_two_commits_ahead_and_not_protected_is_pushed_and_origin_then_equals
 }
 
 #[test]
+fn only_the_target_is_pushed_even_when_the_checkout_follows_tags() {
+    let w = world("follow-tags", 1);
+    git(&w.repo, &["config", "push.followTags", "true"]);
+    git(&w.repo, &["tag", "-a", "-m", "release", "v1", "main"]);
+    let gh = unprotected();
+    let push = request(&w, &gh);
+    let head = git(&w.repo, &["rev-parse", "main"]);
+
+    assert!(matches!(push_target(&push, &head), TargetPushOutcome::Pushed { .. }));
+    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), head);
+    assert_eq!(git(&w.origin, &["tag", "--list"]), "", "no tag went with the push");
+}
+
+#[test]
 fn a_branch_github_reports_protected_is_refused_after_one_rest_lookup_and_never_graphql() {
     let w = world("protected", 2);
     let gh = FakeProvider::builder().reply(&LOOKUP, r#"{"name":"main","protected":true}"#).build();

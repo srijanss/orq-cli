@@ -113,9 +113,10 @@ pub fn forbidden_provider_call(program: &str, args: &[String]) -> Option<&'stati
 }
 
 /// Whether `args` (the arguments after `git`) are the one push of a target branch a person asks
-/// for themselves (`orq push`, or Push on the web): exactly `push <remote> <sha>:refs/heads/<branch>`,
-/// with the commit id they confirmed as the source. No option is accepted, so nothing can force,
-/// delete, mirror or push tags or more refs. Only that command path calls this; every other push
+/// for themselves (`orq push`, or Push on the web): exactly
+/// `push --no-follow-tags <remote> <sha>:refs/heads/<branch>`, with the commit id they confirmed as
+/// the source. `--no-follow-tags`, which keeps a checkout's `push.followTags` from sending tags along,
+/// is the only option accepted, so nothing can force, delete, mirror or push tags or more refs. Only that command path calls this; every other push
 /// goes through [`forbidden_git_push`], which keeps refusing target branches.
 pub fn allowed_target_push(args: &[String], sha: &str, branch: &str) -> Result<(), &'static str> {
     let commit_id = (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit());
@@ -126,11 +127,14 @@ pub fn allowed_target_push(args: &[String], sha: &str, branch: &str) -> Result<(
     if !plain_branch {
         return Err("the branch to push is not a plain branch name");
     }
-    let [push, remote, refspec] = args else {
-        return Err("a target push is one remote and one refspec, with no options");
+    let [push, no_follow_tags, remote, refspec] = args else {
+        return Err("a target push is --no-follow-tags, one remote and one refspec, with no other options");
     };
     if push != "push" {
         return Err("not a push");
+    }
+    if no_follow_tags != "--no-follow-tags" {
+        return Err("a target push sends no tags along");
     }
     if remote.is_empty() || remote.starts_with('-') || !remote.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
         return Err("a target push names its remote plainly");

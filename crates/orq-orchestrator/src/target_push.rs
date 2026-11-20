@@ -273,7 +273,8 @@ pub fn push_target(push: &TargetPush, sha: &str) -> TargetPushOutcome {
     if local != sha {
         return TargetPushOutcome::Refused("the branch changed: review again".to_string());
     }
-    let args = vec!["push".to_string(), REMOTE.to_string(), format!("{sha}:refs/heads/{}", push.target)];
+    // --no-follow-tags: a checkout's push.followTags would otherwise send tags nobody confirmed.
+    let args = vec!["push".to_string(), "--no-follow-tags".to_string(), REMOTE.to_string(),format!("{sha}:refs/heads/{}", push.target)];
     if let Err(why) = orq_core::no_merge::allowed_target_push(&args, sha, push.target) {
         return TargetPushOutcome::Refused(why.to_string());
     }
