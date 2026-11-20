@@ -327,6 +327,27 @@ fn commits_link_to_the_run_they_came_from_others_are_not_from_orq_and_pushed_run
 }
 
 #[test]
+fn a_push_origin_rejects_after_the_checks_pass_shows_gits_reason_and_records_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("rejected", 0);
+    let run_head = commit(&w.repo, "r1.txt", "run work");
+    merged_run(&w, "run-1", REPOSITORY, &w.base, &run_head);
+    let hook = w.origin.join("hooks").join("pre-receive");
+    fs::write(&hook, "#!/bin/sh\necho 'denied by policy' >&2\nexit 1\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let gh = unprotected();
+    let push = request(&w, &gh);
+
+    assert_eq!(target_push_state(&push).reason, None, "the checks pass");
+    match push_target(&push, &run_head) {
+        TargetPushOutcome::Refused(reason) => assert!(reason.contains("denied by policy"), "{reason}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(git(&w.origin, &["rev-parse", "refs/heads/main"]), w.base, "origin keeps its tip");
+    assert!(!w.store.events("run-1").unwrap().iter().any(|e| e.kind == "target.pushed"), "no push is recorded");
+}
+
+#[test]
 fn a_target_that_is_not_a_plain_branch_name_is_refused_before_anything_is_fetched_or_asked() {
     let w = world("odd-target", 1);
     let gh = unprotected();
