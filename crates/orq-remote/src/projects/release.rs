@@ -148,8 +148,8 @@ fn ask_level(env: &Env, evidence: &str) -> Result<orq_agents::ReleaseLevel, Stri
     orq_agents::parse_release_level(&answer).ok_or_else(|| "its answer was not a level and a reason".to_string())
 }
 
-/// Makes the release of `merge`: the commit that carries the next version, fast-forwarded into the target.
-pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) -> Result<Created, String> {
+/// Fails unless the checkout at `merge.root` is on the target at the merged commit with nothing changed.
+fn checkout_ready(merge: &Merge<'_>) -> Result<(), String> {
     let root = merge.root;
     match run_git(root, &["symbolic-ref", "--short", "-q", "HEAD"]) {
         Ok(on) if on.trim() == merge.branch => {}
@@ -163,6 +163,13 @@ pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) 
     if !run_git(root, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
         return Err("the checkout has uncommitted changes".to_string());
     }
+    Ok(())
+}
+
+/// Makes the release of `merge`: the commit that carries the next version, fast-forwarded into the target.
+pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) -> Result<Created, String> {
+    let root = merge.root;
+    checkout_ready(merge)?;
     let file = Path::new(&settings.version_file);
     if file.is_absolute() || file.components().any(|part| !matches!(part, Component::Normal(_))) {
         return Err(format!("the version file {} is not a path inside the project", settings.version_file));
@@ -222,6 +229,8 @@ pub(super) fn release(env: &Env, settings: &ReleaseSettings, merge: &Merge<'_>) 
         }
         run_git(&worktree, &commit)?;
         let commit = run_git(&worktree, &["rev-parse", "HEAD"])?.trim().to_string();
+        // The agent and the commands took a while: the checkout may have moved on meanwhile.
+        checkout_ready(merge)?;
         run_git(root, &["merge", "--ff-only", "-q", &branch])?;
         Ok(commit)
     })();

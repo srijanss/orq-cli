@@ -45,18 +45,23 @@ struct FakeAgent {
     /// How long it takes to answer.
     delay: Duration,
     asked: Mutex<Vec<Vec<String>>>,
+    /// Something that happens in the project while the agent is thinking.
+    during: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl ReleaseAgent for FakeAgent {
     fn ask(&self, _harness: &str, argv: &[String]) -> Result<String, String> {
         self.asked.lock().unwrap().push(argv.to_vec());
+        if let Some(during) = self.during.lock().unwrap().take() {
+            during();
+        }
         std::thread::sleep(self.delay);
         self.reply.clone()
     }
 }
 
 fn replying(reply: Result<String, String>, delay: Duration) -> Arc<FakeAgent> {
-    Arc::new(FakeAgent { reply, delay, asked: Mutex::default() })
+    Arc::new(FakeAgent { reply, delay, asked: Mutex::default(), during: Mutex::default() })
 }
 
 fn answering(level: &str) -> Arc<FakeAgent> {
@@ -352,6 +357,23 @@ fn a_version_file_that_is_a_symlink_is_refused_and_what_it_points_at_is_untouche
     let refused = wait_for(&s, &run, "release.refused").expect("the refusal was recorded");
     assert!(refused.payload["why"].as_str().unwrap().contains("symlink"), "{refused:?}");
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), "[package]\nversion = \"0.1.2\"\n");
+    assert_eq!(git(&s.repo, &["branch", "--list", "release/*"]), "");
+}
+
+#[test]
+fn a_target_that_changes_while_the_agent_thinks_is_refused_and_no_branch_is_moved() {
+    let agent = answering("patch");
+    let s = setup("changes-meanwhile", agent.clone(), "auto");
+    let repo = s.repo.clone();
+    *agent.during.lock().unwrap() = Some(Box::new(move || {
+        git(&repo, &["checkout", "-q", "-b", "other"]);
+    }));
+    let (run, merged) = merged_with(&s, "fix: the thing");
+    let refused = wait_for(&s, &run, "release.refused").expect("the refusal was recorded");
+    assert!(refused.payload["why"].as_str().unwrap().contains("other"), "{refused:?}");
+    assert!(events_of(&s, &run, "release.created").is_empty());
+    assert_eq!(git(&s.repo, &["rev-parse", "main"]), merged);
+    assert_eq!(git(&s.repo, &["rev-parse", "HEAD"]), merged);
     assert_eq!(git(&s.repo, &["branch", "--list", "release/*"]), "");
 }
 
