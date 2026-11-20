@@ -228,11 +228,11 @@ fn the_bar_follows_a_drag_and_opens_when_let_go_past_a_third() {
 }
 
 /// The middle tab, under the lower part of the handle's 44px strip (laid out by `rects`: the handle's box is 0..44
-/// from the bar's top at 600, across x 50..150).
+/// from the bar's top at 600, across x 50..150; every tab's icon starts 28px down, at 628).
 const MIDDLE: &str = "nav.tabbar > a[href=\"/s2\"]";
 
 fn laid_out(steps: Value) -> Option<Value> {
-    let rects = json!({HANDLE: {"top": 600, "bottom": 644, "left": 50, "right": 150}});
+    let rects = json!({HANDLE: {"top": 600, "bottom": 644, "left": 50, "right": 150}, "nav.tabbar > a svg": {"top": 628, "bottom": 656, "left": 86, "right": 114}});
     shell(json!({"tabbar": sections(7), "path": "/s0", "rects": rects, "probe": [DRAWER], "steps": steps}))
 }
 
@@ -254,10 +254,27 @@ fn with_a_handle_a_touch_drag_on_a_tab_is_the_bars_not_a_page_scroll() {
 }
 
 #[test]
-fn a_tap_in_the_handles_strip_on_a_tab_is_still_the_tabs_tap() {
-    let Some(out) = laid_out(json!([{"tap": MIDDLE, "y": 630}])) else { return };
+fn a_tap_in_the_handles_strip_above_a_tabs_icon_toggles_the_bar_and_does_not_navigate() {
+    let Some(out) = laid_out(json!([{"tap": MIDDLE, "y": 615}])) else { return };
     let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(drawer_open(last), "the strip above the icon is the handle's: {out}");
+    assert_eq!(last["path"], "/s0", "{out}");
+}
+
+#[test]
+fn a_tap_on_a_tabs_icon_inside_the_handles_strip_is_still_the_tabs_tap() {
+    let Some(out) = laid_out(json!([{"tap": MIDDLE, "y": 635}])) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(!drawer_open(last), "{out}");
     assert_eq!(last["path"], "/s2", "{out}");
+}
+
+#[test]
+fn a_tap_above_the_icon_of_a_tab_outside_the_handles_box_is_the_tabs_tap() {
+    let Some(out) = laid_out(json!([{"tap": "nav.tabbar > a[href=\"/s1\"]", "x": 30, "y": 615}])) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(!drawer_open(last), "{out}");
+    assert_eq!(last["path"], "/s1", "{out}");
 }
 
 #[test]

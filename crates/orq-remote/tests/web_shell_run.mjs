@@ -119,7 +119,7 @@ try {
     if (step.click) {
       window.document.querySelector(step.click).dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     } else if (step.pointer || step.tap) {
-      // A finger going down, moving, lifting or cancelled at height `y` over the element `at` (or the element
+      // A finger going down, moving, lifting or cancelled at height `y` (and `x`, 100 if not given) over the element `at` (or the element
       // that captured it). `thenClick: true` on a lift, and every `tap` (a down and a lift in place), also send the
       // click a browser sends after the lift, to the captured element if there is one.
       const Pointer = window.PointerEvent || window.MouseEvent;
@@ -127,7 +127,7 @@ try {
       const send = (type, y, over) => {
         const target = type === "down" ? over : captured || over;
         const name = type === "lostcapture" ? "lostpointercapture" : "pointer" + type;
-        target.dispatchEvent(new Pointer(name, { bubbles: true, cancelable: true, clientX: 100, clientY: y, pointerId: 1 }));
+        target.dispatchEvent(new Pointer(name, { bubbles: true, cancelable: true, clientX: step.x ?? 100, clientY: y, pointerId: 1 }));
         return target;
       };
       const over = window.document.querySelector(step.tap || step.at);

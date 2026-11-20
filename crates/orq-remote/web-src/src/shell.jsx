@@ -179,6 +179,8 @@ export function TabBar({ entries, path }) {
   const drawer = useRef(null);
   const drag = useRef(null);
   const dragEndedAt = useRef(-Infinity);
+  // When a tap last lifted in the handle's strip above a tab's icon; the tab's click that follows it is the handle's.
+  const stripTapAt = useRef(-Infinity);
   const wasOpen = useRef(false);
 
   const measure = () => drawer.current?.scrollHeight ?? 0;
@@ -229,13 +231,23 @@ export function TabBar({ entries, path }) {
     return !!box && event.clientY >= box.top && event.clientY < box.bottom && event.clientX >= box.left && event.clientX < box.right;
   };
 
+  // Whether the press is on a tab, inside the handle's strip and above the tab's icon: that part of the tab is the
+  // handle's, so a tap there toggles the bar instead of following the tab.
+  const aboveTabIcon = (event) => {
+    const tab = event.target.closest?.("a");
+    if (!tab || tab.parentElement !== bar.current || !inHandleStrip(event)) return false;
+    const icon = tab.querySelector("svg")?.getBoundingClientRect();
+    return !!icon && event.clientY < icon.top;
+  };
+
   const onPointerDown = (event) => {
+    stripTapAt.current = -Infinity;
     if (!overflows) return;
     // The handle's whole 44px strip, the tabs that paint over its lower part included, or the bar's own empty
-    // strip. A press there that doesn't move stays a tap on whatever it landed on.
+    // strip. A press there that doesn't move is a tap: the handle's above a tab's icon, the tab's on or below it.
     if (!handle.current?.contains(event.target) && event.target !== bar.current && !inHandleStrip(event)) return;
     const height = open ? full : measure();
-    drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false, samples: [{ y: event.clientY, t: now() }] };
+    drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false, aboveIcon: aboveTabIcon(event), samples: [{ y: event.clientY, t: now() }] };
   };
 
   const onPointerMove = (event) => {
@@ -254,7 +266,12 @@ export function TabBar({ entries, path }) {
   const onPointerUp = (event) => {
     const current = drag.current;
     drag.current = null;
-    if (!current || !current.moved) return;
+    if (!current) return;
+    if (!current.moved) {
+      // The click that follows this lift lands on the tab; it toggles the bar instead.
+      if (current.aboveIcon) stripTapAt.current = now();
+      return;
+    }
     dragEndedAt.current = now();
     setPull(null);
     // Upward speed over the last moments of the drag; 0 when the finger rested before lifting.
@@ -297,6 +314,12 @@ export function TabBar({ entries, path }) {
         ) : null}
         {shown.map((entry) => (
           <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
+              if (now() - stripTapAt.current < DRAG_CLICK_MS) {
+                stripTapAt.current = -Infinity;
+                event.preventDefault();
+                setOpen(!open);
+                return;
+              }
               // Choosing any section closes the open bar, the one already shown included.
               if (open) setOpenOn(null);
               goTo(entry, event);
