@@ -198,6 +198,41 @@ fn each_design_role_is_saved_read_back_by_the_api_and_kept_in_orq_db_and_a_stale
 }
 
 #[test]
+fn a_save_that_leaves_the_design_roles_out_keeps_them_and_only_null_resets_one() {
+    let s = setup("design-agents-left-out");
+    let alpha = git_repo(&s.scan, "alpha");
+    let reviewer = json!({"harness": "pi", "model": "openai/gpt-6.1-terra", "effort": "medium"});
+    let verifier = json!({"harness": "claude", "model": "opus", "effort": "high"});
+    let (status, body) = save(&s, "alpha", json!({"design_reviewer": reviewer, "design_verifier": verifier}));
+    assert_eq!(status, 200, "{body}");
+
+    // An older page knows no design role, so it saves the rest of the settings without them.
+    let mut older = s.clone_without_pi();
+    let (status, body) = save(&older, "alpha", json!({"delivery": "merge_local", "revision": 1}));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["settings"]["delivery"], "merge_local");
+    assert_eq!(body["settings"]["design_reviewer"], reviewer, "kept without asking pi again: {body}");
+    assert_eq!(body["settings"]["design_verifier"], verifier);
+    assert_eq!(body["settings"]["design_preparer"], Value::Null);
+    let stored = Store::open(&s.roots.database()).unwrap().project_settings(&alpha).unwrap();
+    assert_eq!(stored.settings.design_reviewer.as_ref().map(|agent| agent.model.as_str()), Some("openai/gpt-6.1-terra"));
+    assert_eq!(stored.settings.design_verifier.as_ref().map(|agent| agent.model.as_str()), Some("opus"));
+
+    older.pi = s.pi.clone();
+    let (status, body) = save(&older, "alpha", json!({"design_verifier": null, "revision": 2}));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["settings"]["design_verifier"], Value::Null, "null resets: {body}");
+    assert_eq!(body["settings"]["design_reviewer"], reviewer, "the role left out is kept: {body}");
+}
+
+impl Setup {
+    /// The same machine, but pi can't be run, so a save that asked pi for its models would be refused.
+    fn clone_without_pi(&self) -> Setup {
+        Setup { scan: self.scan.clone(), roots: self.roots.clone(), pi: self.roots.data.join("no-such-pi") }
+    }
+}
+
+#[test]
 fn a_design_role_whose_model_pi_says_takes_no_images_or_pi_doesnt_list_or_whose_level_is_not_pis_is_refused_and_nothing_is_saved(
 ) {
     let mut s = setup("design-agents-refused");

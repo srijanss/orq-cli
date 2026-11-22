@@ -17,6 +17,7 @@ const PI_MODELS: &str = "provider  model          context  max-out  thinking  im
 struct Fake {
     saved: RefCell<Vec<ProjectSettings>>,
     listed: Cell<u32>,
+    stored: [Option<ProjectAgent>; 3],
 }
 
 impl ProjectsProvider for Fake {
@@ -30,6 +31,10 @@ impl ProjectsProvider for Fake {
             {"harness": "pi", "models": ["openai/gpt-6.1-sol", "kimi/kimi-text"], "efforts": ["off", "low", "medium", "high"]},
             {"harness": "codex", "models": ["gpt-5"]}
         ])))
+    }
+
+    fn design_agents(&self, _id: &str) -> Result<Option<[Option<ProjectAgent>; 3]>, String> {
+        Ok(Some(self.stored.clone()))
     }
 
     fn pi_models(&self) -> Result<Option<String>, String> {
@@ -69,6 +74,7 @@ fn fake() -> Fake {
     Fake {
         saved: RefCell::new(Vec::new()),
         listed: Cell::new(0),
+        stored: [None, None, None],
     }
 }
 
@@ -187,4 +193,17 @@ fn a_design_role_that_is_not_a_design_agent_is_refused_with_why_and_nothing_is_s
         "a role is null or an agent"
     );
     assert!(fake.saved.into_inner().is_empty(), "nothing was saved");
+}
+
+#[test]
+fn a_design_role_left_out_keeps_what_is_stored_without_checking_it_again_and_null_resets_it() {
+    let roots = roots("kept");
+    let mut fake = fake();
+    fake.stored = [None, Some(agent("pi", "openai/gpt-6.1-sol", Some("medium"))), Some(agent("claude", "opus", Some("high")))];
+    assert_eq!(save(&roots, &fake, json!({})).0, 200);
+    assert_eq!(fake.listed.get(), 0, "a kept role is not checked again, so pi is not asked");
+    assert_eq!(save(&roots, &fake, json!({"design_verifier": null, "design_preparer": {"harness": "claude", "model": "sonnet"}})).0, 200);
+    let saved = fake.saved.into_inner();
+    assert_eq!((saved[0].design_preparer.clone(), saved[0].design_reviewer.clone(), saved[0].design_verifier.clone()), (None, fake.stored[1].clone(), fake.stored[2].clone()));
+    assert_eq!((saved[1].design_preparer.clone(), saved[1].design_reviewer.clone(), saved[1].design_verifier.clone()), (Some(agent("claude", "sonnet", None)), fake.stored[1].clone(), None));
 }

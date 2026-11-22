@@ -362,6 +362,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// Project `id`'s stored design preparer, design reviewer and design verifier, unredacted, which a
+    /// save that leaves one out keeps; `None` when there is no such project or nothing is stored.
+    fn design_agents(&self, _id: &str) -> Result<Option<[Option<crate::project_settings::ProjectAgent>; 3]>, String> {
+        Ok(None)
+    }
+
     /// What `pi --list-models` prints on this machine, for checking which models a design role may use;
     /// `None` when pi cannot be asked.
     fn pi_models(&self) -> Result<Option<String>, String> {
@@ -2771,11 +2777,25 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("disk floor out of range"));
         return error(422, "Free disk needed to start must be empty or 1 to 500 GB");
     };
-    // A design role left out is unset, as an older page that knows none of them saves.
-    let design_role = |role: &str| if fields.get(role).is_none() { Some(None) } else { agent(role) };
-    let (Some(design_preparer), Some(design_reviewer), Some(design_verifier)) = (design_role("design_preparer"), design_role("design_reviewer"), design_role("design_verifier")) else {
+    // A design role left out keeps what is stored, as an older page that knows none of them saves; null resets
+    // it. A kept role was checked when it was saved, so only the roles sent are checked here.
+    let left_out = ["design_preparer", "design_reviewer", "design_verifier"].map(|role| fields.get(role).is_none());
+    let design_role = |index: usize, role: &str| if left_out[index] { Some(None) } else { agent(role) };
+    let (Some(design_preparer), Some(design_reviewer), Some(design_verifier)) = (design_role(0, "design_preparer"), design_role(1, "design_reviewer"), design_role(2, "design_verifier")) else {
         audit(Outcome::Refused, Some("bad request body"));
         return error(400, "the request body is not one this action takes");
+    };
+    let stored_design = if left_out.contains(&true) {
+        match provider.map(|provider| provider.design_agents(id)) {
+            Some(Err(_)) => {
+                audit(Outcome::Refused, Some("the stored settings could not be read"));
+                return error(500, "the stored settings could not be read");
+            }
+            Some(Ok(Some(stored))) => stored,
+            _ => [None, None, None],
+        }
+    } else {
+        [None, None, None]
     };
     let design = [("Design preparer", &design_preparer), ("Design reviewer", &design_reviewer), ("Design verifier", &design_verifier)];
     let chosen: Vec<&ProjectAgent> = implementer.iter().chain(reviewer.iter()).collect();
@@ -2860,6 +2880,9 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
             return error(403, "Cleaning up on its own after a merge needs a passkey sign-in");
         }
     }
+    let [stored_preparer, stored_reviewer, stored_verifier] = stored_design;
+    let keep = |index: usize, sent: Option<ProjectAgent>, stored: Option<ProjectAgent>| if left_out[index] { stored } else { sent };
+    let (design_preparer, design_reviewer, design_verifier) = (keep(0, design_preparer, stored_preparer), keep(1, design_reviewer, stored_reviewer), keep(2, design_verifier, stored_verifier));
     let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge, design_preparer, design_reviewer, design_verifier };
     match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
         Some(Ok(ProjectSettingsSave::Saved(settings))) => {

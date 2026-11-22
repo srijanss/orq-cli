@@ -1683,6 +1683,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(self.settings_answer(&git, &stored)))
     }
 
+    /// The design roles stored in this machine's orq.db for the project, as saved, so a save that leaves one
+    /// out keeps it.
+    fn design_agents(&self, id: &str) -> Result<Option<[Option<orq_core::project_settings::ProjectAgent>; 3]>, String> {
+        let Some((_, stored)) = self.stored_settings_of(id)? else { return Ok(None) };
+        let settings = stored.settings;
+        Ok(Some([settings.design_preparer, settings.design_reviewer, settings.design_verifier]))
+    }
+
     /// Saves the project's own settings in this machine's orq.db, keyed by its main checkout like a
     /// read, if its record is still at `revision`; then gives the saved settings as a read gives them.
     fn save_project_settings(&self, id: &str, revision: u64, settings: &orq_core::project_settings::ProjectSettings) -> Result<orq_core::remote_inbox::ProjectSettingsSave, String> {
