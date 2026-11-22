@@ -113,3 +113,27 @@ fn an_unknown_kind_a_feature_not_in_the_ledger_a_missing_token_and_actions_off_a
     assert_eq!(set_kind(&s, "page", "frontend").0, 404, "the switch is an action like the page's others");
     assert_eq!(kinds(&s), [pair("page", "standard"), pair("engine", "standard")], "nothing refused was kept");
 }
+
+/// Listing reads orq.db without writing to it: a database from before feature kinds is neither migrated nor
+/// upgraded by a list of features or runs, and its features read as standard.
+#[test]
+fn listing_reads_an_older_database_as_all_standard_without_upgrading_it() {
+    let s = setup("kind-list-read-only");
+    let alpha = git_repo(&s.scan, "alpha");
+    create_run(&s, &alpha, "r-page", "page");
+    assert_eq!(set_kind(&s, "page", "frontend").0, 200);
+    let db = s.roots.database();
+    let version = || -> u32 { rusqlite::Connection::open(&db).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap() };
+    let tables = || -> i64 { rusqlite::Connection::open(&db).unwrap().query_row("SELECT count(*) FROM sqlite_master WHERE name = 'feature_kinds'", [], |row| row.get(0)).unwrap() };
+    let before_kinds = orq_core::store::Store::LATEST_VERSION - 1;
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("ALTER TABLE feature_kinds RENAME TO feature_kinds_old;").unwrap();
+    conn.pragma_update(None, "user_version", before_kinds).unwrap();
+    drop(conn);
+
+    assert_eq!(kinds(&s), [pair("page", "standard"), pair("engine", "standard")]);
+    let (status, body) = call(&s, "GET", "/api/projects/alpha/runs", Some("Bearer tok"), b"");
+    assert_eq!((status, &body["runs"][0]["feature_kind"]), (200, &json!("standard")), "{body}");
+    assert_eq!(version(), before_kinds, "left as it was");
+    assert_eq!(tables(), 0, "not migrated by a listing");
+}

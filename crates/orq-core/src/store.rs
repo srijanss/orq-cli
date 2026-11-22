@@ -221,6 +221,8 @@ const PINS_REMOVED_VERSION: u32 = 7;
 
 /// The schema version whose migration added `project_settings`.
 const PROJECT_SETTINGS_VERSION: u32 = 6;
+/// The schema version that added feature_kinds.
+const FEATURE_KINDS_VERSION: u32 = 16;
 
 /// The schema version whose migration added a project's run limit and disk floor.
 const RUN_LIMITS_VERSION: u32 = 8;
@@ -304,6 +306,21 @@ impl Store {
             return Ok(StoredProjectSettings { settings: ProjectSettings::default(), revision: 0 });
         }
         store.project_settings_at(root, version)
+    }
+
+    /// The features marked frontend of the project whose main checkout is `root`, read without writing anything:
+    /// the database is not created, migrated or switched to WAL. A database from before feature kinds has none; one
+    /// newer than this Orq understands is refused.
+    pub fn read_frontend_features(path: &Path, root: &Path) -> Result<Vec<String>> {
+        let (store, version) = Self::open_read_only_at_any_version(path)?;
+        if version > Self::LATEST_VERSION {
+            store.check_newer(version, Self::LATEST_VERSION)?;
+        }
+        if version < FEATURE_KINDS_VERSION {
+            project_key(root)?;
+            return Ok(Vec::new());
+        }
+        store.frontend_features(root)
     }
 
     /// The schema `Store::open` would upgrade the database at `path` from, and the version an Orq that reads the

@@ -2750,13 +2750,14 @@ fn ledger_entries(path: &Path) -> Result<usize, String> {
 }
 
 /// The features marked frontend of the project whose main checkout is `root`, from orq.db at `database`.
-/// Without orq.db there are none, and reading never creates it, so a project with no kinds set is as before.
+/// Without orq.db there are none, and reading never creates, migrates or writes it, so a project with no kinds set
+/// is as before.
 pub fn frontend_features_at(database: &Path, root: &Path) -> Result<std::collections::HashSet<String>, String> {
     if !database.exists() {
         return Ok(Default::default());
     }
-    let store = orq_core::store::Store::open(database).map_err(|error| format!("cannot open orq.db: {error}"))?;
-    Ok(store.frontend_features(root).map_err(|error| format!("cannot read the feature kinds: {error}"))?.into_iter().collect())
+    let names = orq_core::store::Store::read_frontend_features(database, root).map_err(|error| format!("cannot read the feature kinds: {error}"))?;
+    Ok(names.into_iter().collect())
 }
 
 /// Sets the kind (`frontend` or `standard`) of `feature` of project `git`, whose main checkout is `root`, in orq.db

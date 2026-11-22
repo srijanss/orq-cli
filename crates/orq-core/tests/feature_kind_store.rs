@@ -45,6 +45,27 @@ fn only_standard_and_frontend_are_kinds() {
 }
 
 #[test]
+fn the_read_only_lookup_writes_nothing_and_reads_an_older_database_as_having_no_frontend_features() {
+    let db = scratch("read-only").join("orq.db");
+    let alpha = Path::new("/code/alpha");
+    Store::open(&db).unwrap().set_feature_kind(alpha, "page", FeatureKind::Frontend).unwrap();
+    assert_eq!(Store::read_frontend_features(&db, alpha).unwrap(), ["page".to_string()]);
+
+    let version = |db: &Path| -> u32 { rusqlite::Connection::open(db).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap() };
+    let before_kinds = Store::LATEST_VERSION - 1;
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("ALTER TABLE feature_kinds RENAME TO feature_kinds_old;").unwrap();
+    conn.pragma_update(None, "user_version", before_kinds).unwrap();
+    drop(conn);
+    assert!(Store::read_frontend_features(&db, alpha).unwrap().is_empty());
+    assert_eq!(version(&db), before_kinds, "left as it was");
+    assert!(Store::read_frontend_features(&db, Path::new("code/alpha")).is_err(), "a relative root is still refused");
+
+    rusqlite::Connection::open(&db).unwrap().pragma_update(None, "user_version", Store::LATEST_VERSION + 1).unwrap();
+    assert!(Store::read_frontend_features(&db, alpha).is_err(), "a newer schema is not guessed at");
+}
+
+#[test]
 fn a_relative_project_root_is_refused() {
     let store = Store::open(&scratch("relative").join("orq.db")).unwrap();
     assert!(store.set_feature_kind(Path::new("code/alpha"), "page", FeatureKind::Frontend).is_err());
