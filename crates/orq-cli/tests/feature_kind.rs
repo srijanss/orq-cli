@@ -26,7 +26,11 @@ fn set_kind(repo: &GitFixture, from: &Path, id: &str, kind: &str) -> Output {
 }
 
 fn kinds(repo: &GitFixture) -> Vec<(String, String)> {
-    let out = orq(repo).args(["features", "--repo"]).arg(repo.root()).output().unwrap();
+    kinds_at(repo, repo.root())
+}
+
+fn kinds_at(repo: &GitFixture, at: &Path) -> Vec<(String, String)> {
+    let out = orq(repo).args(["features", "--repo"]).arg(at).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     list.as_array().unwrap().iter().map(|f| (f["name"].as_str().unwrap().to_string(), f["kind"].as_str().unwrap().to_string())).collect()
@@ -51,6 +55,26 @@ fn a_kind_set_reads_back_in_the_features_list_and_the_ledger_is_untouched() {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(kinds(&repo), [pair("page", "standard"), pair("engine", "standard")]);
     assert_eq!(std::fs::read(repo.root().join(".tdd-features.json")).unwrap(), ledger, "the ledger gets no new field");
+}
+
+/// A linked worktree is the same project as its main checkout: a kind set from either reads back from both.
+#[test]
+fn a_linked_worktree_shares_the_kinds_of_its_main_checkout() {
+    let repo = GitFixture::new();
+    let linked = repo.add_linked_worktree("side");
+    for root in [repo.root(), linked.as_path()] {
+        write_ledger(root, &[LedgerEntry::new("page", "pending")]);
+    }
+
+    let out = set_kind(&repo, &linked, "page", "frontend");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(kinds_at(&repo, repo.root()), [pair("page", "frontend")], "set from the linked worktree, read from the main checkout");
+    assert_eq!(kinds_at(&repo, &linked), [pair("page", "frontend")]);
+
+    let out = set_kind(&repo, repo.root(), "page", "standard");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(kinds_at(&repo, &linked), [pair("page", "standard")], "reset from the main checkout, read from the linked worktree");
+    assert_eq!(kinds_at(&repo, repo.root()), [pair("page", "standard")]);
 }
 
 #[test]
