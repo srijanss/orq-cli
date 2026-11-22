@@ -2844,17 +2844,22 @@ fn unredacted<'a>(value: &str, mut stored: impl Iterator<Item = &'a String>) -> 
 }
 
 /// What `program --list-models` prints, or None when it cannot run, fails, says more than 256 KiB
-/// or is still running after `timeout`. Only argv is passed; it reads nothing.
+/// or is still running after `timeout`. Only argv is passed; it reads nothing. pi runs in its own process
+/// group, and giving up stops the whole group, so a descendant left holding its output can't keep the
+/// reader waiting.
 fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Option<String> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
     const CAP: u64 = 256 * 1024;
     let mut child = std::process::Command::new(program)
         .arg("--list-models")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .process_group(0)
         .spawn()
         .ok()?;
+    let group = libc::pid_t::try_from(child.id()).ok()?;
     let stdout = child.stdout.take()?;
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -2872,6 +2877,8 @@ fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Option<String
             Ok(Some(status)) if output.is_some() => break status,
             Ok(None | Some(_)) if std::time::Instant::now() < deadline => {}
             _ => {
+                // Every member of the group is stopped, which closes the pipe and so ends the reader.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;

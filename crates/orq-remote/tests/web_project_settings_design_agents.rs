@@ -225,6 +225,34 @@ fn a_save_that_leaves_the_design_roles_out_keeps_them_and_only_null_resets_one()
     assert_eq!(body["settings"]["design_reviewer"], reviewer, "the role left out is kept: {body}");
 }
 
+/// Points the setup at a fake pi running `script`, and saves a pi design reviewer with it.
+fn save_with_pi(s: &mut Setup, name: &str, script: &str) -> ((u16, Value), std::time::Duration) {
+    s.pi = s.roots.data.join(name);
+    orq_test_support::write_executable(&s.pi, script);
+    let started = std::time::Instant::now();
+    let answer = save(s, "alpha", json!({"design_reviewer": {"harness": "pi", "model": "openai/gpt-6.1-sol", "effort": "medium"}}));
+    (answer, started.elapsed())
+}
+
+#[test]
+fn a_pi_whose_descendant_keeps_its_output_open_is_given_up_on_and_the_descendant_is_stopped() {
+    let mut s = setup("design-agents-pi-descendant");
+    let alpha = git_repo(&s.scan, "alpha");
+    let pid_file = s.roots.data.join("descendant.pid");
+    let script = format!("#!/bin/sh\nsleep 60 &\necho $! > '{}'\ncat <<'EOF'\n{PI_MODELS}EOF\n", pid_file.display());
+    let (answer, took) = save_with_pi(&mut s, "pi-descendant", &script);
+    assert_eq!(answer, (422, json!({"error": "pi's models could not be listed"})));
+    assert!(took < std::time::Duration::from_secs(10), "given up on in bounded time: {took:?}");
+    let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    let gone = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        !alive
+    });
+    assert!(gone, "the descendant holding pi's output was stopped");
+    assert_eq!(Store::open(&s.roots.database()).unwrap().project_settings(&alpha).unwrap().revision, 0, "nothing saved");
+}
+
 impl Setup {
     /// The same machine, but pi can't be run, so a save that asked pi for its models would be refused.
     fn clone_without_pi(&self) -> Setup {
