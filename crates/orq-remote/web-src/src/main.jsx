@@ -4323,9 +4323,52 @@ function FeatureAction({ feature, control, asking = false, onCancel = null }) {
 const LONG_PRESS_MS = 500;
 const LONG_PRESS_SLOP = 10;
 
+// A feature is frontend or standard; a missing or unknown kind is standard.
+function kindOf(kind) {
+  return kind === "frontend" ? "frontend" : "standard";
+}
+
+// The kind filter's choice, kept in the URL as ?kind=frontend|standard so a link or a reload keeps it; All is no
+// kind in the URL, and anything else there reads as All.
+function useKindFilter() {
+  const [kind, setKind] = useState(() => {
+    const asked = new URLSearchParams(window.location.search).get("kind");
+    return asked === "frontend" || asked === "standard" ? asked : "all";
+  });
+  const choose = (next) => {
+    setKind(next);
+    const params = new URLSearchParams(window.location.search);
+    if (next === "all") params.delete("kind");
+    else params.set("kind", next);
+    const search = params.toString();
+    window.history.replaceState(window.history.state, "", window.location.pathname + (search === "" ? "" : "?" + search) + window.location.hash);
+  };
+  return [kind, choose];
+}
+
+function matchesKind(filter, kind) {
+  return filter === "all" || kindOf(kind) === filter;
+}
+
+// The kind filter: one select, on a phone as on a wide screen.
+function KindFilter({ value, onChange, attribute }) {
+  return (
+    <select {...{ [attribute]: "" }} aria-label="Kind" value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value="all">Kind: All</option>
+      <option value="frontend">Frontend</option>
+      <option value="standard">Standard</option>
+    </select>
+  );
+}
+
+function FrontendBadge({ kind }) {
+  return kindOf(kind) === "frontend" ? <span className="pill pill-on" data-frontend-badge>Frontend</span> : null;
+}
+
 function FeatureList({ features, showProject = false, control = null, scope = null }) {
   const [query, setQuery] = useState("");
   const [state, setState] = useState("all");
+  const [kind, setKind] = useKindFilter();
   const [page, setPage] = useState(0);
   const [marked, setMarked] = useState([]);
   const [results, setResults] = useState([]);
@@ -4374,7 +4417,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
   }
   const states = [...FEATURE_GROUPS, ...[...new Set(features.map((feature) => feature.status))].filter((status) => !FEATURE_GROUPS.includes(status))];
   const needle = query.trim().toLowerCase();
-  const shown = unfinishedFirst(features).filter((feature) => (state === "all" || feature.status === state) && feature.name.toLowerCase().includes(needle));
+  const shown = unfinishedFirst(features).filter((feature) => (state === "all" || feature.status === state) && matchesKind(kind, feature.kind) && feature.name.toLowerCase().includes(needle));
   const pages = Math.max(1, Math.ceil(shown.length / FEATURES_PER_PAGE));
   const at = Math.min(page, pages - 1);
   const visible = shown.slice(at * FEATURES_PER_PAGE, (at + 1) * FEATURES_PER_PAGE);
@@ -4487,6 +4530,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
             <option key={name} value={name}>{name}</option>
           ))}
         </select>
+        <KindFilter attribute="data-feature-kind" value={kind} onChange={(next) => refilter(() => { setKind(next); setPage(0); })} />
         {adder}
         {features.some(markable) ? (
           <button type="button" className="select-mode" data-select-mode aria-pressed={selecting ? "true" : "false"} onClick={selecting ? leaveSelecting : enterSelecting}>{selecting ? "Done" : "Select"}</button>
@@ -4525,6 +4569,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
                   <td>
                     {markable(feature) ? <input type="checkbox" className="feature-mark" data-mark={feature.name} aria-label={"Mark " + feature.name} checked={marked.includes(keyOf(feature))} onChange={() => toggle(keyOf(feature))} /> : null}
                     <a className="feature-link" href={featureHref(feature.projectId, feature.name)} data-feature-open={feature.name} title={showProject ? feature.projectName : undefined} onClick={(event) => { if (selecting && markable(feature)) return; if (isPlainLeftClick(event)) { event.preventDefault(); navigate(featureHref(feature.projectId, feature.name)); } }}>{feature.name}</a>
+                    <FrontendBadge kind={feature.kind} />
                   </td>
                   <td>
                     <span className="feature-state-cell">
@@ -4591,6 +4636,37 @@ function QueueWish({ feature, control }) {
   );
 }
 
+// The Frontend switch: sets the feature's kind through the kind action; a refusal leaves it as it was and says why.
+function FrontendSwitch({ feature, control }) {
+  const [kind, setKind] = useState(kindOf(feature.kind));
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const path = API_PROJECTS + "/" + encodeURIComponent(control.projectId) + "/features/" + encodeURIComponent(feature.name) + "/kind";
+  const flip = async () => {
+    const next = kind === "frontend" ? "standard" : "frontend";
+    setBusy(true);
+    setNote("");
+    const why = await todoSend(path, control.token, control.onSignedOut, { kind: next }, "The kind could not be set.");
+    if (why === undefined) return;
+    setBusy(false);
+    if (why !== null) {
+      setNote(why);
+      return;
+    }
+    setKind(next);
+    control.onDone();
+  };
+  return (
+    <span className="frontend-switch">
+      <label>
+        <input type="checkbox" role="switch" data-frontend-switch checked={kind === "frontend"} disabled={busy} onChange={flip} />
+        Frontend
+      </label>
+      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+    </span>
+  );
+}
+
 function FeatureDetail({ feature, features, runs, projectId, control }) {
   const [tab, setTab] = useState("description");
   // Whether the Improve draft popup is open.
@@ -4618,8 +4694,10 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
             {feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
             {feature.status === "pending" ? <QueueAction feature={feature} control={control} /> : null}
             {feature.status === "draft" ? <button type="button" data-improve-draft onClick={() => setImproving(true)}><Icon name="doc" size={16} />Improve draft</button> : null}
+            <FrontendSwitch key={feature.name + "/" + kindOf(feature.kind)} feature={feature} control={control} />
           </div>
         ) : null}
+        <p className="muted" data-design-package>Design package: <code>{"designs/" + feature.name + "/"}</code></p>
         {control !== null && improving ? <DraftWithClaudeDialog draft={{ project: projectId, name: feature.name }} token={control.token} onSignedOut={control.onSignedOut} onClose={() => setImproving(false)} /> : null}
         {control !== null && feature.status === "draft" ? <QueueWish key={feature.name} feature={feature} control={control} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
@@ -5022,6 +5100,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
   const [stage, setStage] = useState("all");
   const [sort, setSort] = useState("desc");
   const [page, setPage] = useState(0);
+  const [kind, setKind] = useKindFilter();
   if (runs.length === 0) {
     return <p>{showProject ? "No runs in any project yet." : "No runs in this project yet."}</p>;
   }
@@ -5031,7 +5110,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
   const states = STATE_ORDER;
   const stages = [...new Set(runs.map((run) => run.stage).filter((name) => name))];
   const needle = query.trim().toLowerCase();
-  const matches = runs.filter((run) => (state === "all" || (state === "unknown" ? !known(run) : shownState(run.state) === state)) && (stage === "all" || run.stage === stage) && (run.feature.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)));
+  const matches = runs.filter((run) => (state === "all" || (state === "unknown" ? !known(run) : shownState(run.state) === state)) && (stage === "all" || run.stage === stage) && matchesKind(kind, run.feature_kind) && (run.feature.toLowerCase().includes(needle) || run.run_id.toLowerCase().includes(needle)));
   const shown = byUpdated(matches, sort);
   const pages = Math.max(1, Math.ceil(shown.length / RUNS_PER_PAGE));
   const at = Math.min(page, pages - 1);
@@ -5057,6 +5136,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
           <option value="all">Stage: All</option>
           {stages.map((name) => <option key={name} value={name}>{name}</option>)}
         </select>
+        <KindFilter attribute="data-run-kind" value={kind} onChange={(next) => { setKind(next); setPage(0); }} />
         <button type="button" className="sort-toggle" data-run-sort={sort} aria-label={sort === "desc" ? "Sort by updated: newest first" : "Sort by updated: oldest first"} title={sort === "desc" ? "Newest first" : "Oldest first"} onClick={() => {
           setSort(sort === "desc" ? "asc" : "desc");
           setPage(0);
@@ -5082,6 +5162,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                 <tr key={projectOf(run) + "/" + run.run_id} className="run-row">
                   <td>
                     {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectOf(run), run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
+                    <FrontendBadge kind={run.feature_kind} />
                     <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "") + (showProject ? " · " + run.projectName : "")}</span>
                   </td>
                   <td>

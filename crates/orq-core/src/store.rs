@@ -30,7 +30,7 @@ pub struct ReviewRecord {
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
 /// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
-const MIGRATIONS: [&str; 15] = ["
+const MIGRATIONS: [&str; 16] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -154,12 +154,46 @@ const MIGRATIONS: [&str; 15] = ["
         sent_at INTEGER NOT NULL,
         PRIMARY KEY (run_id, kind)
     );
+", "
+    CREATE TABLE feature_kinds (
+        project_root TEXT NOT NULL,
+        feature      TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        PRIMARY KEY (project_root, feature)
+    );
 "];
 
 /// Whether each migration, by version, changes or drops something an older Orq reads or writes. A migration that
 /// only adds (a table, a column with a default, an index) leaves older Orq binaries using the database; one that
 /// breaks them raises the database's `compat_from`, so they are refused instead of misreading it.
-const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false, false, false, false, false];
+const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false];
+
+/// Which pipeline a feature runs through: the standard one, or the frontend one for a feature with a design
+/// package. A feature with no kind stored is standard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FeatureKind {
+    #[default]
+    Standard,
+    Frontend,
+}
+
+impl FeatureKind {
+    /// The kind named exactly `text`; any other word is no kind.
+    pub fn parse(text: &str) -> Option<FeatureKind> {
+        match text {
+            "standard" => Some(FeatureKind::Standard),
+            "frontend" => Some(FeatureKind::Frontend),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FeatureKind::Standard => "standard",
+            FeatureKind::Frontend => "frontend",
+        }
+    }
+}
 
 /// Whether migration `version` leaves an older Orq unable to use the database. An unknown version is taken as breaking.
 pub fn is_breaking(version: u32) -> bool {
@@ -706,6 +740,47 @@ impl Store {
         Ok(SaveOutcome::Saved { revision })
     }
 
+    /// Keeps `kind` for `feature` of the project whose main checkout is `root`. Standard is the default, so it is
+    /// kept as no row at all.
+    pub fn set_feature_kind(&self, root: &Path, feature: &str, kind: FeatureKind) -> Result<()> {
+        let key = project_key(root)?;
+        match kind {
+            FeatureKind::Standard => self.conn.execute("DELETE FROM feature_kinds WHERE project_root = ?1 AND feature = ?2", params![key, feature]),
+            FeatureKind::Frontend => self.conn.execute(
+                "INSERT OR REPLACE INTO feature_kinds (project_root, feature, kind) VALUES (?1, ?2, ?3)",
+                params![key, feature, kind.as_str()],
+            ),
+        }
+        .map(drop)
+        .map_err(db)
+    }
+
+    /// The kind of `feature` of the project whose main checkout is `root`; standard when none is kept.
+    pub fn feature_kind(&self, root: &Path, feature: &str) -> Result<FeatureKind> {
+        let key = project_key(root)?;
+        let kind: Option<String> = self
+            .conn
+            .query_row("SELECT kind FROM feature_kinds WHERE project_root = ?1 AND feature = ?2", params![key, feature], |row| row.get(0))
+            .optional()
+            .map_err(db)?;
+        kind.map_or(Ok(FeatureKind::Standard), |kind| stored_kind(&kind))
+    }
+
+    /// The features of the project whose main checkout is `root` that are frontend, by name.
+    pub fn frontend_features(&self, root: &Path) -> Result<Vec<String>> {
+        let key = project_key(root)?;
+        let mut statement = self.conn.prepare("SELECT feature, kind FROM feature_kinds WHERE project_root = ?1 ORDER BY feature").map_err(db)?;
+        let rows = statement.query_map(params![key], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(db)?;
+        let mut names = Vec::new();
+        for row in rows {
+            let (feature, kind) = row.map_err(db)?;
+            if stored_kind(&kind)? == FeatureKind::Frontend {
+                names.push(feature);
+            }
+        }
+        Ok(names)
+    }
+
     /// Every stored report, oldest first.
     pub fn all_reviews(&self) -> Result<Vec<ReviewRecord>> {
         self.query("1 = 1", [])
@@ -778,6 +853,11 @@ fn wal_may_hold_commits(path: &Path) -> bool {
         Ok(meta) => meta.len() > 0,
         Err(err) => err.kind() != std::io::ErrorKind::NotFound,
     }
+}
+
+/// A kind read back from orq.db; a word this Orq does not know is refused rather than taken as standard.
+fn stored_kind(kind: &str) -> Result<FeatureKind> {
+    FeatureKind::parse(kind).ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("orq.db has an unknown feature kind {kind:?}")))
 }
 
 fn db(error: rusqlite::Error) -> Error {

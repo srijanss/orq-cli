@@ -56,9 +56,9 @@ fn a_project_lists_its_own_ledger_features_in_order_with_status_and_dependencies
     let (status, body) = get(&s, "/api/projects/alpha/features");
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["features"], json!([
-        {"name": "first", "description": "does one", "status": "completed", "depends_on": [], "test_file": null, "recorded_at": "2026-11-01T00:00:00Z"},
-        {"name": "second", "description": "does two", "status": "pending", "depends_on": ["first"], "test_file": "-p x --test second", "recorded_at": null},
-        {"name": "odd", "description": null, "status": "waiting", "depends_on": [], "test_file": null, "recorded_at": null}
+        {"name": "first", "description": "does one", "status": "completed", "depends_on": [], "test_file": null, "recorded_at": "2026-11-01T00:00:00Z", "kind": "standard"},
+        {"name": "second", "description": "does two", "status": "pending", "depends_on": ["first"], "test_file": "-p x --test second", "recorded_at": null, "kind": "standard"},
+        {"name": "odd", "description": null, "status": "waiting", "depends_on": [], "test_file": null, "recorded_at": null, "kind": "standard"}
     ]), "{body}");
     let (_, beta_body) = get(&s, "/api/projects/beta/features");
     assert_eq!(beta_body["features"].as_array().unwrap().len(), 1, "{beta_body}");

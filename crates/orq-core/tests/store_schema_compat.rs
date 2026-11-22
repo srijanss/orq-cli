@@ -37,8 +37,9 @@ fn upgrade_as_newer_orq(db: &std::path::Path, breaking: bool) -> u32 {
 fn version_14_is_additive_so_a_schema_10_orq_keeps_recording_reviews_in_a_schema_14_database() {
     let db = scratch("v14");
     drop(Store::open(&db).unwrap());
-    assert_eq!(Store::LATEST_VERSION, 15);
+    assert_eq!(Store::LATEST_VERSION, 16);
     assert!(!orq_core::store::is_breaking(15), "migration 15 only adds the web push tables");
+    assert!(!orq_core::store::is_breaking(16), "migration 16 only adds the feature kinds table");
     assert!(!orq_core::store::is_breaking(10));
     assert!(!orq_core::store::is_breaking(11), "migration 11 only adds the queued run actions' columns");
     assert!(!orq_core::store::is_breaking(12), "migration 12 only adds the Todo list and the queue-once-approved wishes");
@@ -47,7 +48,7 @@ fn version_14_is_additive_so_a_schema_10_orq_keeps_recording_reviews_in_a_schema
     older.record_review(&record("r-older")).unwrap();
     assert!(!orq_core::store::is_breaking(13), "migration 13 only adds pull_target_before_runs, with a default");
     assert!(!orq_core::store::is_breaking(14), "migration 14 only adds after_merge, with a default");
-    assert_eq!(older.schema_version().unwrap(), 15, "an older Orq never downgrades the database");
+    assert_eq!(older.schema_version().unwrap(), 16, "an older Orq never downgrades the database");
     drop(older);
     assert_eq!(Store::open(&db).unwrap().reviews_for_run("r-older").unwrap().len(), 1);
 }

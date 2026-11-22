@@ -1546,6 +1546,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         self.set_queue_wish_of(id, feature, wanted)
     }
 
+    fn set_feature_kind(&self, id: &str, feature: &str, kind: orq_core::store::FeatureKind) -> Result<Option<Result<(), String>>, String> {
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
+        Ok(Some(set_feature_kind_at(&self.roots.database(), &git, &root, feature, kind.as_str())?.map(|_| ())))
+    }
+
     fn start_run_with(&self, id: &str, feature: &str, profiles: &orq_core::remote_inbox::LaunchProfiles) -> Result<orq_core::remote_inbox::RunStart, String> {
         self.launch(id, Launch::One(feature), Some(profiles))
     }
@@ -1959,9 +1964,15 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     fn features(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
         let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
-        let list = read_ledger(&orq_features::ledger_path(&git))?
+        let entries = read_ledger(&orq_features::ledger_path(&git))?;
+        let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
+        let frontend = if entries.is_empty() { Default::default() } else { frontend_features_at(&self.roots.database(), &root)? };
+        let list = entries
             .into_iter()
-            .map(|entry| serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": orq_core::redact::redact(entry.status.as_str()), "depends_on": entry.depends_on.iter().map(|name| orq_core::redact::redact(name)).collect::<Vec<_>>(), "test_file": entry.test_file.as_deref().map(orq_core::redact::redact), "recorded_at": entry.recorded_at.as_deref().map(orq_core::redact::redact)}))
+            .map(|entry| {
+                let kind = if frontend.contains(&entry.feature_name) { "frontend" } else { "standard" };
+                serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": orq_core::redact::redact(entry.status.as_str()), "depends_on": entry.depends_on.iter().map(|name| orq_core::redact::redact(name)).collect::<Vec<_>>(), "test_file": entry.test_file.as_deref().map(orq_core::redact::redact), "recorded_at": entry.recorded_at.as_deref().map(orq_core::redact::redact), "kind": kind})
+            })
             .collect();
         Ok(Some(serde_json::Value::Array(list)))
     }
@@ -2015,7 +2026,8 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
     fn runs(&self, id: &str) -> Result<Option<serde_json::Value>, String> {
         use orq_orchestrator::StoreError;
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
-        let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
+        let git = orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?;
+        let key = orq_git::project_id(&git);
         let store = orq_orchestrator::RunStore::new(&self.roots.state);
         let mut rows = Vec::new();
         // A poisoned lock only means an earlier request panicked; what it holds is still valid to re-check.
@@ -2035,6 +2047,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             }
         }
         drop(cache);
+        let frontend = if rows.is_empty() { Default::default() } else { frontend_features_at(&self.roots.database(), &orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone()))? };
+        for row in &mut rows {
+            let is_frontend = row.2["feature"].as_str().is_some_and(|feature| frontend.contains(feature));
+            row.2["feature_kind"] = if is_frontend { "frontend" } else { "standard" }.into();
+        }
         // A merge leaves a run's log as it was, so a failed or review-waiting run is checked against git,
         // which is asked again only for a run whose branch or target has moved since it last was.
         if rows.iter().any(|row| matches!(row.2["state"].as_str(), Some("failed" | "needs_review"))) {
@@ -2730,6 +2747,30 @@ const LEDGER_LIMIT: u64 = 1024 * 1024;
 /// only up to a limit, so a ledger planted in a repository cannot reach elsewhere or stall a request.
 fn ledger_entries(path: &Path) -> Result<usize, String> {
     read_ledger(path).map(|entries| entries.len())
+}
+
+/// The features marked frontend of the project whose main checkout is `root`, from orq.db at `database`.
+/// Without orq.db there are none, and reading never creates it, so a project with no kinds set is as before.
+pub fn frontend_features_at(database: &Path, root: &Path) -> Result<std::collections::HashSet<String>, String> {
+    if !database.exists() {
+        return Ok(Default::default());
+    }
+    let store = orq_core::store::Store::open(database).map_err(|error| format!("cannot open orq.db: {error}"))?;
+    Ok(store.frontend_features(root).map_err(|error| format!("cannot read the feature kinds: {error}"))?.into_iter().collect())
+}
+
+/// Sets the kind (`frontend` or `standard`) of `feature` of project `git`, whose main checkout is `root`, in orq.db
+/// at `database`. `Ok(Err(why))` when it is refused: an unknown kind, or a feature that is not in the ledger.
+pub fn set_feature_kind_at(database: &Path, git: &orq_git::Project, root: &Path, feature: &str, kind: &str) -> Result<Result<orq_core::store::FeatureKind, String>, String> {
+    let Some(kind) = orq_core::store::FeatureKind::parse(kind) else {
+        return Ok(Err(format!("unknown kind {:?}: a feature is frontend or standard", orq_core::redact::redact(kind))));
+    };
+    if !read_ledger(&orq_features::ledger_path(git))?.iter().any(|entry| entry.feature_name == feature) {
+        return Ok(Err(format!("{} is not in this project's ledger", orq_core::redact::redact(feature))));
+    }
+    let store = orq_core::store::Store::open(database).map_err(|error| format!("cannot open orq.db: {error}"))?;
+    store.set_feature_kind(root, feature, kind).map_err(|error| format!("cannot save the kind: {error}"))?;
+    Ok(Ok(kind))
 }
 
 /// The ledger's entries; a missing ledger has none. It is opened without following a link and

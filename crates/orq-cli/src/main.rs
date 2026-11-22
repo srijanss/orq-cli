@@ -19,7 +19,7 @@ mod worktree;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending [--reopen] | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending [--reopen] | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq feature kind --repo <path> --id <name> frontend|standard | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -45,6 +45,7 @@ fn main() -> ExitCode {
         (Some("feature"), Some("set-status")) => feature_set_status(&args[2..]),
         (Some("feature"), Some("add")) => feature_add(&args[2..]),
         (Some("feature"), Some("edit")) => feature_edit(&args[2..]),
+        (Some("feature"), Some("kind")) => feature_kind(&args[2..]),
         (Some("storage"), _) => storage::storage(&args[1..]),
         (Some("snapshots"), _) => snapshots::snapshots(&args[1..]),
         (Some("queue"), _) => queue::queue(&args[1..]),
@@ -174,9 +175,57 @@ fn features(args: &[OsString]) -> ExitCode {
         Ok(entries) => entries,
         Err(err) => return fail(ledger_error_text(&err)),
     };
-    let list: Vec<serde_json::Value> = entries.iter().map(entry_json).collect();
+    // Reading the kinds never creates orq.db, so a machine without one lists every feature as standard.
+    let frontend = match orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) {
+        Ok(roots) => match orq_remote::projects::frontend_features_at(&roots.database(), &kind_root(&project)) {
+            Ok(frontend) => frontend,
+            Err(err) => return fail(err),
+        },
+        Err(_) => Default::default(),
+    };
+    let list: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|entry| {
+            let mut json = entry_json(entry);
+            json["kind"] = if frontend.contains(&entry.feature_name) { "frontend" } else { "standard" }.into();
+            json
+        })
+        .collect();
     println!("{}", serde_json::Value::Array(list));
     ExitCode::SUCCESS
+}
+
+/// The checkout a project's feature kinds are kept under: its main checkout, so a linked worktree shares them.
+fn kind_root(project: &orq_git::Project) -> PathBuf {
+    orq_git::main_checkout_root(project).unwrap_or_else(|| project.root.clone())
+}
+
+/// `orq feature kind --repo <path> --id <name> frontend|standard`: sets a feature's kind in orq.db, never in the
+/// ledger. An unknown kind or a feature not in the ledger is refused with the reason.
+fn feature_kind(args: &[OsString]) -> ExitCode {
+    let (repo, id, kind) = match args {
+        [r, repo, i, id, kind] if r == "--repo" && i == "--id" => match (id.to_str(), kind.to_str()) {
+            (Some(id), Some(kind)) => (PathBuf::from(repo), id, kind),
+            _ => return usage_error(),
+        },
+        _ => return usage_error(),
+    };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return fail(format!("cannot resolve project: {err:?}")),
+    };
+    let roots = match storage::open() {
+        Ok((roots, _, _)) => roots,
+        Err(err) => return fail(err),
+    };
+    match orq_remote::projects::set_feature_kind_at(&roots.database(), &project, &kind_root(&project), id, kind) {
+        Ok(Ok(kind)) => {
+            println!("{}", serde_json::json!({ "name": id, "kind": kind.as_str() }));
+            ExitCode::SUCCESS
+        }
+        Ok(Err(why)) => fail(format!("cannot set the kind of {id}: {why}")),
+        Err(err) => fail(err),
+    }
 }
 
 /// `orq features archive --repo <path> [--keep <N>] [--dry-run]`: moves completed features except the

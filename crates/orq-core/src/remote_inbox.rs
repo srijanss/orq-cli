@@ -319,6 +319,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// Sets the kind of `feature` of project `id`, kept in orq.db, never in the ledger. `Some(Err(why))` when it is
+    /// refused (only a feature in the ledger has a kind); `None` when there is no such project.
+    fn set_feature_kind(&self, _id: &str, _feature: &str, _kind: crate::store::FeatureKind) -> Result<Option<Result<(), String>>, String> {
+        Ok(None)
+    }
+
     /// Project `id`'s run queue as the web shows it: `{entries: [{feature, state, run, added_at,
     /// added_by, implementer, reviewer}], paused}`; `None` when there is no such project.
     fn queue(&self, _id: &str) -> Result<Option<Value>, String> {
@@ -1174,6 +1180,52 @@ fn promote_feature(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>
         }
         _ => {
             refused("no such project or feature");
+            error(404, "not found")
+        }
+    }
+}
+
+/// Sets a feature's kind (`{kind: "frontend"|"standard"}`) for the web's Frontend switch, if actions are on, and
+/// leaves an audit line for the attempt as feature.kind, naming the feature.
+fn set_feature_kind(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    use crate::store::FeatureKind;
+    if !plain_feature_name(feature) {
+        return error(404, "not found");
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let failed = "the kind could not be set";
+    let audit = |outcome, reason: &str| {
+        let _ = record(roots, &Attempt { identity: "web", action: "feature.kind", project: id, run: None, outcome, reason: Some(&format!("{feature}: {reason}")) }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, "remote actions are off");
+        return error(404, "not found");
+    }
+    let kind = match body_object(body, MAX_ACTION_BODY) {
+        Ok(sent) if sent.keys().all(|key| key == "kind") => sent.get("kind").and_then(Value::as_str).and_then(FeatureKind::parse),
+        _ => None,
+    };
+    let Some(kind) = kind else {
+        audit(Outcome::Refused, "bad request body");
+        return error(400, "the kind is frontend or standard");
+    };
+    match provider.map(|provider| provider.set_feature_kind(id, feature, kind)) {
+        Some(Ok(Some(Ok(())))) => {
+            audit(Outcome::Allowed, kind.as_str());
+            reply(200, json!({ "feature": feature, "kind": kind.as_str() }))
+        }
+        Some(Ok(Some(Err(why)))) => {
+            audit(Outcome::Refused, &why);
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(_)) => {
+            audit(Outcome::Refused, failed);
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, "no such project");
             error(404, "not found")
         }
     }
@@ -2849,6 +2901,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, feature)) = (request.method == "POST").then(|| feature_target(path, "promote")).flatten() {
         return promote_feature(roots, provider, id, feature, body);
+    }
+    if let Some((id, feature)) = (request.method == "POST").then(|| feature_target(path, "kind")).flatten() {
+        return set_feature_kind(roots, provider, id, feature, body);
     }
     if let Some(id) = (request.method == "POST").then(|| project_target(path, "features")).flatten() {
         return save_feature(roots, provider, id, None, body);

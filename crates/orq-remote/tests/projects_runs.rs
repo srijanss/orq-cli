@@ -76,7 +76,7 @@ fn a_project_lists_only_its_own_runs_newest_first_with_state_stage_feature_branc
     assert_eq!(status, 200, "{body}");
     let runs = body["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 2, "{body}");
-    assert_eq!(runs[0], json!({"run_id": "new", "feature": "f-new", "target_branch": "develop", "state": "running", "stage": "implement", "started_at": "2026-11-02T10:00:00Z", "updated_at": "2026-11-02T10:30:00Z", "delivery": "review", "ending": null}), "{body}");
+    assert_eq!(runs[0], json!({"run_id": "new", "feature": "f-new", "target_branch": "develop", "state": "running", "stage": "implement", "started_at": "2026-11-02T10:00:00Z", "updated_at": "2026-11-02T10:30:00Z", "delivery": "review", "ending": null, "feature_kind": "standard"}), "{body}");
     assert_eq!(runs[1]["run_id"], "old", "{body}");
     assert_eq!(runs[1]["stage"], Value::Null, "{body}");
     assert!(!body.to_string().contains("secret reason"), "{body}");
