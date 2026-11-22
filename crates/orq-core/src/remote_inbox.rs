@@ -2841,6 +2841,11 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
                 audit(Outcome::Refused, Some("not a design agent"));
                 return error(422, &refusal);
             }
+            // pi's own listing says which of its models a design role may use; any other model is one offered here.
+            if agent.harness != "pi" && !offered(&options, &agent.harness, &agent.model) {
+                audit(Outcome::Refused, Some("not an offered harness or model"));
+                return error(422, "That harness or model is not one this machine offers");
+            }
         }
     }
     // The queue's window is absent or null (any time) or `HH:MM-HH:MM`; stopping on failure is off unless true.

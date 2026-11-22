@@ -188,6 +188,11 @@ fn a_design_role_that_is_not_a_design_agent_is_refused_with_why_and_nothing_is_s
         );
     }
     assert_eq!(
+        save(&roots, &fake, json!({"design_reviewer": {"harness": "claude", "model": "made-up-model"}})),
+        (422, json!({"error": "That harness or model is not one this machine offers"})),
+        "a claude model this machine doesn't offer"
+    );
+    assert_eq!(
         save(&roots, &fake, json!({"design_reviewer": "pi"})).0,
         400,
         "a role is null or an agent"
