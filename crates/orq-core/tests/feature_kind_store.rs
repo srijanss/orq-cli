@@ -52,7 +52,8 @@ fn the_read_only_lookup_writes_nothing_and_reads_an_older_database_as_having_no_
     assert_eq!(Store::read_frontend_features(&db, alpha).unwrap(), ["page".to_string()]);
 
     let version = |db: &Path| -> u32 { rusqlite::Connection::open(db).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap() };
-    let before_kinds = Store::LATEST_VERSION - 1;
+    // Schema 16 added feature_kinds.
+    let before_kinds = 15;
     let conn = rusqlite::Connection::open(&db).unwrap();
     conn.execute_batch("ALTER TABLE feature_kinds RENAME TO feature_kinds_old;").unwrap();
     conn.pragma_update(None, "user_version", before_kinds).unwrap();

@@ -30,7 +30,7 @@ pub struct ReviewRecord {
 /// Each entry upgrades the schema by one version; entries are never edited
 /// once released, only appended. Version 3's `run_pins` belonged to run pins, which were removed:
 /// version 7 drops it in code (see [`PINS_REMOVED_VERSION`]).
-const MIGRATIONS: [&str; 16] = ["
+const MIGRATIONS: [&str; 17] = ["
     CREATE TABLE reviews (
         run_id      TEXT    NOT NULL,
         project     TEXT    NOT NULL,
@@ -161,12 +161,22 @@ const MIGRATIONS: [&str; 16] = ["
         kind         TEXT NOT NULL,
         PRIMARY KEY (project_root, feature)
     );
+", "
+    ALTER TABLE project_settings ADD COLUMN design_preparer_harness TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_preparer_model   TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_preparer_effort  TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_reviewer_harness TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_reviewer_model   TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_reviewer_effort  TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_verifier_harness TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_verifier_model   TEXT;
+    ALTER TABLE project_settings ADD COLUMN design_verifier_effort  TEXT;
 "];
 
 /// Whether each migration, by version, changes or drops something an older Orq reads or writes. A migration that
 /// only adds (a table, a column with a default, an index) leaves older Orq binaries using the database; one that
 /// breaks them raises the database's `compat_from`, so they are refused instead of misreading it.
-const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false];
+const BREAKING: [bool; MIGRATIONS.len()] = [true, false, false, false, false, false, true, false, false, false, false, false, false, false, false, false, false];
 
 /// Which pipeline a feature runs through: the standard one, or the frontend one for a feature with a design
 /// package. A feature with no kind stored is standard.
@@ -238,6 +248,9 @@ const PULL_TARGET_VERSION: u32 = 13;
 
 /// The schema version whose migration added what a project does once a run's MR merged.
 const AFTER_MERGE_VERSION: u32 = 14;
+
+/// The schema version whose migration added a project's design preparer, reviewer and verifier.
+const DESIGN_AGENTS_VERSION: u32 = 17;
 
 pub struct Store {
     conn: Connection,
@@ -673,10 +686,16 @@ impl Store {
         let wait = if version >= QUEUE_WAIT_FOR_REVIEW_VERSION { "queue_wait_for_review" } else { "1" };
         let pull = if version >= PULL_TARGET_VERSION { "pull_target_before_runs" } else { "1" };
         let after_merge = if version >= AFTER_MERGE_VERSION { "after_merge" } else { "'ask'" };
+        let design = if version >= DESIGN_AGENTS_VERSION {
+            "design_preparer_harness, design_preparer_model, design_preparer_effort, design_reviewer_harness, design_reviewer_model, design_reviewer_effort, design_verifier_harness, design_verifier_model, design_verifier_effort"
+        } else {
+            "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL"
+        };
+        let mut design_agents = (None, None, None);
         let row = self
             .conn
             .query_row(
-                &format!("SELECT implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, {limits}, {queue}, {wait}, {pull}, {after_merge} FROM project_settings WHERE project_root = ?1"),
+                &format!("SELECT implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, {limits}, {queue}, {wait}, {pull}, {after_merge}, {design} FROM project_settings WHERE project_root = ?1"),
                 params![key],
                 |row| {
                     let agent = |at: usize| -> rusqlite::Result<Option<ProjectAgent>> {
@@ -685,6 +704,7 @@ impl Store {
                         let effort: Option<String> = row.get(at + 2)?;
                         Ok(harness.zip(model).map(|(harness, model)| ProjectAgent { harness, model, effort }))
                     };
+                    design_agents = (agent(15)?, agent(18)?, agent(21)?);
                     Ok((agent(0)?, agent(3)?, row.get::<_, String>(6)?, row.get::<_, i64>(7)?, row.get::<_, Option<i64>>(8)?, row.get::<_, Option<i64>>(9)?, row.get::<_, Option<String>>(10)?, row.get::<_, bool>(11)?, row.get::<_, bool>(12)?, row.get::<_, bool>(13)?, row.get::<_, String>(14)?))
                 },
             )
@@ -700,7 +720,9 @@ impl Store {
         let min_free_disk_gb = min_free_disk_gb.map(|v| u32::try_from(v).map_err(|_| out_of_range("min_free_disk_gb", v))).transpose()?;
         let after_merge = AfterMerge::parse(&after_merge)
             .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("orq.db has an unknown after_merge {after_merge:?} for {key}")))?;
-        Ok(StoredProjectSettings { settings: ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge }, revision: revision as u64 })
+        let (design_preparer, design_reviewer, design_verifier) = design_agents;
+        let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge, design_preparer, design_reviewer, design_verifier };
+        Ok(StoredProjectSettings { settings, revision: revision as u64 })
     }
 
     /// Saves a project's settings if it is still at `expected_revision`; otherwise nothing is
@@ -722,8 +744,9 @@ impl Store {
         let field = |agent: &Option<ProjectAgent>, pick: fn(&ProjectAgent) -> Option<&str>| agent.as_ref().and_then(pick).map(str::to_string);
         let (implementer, reviewer) = (&settings.implementer, &settings.reviewer);
         tx.execute(
-            "INSERT INTO project_settings (project_root, implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, updated_at, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            "INSERT INTO project_settings (project_root, implementer_harness, implementer_model, implementer_effort, reviewer_harness, reviewer_model, reviewer_effort, delivery, revision, updated_at, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge,
+                 design_preparer_harness, design_preparer_model, design_preparer_effort, design_reviewer_harness, design_reviewer_model, design_reviewer_effort, design_verifier_harness, design_verifier_model, design_verifier_effort)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
              ON CONFLICT (project_root) DO UPDATE SET
                  implementer_harness = excluded.implementer_harness, implementer_model = excluded.implementer_model, implementer_effort = excluded.implementer_effort,
                  reviewer_harness = excluded.reviewer_harness, reviewer_model = excluded.reviewer_model, reviewer_effort = excluded.reviewer_effort,
@@ -731,7 +754,10 @@ impl Store {
                  max_active_runs = excluded.max_active_runs, min_free_disk_gb = excluded.min_free_disk_gb,
                  queue_hours = excluded.queue_hours, queue_stop_on_failure = excluded.queue_stop_on_failure,
                  queue_wait_for_review = excluded.queue_wait_for_review, pull_target_before_runs = excluded.pull_target_before_runs,
-                 after_merge = excluded.after_merge",
+                 after_merge = excluded.after_merge,
+                 design_preparer_harness = excluded.design_preparer_harness, design_preparer_model = excluded.design_preparer_model, design_preparer_effort = excluded.design_preparer_effort,
+                 design_reviewer_harness = excluded.design_reviewer_harness, design_reviewer_model = excluded.design_reviewer_model, design_reviewer_effort = excluded.design_reviewer_effort,
+                 design_verifier_harness = excluded.design_verifier_harness, design_verifier_model = excluded.design_verifier_model, design_verifier_effort = excluded.design_verifier_effort",
             params![
                 key,
                 field(implementer, |a| Some(&a.harness)),
@@ -749,7 +775,16 @@ impl Store {
                 settings.queue_stop_on_failure,
                 settings.queue_wait_for_review,
                 settings.pull_target_before_runs,
-                settings.after_merge.as_str()
+                settings.after_merge.as_str(),
+                field(&settings.design_preparer, |a| Some(&a.harness)),
+                field(&settings.design_preparer, |a| Some(&a.model)),
+                field(&settings.design_preparer, |a| a.effort.as_deref()),
+                field(&settings.design_reviewer, |a| Some(&a.harness)),
+                field(&settings.design_reviewer, |a| Some(&a.model)),
+                field(&settings.design_reviewer, |a| a.effort.as_deref()),
+                field(&settings.design_verifier, |a| Some(&a.harness)),
+                field(&settings.design_verifier, |a| Some(&a.model)),
+                field(&settings.design_verifier, |a| a.effort.as_deref())
             ],
         )
         .map_err(db)?;

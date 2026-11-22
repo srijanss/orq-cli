@@ -707,6 +707,8 @@ pub struct StoreProjects {
     plan_timeout: Option<std::time::Duration>,
     /// The program the target push's GitHub branch lookup runs; `gh` when unset.
     gh: Option<PathBuf>,
+    /// The program asked which models take images when a design role is saved; `pi` on PATH when unset.
+    pi: Option<PathBuf>,
 }
 
 /// A report serve builds for a run whose own build of it failed: the run, its head, and the evidence its events hold.
@@ -803,12 +805,19 @@ impl StoreProjects {
             plan_agent: None,
             plan_timeout: None,
             gh: None,
+            pi: None,
         }
     }
 
     /// Has the target push ask GitHub about its branch through `gh` instead of the `gh` on PATH.
     pub fn with_gh(mut self, gh: PathBuf) -> Self {
         self.gh = Some(gh);
+        self
+    }
+
+    /// Has a design role's save ask `pi` for its models instead of the `pi` on PATH.
+    pub fn with_pi(mut self, pi: PathBuf) -> Self {
+        self.pi = Some(pi);
         self
     }
 
@@ -1093,15 +1102,19 @@ impl StoreProjects {
         };
         let name = |text: &str| orq_core::redact::redact(text);
         let effort = |effort: Option<&String>| effort.map(|effort| name(effort));
+        // A design role has no machine default, so it is the project's choice alone.
+        let chosen_agent = |chosen: &Option<orq_core::project_settings::ProjectAgent>| chosen.as_ref().map(|agent| serde_json::json!({ "harness": name(&agent.harness), "model": name(&agent.model), "effort": effort(agent.effort.as_ref()) }));
         let role = |chosen: &Option<orq_core::project_settings::ProjectAgent>, role| {
             let fallback = fallback_of(role);
             let fallback = fallback.map(|(model, source)| serde_json::json!({ "harness": name(&model.harness), "model": name(&model.model), "effort": effort(model.thinking.as_ref()), "source": source.as_str() }));
-            let chosen = chosen.as_ref().map(|agent| serde_json::json!({ "harness": name(&agent.harness), "model": name(&agent.model), "effort": effort(agent.effort.as_ref()) }));
-            serde_json::json!({ "project": chosen, "fallback": fallback })
+            serde_json::json!({ "project": chosen_agent(chosen), "fallback": fallback })
         };
         serde_json::json!({
             "implementer": role(&stored.settings.implementer, AgentRole::Implementer),
             "reviewer": role(&stored.settings.reviewer, AgentRole::Reviewer),
+            "design_preparer": chosen_agent(&stored.settings.design_preparer),
+            "design_reviewer": chosen_agent(&stored.settings.design_reviewer),
+            "design_verifier": chosen_agent(&stored.settings.design_verifier),
             "delivery": stored.settings.delivery.as_str(),
             "max_active_runs": stored.settings.max_active_runs,
             "min_free_disk_gb": stored.settings.min_free_disk_gb,
@@ -1512,6 +1525,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             let _ = options.found.set(found.clone());
         }
         Ok(Some(found))
+    }
+
+    fn pi_models(&self) -> Result<Option<String>, String> {
+        let program = self.pi.clone().unwrap_or_else(|| "pi".into());
+        Ok(list_pi_models(&program, std::time::Duration::from_secs(5)))
     }
 
     fn start_run(&self, id: &str, feature: &str) -> Result<orq_core::remote_inbox::RunStart, String> {
@@ -2815,6 +2833,46 @@ fn read_ledger_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
 /// The stored value a redacted one stands for: `value` if it is not the redacted form of one of `stored`.
 fn unredacted<'a>(value: &str, mut stored: impl Iterator<Item = &'a String>) -> String {
     stored.find(|original| original.as_str() != value && orq_core::redact::redact(original) == value).cloned().unwrap_or_else(|| value.to_string())
+}
+
+/// What `program --list-models` prints, or None when it cannot run, fails, says more than 256 KiB
+/// or is still running after `timeout`. Only argv is passed; it reads nothing.
+fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    const CAP: u64 = 256 * 1024;
+    let mut child = std::process::Command::new(program)
+        .arg("--list-models")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read = stdout.take(CAP + 1).read_to_end(&mut bytes);
+        let _ = sender.send(read.ok().map(|_| bytes));
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let mut output: Option<Option<Vec<u8>>> = None;
+    let status = loop {
+        if output.is_none() {
+            output = receiver.try_recv().ok();
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if output.is_some() => break status,
+            Ok(None | Some(_)) if std::time::Instant::now() < deadline => {}
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let output = output.flatten()?;
+    (status.success() && output.len() as u64 <= CAP).then(|| String::from_utf8_lossy(&output).into_owned())
 }
 
 /// The version of a ledger as it was read, for a later save to compare against: the SHA-256 of its bytes.

@@ -251,6 +251,12 @@ pub struct ProjectSettings {
     pub pull_target_before_runs: bool,
     /// What happens once a run's MR merged: Clean up offered (the default), or done unasked.
     pub after_merge: AfterMerge,
+    /// The agent that prepares a frontend feature's design package; unset is the design reviewer.
+    pub design_preparer: Option<ProjectAgent>,
+    /// The agent that compares a frontend run's captures with its references; a frontend run needs one.
+    pub design_reviewer: Option<ProjectAgent>,
+    /// The agent that verifies a frontend run's corrections; unset is the design reviewer at thinking high.
+    pub design_verifier: Option<ProjectAgent>,
 }
 
 impl Default for ProjectSettings {
@@ -266,6 +272,9 @@ impl Default for ProjectSettings {
             queue_wait_for_review: true,
             pull_target_before_runs: true,
             after_merge: AfterMerge::default(),
+            design_preparer: None,
+            design_reviewer: None,
+            design_verifier: None,
         }
     }
 }
@@ -305,7 +314,14 @@ pub(crate) fn check(settings: &ProjectSettings) -> Result<()> {
     if let Some(hours) = settings.queue_hours.as_deref().filter(|hours| parse_queue_hours(hours).is_none()) {
         return Err(Error::new(ErrorKind::InvalidInput, format!("queue_hours must be empty or HH:MM-HH:MM with two different times, got {hours:?}")));
     }
-    for (role, agent) in [("implementer", &settings.implementer), ("reviewer", &settings.reviewer)] {
+    let roles = [
+        ("implementer", &settings.implementer),
+        ("reviewer", &settings.reviewer),
+        ("design_preparer", &settings.design_preparer),
+        ("design_reviewer", &settings.design_reviewer),
+        ("design_verifier", &settings.design_verifier),
+    ];
+    for (role, agent) in roles {
         let Some(agent) = agent else { continue };
         check_value(role, "harness", &agent.harness)?;
         check_value(role, "model", &agent.model)?;
@@ -314,6 +330,71 @@ pub(crate) fn check(settings: &ProjectSettings) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The harnesses Orq runs read-only for review, the only ones a design role may use.
+pub const DESIGN_HARNESSES: [&str; 2] = ["pi", "claude"];
+
+/// Whether `model` (`provider/model`) accepts images, as the `images` column of `pi --list-models` output
+/// `listing` says; `None` when the listing has no such column or no such model.
+fn pi_model_takes_images(listing: &str, model: &str) -> Option<bool> {
+    let mut lines = listing.lines();
+    let images = lines.next()?.split_whitespace().position(|column| column == "images")?;
+    lines.find_map(|line| {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        let listed = format!("{}/{}", columns.first()?, columns.get(1)?);
+        (listed == model).then(|| columns.get(images).is_some_and(|value| *value == "yes"))
+    })
+}
+
+/// Why `agent` cannot be the design role called `title`, or `None` when it can: its harness must be one Orq
+/// runs read-only for review, its model must accept images (for pi, as `pi_models`, the output of
+/// `pi --list-models`, says; every current claude model does), and its thinking level one of `levels`.
+pub fn design_agent_refusal(title: &str, agent: &ProjectAgent, levels: &[&str], pi_models: Option<&str>) -> Option<String> {
+    if !DESIGN_HARNESSES.contains(&agent.harness.as_str()) {
+        return Some(format!("The {title} must use pi or claude, which Orq runs read-only for review"));
+    }
+    if agent.harness == "pi" {
+        let Some(listing) = pi_models else {
+            return Some("pi's models could not be listed".to_string());
+        };
+        match pi_model_takes_images(listing, &agent.model) {
+            None => return Some(format!("pi doesn't list {}", agent.model)),
+            Some(false) => return Some(format!("{} doesn't accept images, which the {title} needs", agent.model)),
+            Some(true) => {}
+        }
+    }
+    match agent.effort.as_deref() {
+        Some(level) if !levels.contains(&level) => Some(format!("{level} is not a thinking level {} takes", agent.harness)),
+        _ => None,
+    }
+}
+
+/// Why a frontend run refuses to start when the project has no design reviewer.
+pub const NO_DESIGN_REVIEWER: &str = "set a design reviewer in Settings";
+
+/// The design agents a frontend run uses, after the fallbacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignAgents {
+    pub preparer: ProjectAgent,
+    pub reviewer: ProjectAgent,
+    pub verifier: ProjectAgent,
+}
+
+/// The design agents a frontend run of a project with `settings` uses, each checked as a design role with
+/// the levels `levels_of` gives for its harness and `pi_models`, the output of `pi --list-models`: no
+/// design reviewer refuses the run, no verifier is the design reviewer at thinking high, and no preparer
+/// is the design reviewer. Standard runs never call this.
+pub fn design_agents(settings: &ProjectSettings, levels_of: fn(&str) -> &'static [&'static str], pi_models: Option<&str>) -> std::result::Result<DesignAgents, String> {
+    let reviewer = settings.design_reviewer.clone().ok_or_else(|| NO_DESIGN_REVIEWER.to_string())?;
+    let preparer = settings.design_preparer.clone().unwrap_or_else(|| reviewer.clone());
+    let verifier = settings.design_verifier.clone().unwrap_or_else(|| ProjectAgent { effort: Some("high".to_string()), ..reviewer.clone() });
+    for (title, agent) in [("Design preparer", &preparer), ("Design reviewer", &reviewer), ("Design verifier", &verifier)] {
+        if let Some(refusal) = design_agent_refusal(title, agent, levels_of(&agent.harness), pi_models) {
+            return Err(refusal);
+        }
+    }
+    Ok(DesignAgents { preparer, reviewer, verifier })
 }
 
 fn check_value(role: &str, field: &str, value: &str) -> Result<()> {

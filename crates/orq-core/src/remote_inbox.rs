@@ -362,6 +362,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// What `pi --list-models` prints on this machine, for checking which models a design role may use;
+    /// `None` when pi cannot be asked.
+    fn pi_models(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// Saves `settings` as project `id`'s own, if its record is still at `revision`, and gives the
     /// settings read back. A provider that cannot does not know the project.
     fn save_project_settings(&self, _id: &str, _revision: u64, _settings: &crate::project_settings::ProjectSettings) -> Result<ProjectSettingsSave, String> {
@@ -2716,7 +2722,7 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("remote actions are off"));
         return error(404, "not found");
     }
-    const KEYS: [&str; 11] =["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "queue_hours", "queue_stop_on_failure", "queue_wait_for_review", "pull_target_before_runs", "after_merge", "revision"];
+    const KEYS: [&str; 14] =["implementer", "reviewer", "delivery", "max_active_runs", "min_free_disk_gb", "queue_hours", "queue_stop_on_failure", "queue_wait_for_review", "pull_target_before_runs", "after_merge", "design_preparer", "design_reviewer", "design_verifier", "revision"];
     if let Some(refusal) = body_refusal(body, &KEYS) {
         audit(Outcome::Refused, Some("bad request body"));
         return refusal;
@@ -2765,9 +2771,16 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         audit(Outcome::Refused, Some("disk floor out of range"));
         return error(422, "Free disk needed to start must be empty or 1 to 500 GB");
     };
+    // A design role left out is unset, as an older page that knows none of them saves.
+    let design_role = |role: &str| if fields.get(role).is_none() { Some(None) } else { agent(role) };
+    let (Some(design_preparer), Some(design_reviewer), Some(design_verifier)) = (design_role("design_preparer"), design_role("design_reviewer"), design_role("design_verifier")) else {
+        audit(Outcome::Refused, Some("bad request body"));
+        return error(400, "the request body is not one this action takes");
+    };
+    let design = [("Design preparer", &design_preparer), ("Design reviewer", &design_reviewer), ("Design verifier", &design_verifier)];
     let chosen: Vec<&ProjectAgent> = implementer.iter().chain(reviewer.iter()).collect();
-    // Resetting both roles names no agent, so it needs nothing offered.
-    if !chosen.is_empty() {
+    // Resetting every role names no agent, so it needs nothing offered.
+    if !chosen.is_empty() || design.iter().any(|(_, agent)| agent.is_some()) {
         let options = match provider.map(|provider| provider.setting_options()) {
             Some(Ok(Some(options))) => options,
             Some(Err(_)) => {
@@ -2787,6 +2800,27 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
         if !chosen.iter().all(takes) {
             audit(Outcome::Refused, Some("not an offered effort"));
             return error(422, "That effort is not one this harness takes");
+        }
+        // pi is asked for its models once, and only when a design role uses it.
+        let pi_models = if design.iter().any(|(_, agent)| agent.as_ref().is_some_and(|agent| agent.harness == "pi")) {
+            match provider.map(|provider| provider.pi_models()) {
+                Some(Err(_)) => {
+                    audit(Outcome::Refused, Some("pi's models could not be listed"));
+                    return error(500, "pi's models could not be listed");
+                }
+                Some(Ok(listing)) => listing,
+                None => None,
+            }
+        } else {
+            None
+        };
+        for (title, agent) in design {
+            let Some(agent) = agent else { continue };
+            let levels = efforts(&options, &agent.harness).unwrap_or_default();
+            if let Some(refusal) = crate::project_settings::design_agent_refusal(title, agent, &levels, pi_models.as_deref()) {
+                audit(Outcome::Refused, Some("not a design agent"));
+                return error(422, &refusal);
+            }
         }
     }
     // The queue's window is absent or null (any time) or `HH:MM-HH:MM`; stopping on failure is off unless true.
@@ -2826,7 +2860,7 @@ fn save_project_settings(roots: &StorageRoots, provider: Option<&dyn ProjectsPro
             return error(403, "Cleaning up on its own after a merge needs a passkey sign-in");
         }
     }
-    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge };
+    let settings = ProjectSettings { implementer, reviewer, delivery, max_active_runs, min_free_disk_gb, queue_hours, queue_stop_on_failure, queue_wait_for_review, pull_target_before_runs, after_merge, design_preparer, design_reviewer, design_verifier };
     match provider.map(|provider| provider.save_project_settings(id, revision, &settings)) {
         Some(Ok(ProjectSettingsSave::Saved(settings))) => {
             audit(Outcome::Allowed, None);

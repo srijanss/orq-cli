@@ -6674,7 +6674,8 @@ function parseProjectSettings(data) {
     && (settings.queue_wait_for_review === undefined || typeof settings.queue_wait_for_review === "boolean")
     && (settings.pull_target_before_runs === undefined || typeof settings.pull_target_before_runs === "boolean")
     && (settings.after_merge === undefined || settings.after_merge === "ask" || settings.after_merge === "auto")
-    && (settings.target_branch === undefined || typeof settings.target_branch === "string");
+    && (settings.target_branch === undefined || typeof settings.target_branch === "string")
+    && DESIGN_ROLES.every(([, role]) => settings[role] === undefined || settings[role] === null || isPicked(settings[role]));
   // Waiting for each run's review, and pulling the target, are on unless the server says they are off, as their defaults are.
   const target = typeof settings?.target_branch === "string" && settings.target_branch !== "" ? settings.target_branch : "the target";
   return ok ? { ...settings, max_active_runs: settings.max_active_runs ?? null, min_free_disk_gb: settings.min_free_disk_gb ?? null, queue_hours: settings.queue_hours ?? null, queue_stop_on_failure: settings.queue_stop_on_failure === true, queue_wait_for_review: settings.queue_wait_for_review !== false, pull_target_before_runs: settings.pull_target_before_runs !== false, after_merge: settings.after_merge === "auto" ? "auto" : "ask", target_branch: target } : null;
@@ -6749,7 +6750,8 @@ function sentRole(choice) {
 
 // A role while editing: the harness, whose first entry is the machine default, then the model and effort
 // of the harness picked, and a reset back to the machine default.
-function RoleFields({ title, role, entry, options, choice, disabled, onChoose }) {
+// A design role (`unset` and `reset` name what it is without one) reuses it with no machine default.
+function RoleFields({ title, role, entry, options, choice, disabled, onChoose, unset, reset = "Use machine default", className = "settings-block project-role-fields" }) {
   const current = choice === null ? null : options.find((option) => option.harness === choice.harness);
   const levels = effortsOf(current);
   const harnesses = options.map((option) => option.harness);
@@ -6757,16 +6759,16 @@ function RoleFields({ title, role, entry, options, choice, disabled, onChoose })
     const option = options.find((each) => each.harness === harness);
     onChoose(option ? { harness, model: option.models[0], effort: keptEffort(option, choice && choice.effort) } : null);
   };
-  const machine = entry.fallback === null ? "Machine default" : "Machine default (" + agentLine(entry.fallback) + ")";
+  const machine = unset !== undefined ? unset : entry.fallback === null ? "Machine default" : "Machine default (" + agentLine(entry.fallback) + ")";
   return (
-    <div className="settings-block project-role-fields">
+    <div className={className}>
       <select data-role-harness={role} aria-label={title + " harness"} value={choice === null ? "" : choice.harness} disabled={disabled} onChange={(event) => pickHarness(event.target.value)}>
         <option value="">{machine}</option>
         {(choice === null ? harnesses.map((harness) => [harness, harness]) : withCurrent(harnesses, choice.harness)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
       </select>
       {choice !== null ? <select data-role-model={role} aria-label={title + " model"} value={choice.model} disabled={disabled} onChange={(event) => onChoose({ ...choice, model: event.target.value })}>{withCurrent(current ? current.models : [], choice.model).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : null}
       {current && levels.length > 0 ? <select data-role-effort={role} aria-label={title + " effort"} value={choice.effort} disabled={disabled} onChange={(event) => onChoose({ ...choice, effort: event.target.value })}><option value="">Not set</option>{(choice.effort === "" ? levels.map((level) => [level, level]) : withCurrent(levels, choice.effort)).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : null}
-      <button type="button" data-role-reset={role} disabled={disabled || choice === null} onClick={() => onChoose(null)}>Use machine default</button>
+      <button type="button" data-role-reset={role} disabled={disabled || choice === null} onClick={() => onChoose(null)}>{reset}</button>
     </div>
   );
 }
@@ -6793,6 +6795,40 @@ function SettingsRow({ label, editing, value, children }) {
 
 const PROJECT_ROLES = [["Implementer", "implementer"], ["Reviewer", "reviewer"]];
 
+// The frontend design roles: each one's title, key, what it is while unset, and a model to suggest, which is
+// only ever shown as a hint and never chosen for the project.
+const DESIGN_ROLES = [
+  ["Design preparer", "design_preparer", "Uses the design reviewer", "pi openai/gpt-6.1-sol, thinking medium"],
+  ["Design reviewer", "design_reviewer", "Not set: a frontend run needs one", "pi openai/gpt-6.1-terra, thinking medium"],
+  ["Design verifier", "design_verifier", "Uses the design reviewer at thinking high", "pi openai/gpt-6.1-sol, thinking high"],
+];
+// The harnesses Orq runs read-only for review, the only ones a design role may use.
+const DESIGN_HARNESSES = ["pi", "claude"];
+const DESIGN_HELP = "Used only by frontend features. The implementer and code reviewer above build and review the code.";
+
+// The design roles as a settings card: a row per role, its agent or what it is while unset; while editing, the
+// role's harness (pi or claude), model and thinking, with a suggestion under a role left unset.
+function DesignAgentsCard({ settings, editing, draft, options, disabled, onChoose }) {
+  const offered = options.filter((option) => DESIGN_HARNESSES.includes(option.harness));
+  return (
+    <section className="card settings-card" data-design-agents>
+      <SettingsHead icon="cpu">Frontend design</SettingsHead>
+      <p className="settings-hint muted" data-design-help>{DESIGN_HELP}</p>
+      {DESIGN_ROLES.map(([title, role, unset, suggestion]) => editing ? (
+        <div key={role} className="settings-row" data-setting-row data-design-role={role}>
+          <span className="settings-label" data-setting-label>{title}</span>
+          <span className="settings-field-control">
+            <RoleFields title={title} role={role} entry={{ fallback: null }} options={offered} choice={draft[role]} disabled={disabled} onChoose={(choice) => onChoose(role, choice)} unset={unset} reset="Unset" className="project-role-fields" />
+            {draft[role] === null ? <span className="muted" data-design-suggestion>{"Suggested: " + suggestion}</span> : null}
+          </span>
+        </div>
+      ) : (
+        <SettingsRow key={role} label={title} editing={false} value={<span data-project-design-role={role}>{settings[role] === null ? unset : agentLine(settings[role])}</span>} />
+      ))}
+    </section>
+  );
+}
+
 // A project's settings: each role and the delivery, read only until Edit. Edit checks that remote actions
 // are on and reads the machine's options; Save asks, then sends the whole record with the revision Edit
 // read, and a refusal shows the server's reason, with Reload when the settings changed meanwhile.
@@ -6802,6 +6838,8 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
   const [draft, setDraft] = useState(null);
   const [note, setNote] = useState("");
   const [conflict, setConflict] = useState(false);
+  // A server older than the design roles sends none, and a save then leaves them out too.
+  const hasDesign = settings.design_reviewer !== undefined;
   const edit = async () => {
     setPhase("loading");
     setNote("");
@@ -6830,7 +6868,8 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
         return;
       }
       setOptions(listed);
-      setDraft({ implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, waitForReview: settings.queue_wait_for_review, pullTarget: settings.pull_target_before_runs, afterMerge: settings.after_merge, revision: settings.revision });
+      const design = hasDesign ? Object.fromEntries(DESIGN_ROLES.map(([, role]) => [role, startingRole(settings[role])])) : {};
+      setDraft({ ...design, implementer: startingRole(settings.implementer.project), reviewer: startingRole(settings.reviewer.project), delivery: isOfferedDelivery(settings.delivery) ? settings.delivery : "", maxActiveRuns: settings.max_active_runs === null ? "" : String(settings.max_active_runs), minFreeDisk: settings.min_free_disk_gb === null ? "" : String(settings.min_free_disk_gb), queueHours: settings.queue_hours ?? "", stopOnFailure: settings.queue_stop_on_failure, waitForReview: settings.queue_wait_for_review, pullTarget: settings.pull_target_before_runs, afterMerge: settings.after_merge, revision: settings.revision });
       setPhase("editing");
     } catch (unreachable) {
       setNote("The server could not be reached.");
@@ -6843,7 +6882,8 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
     setConflict(false);
     let text = "The change could not be made.";
     try {
-      const response = await actionRequest(path, token, { implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, queue_wait_for_review: draft.waitForReview, pull_target_before_runs: draft.pullTarget, after_merge: draft.afterMerge, revision: draft.revision });
+      const design = hasDesign ? Object.fromEntries(DESIGN_ROLES.map(([, role]) => [role, sentRole(draft[role])])) : {};
+      const response = await actionRequest(path, token, { ...design, implementer: sentRole(draft.implementer), reviewer: sentRole(draft.reviewer), delivery: draft.delivery, max_active_runs: draft.maxActiveRuns === "" ? null : Number(draft.maxActiveRuns), min_free_disk_gb: typedFloor(draft.minFreeDisk), queue_hours: typedHours(draft.queueHours), queue_stop_on_failure: draft.stopOnFailure, queue_wait_for_review: draft.waitForReview, pull_target_before_runs: draft.pullTarget, after_merge: draft.afterMerge, revision: draft.revision });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -6876,6 +6916,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           )}
         </section>
       ))}
+      {hasDesign ? <DesignAgentsCard settings={settings} editing={editing} draft={draft} options={options} disabled={phase !== "editing"} onChoose={(role, choice) => setDraft({ ...draft, [role]: choice })} /> : null}
       <section className="card settings-card">
         <SettingsHead icon="flag">When a run finishes</SettingsHead>
         <div className="settings-block">
