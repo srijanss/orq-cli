@@ -253,6 +253,24 @@ fn a_pi_whose_descendant_keeps_its_output_open_is_given_up_on_and_the_descendant
     assert_eq!(Store::open(&s.roots.database()).unwrap().project_settings(&alpha).unwrap().revision, 0, "nothing saved");
 }
 
+#[test]
+fn a_pi_that_hangs_says_too_much_or_fails_after_a_good_table_is_refused_in_bounded_time_and_nothing_is_saved() {
+    let mut s = setup("design-agents-pi-failures");
+    let alpha = git_repo(&s.scan, "alpha");
+    let cases = [
+        ("pi-hangs", "#!/bin/sh\nexec sleep 60\n".to_string(), 10),
+        // Over 256 KiB and still writing: given up on as soon as the cap is passed, not at the timeout.
+        ("pi-floods", format!("#!/bin/sh\ncat <<'EOF'\n{PI_MODELS}EOF\nexec yes 'openai    gpt-6.1-sol    400K     128K     yes       yes'\n"), 3),
+        ("pi-fails", format!("#!/bin/sh\ncat <<'EOF'\n{PI_MODELS}EOF\nexit 3\n"), 3),
+    ];
+    for (name, script, within) in cases {
+        let (answer, took) = save_with_pi(&mut s, name, &script);
+        assert_eq!(answer, (422, json!({"error": "pi's models could not be listed"})), "{name}");
+        assert!(took < std::time::Duration::from_secs(within), "{name} took {took:?}");
+    }
+    assert_eq!(Store::open(&s.roots.database()).unwrap().project_settings(&alpha).unwrap().revision, 0, "nothing saved");
+}
+
 impl Setup {
     /// The same machine, but pi can't be run, so a save that asked pi for its models would be refused.
     fn clone_without_pi(&self) -> Setup {
