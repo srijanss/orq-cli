@@ -40,9 +40,25 @@ fn the_token_lives_in_memory_and_this_tabs_session_storage_only() {
     assert!(code.contains("useState(keptToken)"), "the token is held in one piece of state, restored from this tab only");
 }
 
+/// The code with the kind filter's own address handling masked: it alone reads the query and
+/// replaces the address in place, and only ever with the `kind` value, never the token.
+fn kind_filter_masked(code: &str) -> String {
+    const READ: &str = "const asked = new URLSearchParams(window.location.search).get(\"kind\");";
+    const PARAMS: &str = "const params = new URLSearchParams(window.location.search);";
+    const WRITE: &str = "window.history.replaceState(window.history.state, \"\", window.location.pathname + (search === \"\" ? \"\" : \"?\" + search) + window.location.hash);";
+    for line in [READ, PARAMS, WRITE] {
+        assert_eq!(code.matches(line).count(), 1, "the kind filter's address line appears once: {line}");
+    }
+    let body = code.split("function useKindFilter(").nth(1).expect("useKindFilter").split("\nfunction ").next().unwrap();
+    assert!(body.contains(READ) && body.contains(PARAMS) && body.contains(WRITE), "only the kind filter touches the address query");
+    assert!(body.contains("params.delete(\"kind\")") && body.contains("params.set(\"kind\", next)"), "the kind filter writes only the kind");
+    assert!(!body.to_lowercase().contains("token"), "the kind filter never sees the token");
+    code.replace(READ, "const asked = kindInAddress;").replace(PARAMS, "const params = addressQuery;").replace(WRITE, "replaceAddress(search);")
+}
+
 #[test]
 fn the_token_never_reaches_a_url_a_log_or_the_history() {
-    let code = code_without_push();
+    let code = kind_filter_masked(&code_without_push());
     for banned in ["location.search", "location.href", "URLSearchParams", "history.", "console.", "alert(", "window.name", "postMessage", "sendBeacon", "WebSocket", "EventSource", "XMLHttpRequest", "document.write", "innerHTML", "eval(", "new Function"] {
         assert!(!code.contains(banned), "the source uses {banned}");
     }

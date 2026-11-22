@@ -118,7 +118,11 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     assert_eq!(todo_paths(todo_body), ["API_TODO + \"/\" + item.id + \"/delete\""]);
     assert_eq!(todo_paths(edit_body), ["API_TODO + \"/\" + item.id"]);
     // Adding to the Todo list, and a move out of it, post under the Todo list; a draft's queue wish posts to its own route.
-    assert_eq!(code.matches("todoSend(").count(), 5, "the helper, a Todo item's delete, its Edit popup's save, Todo's add and the wish's cancel");
+    assert_eq!(code.matches("todoSend(").count(), 6, "the helper, a Todo item's delete, its Edit popup's save, Todo's add, the wish's cancel and the Frontend switch");
+    // The Frontend switch posts only the chosen kind to the feature's own kind route.
+    assert_eq!(todo_paths(body_of("FrontendSwitch")), ["path"]);
+    assert!(code.contains("encodeURIComponent(feature.name) + \"/kind\";"), "the kind route");
+    assert!(code.contains("todoSend(path, control.token, control.onSignedOut, { kind: next }"), "the switch sends only the kind");
     assert!(code.contains("todoSend(API_TODO, token, onSignedOut, { name, description }"), "Todo's add");
     assert!(code.contains("path: API_TODO + \"/\" + item.id + \"/move\""), "a Todo item's move");
     assert!(code.contains("encodeURIComponent(feature.name) + \"/queue-wish\";"), "the queue wish");
