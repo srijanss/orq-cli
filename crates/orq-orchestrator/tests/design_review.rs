@@ -498,6 +498,23 @@ fn a_reviewer_that_edits_a_worktree_file_fails_the_review() {
 }
 
 #[test]
+fn a_reviewer_that_makes_a_file_executable_fails_the_review() {
+    let f = Fixture::new();
+    f.answer(
+        "reviewer",
+        &answer("pass", vec![check("layout", "pass")], vec![]),
+    );
+    after(&f, "reviewer", "chmod +x README.md\n");
+
+    assert_eq!(f.review(1), DesignVerdict::Blocked);
+    assert!(
+        reason(&f).contains("changed the worktree"),
+        "{}",
+        reason(&f)
+    );
+}
+
+#[test]
 fn a_reviewer_that_adds_a_file_fails_the_review() {
     let f = Fixture::new();
     f.answer(

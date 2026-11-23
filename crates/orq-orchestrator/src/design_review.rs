@@ -930,7 +930,7 @@ fn folder_hash(dir: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Adds `name` and what `path` is: a file's bytes, a symlink's target, a folder, or nothing.
+/// Adds `name` and what `path` is: a file's mode and bytes, a symlink's target, a folder, or nothing.
 fn hash_entry(hasher: &mut Sha256, name: &[u8], path: &Path) -> Result<(), String> {
     hasher.update(name);
     hasher.update([0]);
@@ -942,8 +942,11 @@ fn hash_entry(hasher: &mut Sha256, name: &[u8], path: &Path) -> Result<(), Strin
             hasher.update(target.to_string_lossy().as_bytes());
         }
         Ok(meta) if meta.is_dir() => hasher.update(b"d"),
-        Ok(_) => {
+        Ok(meta) => {
+            use std::os::unix::fs::PermissionsExt;
             hasher.update(b"f");
+            // Its permission bits too: a chmod is a change Git shows.
+            hasher.update((meta.permissions().mode() & 0o7777).to_le_bytes());
             let mut file = std::fs::File::open(path)
                 .map_err(|e| format!("{} could not be read ({:?})", path.display(), e.kind()))?;
             std::io::copy(&mut file, hasher)
