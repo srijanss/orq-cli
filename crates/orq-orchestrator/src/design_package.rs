@@ -823,10 +823,47 @@ fn tags_named(text: &str, local: &str, closing: bool) -> Vec<(usize, usize)> {
     found
 }
 
-/// The contents of every `<style>` element in `text`, prefixed (`<s:style>`) or not.
+/// The spans of `text` (lowercased) that hold no markup: CDATA sections and comments, as
+/// (start, end), in order. Read in one forward pass, so a `<!--` inside a CDATA section (or the
+/// other way round) is text.
+fn unmarked_sections(text: &str) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(offset) = text[at..].find("<!") {
+        let start = at + offset;
+        let rest = &text[start..];
+        let Some((opener, terminator)) = [("<![cdata[", "]]>"), ("<!--", "-->")]
+            .into_iter()
+            .find(|(opener, _)| rest.starts_with(opener))
+        else {
+            at = start + 2;
+            continue;
+        };
+        let body = start + opener.len();
+        let end = text[body..]
+            .find(terminator)
+            .map_or(text.len(), |end| body + end + terminator.len());
+        found.push((start, end));
+        at = end;
+    }
+    found
+}
+
+/// The contents of every `<style>` element in `text`, prefixed (`<s:style>`) or not. A closing
+/// tag inside a CDATA section or a comment is text and doesn't end the element.
 fn style_elements(text: &str) -> Vec<String> {
     let opening = tags_named(text, "style", false);
-    let closing = tags_named(text, "style", true);
+    let sections = unmarked_sections(text);
+    let mut section = 0;
+    let closing: Vec<(usize, usize)> = tags_named(text, "style", true)
+        .into_iter()
+        .filter(|&(at, _)| {
+            while section < sections.len() && sections[section].1 <= at {
+                section += 1;
+            }
+            sections.get(section).is_none_or(|&(start, _)| at < start)
+        })
+        .collect();
     let mut found = Vec::new();
     let mut from = 0;
     let mut next_close = 0;

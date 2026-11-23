@@ -776,6 +776,48 @@ fn namespace_prefixed_svg_elements_are_checked_like_unprefixed_ones() {
 }
 
 #[test]
+fn a_closing_style_tag_inside_cdata_or_a_comment_does_not_end_the_style() {
+    let f = Fixture::new("svg-fake-close");
+    f.full_package();
+    let svg = |body: &str| format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{body}</svg>"#);
+    let refused_bodies = [
+        (
+            "cdata-prefixed",
+            "<style><![CDATA[/* </x:style> */ rect { fill: url(https://example.com/p.svg#g) } ]]></style>",
+        ),
+        (
+            "cdata-plain",
+            r#"<style><![CDATA[/* </style> */ @import "https://example.com/a.css"; ]]></style>"#,
+        ),
+        (
+            "comment",
+            "<style><!-- </style> --> rect { fill: url(https://example.com/p.svg#g) }</style>",
+        ),
+    ];
+    for (name, body) in refused_bodies {
+        f.put(&format!("assets/{name}.svg"), svg(body));
+    }
+    f.put(
+        "assets/cdata-local.svg",
+        svg("<style><![CDATA[ rect { fill: url(#g) } ]]></style><title>u\\72l(https://x)</title>"),
+    );
+
+    let problems = refused(f.start());
+
+    for (name, _) in refused_bodies {
+        let path = format!("assets/{name}.svg");
+        assert!(
+            mentions(&problems, &[&path]),
+            "{path} not refused: {problems:?}"
+        );
+    }
+    assert!(
+        !mentions(&problems, &["assets/cdata-local.svg"]),
+        "{problems:?}"
+    );
+}
+
+#[test]
 fn character_references_in_an_svg_attribute_cannot_hide_the_attributes_after_it() {
     let f = Fixture::new("svg-references");
     f.full_package();
