@@ -11,7 +11,7 @@ use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const HEAD: &str = "2222222222222222222222222222222222222222";
-const SELECTORS: [&str; 18] = [
+const SELECTORS: [&str; 23] = [
     "details[data-unpushed-details]",
     "details[data-unpushed-details][open]",
     ".unpushed-warning",
@@ -30,6 +30,11 @@ const SELECTORS: [&str; 18] = [
     "[data-push-sending]",
     "[data-push-send][aria-busy=\"true\"]",
     "[data-push-send]:disabled",
+    "[data-push-modal]",
+    "[data-modal-close]",
+    "[data-push-modal] [data-push-confirm]",
+    "[data-push-modal] [data-push-error]",
+    "[data-modal-close]:disabled",
 ];
 
 fn harness(scenario: Value) -> Option<Value> {
@@ -346,4 +351,94 @@ fn the_warning_token_is_defined_in_every_theme_block_and_the_line_uses_it() {
     assert!(css.contains("--warning: #fcd34d") && css.contains("--warning: #92400e"), "dark and light values");
     let rule = css.split(".unpushed-warning").nth(1).expect("a .unpushed-warning rule");
     assert!(rule.split('}').next().unwrap().contains("var(--warning)"), "{rule}");
+}
+
+/// The confirmation is in the popup, and nowhere else on the page.
+fn in_popup(frame: &Value) -> bool {
+    count(frame, "[data-push-modal]") == 1 && count(frame, "[data-push-modal] [data-push-confirm]") == 1 && count(frame, "[data-push-confirm]") == 1
+}
+
+#[test]
+fn pressing_push_opens_the_confirmation_in_a_popup() {
+    let steps = vec![json!({"click": "[data-push-target]"})];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true)], steps) else { return };
+    assert_eq!(count(&frames(&out)[0], "[data-push-modal]"), 0, "{out}");
+    let asking = last(&out);
+    assert!(in_popup(asking), "{out}");
+    assert_eq!(count(asking, "[data-modal-close]"), 1, "{out}");
+    assert!(buttons(asking).iter().any(|b| b == "Push 2 commits"), "{:?}", buttons(asking));
+}
+
+#[test]
+fn the_queue_pages_push_opens_the_popup_too() {
+    let steps = vec![json!({"click": "[data-push-target]"})];
+    let Some(out) = as_session("/projects/alpha/queue", vec![queue_page(unpushed("github")), projects(Value::Null), state(None, true)], steps) else { return };
+    assert!(in_popup(last(&out)), "{out}");
+}
+
+#[test]
+fn escape_close_cancel_and_the_backdrop_shut_the_popup_unsent() {
+    for shut in [json!({"keydown": "Escape"}), json!({"click": "[data-modal-close]"}), json!({"click": "[data-push-modal] [data-cancel]"}), json!({"click": "[data-push-modal]"})] {
+        let steps = vec![json!({"click": "[data-push-target]"}), shut.clone()];
+        let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true)], steps) else { return };
+        assert!(in_popup(&frames(&out)[1]), "{shut}: opened");
+        let closed = last(&out);
+        assert_eq!((count(closed, "[data-push-modal]"), count(closed, "[data-push-confirm]"), count(closed, "[data-push-target]")), (0, 0, 1), "{shut}: closed");
+        assert!(requests(&out).iter().all(|(method, _, _)| method == "GET"), "{shut}: nothing was sent: {:?}", requests(&out));
+    }
+}
+
+#[test]
+fn escape_close_and_the_backdrop_do_nothing_while_the_push_is_sending() {
+    let held = json!({"status": 200, "hold": "fetch", "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": []}});
+    let steps = vec![
+        json!({"click": "[data-push-target]"}),
+        json!({"click": "[data-push-send]"}),
+        json!({"keydown": "Escape"}),
+        json!({"click": "[data-modal-close]"}),
+        json!({"click": "[data-push-modal]"}),
+    ];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true), held], steps) else { return };
+    let sending = last(&out);
+    assert!(in_popup(sending), "{out}");
+    assert_eq!((count(sending, "[data-push-sending]"), count(sending, "[data-modal-close]:disabled")), (1, 1), "{out}");
+}
+
+#[test]
+fn a_push_from_the_popup_closes_it_and_shows_the_pushed_note() {
+    let pushed = json!({"status": 200, "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": []}});
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"})];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true), pushed], steps) else { return };
+    assert!(requests(&out).iter().any(|(method, _, body)| method == "POST" && body == &json!({"sha": HEAD})), "{:?}", requests(&out));
+    let done = last(&out);
+    assert_eq!((count(done, "[data-push-modal]"), count(done, "[data-push-done]")), (0, 1), "{out}");
+    assert!(shows(done, "Pushed 2 commits to origin/main."), "{:?}", texts(done));
+}
+
+#[test]
+fn a_failed_push_keeps_the_popup_with_the_error() {
+    let rejected = json!({"status": 500, "json": {"error": "rejected by the remote"}});
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"})];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true), rejected], steps) else { return };
+    let failed = last(&out);
+    assert!(in_popup(failed), "{out}");
+    assert_eq!(count(failed, "[data-push-modal] [data-push-error]"), 1, "{out}");
+    assert!(shows(failed, "rejected by the remote"), "{:?}", texts(failed));
+}
+
+#[test]
+fn only_the_commit_list_scrolls_inside_the_popup() {
+    let css = std::fs::read_to_string(format!("{}/web/app.css", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let rule = css.split(".push-confirm .push-commits {").nth(1).expect("a .push-confirm .push-commits rule");
+    let rule = rule.split('}').next().unwrap();
+    assert!(rule.contains("max-height:") && rule.contains("overflow-y: auto"), "{rule}");
+}
+
+#[test]
+fn a_commits_run_link_closes_the_popup_and_goes_to_the_run() {
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"nav": "[data-push-commit-run]"})];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true)], steps) else { return };
+    let gone = last(&out);
+    assert_eq!(gone["settled"]["path"], "/projects/alpha/orchestrations/run-1-PUSH-01", "{out}");
+    assert_eq!(count(gone, "[data-push-modal]"), 0, "{out}");
 }

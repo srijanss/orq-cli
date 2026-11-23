@@ -950,14 +950,35 @@ function PushTarget({ target, push, onPushed }) {
     setState(null);
     setNote("");
   };
-  const open = phase === "asking" || phase === "sending";
+  const open = (phase === "asking" || phase === "sending") && state !== null;
+  const busy = phase === "sending";
+  useEffect(() => {
+    if (!open || busy) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && !event.defaultPrevented) cancel();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, busy]);
+  const error = note !== "" ? <span role="status" className="run-action-note error-text" data-push-error>{note}</span> : null;
+  // The confirmation is a popup over the page, so the card or line the button sits in keeps its size.
   return (
     <div className="push-target">
-      {open ? null : <button type="button" className="primary-button" data-push-target disabled={!session || phase === "checking"} onClick={ask}><Icon name="arrowUp" size={16} />{"Push " + target}</button>}
+      <button type="button" className="primary-button" data-push-target disabled={!session || phase !== "idle"} onClick={ask}><Icon name="arrowUp" size={16} />{"Push " + target}</button>
       {session ? null : <p className="muted" data-push-needs-passkey>Pushing needs a passkey sign-in.</p>}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
-      {open && state !== null ? <PushConfirm state={state} target={target} projectId={push.projectId} busy={phase === "sending"} onConfirm={send} onCancel={cancel} /> : null}
-      {note !== "" ? <span role="status" className="run-action-note error-text">{note}</span> : null}
+      {open ? (
+        <div className="feature-modal" data-push-modal onClick={(event) => { if (event.target === event.currentTarget && !busy) cancel(); }}>
+          <div className="feature-modal-box" role="dialog" aria-modal="true" aria-label={"Push " + target}>
+            <div className="feature-modal-head">
+              <h2>{"Push " + target}</h2>
+              <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={busy} onClick={cancel}><Icon name="close" size={18} /></button>
+            </div>
+            <PushConfirm state={state} target={target} projectId={push.projectId} busy={busy} onConfirm={send} onCancel={cancel} />
+            {error}
+          </div>
+        </div>
+      ) : error}
     </div>
   );
 }
@@ -983,7 +1004,7 @@ function PushConfirm({ state, target, projectId, busy, onConfirm, onCancel }) {
               <code>{commit.short}</code>
               <span>{" " + commit.subject + " "}</span>
               {typeof commit.run === "string" && RUN_ID.test(commit.run)
-                ? <a href={runHref(commit.run)} data-push-commit-run onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(runHref(commit.run)); } }}>{commit.run}</a>
+                ? <a href={runHref(commit.run)} data-push-commit-run onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); onCancel(); navigate(runHref(commit.run)); } }}>{commit.run}</a>
                 : <em className="muted">not from orq</em>}
             </li>
           ))}

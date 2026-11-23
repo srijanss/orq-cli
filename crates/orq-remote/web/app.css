@@ -988,6 +988,8 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .unpushed-details .unpushed-subjects { color: var(--text); margin: 0.25rem 0 0.5rem; }
 .unpushed { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .unpushed > details { flex: 1 1 16rem; min-width: 0; }
+/* The push confirmation's commits scroll on their own, so the popup's head and Push / Cancel stay in view. */
+.push-confirm .push-commits { max-height: min(24rem, 50vh); overflow-y: auto; margin: 0.5rem 0; overflow-wrap: anywhere; }
 /* A frontend run's design review: per viewport the reference beside the capture, one above the other on a
    phone; images never wider than their column, so the page never scrolls sideways. */
 .design-review, .design-files-needed { margin: 0 0 1rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); min-width: 0; overflow-wrap: anywhere; }
