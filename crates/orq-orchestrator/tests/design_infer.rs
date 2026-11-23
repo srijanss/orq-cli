@@ -343,8 +343,19 @@ fn a_preparer_that_makes_an_image_or_answers_badly_fails_the_step() {
     );
     let mut escaping = clean_answer();
     escaping["needed_files"] = serde_json::json!([{"path": "../../etc/passwd", "what": "x", "why": "y"}]);
+    let binary = Fake::new(
+        |request| {
+            write_prepared(request);
+            fs::write(request.prepared.join("RESPONSIVE.md"), png(4, 4)).unwrap();
+        },
+        clean_answer(),
+    );
+    let mut unlabelled = clean_answer();
+    unlabelled["inferred"][0]["label"] = serde_json::json!("guessed");
     let cases = [
         ("image", image, "never an image"),
+        ("binary under a text name", binary, "not text"),
+        ("unknown label", Fake::new(write_prepared, unlabelled), "not valid"),
         ("not json", Fake::writing().answering(|_| serde_json::json!("all done")), "not valid"),
         ("escaping path", Fake::new(write_prepared, escaping), "not a plain path"),
     ];

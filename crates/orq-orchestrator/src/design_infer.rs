@@ -109,9 +109,30 @@ pub struct PrepareConflict {
 #[serde(deny_unknown_fields)]
 pub struct InferredValue {
     pub value: String,
-    /// `measured`, `inferred` or `proposed`.
-    pub label: String,
+    pub label: InferenceLabel,
     pub source: String,
+}
+
+/// How a value was found: any other label makes the answer not valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InferenceLabel {
+    /// Read from a measurement or a document.
+    Measured,
+    /// Read off a reference by eye.
+    Inferred,
+    /// The preparer's choice where the package says nothing.
+    Proposed,
+}
+
+impl InferenceLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            InferenceLabel::Measured => "measured",
+            InferenceLabel::Inferred => "inferred",
+            InferenceLabel::Proposed => "proposed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,12 +429,15 @@ fn files_needed(feature: &str, answer: &PrepareAnswer) -> Result<DesignFilesNeed
     Ok(DesignFilesNeeded { feature: feature.to_string(), files })
 }
 
+/// The prepared folder's files, hashed, each with its bytes.
+type PreparedFiles = Vec<(PreparedFile, Vec<u8>)>;
+
 /// The preparation `prepared.json` records, with its files' bytes, when it was made from this
 /// package and the prepared folder holds exactly its files, unchanged.
 fn kept_preparation(
     design: &Path,
     manifest: &DesignManifest,
-) -> Option<(PreparedDesign, Vec<(PreparedFile, Vec<u8>)>)> {
+) -> Option<(PreparedDesign, PreparedFiles)> {
     let saved = std::fs::read(design.join(PREPARED_FILE)).ok()?;
     let mut kept: PreparedDesign = serde_json::from_slice(&saved).ok()?;
     // Carried from the run this one resumes: the report is rewritten here.
@@ -460,7 +484,7 @@ fn remove_if_there(path: &Path) -> std::io::Result<()> {
 
 /// Every file the preparer wrote, hashed, with its bytes; anything but a plain text file of an
 /// allowed kind fails the step.
-fn prepared_files(prepared: &Path) -> Result<Vec<(PreparedFile, Vec<u8>)>, String> {
+fn prepared_files(prepared: &Path) -> Result<PreparedFiles, String> {
     let mut found = Vec::new();
     let mut pending = vec![(prepared.to_path_buf(), String::new())];
     while let Some((dir, prefix)) = pending.pop() {
@@ -494,6 +518,12 @@ fn prepared_files(prepared: &Path) -> Result<Vec<(PreparedFile, Vec<u8>)>, Strin
             }
             let bytes = std::fs::read(entry.path())
                 .map_err(|e| format!("prepared/{relative} could not be read ({:?})", e.kind()))?;
+            if std::str::from_utf8(&bytes).is_err() || bytes.contains(&0) {
+                return Err(format!(
+                    "the design preparer wrote prepared/{relative}, which is not text: it writes \
+                     only text documents, never an image"
+                ));
+            }
             found.push((
                 PreparedFile {
                     path: relative,
@@ -556,7 +586,7 @@ fn report(feature: &str, answer: &PrepareAnswer) -> String {
     for value in &answer.inferred {
         text.push_str(&format!(
             "- [{}] {} (from {})\n",
-            line(&value.label),
+            value.label.as_str(),
             line(&value.value),
             line(&value.source)
         ));

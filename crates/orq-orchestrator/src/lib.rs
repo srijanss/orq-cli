@@ -79,8 +79,8 @@ pub use design_capture::{
     CaptureRecord, CaptureRun, CaptureViewport, PageCapture,
 };
 pub use design_infer::{
-    prepare_design, AgentPreparer, DesignPrepareOutcome, DesignPreparer, InferredValue, PrepareAnswer,
-    PrepareConflict, PrepareRequest, PreparedDesign, PreparedFile, PreparerNeed,
+    prepare_design, AgentPreparer, DesignPrepareOutcome, DesignPreparer, InferenceLabel,
+    InferredValue, PrepareAnswer, PrepareConflict, PrepareRequest, PreparedDesign, PreparedFile, PreparerNeed,
 };
 pub use design_loop::{
     carry_design, design_code_review_task, design_fix_task, design_round_label, record_design_package, run_design_code_review,
