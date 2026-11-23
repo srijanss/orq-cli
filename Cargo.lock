@@ -1232,6 +1232,7 @@ dependencies = [
  "orq-test-support",
  "serde",
  "serde_json",
+ "sha2",
  "toml_edit",
 ]
 

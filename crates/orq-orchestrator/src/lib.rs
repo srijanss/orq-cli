@@ -8,6 +8,7 @@ mod ci_fix;
 mod ci_wait;
 mod cleanup;
 mod conflict_fix;
+mod design_package;
 mod discard;
 mod fix_features;
 mod format_revert;
@@ -69,6 +70,11 @@ pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{conflict_fix_task, fix_rebase_conflicts, ConflictFixOutcome};
+pub use design_package::{
+    resume_design_package, start_design_package, AssignedViewport, DesignFilesNeeded,
+    DesignManifest, DesignPackageOutcome, DesignPackageRun, ManifestFile, MissingPieces,
+    NeededFile, PackageLimits,
+};
 pub use discard::{
     discard_preview, discard_run, discard_run_before_remove, discard_run_then,
     features_finished_elsewhere, features_no_later_run_took, DeletedBranch, DiscardOutcome,
