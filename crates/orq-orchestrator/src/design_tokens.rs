@@ -207,20 +207,27 @@ fn slug(text: &str) -> String {
 /// package's tokens through its token rules, and writes `round-<round>/token-check.json`.
 pub fn check_design_tokens(design_dir: &Path, round: u32) -> TokenCheck {
     let round_dir = design_dir.join(format!("round-{round}"));
+    let not_assessed = |reason: String, rules_configured: usize| TokenCheck {
+        round,
+        status: TokenCheckStatus::NotAssessed,
+        reason: Some(reason),
+        rules_configured,
+        rules: Vec::new(),
+        warnings: Vec::new(),
+    };
     let check = match package_tokens(design_dir) {
-        Ok(tokens) => {
+        Ok(Some(tokens)) => {
             let viewports = read_measurements(&round_dir);
             let gaps = unmeasured_pages(&round_dir, &viewports);
             compare_round(round, &tokens, &design_rules(design_dir), &viewports, &gaps)
         }
-        Err(reason) => TokenCheck {
-            round,
-            status: TokenCheckStatus::NotAssessed,
-            reason: Some(reason),
-            rules_configured: 0,
-            rules: Vec::new(),
-            warnings: Vec::new(),
-        },
+        // No tokens file: the check is optional, so no rule counts as configured.
+        Ok(None) => not_assessed(
+            "the design package has no tokens file (tokens.css or tokens.json)".to_string(),
+            0,
+        ),
+        // A tokens file that does not load leaves every configured rule unchecked.
+        Err(reason) => not_assessed(reason, design_rules(design_dir).len()),
     };
     if let Ok(bytes) = serde_json::to_vec_pretty(&check) {
         let _ = std::fs::create_dir_all(&round_dir)
@@ -230,18 +237,18 @@ pub fn check_design_tokens(design_dir: &Path, round: u32) -> TokenCheck {
 }
 
 /// The frozen package's tokens: its `tokens.css`, else its `tokens.json`, else (infer mode) the
-/// prepared folder's.
-fn package_tokens(design_dir: &Path) -> Result<DesignTokens, String> {
+/// prepared folder's. `None` when there is no tokens file; an error when the one found does not load.
+fn package_tokens(design_dir: &Path) -> Result<Option<DesignTokens>, String> {
     for folder in [PACKAGE_DIR, PREPARED_DIR] {
         let folder = design_dir.join(folder);
         if let Some(text) = read_text(&folder.join(TOKENS_CSS)) {
-            return Ok(parse_tokens_css(&text));
+            return Ok(Some(parse_tokens_css(&text)));
         }
         if let Some(text) = read_text(&folder.join(TOKENS_JSON)) {
-            return parse_tokens_json(&text);
+            return parse_tokens_json(&text).map(Some);
         }
     }
-    Err("the design package has no tokens file (tokens.css or tokens.json)".to_string())
+    Ok(None)
 }
 
 /// The token rules of the frozen package's DESIGN.md and, in infer mode, of the prepared DESIGN.md

@@ -389,6 +389,27 @@ fn a_reviewer_pass_cannot_pass_token_rules_the_check_could_not_assess() {
 }
 
 #[test]
+fn a_reviewer_pass_cannot_pass_token_rules_whose_tokens_file_does_not_parse() {
+    let f = Fixture::new();
+    let package = f.repo.root().join("designs").join(FEATURE);
+    fs::write(package.join("tokens.json"), "{ \"weight-bold\": 700,\n").unwrap();
+    fs::write(package.join("DESIGN.md"), "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n").unwrap();
+    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
+
+    assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
+
+    let check: Value =
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap()).unwrap();
+    assert_eq!(check["status"], "not_assessed", "{check:#}");
+    assert_eq!(check["rules_configured"], 1, "{check:#}");
+    let written: Value =
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap()).unwrap();
+    let issues = written["review"]["issues"].as_array().unwrap();
+    let incomplete = issues.iter().find(|i| i["id"] == "tokens-not-assessed").unwrap_or_else(|| panic!("{written:#}"));
+    assert!(incomplete["actual"].as_str().unwrap().contains("tokens.json"), "{incomplete:#}");
+}
+
+#[test]
 fn a_token_violation_open_for_verify_after_rounds_rounds_goes_to_the_verifier() {
     let f = Fixture::new();
     let package = f.repo.root().join("designs").join(FEATURE);

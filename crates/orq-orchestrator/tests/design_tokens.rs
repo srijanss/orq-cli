@@ -306,6 +306,29 @@ fn configured_rules_the_check_could_not_assess_are_one_major_tokens_issue_and_a_
 }
 
 #[test]
+fn configured_rules_with_a_tokens_file_that_does_not_parse_are_a_tokens_issue_not_an_optional_check() {
+    let dir = design_folder(
+        ":root { --weight-bold: 700; }",
+        "h1: font-weight --weight-bold",
+        vec![json!({"tag": "h1", "index": 0, "styles": {"font-weight": "700"}})],
+        json!({}),
+    );
+    std::fs::remove_file(dir.path().join("package/tokens.css")).unwrap();
+    std::fs::write(dir.path().join("package/tokens.json"), "[\"--weight-bold\"]").unwrap();
+
+    let check = check_design_tokens(dir.path(), 1);
+
+    assert_eq!((check.status, check.rules_configured), (TokenCheckStatus::NotAssessed, 1), "{check:#?}");
+    assert!(check.reason.as_deref().is_some_and(|r| r.contains("tokens.json")), "{:?}", check.reason);
+    let ids: Vec<String> = check.issues().into_iter().map(|issue| issue.id).collect();
+    assert_eq!(ids, vec!["tokens-not-assessed"]);
+
+    // Without rules a broken tokens file leaves nothing configured unchecked.
+    std::fs::write(dir.path().join("package/DESIGN.md"), "# Page\n").unwrap();
+    assert!(check_design_tokens(dir.path(), 1).issues().is_empty());
+}
+
+#[test]
 fn a_captured_page_without_readable_measurements_leaves_the_check_not_assessed() {
     let dir = design_folder(
         ":root { --weight-bold: 700; }",
