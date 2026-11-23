@@ -313,9 +313,11 @@ fn a_verification_review_that_passes_lets_delivery_go_on() {
     let _ = fs::remove_dir_all(&w.root);
 }
 
-/// run-1 froze its package (manifest and a round's review in its logs); run-2 resumes it.
+/// run-1 froze its package and was reviewed once (manifest and the round's review in its logs); run-2
+/// resumes it.
 fn frozen_and_resumed(w: &World) -> (RunRecord, PathBuf, PathBuf) {
     orq_orchestrator::record_design_package(&w.store, "run-1", "stage.completed", serde_json::json!({})).unwrap();
+    run_design_loop(&w.store, "run-1", 3, &mut Fake::new("head-1", vec![pass()])).unwrap();
     let from_logs = w.root.join("logs/run-1");
     fs::create_dir_all(from_logs.join("design/round-1")).unwrap();
     fs::write(from_logs.join("design/manifest.json"), "{\"frozen\":true}").unwrap();
@@ -371,9 +373,9 @@ fn a_design_folder_already_carried_whole_is_kept_on_every_later_carry() {
 
     assert_eq!(fs::read_to_string(to_logs.join("design/round-2/review.json")).unwrap(), "{\"round\":2}");
     assert_eq!(fs::read_to_string(to_logs.join("design/manifest.json")).unwrap(), "{\"frozen\":true}");
-    let reviews = w.store.events("run-2").unwrap().iter().filter(|e| e.kind == "design_review").count();
-    let carried = w.store.events("run-1").unwrap().iter().filter(|e| e.kind == "design_review").count();
-    assert_eq!(reviews, carried, "nothing is carried twice");
+    let reviews = |run: &str| w.store.events(run).unwrap().iter().filter(|e| e.kind == "design_review").count();
+    assert_eq!(reviews("run-1"), 1);
+    assert_eq!(reviews("run-2"), 1, "run-1's one review is carried once, never again");
     let _ = fs::remove_dir_all(&w.root);
 }
 
