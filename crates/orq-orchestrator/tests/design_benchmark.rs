@@ -13,7 +13,8 @@ use orq_test_support::TempDir;
 use serde_json::{json, Value};
 
 /// A fake pi: answers with `answer-<n>.json` of its folder, `@RUN@`, `@REF@` and `@CAP@` replaced
-/// by what the prompt names, and records its argv in `argv-<n>`.
+/// by what the prompt names, and records its argv in `argv-<n>`. With `fail-<n>` it exits 3
+/// without answering; with `hang-<n>` it sleeps past any test's timeout first.
 fn fake_pi(dir: &Path) -> PathBuf {
     fs::create_dir_all(dir).unwrap();
     let script = dir.join("pi");
@@ -28,6 +29,8 @@ fn fake_pi(dir: &Path) -> PathBuf {
              run=$(printf '%s\\n' \"$prompt\" | sed -n 's/^run_id: //p' | head -n 1)\n\
              ref=$(printf '%s\\n' \"$prompt\" | sed -n 's/^reference_hash: //p' | head -n 1)\n\
              cap=$(printf '%s\\n' \"$prompt\" | sed -n 's/^capture_revision: //p' | head -n 1)\n\
+             [ -f '{d}/fail-'$n ] && exit 3\n\
+             [ -f '{d}/hang-'$n ] && sleep 30\n\
              sed -e \"s|@RUN@|$run|g\" -e \"s|@REF@|$ref|g\" -e \"s|@CAP@|$cap|g\" '{d}/answer-'$n.json\n\
              exit 0\n"
         ),
@@ -93,7 +96,11 @@ impl Fixture {
     fn case(&self, name: &str, case: Value) {
         let dir = self.cases.path().join(name);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("reference.png"), png(&format!("reference of {name}"))).unwrap();
+        fs::write(
+            dir.join("reference.png"),
+            png(&format!("reference of {name}")),
+        )
+        .unwrap();
         fs::write(dir.join("actual.png"), png(&format!("capture of {name}"))).unwrap();
         fs::write(dir.join("case.json"), case.to_string()).unwrap();
     }
@@ -114,15 +121,24 @@ impl Fixture {
     }
 
     fn run(&self, repeat: u32) -> Result<orq_orchestrator::DesignBenchmarkOutcome, String> {
+        self.run_with(&self.agent, repeat, Duration::from_secs(30))
+    }
+
+    fn run_with(
+        &self,
+        agent: &DesignAgent,
+        repeat: u32,
+        agent_timeout: Duration,
+    ) -> Result<orq_orchestrator::DesignBenchmarkOutcome, String> {
         let output = self.output();
         run_design_benchmark(&DesignBenchmarkRun {
             cases: self.cases.path(),
             output: &output,
-            agent: &self.agent,
+            agent,
             repeat,
             skill: "the design-review skill",
             schema: "{}",
-            agent_timeout: Duration::from_secs(30),
+            agent_timeout,
         })
     }
 
@@ -328,4 +344,80 @@ fn a_case_whose_image_is_not_a_png_is_refused_before_any_review() {
     );
     assert!(!f.agent_dir.path().join("count").exists());
     assert!(!f.output().exists());
+}
+
+/// A case's single repeat, as results.json has it.
+fn only_repeat<'a>(results: &'a Value, name: &str) -> &'a Value {
+    &case_named(results, name)["repeats"][0]
+}
+
+#[test]
+fn an_agent_that_fails_or_times_out_gives_an_invalid_repeat_and_the_later_reviews_still_run() {
+    let f = Fixture::new();
+    f.case("a-fails", json!({"viewport": "desktop", "control": true}));
+    f.case("b-hangs", json!({"viewport": "desktop", "control": true}));
+    f.case("c-passes", json!({"viewport": "desktop", "control": true}));
+    f.answers(&[
+        answer("pass", &[]),
+        answer("pass", &[]),
+        answer("pass", &[]),
+    ]);
+    fs::write(f.agent_dir.path().join("fail-1"), "").unwrap();
+    fs::write(f.agent_dir.path().join("hang-2"), "").unwrap();
+
+    let outcome = f.run_with(&f.agent, 1, Duration::from_secs(2)).unwrap();
+
+    let results = f.results();
+    for name in ["a-fails", "b-hangs"] {
+        let review = only_repeat(&results, name);
+        assert!(review["invalid"].is_string(), "{name}: {results}");
+        assert_eq!(review["verdict"], Value::Null, "{name}: {results}");
+        assert_eq!(
+            case_named(&results, name)["passed"],
+            json!(false),
+            "{results}"
+        );
+    }
+    assert_eq!(
+        case_named(&results, "c-passes")["passed"],
+        json!(true),
+        "{results}"
+    );
+    assert_eq!(results["totals"]["invalid"], json!(2), "{results}");
+    assert_eq!(results["totals"]["controls_passed"], json!(1), "{results}");
+    assert!(outcome.report.is_file());
+    assert!(
+        outcome.summary.contains("2 invalid of 3"),
+        "{}",
+        outcome.summary
+    );
+}
+
+#[test]
+fn an_agent_program_that_cannot_start_gives_invalid_repeats_and_still_writes_the_report() {
+    let f = Fixture::new();
+    f.case("a-control", json!({"viewport": "desktop", "control": true}));
+    f.case("b-control", json!({"viewport": "desktop", "control": true}));
+    let missing = DesignAgent {
+        program: f.agent_dir.path().join("no-such-pi"),
+        ..f.agent.clone()
+    };
+
+    let outcome = f.run_with(&missing, 1, Duration::from_secs(30)).unwrap();
+
+    let results = f.results();
+    for name in ["a-control", "b-control"] {
+        assert!(
+            only_repeat(&results, name)["invalid"].is_string(),
+            "{results}"
+        );
+        assert_eq!(
+            case_named(&results, name)["passed"],
+            json!(false),
+            "{results}"
+        );
+    }
+    assert_eq!(results["totals"]["invalid"], json!(2), "{results}");
+    assert!(outcome.report.is_file());
+    assert!(f.output().join("results.json").is_file());
 }
