@@ -705,12 +705,8 @@ fn svg_problem(bytes: &[u8]) -> Option<String> {
     if css.iter().any(|css| css.contains("@import")) {
         return Some("is refused: its CSS has an @import".to_string());
     }
-    for target in css.iter().flat_map(|css| css_urls(css)) {
-        if !local_resource(&target) {
-            return Some(format!(
-                "is refused: url({target}) is neither a local #fragment nor a data image"
-            ));
-        }
+    if let Some(problem) = css.iter().find_map(|css| css_url_problem(css)) {
+        return Some(problem);
     }
     if styles.iter().any(|style| style.contains('\\')) {
         return Some("is refused: its CSS has a backslash escape".to_string());
@@ -772,19 +768,40 @@ fn decode_references(text: &str) -> String {
     out
 }
 
-/// The target of every CSS `url(...)` in `text`, quotes removed.
-fn css_urls(text: &str) -> Vec<String> {
-    let mut found = Vec::new();
+/// Why a CSS text's `url(...)`s are refused: the first that isn't a local fragment or a data
+/// image, or one never closed. One forward pass: each target is skipped once read.
+fn css_url_problem(text: &str) -> Option<String> {
     let mut rest = text;
     while let Some(at) = rest.find("url(") {
         rest = rest[at + 4..].trim_start();
-        let target = match rest.chars().next() {
-            Some(quote @ ('"' | '\'')) => rest[1..].split(quote).next().unwrap_or(""),
-            _ => rest.split(')').next().unwrap_or(""),
+        let (target, after) = match rest.chars().next() {
+            Some(quote @ ('"' | '\'')) => {
+                let end = rest[1..].find(quote).map(|end| end + 1);
+                let closed = end.and_then(|end| {
+                    rest[end + 1..]
+                        .trim_start()
+                        .starts_with(')')
+                        .then_some(end)
+                });
+                match closed {
+                    Some(end) => (&rest[1..end], end + 1),
+                    None => return Some("is refused: it has an unterminated url(".to_string()),
+                }
+            }
+            _ => match rest.find(')') {
+                Some(end) => (&rest[..end], end + 1),
+                None => return Some("is refused: it has an unterminated url(".to_string()),
+            },
         };
-        found.push(target.trim().to_string());
+        if !local_resource(target) {
+            return Some(format!(
+                "is refused: url({}) is neither a local #fragment nor a data image",
+                target.trim()
+            ));
+        }
+        rest = &rest[after..];
     }
-    found
+    None
 }
 
 /// The contents of every `<style>` element in `text`.

@@ -741,6 +741,30 @@ fn character_references_in_an_svg_attribute_cannot_hide_the_attributes_after_it(
 }
 
 #[test]
+fn an_unterminated_css_url_is_refused_at_once_however_many_follow() {
+    let f = Fixture::new("svg-url-flood");
+    f.full_package();
+    let flood = "url(".repeat(20000);
+    f.put(
+        "assets/flood.svg",
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg"><style>{flood}</style></svg>"#),
+    );
+    f.put(
+        "assets/quoted.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url('#a)"/></svg>"#,
+    );
+
+    let problems = refused(f.start());
+
+    for path in ["assets/flood.svg", "assets/quoted.svg"] {
+        assert!(
+            mentions(&problems, &[path, "unterminated url("]),
+            "{path}: {problems:?}"
+        );
+    }
+}
+
+#[test]
 fn svg_comments_hide_no_attributes_however_many_there_are() {
     let f = Fixture::new("svg-comments");
     f.full_package();
