@@ -552,6 +552,37 @@ fn images_with_whole_headers_but_unusable_pixel_data_are_refused() {
 }
 
 #[test]
+fn pngs_of_stored_blocks_or_interlaced_rows_decode_when_their_data_is_whole() {
+    let f = Fixture::new("png-variants");
+    f.full_package();
+    // 10 rows of 1 + 3 * 10 bytes, in one stored block.
+    let mut stored = vec![0x78, 0x01, 0x01];
+    stored.extend_from_slice(&310u16.to_le_bytes());
+    stored.extend_from_slice(&(!310u16).to_le_bytes());
+    stored.extend([0; 310]);
+    stored.extend_from_slice(&((310u32 << 16) | 1).to_be_bytes());
+    f.put("assets/stored.png", png_with(10, 10, &stored));
+    // Adam7's seven passes over 10 x 10 RGB hold 320 bytes.
+    let mut interlaced = png_with(10, 10, &zlib_zeros(320));
+    interlaced[8 + 8 + 12] = 1;
+    let crc = crc32(&interlaced[12..29]);
+    interlaced[29..33].copy_from_slice(&crc.to_be_bytes());
+    f.put("assets/interlaced.png", interlaced);
+    // Its filter bytes say a filter PNG doesn't have.
+    let mut stored_bad = stored.clone();
+    stored_bad[7] = 9;
+    f.put("assets/unknown-filter.png", png_with(10, 10, &stored_bad));
+
+    let problems = refused(f.start());
+
+    assert!(
+        mentions(&problems, &["assets/unknown-filter.png", "does not decode"]),
+        "{problems:?}"
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+}
+
+#[test]
 fn a_pdf_reference_is_kept_with_its_viewport_and_no_pixel_size() {
     let f = Fixture::new("pdf");
     f.full_package();
