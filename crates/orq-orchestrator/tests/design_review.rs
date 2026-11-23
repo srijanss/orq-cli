@@ -338,6 +338,57 @@ fn a_reviewer_cannot_downgrade_a_violated_token_rule_or_pass_over_it() {
 }
 
 #[test]
+fn a_reviewer_pass_cannot_pass_token_rules_the_check_could_not_assess() {
+    let bold_h1 = json!({"tag": "h1", "index": 0, "box": {"x": 0, "y": 0, "width": 100, "height": 40},
+                         "styles": {"font-weight": "700"}});
+    let page = |extra: Value| {
+        let mut page = json!({"document": {"width": 400, "height": 300, "root_font_size": 16}, "elements": [bold_h1]});
+        if let (Some(page), Some(extra)) = (page.as_object_mut(), extra.as_object()) {
+            page.extend(extra.clone());
+        }
+        json!({"viewport": "desktop", "width": 400, "height": 300, "routes": {"/": page}})
+    };
+    let truncated = json!({"selectors": {"h1": [bold_h1]}, "selector_counts": {"h1": 2}});
+    let cases = [
+        ("an unresolved token", "h1: font-weight --weight-bodl", Some(page(json!({})))),
+        ("no measurements", "h1: font-weight --weight-bold", None),
+        ("a selector matched beyond the capture", "h1: font-weight --weight-bold", Some(page(truncated))),
+    ];
+    for (case, rule, measured) in cases {
+        let f = Fixture::new();
+        let package = f.repo.root().join("designs").join(FEATURE);
+        fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
+        fs::write(package.join("DESIGN.md"), format!("# Home\n\n## Token rules\n\n{rule}\n")).unwrap();
+        if let Some(measured) = measured {
+            fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
+        }
+        f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
+
+        assert_eq!(f.review(1), DesignVerdict::ChangesRequired, "{case}");
+
+        let written: Value =
+            serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap()).unwrap();
+        let issues = written["review"]["issues"].as_array().unwrap();
+        let incomplete = issues.iter().find(|i| i["id"] == "tokens-not-assessed").unwrap_or_else(|| {
+            panic!("{case}: {written:#}")
+        });
+        assert_eq!(incomplete["source"], "tokens", "{case}");
+        assert_eq!(incomplete["severity"], "major", "{case}");
+        let check: Value =
+            serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap()).unwrap();
+        assert_eq!(check["status"], "not_assessed", "{case}");
+        assert!(incomplete["actual"].as_str().unwrap().contains(check["reason"].as_str().unwrap()), "{case}");
+    }
+
+    // Tokens without any rule, measured or not: nothing configured is left unchecked.
+    let f = Fixture::new();
+    let package = f.repo.root().join("designs").join(FEATURE);
+    fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
+    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
+    assert_eq!(f.review(1), DesignVerdict::Pass);
+}
+
+#[test]
 fn a_token_violation_open_for_verify_after_rounds_rounds_goes_to_the_verifier() {
     let f = Fixture::new();
     let package = f.repo.root().join("designs").join(FEATURE);

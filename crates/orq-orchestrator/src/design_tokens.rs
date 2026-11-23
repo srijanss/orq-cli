@@ -96,13 +96,41 @@ pub struct TokenCheck {
     pub status: TokenCheckStatus,
     /// Why the check was not assessed.
     pub reason: Option<String>,
+    /// How many token rules the design configures (0 when it has no tokens file).
+    pub rules_configured: usize,
     pub rules: Vec<RuleResult>,
     pub warnings: Vec<TokenWarning>,
 }
 
 impl TokenCheck {
-    /// Each violated rule as a design issue: source `tokens`, severity major, confidence high.
+    /// Each violated rule as a design issue: source `tokens`, severity major, confidence high. A
+    /// check the design's rules were configured for but that could not assess them is one more
+    /// such issue, so a round never passes over rules nobody checked.
     pub fn issues(&self) -> Vec<ReviewIssue> {
+        let mut issues = self.violations();
+        if self.status == TokenCheckStatus::NotAssessed && self.rules_configured > 0 {
+            let reason = self.reason.as_deref().unwrap_or("the token check did not complete");
+            issues.push(ReviewIssue {
+                id: "tokens-not-assessed".to_string(),
+                section: "token rules".to_string(),
+                viewport: "all".to_string(),
+                source: "tokens".to_string(),
+                expected: "every token rule checked against the measured page".to_string(),
+                actual: format!("the token check could not assess the rules: {reason}"),
+                evidence: vec![format!("round-{}/{TOKEN_CHECK_FILE}", self.round)],
+                severity: Severity::Major,
+                status: IssueStatus::Open,
+                fix_direction: "make every captured page measurable and every rule checkable; a rule naming a \
+                                token the design does not define needs the design package fixed by a person"
+                    .to_string(),
+                selector: None,
+                confidence: Some("high".to_string()),
+            });
+        }
+        issues
+    }
+
+    fn violations(&self) -> Vec<ReviewIssue> {
         self.rules
             .iter()
             .filter(|rule| matches!(rule.status, RuleStatus::Fail | RuleStatus::NoMatch))
@@ -189,6 +217,7 @@ pub fn check_design_tokens(design_dir: &Path, round: u32) -> TokenCheck {
             round,
             status: TokenCheckStatus::NotAssessed,
             reason: Some(reason),
+            rules_configured: 0,
             rules: Vec::new(),
             warnings: Vec::new(),
         },
@@ -389,7 +418,14 @@ fn compare_round(
     } else {
         TokenCheckStatus::Pass
     };
-    TokenCheck { round, status, reason, rules: results, warnings: off_token_values(tokens, viewports) }
+    TokenCheck {
+        round,
+        status,
+        reason,
+        rules_configured: rules.len(),
+        rules: results,
+        warnings: off_token_values(tokens, viewports),
+    }
 }
 
 /// Each rule selector the capture measured only some of the matches of, per page

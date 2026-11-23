@@ -268,7 +268,41 @@ fn a_rule_naming_a_token_that_does_not_resolve_is_reported_and_the_check_is_not_
         .map(|r| (r.selector.as_str(), r.token.as_deref().unwrap_or("")))
         .collect();
     assert_eq!(unresolved, vec![("h1", "--weight-bodl"), ("h1", "--loop-a")]);
-    assert!(check.issues().is_empty(), "a design's own mistake is not the page's issue");
+    let ids: Vec<String> = check.issues().into_iter().map(|issue| issue.id).collect();
+    assert_eq!(ids, vec!["tokens-not-assessed"], "rules left unchecked are one issue, not a violation each");
+}
+
+#[test]
+fn configured_rules_the_check_could_not_assess_are_one_major_tokens_issue_and_a_package_without_rules_none() {
+    let dir = design_folder(
+        ":root { --weight-bold: 700; }",
+        "h1: font-weight --weight-bold",
+        vec![json!({"tag": "h1", "index": 0, "styles": {"font-weight": "700"}})],
+        json!({}),
+    );
+    std::fs::remove_file(dir.path().join("round-1/desktop/measurements.json")).unwrap();
+
+    let check = check_design_tokens(dir.path(), 1);
+
+    assert_eq!(check.status, TokenCheckStatus::NotAssessed);
+    assert_eq!(check.rules_configured, 1);
+    let issues = check.issues();
+    assert_eq!(issues.len(), 1, "{issues:#?}");
+    let issue = &issues[0];
+    assert_eq!(issue.id, "tokens-not-assessed");
+    assert_eq!(issue.source, "tokens");
+    assert_eq!(issue.severity, Severity::Major);
+    assert_eq!(issue.confidence.as_deref(), Some("high"));
+    assert!(issue.actual.contains(check.reason.as_deref().unwrap()), "{issue:#?}");
+    assert_eq!(issue.evidence, vec!["round-1/token-check.json".to_string()]);
+
+    // Without rules nothing configured is left unchecked; without tokens the check is optional.
+    std::fs::write(dir.path().join("package/DESIGN.md"), "# Page\n").unwrap();
+    let check = check_design_tokens(dir.path(), 1);
+    assert_eq!((check.status, check.rules_configured), (TokenCheckStatus::NotAssessed, 0));
+    assert!(check.issues().is_empty(), "{:#?}", check.issues());
+    std::fs::remove_file(dir.path().join("package/tokens.css")).unwrap();
+    assert!(check_design_tokens(dir.path(), 1).issues().is_empty());
 }
 
 #[test]
