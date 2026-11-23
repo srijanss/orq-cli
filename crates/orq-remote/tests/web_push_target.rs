@@ -11,7 +11,7 @@ use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const HEAD: &str = "2222222222222222222222222222222222222222";
-const SELECTORS: [&str; 15] = [
+const SELECTORS: [&str; 18] = [
     "details[data-unpushed-details]",
     "details[data-unpushed-details][open]",
     ".unpushed-warning",
@@ -27,6 +27,9 @@ const SELECTORS: [&str; 15] = [
     "[data-push-gitlab]",
     "[data-push-done]",
     "[data-run-pushed]",
+    "[data-push-sending]",
+    "[data-push-send][aria-busy=\"true\"]",
+    "[data-push-send]:disabled",
 ];
 
 fn harness(scenario: Value) -> Option<Value> {
@@ -139,6 +142,39 @@ fn a_github_project_card_offers_the_push_lists_the_commits_with_their_runs_and_t
     let done = last(&out);
     assert_eq!((count(done, "[data-unpushed]"), count(done, "[data-push-confirm]"), count(done, "[data-push-done]")), (0, 0, 1), "{out}");
     assert!(shows(done, "Pushed 2 commits to origin/main."), "{:?}", texts(done));
+}
+
+#[test]
+fn pressing_push_n_commits_shows_pushing_with_a_spinner_until_the_push_answers() {
+    let pushed = json!({"status": 200, "hold": "fetch", "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": []}});
+    let responses = vec![projects(unpushed("github")), state(None, true), pushed];
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"}), json!({"release": 2})];
+    let Some(out) = as_session("/dashboard", responses, steps) else { return };
+
+    let all = frames(&out);
+    let sending = &all[all.len() - 2];
+    assert_eq!((count(sending, "[data-push-sending]"), count(sending, "[data-push-send][aria-busy=\"true\"]"), count(sending, "[data-push-send]:disabled")), (1, 1, 1), "{out}");
+    assert!(buttons(sending).iter().any(|b| b == "Pushing…"), "{:?}", buttons(sending));
+    assert!(shows(sending, "Pushing 2 commits to origin/main…"), "{:?}", texts(sending));
+
+    let done = last(&out);
+    assert_eq!((count(done, "[data-push-sending]"), count(done, "[data-push-done]")), (0, 1), "{out}");
+}
+
+#[test]
+fn a_failed_push_drops_the_spinner_and_offers_push_n_commits_again() {
+    let rejected = json!({"status": 500, "hold": "fetch", "json": {"error": "rejected"}});
+    let responses = vec![projects(unpushed("github")), state(None, true), rejected];
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"}), json!({"release": 2})];
+    let Some(out) = as_session("/dashboard", responses, steps) else { return };
+
+    let all = frames(&out);
+    assert_eq!(count(&all[all.len() - 2], "[data-push-sending]"), 1, "{out}");
+    let failed = last(&out);
+    assert_eq!((count(failed, "[data-push-sending]"), count(failed, "[data-push-send][aria-busy=\"true\"]"), count(failed, "[data-push-send]"), count(failed, "[data-push-send]:disabled")), (0, 0, 1, 0), "{out}");
+    assert!(buttons(failed).iter().any(|b| b == "Push 2 commits"), "{:?}", buttons(failed));
+    assert!(shows(failed, "rejected"), "{:?}", texts(failed));
+    assert!(!shows(failed, "Pushing 2 commits to origin/main…"), "{:?}", texts(failed));
 }
 
 #[test]
@@ -288,6 +324,17 @@ fn the_icon_and_message_carry_the_warning_class_on_the_card_the_queue_and_the_ru
     let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"})];
     let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true), pushed], steps) else { return };
     assert_eq!((count(last(&out), "[data-push-done]"), count(last(&out), ".unpushed-warning")), (1, 0), "{out}");
+}
+
+#[test]
+fn the_spinner_does_not_spin_with_reduced_motion() {
+    let css = std::fs::read_to_string(format!("{}/web/app.css", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let rule = |from: &str| from.split(".spinner {").nth(1).map(|r| r.split('}').next().unwrap().to_string());
+    let spinning = rule(&css).expect("a .spinner rule");
+    assert!(spinning.contains("animation:") && spinning.contains("spinner-turn"), "{spinning}");
+    assert!(css.contains("@keyframes spinner-turn"), "the spinner's keyframes");
+    let reduced = css.split("@media (prefers-reduced-motion: reduce) {").skip(1).find_map(|block| rule(block.split("\n}").next().unwrap())).expect("a .spinner rule in the reduced-motion block");
+    assert_eq!(reduced.trim(), "animation: none;", "{reduced}");
 }
 
 #[test]

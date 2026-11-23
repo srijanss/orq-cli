@@ -970,6 +970,7 @@ function PushConfirm({ state, target, projectId, busy, onConfirm, onCancel }) {
   const more = (isCount(state.more) ? state.more : 0) + (commits.length - shown.length);
   const reason = state.remote_actions !== true ? "Remote actions are off on this server." : typeof state.reason === "string" && state.reason !== "" ? state.reason : typeof state.sha !== "string" || shown.length === 0 ? "Nothing is waiting to be pushed." : null;
   const count = isCount(state.count) ? state.count : commits.length;
+  const commitCount = count + (count === 1 ? " commit" : " commits");
   const runHref = (run) => "/projects/" + encodeURIComponent(projectId) + "/orchestrations/" + encodeURIComponent(run);
   return (
     <div className="confirm push-confirm" role="group" aria-label={"Push " + target + " to " + remote} data-push-confirm>
@@ -991,8 +992,13 @@ function PushConfirm({ state, target, projectId, busy, onConfirm, onCancel }) {
       ) : null}
       {reason !== null ? <p className="error-text" role="note" data-push-reason>{reason}</p> : null}
       <div className="confirm-actions">
-        {reason === null ? <button type="button" className="primary-button" data-push-send disabled={busy} onClick={onConfirm}>{"Push " + count + (count === 1 ? " commit" : " commits")}</button> : null}
+        {reason === null ? (
+          <button type="button" className="primary-button" data-push-send disabled={busy} aria-busy={busy} onClick={onConfirm}>
+            {busy ? <><span className="spinner" aria-hidden="true" data-push-sending />Pushing…</> : "Push " + commitCount}
+          </button>
+        ) : null}
         <button type="button" data-cancel disabled={busy} onClick={onCancel}>Cancel</button>
+        {busy ? <span role="status">{"Pushing " + commitCount + " to " + remote + "/" + target + "…"}</span> : null}
       </div>
     </div>
   );
