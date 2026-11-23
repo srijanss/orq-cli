@@ -32,6 +32,8 @@ const MEASUREMENTS_FILE: &str = "measurements.json";
 /// How long one page may take to load, and the browser to answer one call.
 const PAGE_LOAD: Duration = Duration::from_secs(30);
 const CALL: Duration = Duration::from_secs(30);
+/// How long a just-started Chromium has to give its first answer before it is taken as stuck.
+const FIRST_ANSWER: Duration = Duration::from_secs(10);
 /// How long the capture waits for a page's fonts and images.
 const ASSETS_BOUND_MS: u64 = 5_000;
 /// The tallest full-page capture, in CSS pixels; a longer page is cut there.
@@ -661,7 +663,7 @@ impl Browser {
     }
 
     fn version(&mut self) -> Result<String, String> {
-        let result = self.call(None, "Browser.getVersion", json!({}), CALL)?;
+        let result = self.call(None, "Browser.getVersion", json!({}), FIRST_ANSWER)?;
         Ok(result["product"].as_str().unwrap_or("unknown").to_string())
     }
 

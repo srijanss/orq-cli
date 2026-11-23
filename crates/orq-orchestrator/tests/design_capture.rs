@@ -528,6 +528,78 @@ fn browser_recording_args(dir: &Path) -> PathBuf {
 }
 
 #[test]
+fn a_browser_that_never_answers_blocks_soon_and_it_and_the_server_are_stopped() {
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-hung-browser");
+    let fake = TempDir::new("design-capture-hung-browser-bin");
+    let browser = fake.path().join("chromium");
+    let pid_file = fake.path().join("browser.pid");
+    orq_test_support::write_executable(
+        &browser,
+        &format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec sleep 60\n",
+            pid_file.display()
+        ),
+    );
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+    let started = std::time::Instant::now();
+
+    let outcome = capture(
+        site.root(),
+        logs.path(),
+        &["/".to_string()],
+        &browser,
+        &settings,
+    );
+
+    let CaptureOutcome::Blocked(reason) = outcome else {
+        panic!("not blocked: {outcome:?}")
+    };
+    assert!(reason.contains("Chromium did not answer"), "{reason}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "a silent browser is given up on soon: {:?}",
+        started.elapsed()
+    );
+    let browser_pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(process_is_gone(browser_pid), "the browser is stopped");
+    assert!(
+        process_is_gone(server_pid(site.root())),
+        "the server is stopped"
+    );
+    let written = read_json(&logs.path().join("design/round-1/capture.json"));
+    assert_eq!(written["outcome"], "blocked");
+}
+
+#[test]
+fn a_browser_that_cannot_be_started_blocks_and_the_server_is_stopped() {
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-no-such-browser");
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(
+        site.root(),
+        logs.path(),
+        &["/".to_string()],
+        Path::new("/no/such/chromium"),
+        &settings,
+    );
+
+    let CaptureOutcome::Blocked(reason) = outcome else {
+        panic!("not blocked: {outcome:?}")
+    };
+    assert!(reason.contains("could not be started"), "{reason}");
+    assert!(
+        process_is_gone(server_pid(site.root())),
+        "the server is stopped"
+    );
+}
+
+#[test]
 fn chromium_keeps_its_sandbox_unless_it_is_turned_off_on_purpose() {
     let site = fixture_site();
     let logs = TempDir::new("design-capture-sandbox");
