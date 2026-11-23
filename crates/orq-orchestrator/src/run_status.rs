@@ -46,6 +46,8 @@ pub enum RunPhase {
     PauseRequested,
     /// The run stopped at a stage boundary and can be resumed.
     Paused,
+    /// A frontend run waiting for the design files its `design.files_needed` event lists: a pause, never a failure.
+    DesignFilesNeeded,
     /// A failed or review-waiting run whose commits were all merged into its target branch by
     /// hand. Never read off the events: only [`crate::mark_merged_runs`] says so, from git.
     Merged,
@@ -64,6 +66,7 @@ impl RunPhase {
             RunPhase::NeedsReview => "needs_review",
             RunPhase::PauseRequested => "pause_requested",
             RunPhase::Paused => "paused",
+            RunPhase::DesignFilesNeeded => "design_files_needed",
             RunPhase::Merged => "merged",
             RunPhase::Accepting => "accepting",
         }
@@ -308,6 +311,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
                 Some("failed") => RunPhase::Failed,
                 Some("blocked") => RunPhase::Blocked,
                 Some("needs_review") => RunPhase::NeedsReview,
+                Some("design_files_needed") => RunPhase::DesignFilesNeeded,
                 _ => continue,
             },
             // Cleanup keeps the worktree of an unsuccessful run too: that says nothing about how
@@ -318,7 +322,7 @@ pub fn summarize_run(events: &[Event]) -> RunSummary {
                 if unsuccessful
                     || matches!(
                         summary.phase,
-                        RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview
+                        RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview | RunPhase::DesignFilesNeeded
                     )
                 {
                     continue;

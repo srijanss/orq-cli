@@ -867,6 +867,7 @@ fn landing(store: Option<&Store>, runs: &RunStore, root: &Path, run: &str) -> Op
             RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Accepting => Some("running".to_string()),
             RunPhase::Failed | RunPhase::Blocked => Some("failed".to_string()),
             RunPhase::NeedsReview => Some("in review".to_string()),
+            RunPhase::DesignFilesNeeded => Some("waiting for design files".to_string()),
             RunPhase::Completed if matches!(ending(&events), Some("review_ready" | "pushed")) => mr_landing(store, runs, root, &run, &events),
             RunPhase::Completed | RunPhase::Merged => None,
         };
@@ -1092,7 +1093,7 @@ fn action_applies(runs: &RunStore, git: &orq_git::Project, action: &QueueAction)
         return Err(format!("its feature {} was started again as {later}", record.feature_id));
     }
     let applies = match action.kind {
-        QueueKind::Resume => matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::Paused | RunPhase::NeedsReview),
+        QueueKind::Resume => matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::Paused | RunPhase::NeedsReview | RunPhase::DesignFilesNeeded),
         QueueKind::ReviewAgain => matches!(summary.phase, RunPhase::Failed | RunPhase::NeedsReview),
         QueueKind::Accept => matches!(summary.phase, RunPhase::NeedsReview | RunPhase::Failed | RunPhase::Blocked),
     };
@@ -1255,7 +1256,8 @@ fn settle(store: &Store, runs: &RunStore, run: &str, repo: Option<&Path>, wait: 
         RunPhase::NeedsReview if !wait => Settled::Going,
         RunPhase::NeedsReview if repo.is_some_and(|repo| runs.load(run).is_ok_and(|record| orq_orchestrator::work_is_on_target(repo, &record))) => Settled::Done,
         RunPhase::NeedsReview => Settled::InReview(None),
-        RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::Accepting => Settled::Going,
+        // Waiting for design files is a pause like any other, never a failure.
+        RunPhase::Running | RunPhase::PauseRequested | RunPhase::Paused | RunPhase::DesignFilesNeeded | RunPhase::Accepting => Settled::Going,
     }
 }
 

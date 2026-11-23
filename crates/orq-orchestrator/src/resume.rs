@@ -475,7 +475,8 @@ fn plan(
         phase = RunPhase::Merged;
     }
     match phase {
-        RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview => {}
+        // Waiting for design files: resumed once they are there, its package checked again first.
+        RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview | RunPhase::DesignFilesNeeded => {}
         RunPhase::Running => {
             return Err(format!(
                 "{} did not stop; it may still be running",

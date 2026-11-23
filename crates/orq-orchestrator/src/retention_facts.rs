@@ -52,7 +52,7 @@ fn facts_of(runs: &RunStore, store: &Store, run_id: &str) -> Result<Option<RunFa
         RunPhase::Failed | RunPhase::Merged => RunState::Failed,
         RunPhase::Completed => RunState::Completed,
         RunPhase::PauseRequested => RunState::PauseRequested,
-        RunPhase::Paused => RunState::Paused,
+        RunPhase::Paused | RunPhase::DesignFilesNeeded => RunState::Paused,
     };
     let ended_at = events
         .last()

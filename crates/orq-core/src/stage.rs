@@ -3,12 +3,19 @@
 //! The order mirrors the Bash orchestrator: one implement-and-review session,
 //! rebase, local gate, push, MR/PR, CI. A run ends at `review_ready`; there is
 //! deliberately no merge stage, merging stays a human action in the provider.
+//! A frontend run (a feature with a design package) has two more steps: its
+//! package is checked before the implementer starts, and its page is reviewed
+//! against the design after the rebase, before the gate.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stage {
     Prepare,
+    /// Frontend only: the design package is frozen and checked.
+    DesignPackage,
     ImplementAndReview,
     Rebase,
+    /// Frontend only: capture, design review and correction rounds.
+    DesignReview,
     Verify,
     Push,
     CreateReview,
@@ -17,10 +24,13 @@ pub enum Stage {
 }
 
 impl Stage {
-    const ALL: [Stage; 8] = [
+    /// Every stage a stored run may name, in a frontend run's order.
+    const ALL: [Stage; 10] = [
         Stage::Prepare,
+        Stage::DesignPackage,
         Stage::ImplementAndReview,
         Stage::Rebase,
+        Stage::DesignReview,
         Stage::Verify,
         Stage::Push,
         Stage::CreateReview,
@@ -32,8 +42,10 @@ impl Stage {
     pub fn as_str(self) -> &'static str {
         match self {
             Stage::Prepare => "prepare",
+            Stage::DesignPackage => "design_package",
             Stage::ImplementAndReview => "implement_and_review",
             Stage::Rebase => "rebase",
+            Stage::DesignReview => "design_review",
             Stage::Verify => "verify",
             Stage::Push => "push",
             Stage::CreateReview => "create_review",
@@ -44,6 +56,10 @@ impl Stage {
 
     pub fn parse(name: &str) -> Option<Stage> {
         Stage::ALL.into_iter().find(|s| s.as_str() == name)
+    }
+
+    fn is_design(self) -> bool {
+        matches!(self, Stage::DesignPackage | Stage::DesignReview)
     }
 }
 
@@ -72,11 +88,22 @@ pub struct StagePlan {
 }
 
 impl StagePlan {
+    /// The standard run's stages: never a design step.
     pub fn new(options: StageOptions) -> StagePlan {
+        StagePlan::with(options, false)
+    }
+
+    /// A frontend run's stages: the standard ones with the design package and design review.
+    pub fn frontend(options: StageOptions) -> StagePlan {
+        StagePlan::with(options, true)
+    }
+
+    fn with(options: StageOptions, frontend: bool) -> StagePlan {
         let enabled = |stage: &Stage| match stage {
             Stage::Rebase => options.rebase,
             Stage::Verify => options.verify,
             Stage::CiCheck => options.ci_check,
+            stage if stage.is_design() => frontend,
             _ => true,
         };
         StagePlan {

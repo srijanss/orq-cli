@@ -9,6 +9,7 @@ mod ci_wait;
 mod cleanup;
 mod conflict_fix;
 mod design_capture;
+mod design_loop;
 mod design_package;
 mod design_review;
 mod discard;
@@ -75,6 +76,11 @@ pub use conflict_fix::{conflict_fix_task, fix_rebase_conflicts, ConflictFixOutco
 pub use design_capture::{
     capture_design, capture_viewports, design_routes, find_chromium_in, CaptureOutcome,
     CaptureRecord, CaptureRun, CaptureViewport, PageCapture,
+};
+pub use design_loop::{
+    design_fix_task, record_design_package, run_design_correction, run_design_loop,
+    CorrectionOutcome, DesignLoopOutcome, DesignLoopSteps, DESIGN_FIX_STAGE, DESIGN_PACKAGE_STAGE,
+    DESIGN_REVIEW_STAGE,
 };
 pub use design_package::{
     resume_design_package, start_design_package, AssignedViewport, DesignFilesNeeded,

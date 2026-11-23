@@ -167,6 +167,8 @@ pub enum Ending {
     Paused,
     /// The run's delivery is merge-local: its base branch was fast-forwarded to it, nothing pushed.
     Merged,
+    /// A frontend run waits for the design files its events list; resumed once they are there.
+    DesignFilesNeeded,
 }
 
 impl Ending {
@@ -178,6 +180,7 @@ impl Ending {
             Ending::NeedsReview => "needs_review",
             Ending::Paused => "paused",
             Ending::Merged => "merged",
+            Ending::DesignFilesNeeded => "design_files_needed",
         }
     }
 }
@@ -370,6 +373,7 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
         eprintln!("orq: using GATE_CMD from {file} as the gate");
     }
     project_limits(options, store)?;
+    refuse_grouped_frontend(options)?;
     let resumed = if options.resume {
         let members: Vec<String> = options.features.iter().map(|f| slug(f)).collect();
         let planned = if options.review_again {
@@ -418,6 +422,28 @@ fn preflight(options: &Options<'_>, store: &RunStore) -> Result<Preflight, Start
     // still only reach the host the user chose.
     let repository = orq_orchestrator::resolve_repository_url(repo, options.remote).map_err(|e| other(format!("{e:?}")))?;
     Ok(Preflight { settings, resumed, naming, provider, repository })
+}
+
+/// The features of this run marked frontend in orq.db (kept under the project's main checkout). A machine
+/// without orq.db has none.
+fn frontend_features(options: &Options<'_>) -> Result<std::collections::HashSet<String>, StartError> {
+    let Ok(roots) = orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) else {
+        return Ok(Default::default());
+    };
+    let root = orq_git::main_checkout_root(options.project).unwrap_or_else(|| options.project.root.clone());
+    orq_remote::projects::frontend_features_at(&roots.database(), &root).map_err(other)
+}
+
+/// A grouped run with a frontend feature is refused for now: the design review step runs for one feature.
+fn refuse_grouped_frontend(options: &Options<'_>) -> Result<(), StartError> {
+    if options.features.len() < 2 {
+        return Ok(());
+    }
+    let frontend = frontend_features(options)?;
+    match options.features.iter().find(|f| frontend.contains(f.as_str())) {
+        Some(feature) => Err(other(format!("{feature} is a frontend feature and cannot run in a group yet: run it on its own"))),
+        None => Ok(()),
+    }
 }
 
 /// The refusals the project's and the machine's settings make: too little free disk where the
@@ -2069,6 +2095,11 @@ fn stages(
     let done = |stage: &str| paused_at.is_some_and(|c| c.completed_stages.iter().any(|d| d == stage));
     let worktree = record.worktree.as_path();
     let implementer = with_run_model(&options.implementer, options, settings);
+    // A frontend run (one feature marked frontend) has the design package and design review steps.
+    let frontend_run = !options.publish && options.features.len() == 1 && {
+        let frontend = frontend_features(options).map_err(|e| StoreError::Corrupt(start_error_text(e)))?;
+        frontend.contains(&options.features[0])
+    };
 
     let Some(claude) = find_program(&options.implementer.harness) else {
         return stopped(Ending::Failed, harness_missing(&options.implementer.harness));
@@ -2135,6 +2166,11 @@ fn stages(
 
         // A resumed run whose agent session already finished goes on from the next stage; that was
         // recorded when the run began, so it survives a failure anywhere before here.
+        if implement_inherited_from.is_none() && frontend_run {
+            if let Some(stop) = design_package(store, run_id, options, settings, logs, worktree)? {
+                return Ok(stop);
+            }
+        }
         if implement_inherited_from.is_none() {
             if resumed_from.is_some() {
                 hand_back_features(store, record, &orq_features::ledger_path(options.project), options.features);
@@ -2415,6 +2451,83 @@ fn stages(
             orq_orchestrator::ConflictFixOutcome::StillBlocked { reason } => stopped(Ending::Blocked, reason).map(Some),
         }
     };
+    // A frontend run's design review step: `Some` with how the run stops when its page does not pass. The step
+    // carries on from what the run's events record, and a pass holds only for the head it reviewed, so calling
+    // it again after a later change reviews once more, to verify.
+    let design =|| -> Result<Option<Report>, StoreError> {
+        if !frontend_run {
+            return Ok(None);
+        }
+        let needs_review = |reason: String| stopped(Ending::NeedsReview, reason).map(Some);
+        let Some(design_settings) = settings.design.as_ref() else {
+            return needs_review("this frontend feature's project has no design settings: add a [design] table to .orq/run.toml".to_string());
+        };
+        let agents = match design_agents(options.project) {
+            Ok(agents) => agents,
+            Err(reason) => return needs_review(format!("the design review cannot run: {reason}")),
+        };
+        let main_checkout = crate::kind_root(options.project);
+        let skill = orq_agents::design_skill("design-review").unwrap_or_default();
+        let max = u32::from(design_settings.max_correction_rounds);
+        let review = |round: u32| {
+            let run = orq_orchestrator::DesignReviewRun {
+                run_id,
+                main_checkout: &main_checkout,
+                feature: &options.features[0],
+                settings: design_settings,
+                run_logs: logs,
+                worktree,
+                round,
+                reviewer: &agents.0,
+                verifier: &agents.1,
+                skill,
+                schema: orq_agents::DESIGN_REVIEW_SCHEMA,
+                agent_timeout: DESIGN_AGENT_TIMEOUT,
+            };
+            orq_orchestrator::review_design(&run, &orq_orchestrator::capture_design)
+        };
+        let correct = |batch: u32, issues: &[orq_orchestrator::ReviewIssue]| {
+            let task = orq_orchestrator::design_fix_task(batch, max, issues);
+            let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+            let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-fix.done"));
+            let args = adapter_for(&options.implementer.harness)
+                .and_then(|adapter| {
+                    adapter.fix_argv(&FixRequest {
+                        implementer: spec(&implementer),
+                        task: &task,
+                        exit_marker: marker.as_deref().and_then(Path::to_str),
+                        attended: options.interactive,
+                        allowed_commands: &allowed_commands,
+                    })
+                })
+                .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+            let session = ImplementSession {
+                program: claude_program,
+                args: &args,
+                env: database_env,
+                cwd: worktree,
+                session_id: None,
+                log: &logs.join("design-fix.log"),
+                terminal: options.interactive,
+                exit_marker: marker.as_deref(),
+            };
+            fix_features.before("design_fix");
+            let outcome = orq_orchestrator::run_design_correction(store, run_id, &session, batch);
+            fix_features.settle();
+            record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "design fix");
+            record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "design_fix");
+            outcome
+        };
+        let mut steps = PipelineDesignSteps { worktree, review: &review, correct: &correct };
+        match orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)? {
+            orq_orchestrator::DesignLoopOutcome::Passed { .. } => Ok(None),
+            orq_orchestrator::DesignLoopOutcome::NeedsReview { reason, report } => needs_review(match report {
+                Some(report) => format!("{reason}; the report is at {}", report.display()),
+                None => reason,
+            }),
+            orq_orchestrator::DesignLoopOutcome::Stopped { reason } => stopped(Ending::Failed, reason).map(Some),
+        }
+    };
     if !done("gate") {
         if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
             return paused("rebase");
@@ -2430,9 +2543,16 @@ fn stages(
                 return Ok(stop);
             }
         }
+        if let Some(stop) = design()? {
+            return Ok(stop);
+        }
         if let Some(stop) = check()? {
             return Ok(stop);
         }
+    }
+    // Evidence is bound to the commit: a gate fix since the design passed gets a verification review first.
+    if let Some(stop) = design()? {
+        return Ok(stop);
     }
 
     // The worktree of a run whose work is delivered goes, and its test databases with it; a kept
@@ -2485,7 +2605,11 @@ fn stages(
         // Asked to set aside uncommitted changes in the way: they are stashed, the run merged, and the
         // changes put back (or named in their stash when they conflict with the run). A conflict
         // resolved here is checked by the gate again before the next merge attempt.
-        let landed = orq_orchestrator::land_on_target(store, run_id, options.set_aside, options.rebase, &mut |reason| resolve_conflict(reason), &mut || check())?;
+        let landed = orq_orchestrator::land_on_target(store, run_id, options.set_aside, options.rebase, &mut |reason| resolve_conflict(reason), &mut || match check()? {
+            // A catch-up rebase moves the head: the page is verified again before it lands.
+            None => design(),
+            stop => Ok(stop),
+        })?;
         return match landed {
             orq_orchestrator::Landing::Merged { head_sha, note } => {
                 let mut report = delivered(&head_sha, Ending::Merged)?;
@@ -2658,6 +2782,12 @@ fn stages(
         }
     };
     let ready = matches!(ci, CiOutcome::Passed | CiOutcome::Skipped);
+    // A CI fix since the design passed gets a verification review before the review is ready.
+    if ready {
+        if let Some(stop) = design()? {
+            return Ok(stop);
+        }
+    }
     clean_up(ready, &ci)?;
     if !ready {
         return Ok(Report {
@@ -2670,6 +2800,103 @@ fn stages(
     }
     let ci_green = Some(matches!(ci, CiOutcome::Passed));
     Ok(Report { run_id: String::new(), ending: Ending::ReviewReady, detail: None, review_url: Some(review_url), ci_green })
+}
+
+/// A frontend run's `design_package` step, before any agent: the feature's package is checked and frozen. `Some`
+/// with how the run stops: waiting for design files (listed in its events), or a package that cannot be used.
+fn design_package(
+    store: &RunStore,
+    run_id: &str,
+    options: &Options<'_>,
+    settings: &orq_orchestrator::RunSettings,
+    logs: &Path,
+    worktree: &Path,
+) -> Result<Option<Report>, StoreError> {
+    let Some(design) = settings.design.as_ref() else {
+        return stopped(Ending::NeedsReview, "this frontend feature's project has no design settings: add a [design] table to .orq/run.toml").map(Some);
+    };
+    orq_orchestrator::record_design_package(store, run_id, "stage.started", serde_json::json!({}))?;
+    let main_checkout = crate::kind_root(options.project);
+    let run = orq_orchestrator::DesignPackageRun {
+        main_checkout: &main_checkout,
+        feature: &options.features[0],
+        settings: design,
+        run_logs: logs,
+        worktree,
+        limits: Default::default(),
+    };
+    match orq_orchestrator::start_design_package(&run) {
+        orq_orchestrator::DesignPackageOutcome::Frozen(_) => {
+            orq_orchestrator::record_design_package(store, run_id, "stage.completed", serde_json::json!({}))?;
+            Ok(None)
+        }
+        orq_orchestrator::DesignPackageOutcome::FilesNeeded(needed) => {
+            let files: Vec<serde_json::Value> = needed.files.iter().map(|f| serde_json::json!({"what": f.what, "path": f.path})).collect();
+            orq_orchestrator::record_design_package(store, run_id, "design.files_needed", serde_json::json!({"feature": needed.feature, "files": files}))?;
+            stopped(Ending::DesignFilesNeeded, needed.message()).map(Some)
+        }
+        orq_orchestrator::DesignPackageOutcome::Refused(problems) => {
+            stopped(Ending::Failed, format!("the design package cannot be used: {}", problems.join("; "))).map(Some)
+        }
+        orq_orchestrator::DesignPackageOutcome::Changed(reason) => stopped(Ending::NeedsReview, reason).map(Some),
+    }
+}
+
+/// How long one design agent (reviewer or verifier) may take.
+const DESIGN_AGENT_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+/// The design reviewer and verifier the project's settings name.
+fn design_agents(project: &orq_git::Project) -> Result<(orq_orchestrator::DesignAgent, orq_orchestrator::DesignAgent), String> {
+    let settings = crate::project_settings(project)?;
+    let uses_pi = [&settings.design_reviewer, &settings.design_verifier, &settings.design_preparer]
+        .iter()
+        .any(|agent| agent.as_ref().is_some_and(|agent| agent.harness == "pi"));
+    let listing = if uses_pi { find_program("pi").and_then(|program| crate::pi_model_listing(&program, Duration::from_secs(5))) } else { None };
+    let agents = orq_core::project_settings::design_agents(&settings, orq_agents::effort_levels, listing.as_deref())?;
+    let agent = |agent: &orq_core::project_settings::ProjectAgent| orq_orchestrator::DesignAgent {
+        program: PathBuf::from(&agent.harness),
+        harness: agent.harness.clone(),
+        model: agent.model.clone(),
+        thinking: agent.effort.clone(),
+    };
+    Ok((agent(&agents.reviewer), agent(&agents.verifier)))
+}
+
+/// The design loop's steps on the run's worktree: the real capture and review, and the implementer's fix session.
+struct PipelineDesignSteps<'a> {
+    worktree: &'a Path,
+    review: &'a dyn Fn(u32) -> orq_orchestrator::DesignReviewOutcome,
+    correct: &'a dyn Fn(u32, &[orq_orchestrator::ReviewIssue]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
+}
+
+impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
+    fn head(&mut self) -> Result<String, StoreError> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(self.worktree)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .map_err(|e| StoreError::Corrupt(format!("cannot read the run's head: {e}")))?;
+        if !out.status.success() {
+            return Err(StoreError::Corrupt("cannot read the run's head".to_string()));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn review(&mut self, round: u32) -> Result<orq_orchestrator::DesignReviewOutcome, StoreError> {
+        Ok((self.review)(round))
+    }
+
+    fn correct(&mut self, batch: u32, issues: &[orq_orchestrator::ReviewIssue]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
+        (self.correct)(batch, issues)
+    }
+}
+
+/// A refusal's text, for a run that has already started.
+fn start_error_text(err: StartError) -> String {
+    match err {
+        StartError::Busy(text) | StartError::Refused(text) | StartError::Limit(text) | StartError::Other(text) => text,
+    }
 }
 
 /// How long a run waits for its review report before moving on without it.

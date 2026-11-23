@@ -77,7 +77,11 @@ pub fn discard_run_before_remove(
     // A run whose pause is only requested is still running until it reaches a safe point.
     if !matches!(
         phase,
-        RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview | RunPhase::Paused
+        RunPhase::Failed
+            | RunPhase::Blocked
+            | RunPhase::NeedsReview
+            | RunPhase::Paused
+            | RunPhase::DesignFilesNeeded
     ) {
         let continued = summary
             .resumed_as

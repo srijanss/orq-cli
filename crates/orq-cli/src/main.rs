@@ -699,7 +699,7 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
             }
             ExitCode::from(match report.ending {
                 pipeline::Ending::ReviewReady | pipeline::Ending::Paused | pipeline::Ending::Merged => 0,
-                pipeline::Ending::Blocked | pipeline::Ending::NeedsReview => EXIT_BLOCKED,
+                pipeline::Ending::Blocked | pipeline::Ending::NeedsReview | pipeline::Ending::DesignFilesNeeded => EXIT_BLOCKED,
                 pipeline::Ending::Failed => EXIT_FAILED,
             })
         }
