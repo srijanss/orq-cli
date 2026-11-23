@@ -897,7 +897,12 @@ function useTabInside(box, active = true) {
     const keepFocus = (event) => {
       if (event.key !== "Tab" || box.current === null) return;
       const stops = [...box.current.querySelectorAll("button, input, textarea, select, a[href]")].filter((el) => !el.disabled && el.tabIndex >= 0);
-      if (stops.length === 0) return;
+      if (stops.length === 0) {
+        // Everything inside is off (a send is out): the focus rests on the popup itself.
+        event.preventDefault();
+        box.current.focus();
+        return;
+      }
       const first = stops[0];
       const last = stops[stops.length - 1];
       const at = document.activeElement;
@@ -997,6 +1002,12 @@ function PushTarget({ target, push, onPushed }) {
     }
     wasOpen.current = open;
   }, [open]);
+  // Sending turns off the focused Push N commits: the focus moves to the popup rather than the page.
+  useEffect(() => {
+    if (!busy || box.current === null) return;
+    const at = document.activeElement;
+    if (at === null || !box.current.contains(at) || at.disabled) box.current.focus();
+  }, [busy]);
   useTabInside(box, open);
   const error =note !== "" ? <span role="status" className="run-action-note error-text" data-push-error>{note}</span> : null;
   // The confirmation is a popup over the page, so the card or line the button sits in keeps its size.
@@ -1007,7 +1018,7 @@ function PushTarget({ target, push, onPushed }) {
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {open ? (
         <div className="feature-modal" data-push-modal onClick={(event) => { if (event.target === event.currentTarget && !busy) cancel(); }}>
-          <div className="feature-modal-box" ref={box} role="dialog" aria-modal="true" aria-label={"Push " + target}>
+          <div className="feature-modal-box" ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label={"Push " + target}>
             <div className="feature-modal-head">
               <h2>{"Push " + target}</h2>
               <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={busy} onClick={cancel}><Icon name="close" size={18} /></button>

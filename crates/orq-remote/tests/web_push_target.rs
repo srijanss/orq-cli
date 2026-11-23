@@ -11,7 +11,7 @@ use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const HEAD: &str = "2222222222222222222222222222222222222222";
-const SELECTORS: [&str; 24] = [
+const SELECTORS: [&str; 25] = [
     "details[data-unpushed-details]",
     "details[data-unpushed-details][open]",
     ".unpushed-warning",
@@ -36,6 +36,7 @@ const SELECTORS: [&str; 24] = [
     "[data-push-modal] [data-push-error]",
     "[data-modal-close]:disabled",
     "[data-push-modal] [data-cancel]",
+    "[data-push-modal] [role=dialog]",
 ];
 
 fn harness(scenario: Value) -> Option<Value> {
@@ -446,6 +447,25 @@ fn the_popup_takes_the_focus_keeps_tab_inside_and_gives_it_back_to_push_on_close
     assert!(focused(&all[3], "[data-push-modal] [data-cancel]"), "Shift+Tab from Close wraps to Cancel: {:?}", all[3]["settled"]["focusMatches"]);
     assert_eq!(count(&all[4], "[data-push-modal]"), 0, "{out}");
     assert!(focused(&all[4], "[data-push-target]"), "closing gives the focus back to Push: {:?}", all[4]["settled"]["focusMatches"]);
+}
+
+#[test]
+fn while_a_push_with_no_run_links_is_sending_tab_stays_on_the_popup() {
+    let mut no_runs = state(None, true);
+    no_runs["json"]["commits"][1]["run"] = Value::Null;
+    let held = json!({"status": 200, "hold": "fetch", "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": []}});
+    let steps = vec![
+        json!({"click": "[data-push-target]"}),
+        json!({"click": "[data-push-send]"}),
+        json!({"keydown": "Tab"}),
+        json!({"keydown": "Tab", "shift": true}),
+    ];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), no_runs, held], steps) else { return };
+    let all = frames(&out);
+    assert_eq!((count(&all[2], "[data-push-sending]"), count(&all[2], "[data-push-commit-run]")), (1, 0), "{out}");
+    assert!(focused(&all[2], "[data-push-modal] [role=dialog]"), "sending moves the focus to the popup: {:?}", all[2]["settled"]["focusMatches"]);
+    assert!(focused(&all[3], "[data-push-modal] [role=dialog]"), "Tab stays on the popup: {:?}", all[3]["settled"]["focusMatches"]);
+    assert!(focused(&all[4], "[data-push-modal] [role=dialog]"), "Shift+Tab stays on the popup: {:?}", all[4]["settled"]["focusMatches"]);
 }
 
 #[test]
