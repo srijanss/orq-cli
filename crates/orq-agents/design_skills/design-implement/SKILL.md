@@ -17,7 +17,8 @@ Read, in this order, everything the package has:
 5. The design tokens and the token mapping.
 6. The approved assets (images, icons, fonts).
 
-A run that has a prepared folder (written by the design preparer) adds `DESIGN.md`, `RESPONSIVE.md`
+A run that has a prepared folder, `.orq-design-prepared/` (written by the design preparer,
+read-only like the package, its report in `prepared.md` of the run's design folder), adds `DESIGN.md`, `RESPONSIVE.md`
 and a token mapping there for what the package lacked; each value is labelled measured, inferred or
 proposed. Prefer measured over inferred over proposed, and the package over the prepared folder.
 

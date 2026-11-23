@@ -477,8 +477,16 @@ fn ask(
         .chain(context.captures.iter().map(|(path, _, _)| path))
         .map(|path| context.design_dir.join(path))
         .collect();
-    let argv = agent_argv(agent, &images, prompt)?;
+    let argv = agent_argv(agent, &images, prompt, AgentAccess::ReadOnly)?;
     run_agent(run, agent, role, &argv)
+}
+
+/// What a one-shot design session may touch: only read (the reviewers), or also write into one
+/// folder (the preparer).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum AgentAccess<'a> {
+    ReadOnly,
+    WritesInto(&'a Path),
 }
 
 fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> String {
@@ -526,13 +534,15 @@ fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> 
     prompt
 }
 
-/// A one-shot, read-only session of the agent's harness, the images attached (pi) or named for
-/// its read tool (claude), the prompt last.
-fn agent_argv(
+/// A one-shot session of the agent's harness, read-only unless `access` lets it write into one
+/// folder, the images attached (pi) or named for its read tool (claude), the prompt last.
+pub(crate) fn agent_argv(
     agent: &DesignAgent,
     images: &[PathBuf],
     prompt: String,
+    access: AgentAccess,
 ) -> Result<Vec<String>, String> {
+    let writes = matches!(access, AgentAccess::WritesInto(_));
     let mut argv = vec!["-p".to_string()];
     match agent.harness.as_str() {
         "pi" => {
@@ -552,7 +562,8 @@ fn agent_argv(
             if let Some(thinking) = &agent.thinking {
                 argv.extend(["--thinking".to_string(), thinking.clone()]);
             }
-            argv.extend(["--tools", "read"].map(str::to_string));
+            let tools = if writes { "read,write" } else { "read" };
+            argv.extend(["--tools", tools].map(str::to_string));
             argv.extend(images.iter().map(|image| format!("@{}", image.display())));
         }
         "claude" => {
@@ -560,12 +571,13 @@ fn agent_argv(
             if let Some(thinking) = &agent.thinking {
                 argv.extend(["--effort".to_string(), thinking.clone()]);
             }
+            let tools = if writes { "Read,Write" } else { "Read" };
+            argv.extend(["--tools", tools, "--allowedTools", tools].map(str::to_string));
+            if let AgentAccess::WritesInto(folder) = access {
+                argv.extend(["--add-dir".to_string(), folder.display().to_string()]);
+            }
             argv.extend(
                 [
-                    "--tools",
-                    "Read",
-                    "--allowedTools",
-                    "Read",
                     "--disable-slash-commands",
                     "--strict-mcp-config",
                     "--setting-sources",
@@ -588,16 +600,30 @@ fn run_agent(
     role: &str,
     argv: &[String],
 ) -> Result<String, String> {
-    use std::os::unix::process::CommandExt;
     let round_dir = run
         .run_logs
         .join(RUN_DESIGN_DIR)
         .join(format!("round-{}", run.round));
-    let log = std::fs::File::create(round_dir.join(format!("{}.log", role.replace(' ', "-"))))
+    let log = round_dir.join(format!("{}.log", role.replace(' ', "-")));
+    run_agent_logged(agent, role, argv, run.worktree, &log, run.agent_timeout)
+}
+
+/// Runs the agent in `cwd`, in a process group of its own, and returns what it printed; its
+/// errors go to `log`. Stopped, with everything it started, at `timeout`.
+pub(crate) fn run_agent_logged(
+    agent: &DesignAgent,
+    role: &str,
+    argv: &[String],
+    cwd: &Path,
+    log: &Path,
+    timeout: Duration,
+) -> Result<String, String> {
+    use std::os::unix::process::CommandExt;
+    let log = std::fs::File::create(log)
         .map_err(|e| format!("the {role}'s log could not be made ({:?})", e.kind()))?;
     let mut child = Command::new(&agent.program)
         .args(argv)
-        .current_dir(run.worktree)
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(log)
@@ -610,16 +636,13 @@ fn run_agent(
         stdout.map(|s| s.take(MAX_ANSWER + 1).read_to_end(&mut out));
         out
     });
-    let deadline = Instant::now() + run.agent_timeout;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             Ok(None) => {
-                break Err(format!(
-                    "the {role} did not answer within {:?}",
-                    run.agent_timeout
-                ))
+                break Err(format!("the {role} did not answer within {timeout:?}"))
             }
             Err(e) => {
                 break Err(format!(

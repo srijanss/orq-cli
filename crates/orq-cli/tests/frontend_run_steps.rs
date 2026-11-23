@@ -174,7 +174,16 @@ impl Frontend {
         let bin = self.home.join("bin");
         std::fs::write(bin.join("claude"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", agent.path().display())).unwrap();
         std::fs::set_permissions(bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let pi = "#!/bin/sh\nif [ \"$1\" = --list-models ]; then printf 'provider  model  context  max-out  thinking  images\\nopenai  gpt-6.1-sol  400K  128K  yes  yes\\n'; exit 0; fi\nexit 1\n";
+        // As the design preparer it writes DESIGN.md into the prepared folder its prompt names and
+        // answers `$HOME/preparer.json` (no conflicts, nothing needed when there is none); as
+        // anything else it fails.
+        let pi = "#!/bin/sh\nif [ \"$1\" = --list-models ]; then printf 'provider  model  context  max-out  thinking  images\\nopenai  gpt-6.1-sol  400K  128K  yes  yes\\n'; exit 0; fi\n\
+                  for a; do last=$a; done\n\
+                  case \"$last\" in *'You are the design preparer'*) ;; *) exit 1 ;; esac\n\
+                  printf '%s\\n' \"$last\" > \"$HOME/preparer-prompt\"\n\
+                  dir=$(printf '%s\\n' \"$last\" | sed -n 's/^The prepared folder, the only place you may write: //p')\n\
+                  printf '# Home, prepared\\n' > \"$dir/DESIGN.md\"\n\
+                  if [ -f \"$HOME/preparer.json\" ]; then cat \"$HOME/preparer.json\"; else printf '{\"conflicts\":[],\"inferred\":[],\"needed_files\":[]}'; fi\n";
         std::fs::write(bin.join("pi"), pi).unwrap();
         std::fs::set_permissions(bin.join("pi"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let mut dirs = vec![bin, provider.bin_dir()];
@@ -335,6 +344,57 @@ fn a_frontend_run_waiting_for_design_files_resumes_once_they_are_there_and_goes_
         .find(|e| e["type"] == "stage.started" && e["stage"] == "design_review")
         .unwrap_or_else(|| panic!("no design review after the resume: {all}"));
     assert_eq!(started["payload"], serde_json::json!({"round": 1, "of": 4}), "{all}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
+#[test]
+fn an_infer_mode_run_pauses_for_an_asset_its_preparer_needs_and_resumed_with_it_prepares_again_and_implements() {
+    let w = frontend("infer-asset");
+    w.design_reviewer();
+    w.mark_frontend();
+    std::fs::write(
+        w.home.join("preparer.json"),
+        r#"{"conflicts":[],"inferred":[],"needed_files":[{"path":"assets/hero.png","what":"the hero illustration","why":"the desktop reference shows it"}]}"#,
+    )
+    .unwrap();
+    let agent = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n").commit("feat: the home page").build();
+    let provider = orq_test_support::FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+
+    let first = w.run(&agent, &provider);
+
+    let all = format!("{}{}", text(&first.stdout), text(&first.stderr));
+    assert!(all.contains("state: design_files_needed"), "{all}");
+    assert!(std::fs::read_to_string(w.home.join("preparer-prompt")).unwrap().contains("design-prepare"), "the preparer is given its skill");
+    let events = w.events();
+    let needed = events
+        .iter()
+        .find(|e| e["type"] == "design.files_needed")
+        .unwrap_or_else(|| panic!("no design.files_needed event in {events:?}"));
+    let files = needed["payload"]["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{needed}");
+    assert_eq!(files[0]["path"], "designs/home/assets/hero.png", "{needed}");
+    assert!(files[0]["what"].as_str().unwrap().contains("hero illustration"), "{needed}");
+    assert!(!events.iter().any(|e| e["stage"] == "implement_and_review"), "no implementer before the asset is there: {events:?}");
+    let first_run = events.iter().find_map(|e| e["run_id"].as_str().map(str::to_string)).unwrap();
+
+    std::fs::create_dir_all(w.repo.root().join("designs/home/assets")).unwrap();
+    std::fs::write(w.repo.root().join("designs/home/assets/hero.png"), png(40, 30)).unwrap();
+    std::fs::remove_file(w.home.join("preparer.json")).unwrap();
+    let resumed = w.resume(&first_run, &agent, &provider);
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    let events = w.events();
+    let later = |e: &&serde_json::Value| e["run_id"] != first_run.as_str();
+    assert!(
+        events.iter().filter(later).any(|e| e["type"] == "stage.completed" && e["stage"] == "implement_and_review"),
+        "the implementer runs once the asset is there: {all}"
+    );
+    let resumed_run = events.iter().filter_map(|e| e["run_id"].as_str()).find(|r| *r != first_run).unwrap().to_string();
+    let logs = w.home.join("state/orq/logs").join(&resumed_run).join("design");
+    let manifest = std::fs::read_to_string(logs.join("manifest.json")).unwrap_or_else(|e| panic!("{e}: {all}"));
+    assert!(manifest.contains("assets/hero.png"), "the changed package is frozen again: {manifest}");
+    let prepared = std::fs::read_to_string(logs.join("prepared.json")).unwrap_or_else(|e| panic!("{e}: {all}"));
+    assert!(prepared.contains("DESIGN.md"), "prepared again: {prepared}");
     let _ = std::fs::remove_dir_all(&w.home);
 }
 

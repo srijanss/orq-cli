@@ -2869,16 +2869,37 @@ fn design_package(
         limits: Default::default(),
     };
     // A package already frozen for the run (carried from the run it resumes) is checked unchanged, never frozen again.
+    let files_needed = |needed: orq_orchestrator::DesignFilesNeeded| {
+        let files: Vec<serde_json::Value> = needed.files.iter().map(|f| serde_json::json!({"what": f.what, "path": f.path})).collect();
+        orq_orchestrator::record_design_package(store, run_id, "design.files_needed", serde_json::json!({"feature": needed.feature, "files": files}))?;
+        stopped(Ending::DesignFilesNeeded, needed.message()).map(Some)
+    };
     match orq_orchestrator::resume_design_package(&run) {
-        orq_orchestrator::DesignPackageOutcome::Frozen(_) => {
+        orq_orchestrator::DesignPackageOutcome::Frozen(manifest) => {
+            // Infer mode: the design preparer writes what the package lacks before the implementer.
+            if design.mode == orq_orchestrator::DesignMode::Infer {
+                let preparer_agent = match design_agents(options.project) {
+                    Ok((_, _, preparer)) => preparer,
+                    Err(reason) => return stopped(Ending::NeedsReview, format!("the design preparer cannot run: {reason}")).map(Some),
+                };
+                let skill = orq_agents::design_skill("design-prepare").unwrap_or_default();
+                let mut preparer = orq_orchestrator::AgentPreparer {
+                    agent: &preparer_agent,
+                    worktree,
+                    skill: &skill,
+                    log: logs.join("design/preparer.log"),
+                    timeout: DESIGN_AGENT_TIMEOUT,
+                };
+                match orq_orchestrator::prepare_design(&run, &manifest, &mut preparer) {
+                    orq_orchestrator::DesignPrepareOutcome::Skipped | orq_orchestrator::DesignPrepareOutcome::Prepared(_) => {}
+                    orq_orchestrator::DesignPrepareOutcome::FilesNeeded(needed) => return files_needed(needed),
+                    orq_orchestrator::DesignPrepareOutcome::Failed(reason) => return stopped(Ending::Failed, reason).map(Some),
+                }
+            }
             orq_orchestrator::record_design_package(store, run_id, "stage.completed", serde_json::json!({}))?;
             Ok(None)
         }
-        orq_orchestrator::DesignPackageOutcome::FilesNeeded(needed) => {
-            let files: Vec<serde_json::Value> = needed.files.iter().map(|f| serde_json::json!({"what": f.what, "path": f.path})).collect();
-            orq_orchestrator::record_design_package(store, run_id, "design.files_needed", serde_json::json!({"feature": needed.feature, "files": files}))?;
-            stopped(Ending::DesignFilesNeeded, needed.message()).map(Some)
-        }
+        orq_orchestrator::DesignPackageOutcome::FilesNeeded(needed) => files_needed(needed),
         orq_orchestrator::DesignPackageOutcome::Refused(problems) => {
             stopped(Ending::Failed, format!("the design package cannot be used: {}", problems.join("; "))).map(Some)
         }
@@ -2886,11 +2907,13 @@ fn design_package(
     }
 }
 
-/// How long one design agent (reviewer or verifier) may take.
+/// How long one design agent (preparer, reviewer or verifier) may take.
 const DESIGN_AGENT_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-/// The design reviewer and verifier the project's settings name.
-fn design_agents(project: &orq_git::Project) -> Result<(orq_orchestrator::DesignAgent, orq_orchestrator::DesignAgent), String> {
+/// The design reviewer, verifier and preparer the project's settings name.
+fn design_agents(
+    project: &orq_git::Project,
+) -> Result<(orq_orchestrator::DesignAgent, orq_orchestrator::DesignAgent, orq_orchestrator::DesignAgent), String> {
     let settings = crate::project_settings(project)?;
     let uses_pi = [&settings.design_reviewer, &settings.design_verifier, &settings.design_preparer]
         .iter()
@@ -2903,7 +2926,7 @@ fn design_agents(project: &orq_git::Project) -> Result<(orq_orchestrator::Design
         model: agent.model.clone(),
         thinking: agent.effort.clone(),
     };
-    Ok((agent(&agents.reviewer), agent(&agents.verifier)))
+    Ok((agent(&agents.reviewer), agent(&agents.verifier), agent(&agents.preparer)))
 }
 
 /// The design loop's steps on the run's worktree: the real capture and review, and the implementer's fix session.
