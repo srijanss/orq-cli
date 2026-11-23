@@ -5579,12 +5579,15 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
         .map(|events| {
             matches!(
                 orq_orchestrator::summarize_run(&events).phase,
-                orq_orchestrator::RunPhase::Failed | orq_orchestrator::RunPhase::Blocked | orq_orchestrator::RunPhase::NeedsReview
+                orq_orchestrator::RunPhase::Failed
+                    | orq_orchestrator::RunPhase::Blocked
+                    | orq_orchestrator::RunPhase::NeedsReview
+                    | orq_orchestrator::RunPhase::DesignFilesNeeded
             )
         })
         .unwrap_or(false);
     let next = if stopped {
-        // A failed, blocked or review-waiting run has no checkpoint; the pipeline picks it up through the group resume below.
+        // A failed, blocked, review-waiting or design-files-waiting run has no checkpoint; the pipeline picks it up through the group resume below.
         "where it stopped".to_string()
     } else {
         match orq_orchestrator::validate_checkpoint(&store, &repo, &run_id) {

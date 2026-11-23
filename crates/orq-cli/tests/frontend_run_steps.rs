@@ -277,6 +277,38 @@ fn a_frontend_run_missing_design_files_pauses_as_design_files_needed_before_the_
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
+#[test]
+fn a_frontend_run_waiting_for_design_files_resumes_once_they_are_there_and_goes_on_to_the_implementer() {
+    let w = frontend_with("files-supplied", false);
+    w.design_reviewer();
+    w.mark_frontend();
+    let agent = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n").commit("feat: the home page").build();
+    let provider = orq_test_support::FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+    let first = w.run(&agent, &provider);
+    assert!(text(&first.stdout).contains("state: design_files_needed"), "{}", text(&first.stdout));
+    let first_run = w.events().iter().find_map(|e| e["run_id"].as_str().map(str::to_string)).unwrap();
+    for (name, width, height) in [("desktop", 400, 300), ("tablet", 300, 400), ("mobile", 200, 400)] {
+        std::fs::write(w.repo.root().join(format!("designs/home/references/{name}.png")), png(width, height)).unwrap();
+    }
+
+    let resumed = w.resume(&first_run, &agent, &provider);
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    let events = w.events();
+    let later = |e: &&serde_json::Value| e["run_id"] != first_run.as_str();
+    assert!(
+        events.iter().filter(later).any(|e| e["type"] == "stage.completed" && e["stage"] == "implement_and_review"),
+        "the implementer runs once the files are there: {all}"
+    );
+    let started = events
+        .iter()
+        .filter(later)
+        .find(|e| e["type"] == "stage.started" && e["stage"] == "design_review")
+        .unwrap_or_else(|| panic!("no design review after the resume: {all}"));
+    assert_eq!(started["payload"], serde_json::json!({"round": 1, "of": 4}), "{all}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &byte in bytes {

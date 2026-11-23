@@ -939,7 +939,7 @@ fn check_group_resume_as(
 }
 
 /// Where run `run_id` would continue if resumed now: the next stage of a paused run's checkpoint,
-/// "where it stopped" for a failed, blocked or needs-review run, or the reason it cannot be resumed.
+/// "where it stopped" for a failed, blocked, needs-review or design-files-needed run, or the reason it cannot be resumed.
 /// Nothing is launched; a run whose process is gone is first recorded as failed, as it already is.
 pub fn resume_check(store: &RunStore, repo: &Path, run_id: &str) -> Result<String, String> {
     crate::interrupted::reconcile_interrupted(store, run_id, &crate::interrupted::process_is_alive)
@@ -949,7 +949,10 @@ pub fn resume_check(store: &RunStore, repo: &Path, run_id: &str) -> Result<Strin
         .map(|events| {
             matches!(
                 summarize_run(&events).phase,
-                RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview
+                RunPhase::Failed
+                    | RunPhase::Blocked
+                    | RunPhase::NeedsReview
+                    | RunPhase::DesignFilesNeeded
             )
         })
         .unwrap_or(false);
