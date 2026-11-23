@@ -18,20 +18,36 @@ const PLAN_DISCARDED: &str = "plan.discarded";
 /// Where a project keeps its own guidance for drafting, read in place of the default.
 const DRAFT_PROMPT_FILE: &str = ".orq/draft_prompt.md";
 const MAX_DRAFT_PROMPT_BYTES: u64 = 64 * 1024;
-/// Variables the agent needs to reach its account, passed through when serve has them.
+/// Variables claude needs to reach its account, passed through when serve has them.
 const AGENT_ENV: [&str; 2] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
-/// pi reaches each of its providers with a `<PROVIDER>_API_KEY` variable, so a pi session also gets
-/// every such variable serve has; nothing else of serve's environment is passed.
-const PROVIDER_KEY_SUFFIX: &str = "_API_KEY";
+/// The variables pi reads a provider's key from, by the provider part of a `provider/model` name. A
+/// pi session gets only its model's provider's variables; a provider not listed here (or a model with
+/// no provider part) gets none, and pi falls back to the logins it keeps under HOME.
+const PI_PROVIDER_ENV: [(&str, &[&str]); 11] = [
+    ("anthropic", &["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"]),
+    ("openai", &["OPENAI_API_KEY"]),
+    ("azure-openai-responses", &["AZURE_OPENAI_API_KEY"]),
+    ("google", &["GEMINI_API_KEY"]),
+    ("groq", &["GROQ_API_KEY"]),
+    ("cerebras", &["CEREBRAS_API_KEY"]),
+    ("xai", &["XAI_API_KEY"]),
+    ("openrouter", &["OPENROUTER_API_KEY"]),
+    ("zai", &["ZAI_API_KEY"]),
+    ("mistral", &["MISTRAL_API_KEY"]),
+    ("minimax", &["MINIMAX_API_KEY"]),
+];
 
-/// The planning session's environment for `harness`.
-fn agent_env(harness: &str) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = AGENT_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect();
-    if harness == "pi" {
-        // vars_os, as a variable that is not Unicode would make env::vars panic; such a key is skipped.
-        env.extend(std::env::vars_os().filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))).filter(|(key, _)| key.ends_with(PROVIDER_KEY_SUFFIX) && !AGENT_ENV.contains(&key.as_str())));
-    }
-    env
+/// The planning session's environment for `harness` running `model`. Each variable is read on its
+/// own, so one that is not Unicode is skipped rather than failing the start.
+fn agent_env(harness: &str, model: &str) -> Vec<(String, String)> {
+    let keys: &[&str] = match harness {
+        "pi" => {
+            let provider = model.split_once('/').map(|(provider, _)| provider);
+            PI_PROVIDER_ENV.iter().find(|(name, _)| Some(*name) == provider).map_or(&[], |(_, keys)| keys)
+        }
+        _ => &AGENT_ENV,
+    };
+    keys.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect()
 }
 
 static PLAN_RUNS: AtomicU64 = AtomicU64::new(0);
@@ -135,7 +151,7 @@ impl StoreProjects {
         let session = orq_orchestrator::DraftSession {
             program: program.map_or_else(|| request.harness.clone(), |program| program.to_string_lossy().into_owned()),
             args,
-            env: agent_env(&request.harness),
+            env: agent_env(&request.harness, &request.model),
             cwd: root.clone(),
         };
 

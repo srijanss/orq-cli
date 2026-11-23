@@ -260,9 +260,11 @@ fn a_pi_plan_runs_pi_read_only() {
 }
 
 #[test]
-fn a_pi_plan_gets_the_provider_keys_and_nothing_else_of_the_servers_environment() {
-    // Names no other test sets, so changing this process's environment touches no other test.
-    std::env::set_var("ORQ_PLAN_TEST_API_KEY", "sk-provider");
+fn a_pi_plan_gets_only_its_models_provider_key_of_the_servers_environment() {
+    // Names no other test sets or reads, so changing this process's environment touches no other test.
+    std::env::set_var("OPENAI_API_KEY", "sk-provider");
+    std::env::set_var("GEMINI_API_KEY", "another-provider-not-for-pi");
+    std::env::set_var("ORQ_PLAN_TEST_API_KEY", "unrelated-key-not-for-pi");
     std::env::set_var("ORQ_PLAN_TEST_SECRET", "not-for-pi");
     let s = setup("plan-pi-env");
     git_repo(&s.scan, "alpha");
@@ -273,7 +275,7 @@ fn a_pi_plan_gets_the_provider_keys_and_nothing_else_of_the_servers_environment(
     let plan = draft_with(&s, json!({"harness": "pi", "model": "openai/gpt-6.1-sol"}));
     assert_eq!(plan["state"], "completed", "{plan}");
     let env = std::fs::read_to_string(s.base.join("pi-env")).unwrap();
-    assert!(env.lines().any(|line| line == "ORQ_PLAN_TEST_API_KEY=sk-provider"), "a provider key reaches pi: {env}");
+    assert!(env.lines().any(|line| line == "OPENAI_API_KEY=sk-provider"), "the openai model's key reaches pi: {env}");
     assert!(!env.contains("not-for-pi"), "the rest of the server's environment does not: {env}");
 }
 
