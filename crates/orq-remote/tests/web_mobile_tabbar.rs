@@ -511,7 +511,7 @@ fn the_top_bar_is_fixed_and_the_content_clears_both_bars() {
 
 mod web_chromium;
 
-/// The rounded boxes of the bar, its links, its handle and its extra rows on /dashboard (six sections) at `width`,
+/// The rounded boxes of the bar, its links, its handle and its extra rows on /dashboard (seven sections) at `width`,
 /// closed or after a tap on the handle.
 fn bar_boxes(chromium: &std::path::Path, width: u32, open: bool) -> Value {
     let project = json!({"id": "alpha", "name": "alpha", "available": true, "features": 1, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
@@ -544,7 +544,8 @@ fn opened_the_bar_itself_slides_up_with_the_rest_below_the_tabs_in_their_columns
         // Each message ends with what failed, after the boxes, so a clipped log still shows it.
         let same = |a: i64, b: i64, boxes: String, what: &str| assert!(a == b, "{boxes}\n=> {width}: {what}: {a} != {b}");
         let links = shown["nav.tabbar a"].as_array().unwrap();
-        same(links.len() as i64, 6, shown.to_string(), "six links");
+        same(links.len() as i64, 7, shown.to_string(), "seven links");
+        same(edge(&open, "nav.tabbar a", 6, "left"), edge(&open, "nav.tabbar a", 1, "left"), shown.to_string(), "the seventh's left is the second's");
         same(edge(&open, "nav.tabbar a", 5, "left"), edge(&open, "nav.tabbar a", 0, "left"), shown.to_string(), "the sixth's left is the first's");
         same(edge(&open, "nav.tabbar a", 5, "right"), edge(&open, "nav.tabbar a", 0, "right"), shown.to_string(), "the sixth's right is the first's");
         assert!(edge(&open, "nav.tabbar a", 5, "top") >= edge(&open, TABS, 0, "bottom"), "{shown}\n=> {width}: the rest is below the tab row");

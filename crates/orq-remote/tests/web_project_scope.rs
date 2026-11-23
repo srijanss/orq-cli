@@ -35,7 +35,7 @@ fn inside_a_project_the_sidebar_lists_the_projects_with_the_current_one_chosen_a
     assert_eq!(out["requests"][0]["headers"]["Authorization"], format!("Bearer {TOKEN}"));
     let frame = &out["frames"][1]["settled"];
     assert_eq!(frame["switchers"], json!([{"value": "alpha", "options": ["", "alpha", "beta"]}]), "{out}");
-    assert_eq!(frame["sidebarLinks"], json!(["/dashboard", "/projects/alpha/features", "/projects/alpha/orchestrations", "/projects/alpha/queue", "/projects/alpha/reviews", "/settings"]), "{out}");
+    assert_eq!(frame["sidebarLinks"], json!(["/dashboard", "/todos", "/projects/alpha/features", "/projects/alpha/orchestrations", "/projects/alpha/queue", "/projects/alpha/reviews", "/settings"]), "{out}");
 }
 
 #[test]
