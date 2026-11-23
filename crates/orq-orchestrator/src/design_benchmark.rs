@@ -27,7 +27,8 @@ const MAX_CASE_FILE: u64 = 64 * 1024;
 pub struct DesignBenchmarkRun<'a> {
     /// The folder of cases, one subfolder each.
     pub cases: &'a Path,
-    /// The benchmark's own folder: `<state>/design-benchmarks/<time>`. Made here.
+    /// The benchmark's own folder: `<state>/design-benchmarks/<time>`. Made here; one that already
+    /// exists is refused.
     pub output: &'a Path,
     /// The design reviewer measured.
     pub agent: &'a DesignAgent,
@@ -144,12 +145,16 @@ pub fn run_design_benchmark(run: &DesignBenchmarkRun) -> Result<DesignBenchmarkO
         ));
     }
     let cases = read_cases(run.cases)?;
-    std::fs::create_dir_all(run.output).map_err(|e| {
-        format!(
-            "{} could not be made ({:?})",
-            run.output.display(),
-            e.kind()
-        )
+    // Made here and only here, so two benchmarks never share a folder.
+    let made = match run.output.parent() {
+        Some(parent) => std::fs::create_dir_all(parent).and_then(|()| std::fs::create_dir(run.output)),
+        None => std::fs::create_dir(run.output),
+    };
+    made.map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            format!("{} already exists: another benchmark wrote it", run.output.display())
+        }
+        kind => format!("{} could not be made ({kind:?})", run.output.display()),
     })?;
     let mut results = Vec::new();
     for case in &cases {

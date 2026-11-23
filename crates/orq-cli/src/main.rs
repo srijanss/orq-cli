@@ -1768,10 +1768,9 @@ fn design_benchmark(args: &[OsString]) -> ExitCode {
     };
     let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let benchmarks = roots.state.join("design-benchmarks");
-    let mut output = benchmarks.join(orq_core::storage::utc_stamp(since));
-    if output.exists() {
-        output = benchmarks.join(format!("{}-{}", orq_core::storage::utc_stamp(since), std::process::id()));
-    }
+    // The process id keeps two benchmarks started in the same second apart; the benchmark makes the
+    // folder itself and refuses one that exists.
+    let output = benchmarks.join(format!("{}-{}", orq_core::storage::utc_stamp(since), std::process::id()));
     let run = orq_orchestrator::DesignBenchmarkRun {
         cases: &cases,
         output: &output,
