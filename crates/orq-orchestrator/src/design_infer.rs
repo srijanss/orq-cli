@@ -251,6 +251,13 @@ pub fn prepare_design(
     }
     let design = run.run_logs.join(RUN_DESIGN_DIR);
     let prepared = design.join(PREPARED_DIR);
+    // A resumed run keeps what was prepared for this same package, its files as hashed.
+    if let Some((kept, files)) = kept_preparation(&design, manifest) {
+        return match freeze_prepared(run, &design, &kept, &files) {
+            Ok(()) => DesignPrepareOutcome::Prepared(kept),
+            Err(why) => DesignPrepareOutcome::Failed(why),
+        };
+    }
     if let Err(e) = replace_dir(&prepared) {
         return DesignPrepareOutcome::Failed(format!("the prepared folder could not be made ({e})"));
     }
@@ -399,6 +406,25 @@ fn files_needed(feature: &str, answer: &PrepareAnswer) -> Result<DesignFilesNeed
         });
     }
     Ok(DesignFilesNeeded { feature: feature.to_string(), files })
+}
+
+/// The preparation `prepared.json` records, with its files' bytes, when it was made from this
+/// package and the prepared folder holds exactly its files, unchanged.
+fn kept_preparation(
+    design: &Path,
+    manifest: &DesignManifest,
+) -> Option<(PreparedDesign, Vec<(PreparedFile, Vec<u8>)>)> {
+    let saved = std::fs::read(design.join(PREPARED_FILE)).ok()?;
+    let mut kept: PreparedDesign = serde_json::from_slice(&saved).ok()?;
+    // Carried from the run this one resumes: the report is rewritten here.
+    kept.report = design.join(PREPARED_REPORT);
+    if kept.package_sha256 != manifest.package_sha256 {
+        return None;
+    }
+    let files = prepared_files(&design.join(PREPARED_DIR)).ok()?;
+    let same = files.len() == kept.files.len()
+        && files.iter().zip(&kept.files).all(|((found, _), recorded)| found == recorded);
+    same.then_some((kept, files))
 }
 
 /// What neither the package nor the prepared files supply: DESIGN.md, RESPONSIVE.md, and a token

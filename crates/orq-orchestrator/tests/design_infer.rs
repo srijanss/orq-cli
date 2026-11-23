@@ -502,6 +502,39 @@ fn a_preparation_that_leaves_a_document_missing_fails_and_one_the_package_alread
     }
 }
 
+#[test]
+fn a_preparation_frozen_for_the_same_package_is_kept_without_a_preparer_call_and_a_changed_one_is_prepared_again() {
+    let f = Fixture::new("kept");
+    let manifest = f.freeze();
+    let first = match f.prepare(&manifest, &mut Fake::writing()) {
+        DesignPrepareOutcome::Prepared(prepared) => prepared,
+        other => panic!("expected the package prepared, got {other:?}"),
+    };
+    // The resumed run's worktree has no copy yet.
+    fs::remove_dir_all(f.worktree.join(".orq-design-prepared")).unwrap();
+
+    let mut again = Fake::writing();
+    assert_eq!(f.prepare(&manifest, &mut again), DesignPrepareOutcome::Prepared(first.clone()));
+    assert_eq!(again.calls, 0, "the frozen preparation is kept");
+    assert_eq!(read(&f.worktree.join(".orq-design-prepared/DESIGN.md")), read(&f.logs.path().join("design/prepared/DESIGN.md")));
+
+    // A prepared file that no longer matches its hash is prepared again.
+    fs::write(f.logs.path().join("design/prepared/DESIGN.md"), "# Tampered\n").unwrap();
+    let mut tampered = Fake::writing();
+    assert!(matches!(f.prepare(&manifest, &mut tampered), DesignPrepareOutcome::Prepared(_)));
+    assert_eq!(tampered.calls, 1);
+
+    // A changed package is prepared again.
+    f.put("UX.md", "One action.\n");
+    let changed = f.freeze();
+    let mut fresh = Fake::writing();
+    match f.prepare(&changed, &mut fresh) {
+        DesignPrepareOutcome::Prepared(prepared) => assert_eq!(prepared.package_sha256, changed.package_sha256),
+        other => panic!("expected the package prepared, got {other:?}"),
+    }
+    assert_eq!(fresh.calls, 1);
+}
+
 fn failed(outcome: DesignPrepareOutcome) -> String {
     match outcome {
         DesignPrepareOutcome::Failed(why) => why,
