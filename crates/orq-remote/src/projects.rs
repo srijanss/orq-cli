@@ -481,18 +481,23 @@ fn design_shown(events: &[orq_orchestrator::Event], logs_dir: &Path) -> Option<s
 /// The most bytes a design image may have to be served.
 const DESIGN_IMAGE_CAP: u64 = 16 * 1024 * 1024;
 
-/// Every image the run's own design records list, relative to its design folder: the package's references
-/// and approved assets, and each round's captures.
-fn design_images_listed(events: &[orq_orchestrator::Event], dir: &Path) -> Vec<String> {
-    let manifest = design_record(&dir.join("manifest.json"));
-    let files = manifest.as_ref().and_then(|manifest| manifest["files"].as_array()).cloned().unwrap_or_default();
-    let mut listed: Vec<String> = files.iter().filter(|file| file["kind"] == "reference" || file["kind"] == "asset").filter_map(|file| file["path"].as_str().filter(|path| plain_design_path(path)).map(|path| format!("package/{path}"))).collect();
-    for round in 1..=design_last_round(events) {
-        let capture = design_record(&dir.join(format!("round-{round}")).join("capture.json"));
-        let pages = capture.as_ref().and_then(|capture| capture["pages"].as_array()).cloned().unwrap_or_default();
-        listed.extend(pages.iter().filter_map(|page| page["image"].as_str().filter(|image| plain_design_path(image)).map(|image| format!("round-{round}/{image}"))));
+/// Whether the run's own design records list the image at `path`, relative to its design folder: a package
+/// reference or approved asset its manifest names, or a capture of a round its events name, as that round's
+/// capture record names it. Only the one record the path points into is read.
+fn design_image_listed(events: &[orq_orchestrator::Event], dir: &Path, path: &str) -> bool {
+    if let Some(file) = path.strip_prefix("package/") {
+        let manifest = design_record(&dir.join("manifest.json"));
+        let files = manifest.as_ref().and_then(|manifest| manifest["files"].as_array());
+        return files.is_some_and(|files| files.iter().any(|listed| (listed["kind"] == "reference" || listed["kind"] == "asset") && listed["path"] == file));
     }
-    listed
+    let Some((folder, image)) = path.split_once('/') else { return false };
+    let Some(round) = folder.strip_prefix("round-").filter(|n| !n.starts_with('0')).and_then(|n| n.parse::<u64>().ok()) else { return false };
+    if round == 0 || round > design_last_round(events) {
+        return false;
+    }
+    let capture = design_record(&dir.join(folder).join("capture.json"));
+    let pages = capture.as_ref().and_then(|capture| capture["pages"].as_array());
+    pages.is_some_and(|pages| pages.iter().any(|page| page["image"] == image))
 }
 
 /// The content type of an image the page can show, by its extension.
@@ -2440,7 +2445,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
         };
         let logs_dir = self.roots.state.join("logs").join(run);
-        if !plain_design_path(path) || !design_images_listed(&events, &logs_dir.join("design")).iter().any(|listed| listed == path) {
+        if !plain_design_path(path) || !design_image_listed(&events, &logs_dir.join("design"), path) {
             return Ok(None);
         }
         design_image(&self.roots.state.join("logs"), run, path)

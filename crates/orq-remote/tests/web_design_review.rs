@@ -800,6 +800,25 @@ fn the_images_come_from_the_image_route_with_the_token_and_one_opens_large_when_
     assert_eq!(count(last(&out), "[data-design-zoom]"), 1, "{out}");
 }
 
+#[test]
+fn a_reference_shown_beside_two_captures_is_asked_for_once() {
+    let s = setup("design-panel-shared-reference");
+    one_round_run(&s, "r-1", "pass", json!([]));
+    let mut body = page(&s, "/api/projects/alpha/runs/r-1");
+    let desktop = &mut body["run"]["design"]["rounds"][0]["viewports"][0]["captures"];
+    let mut about = desktop[0].clone();
+    about["route"] = json!("/about");
+    desktop.as_array_mut().unwrap().push(about);
+
+    let Some(out) = open("r-1", body, vec![], vec![], vec![]) else {
+        return;
+    };
+
+    assert_eq!(count(last(&out), "[data-design-reference]"), 3, "{out}");
+    let asked = out["requests"].as_array().unwrap().iter().filter(|r| r["url"].as_str().unwrap().ends_with("path=package%2Freferences%2Fdesktop.png")).count();
+    assert_eq!(asked, 1, "{out}");
+}
+
 /// A live design review event, as the run's event stream sends it.
 fn live_design_event(body: &Value, id: &str) -> Value {
     let mut event = body["events"][0].clone();

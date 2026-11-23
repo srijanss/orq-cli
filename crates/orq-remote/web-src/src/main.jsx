@@ -5449,52 +5449,68 @@ function bySection(issues) {
   return [...groups.entries()];
 }
 
-// One design image as a blob URL, fetched with the page's auth; revoked when it is no longer shown.
-function useDesignImage(source, path) {
+// The design images of one run page, each fetched once however often it shows (a reference sits beside every
+// capture of its viewport) and kept as a blob URL until the panel goes or shows another run.
+function useDesignImages(source) {
+  const base = source === null ? null : source.base;
+  const images = useMemo(() => ({ controller: new AbortController(), asked: new Map(), urls: [] }), [base]);
+  useEffect(() => () => {
+    images.controller.abort();
+    for (const url of images.urls) URL.revokeObjectURL(url);
+  }, [images]);
+  return images;
+}
+
+// The blob URL of the design image at `path`, or null when it cannot be shown; asked for once per page.
+function designImageUrl(images, source, path) {
+  if (!images.asked.has(path)) {
+    images.asked.set(path, (async () => {
+      try {
+        const response = await get(source.base + "/design/image?path=" + encodeURIComponent(path), source.token, images.controller.signal);
+        if (response.status === 401) {
+          source.onSignedOut();
+          return null;
+        }
+        const data = response.ok ? await response.json() : null;
+        if (data === null || typeof data !== "object" || !DESIGN_IMAGE_TYPES.includes(data.content_type) || typeof data.data !== "string") return null;
+        const raw = atob(data.data);
+        const bytes = new Uint8Array(raw.length);
+        for (let at = 0; at < raw.length; at += 1) bytes[at] = raw.charCodeAt(at);
+        const url = URL.createObjectURL(new Blob([bytes], { type: data.content_type }));
+        images.urls.push(url);
+        return url;
+      } catch (error) {
+        return null;
+      }
+    })());
+  }
+  return images.asked.get(path);
+}
+
+// One design image as a blob URL, fetched with the page's auth through the panel's shared images.
+function useDesignImage(images, source, path) {
   const [url, setUrl] = useState(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (source === null || path === "") return undefined;
     let current = true;
-    let made = null;
-    const controller = new AbortController();
     setUrl(null);
     setFailed(false);
-    (async () => {
-      try {
-        const response = await get(source.base + "/design/image?path=" + encodeURIComponent(path), source.token, controller.signal);
-        if (!current) return;
-        if (response.status === 401) {
-          source.onSignedOut();
-          return;
-        }
-        const data = response.ok ? await response.json() : null;
-        if (!current) return;
-        if (data === null || typeof data !== "object" || !DESIGN_IMAGE_TYPES.includes(data.content_type) || typeof data.data !== "string") {
-          setFailed(true);
-          return;
-        }
-        const raw = atob(data.data);
-        const bytes = new Uint8Array(raw.length);
-        for (let at = 0; at < raw.length; at += 1) bytes[at] = raw.charCodeAt(at);
-        made = URL.createObjectURL(new Blob([bytes], { type: data.content_type }));
-        setUrl(made);
-      } catch (error) {
-        if (current) setFailed(true);
-      }
-    })();
+    designImageUrl(images, source, path).then((made) => {
+      if (!current) return;
+      if (made === null) setFailed(true);
+      else setUrl(made);
+    });
     return () => {
       current = false;
-      controller.abort();
-      if (made !== null) URL.revokeObjectURL(made);
     };
-  }, [source === null ? null : source.base, path]);
+  }, [images, path]);
   return { url, failed };
 }
 
 // A reference or capture: a button that opens it large; a capture that failed says why instead.
-function DesignImage({ source, path, label, kind, failure = null, onEnlarge }) {
-  const { url, failed } = useDesignImage(failure === null ? source : null, failure === null ? path : "");
+function DesignImage({ images, source, path, label, kind, failure = null, onEnlarge }) {
+  const { url, failed } = useDesignImage(images, failure === null ? source : null, failure === null ? path : "");
   const marker = { ["data-design-" + kind]: "" };
   let body;
   if (failure !== null) body = <p className="design-image-note error-text">{"Not captured: " + failure}</p>;
@@ -5536,6 +5552,7 @@ function DesignReview({ design, source }) {
   const [picked, setPicked] = useState(null);
   const at = picked === null ? latest : Math.min(picked, latest);
   const [enlarged, setEnlarged] = useState(null);
+  const images = useDesignImages(source);
   useEffect(() => {
     if (enlarged === null) return undefined;
     const onKeyDown = (event) => {
@@ -5572,8 +5589,8 @@ function DesignReview({ design, source }) {
             <h4>{size === null ? name : name + " · " + size}</h4>
             {(captures.length === 0 ? [null] : captures).map((capture, at) => (
               <div key={at} className="design-pair">
-                {typeof viewport.reference === "string" ? <DesignImage source={source} path={viewport.reference} label={"Reference, " + name} kind="reference" onEnlarge={setEnlarged} /> : <p className="design-image-note muted">No reference</p>}
-                {capture === null ? <p className="design-image-note muted">No capture</p> : <DesignImage source={source} path={textOr(capture.image)} label={"Capture of " + textOr(capture.route, "/") + ", " + name} kind="capture" failure={typeof capture.failure === "string" ? capture.failure : null} onEnlarge={setEnlarged} />}
+                {typeof viewport.reference === "string" ? <DesignImage images={images} source={source} path={viewport.reference} label={"Reference, " + name} kind="reference" onEnlarge={setEnlarged} /> : <p className="design-image-note muted">No reference</p>}
+                {capture === null ? <p className="design-image-note muted">No capture</p> : <DesignImage images={images} source={source} path={textOr(capture.image)} label={"Capture of " + textOr(capture.route, "/") + ", " + name} kind="capture" failure={typeof capture.failure === "string" ? capture.failure : null} onEnlarge={setEnlarged} />}
               </div>
             ))}
           </div>
