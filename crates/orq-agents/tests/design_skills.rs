@@ -74,6 +74,20 @@ fn each_design_skill_is_installed_and_found_by_a_fake_claude_and_a_fake_pi_sessi
     }
 }
 
+/// A review stopped by a blocker can have no open issue at all: it must never read as a pass.
+#[test]
+fn the_review_skill_decides_blocked_before_changes_required_before_pass() {
+    let worktree = TempDir::new("design-skills-verdict");
+    install_design_skills(worktree.path()).unwrap();
+    let skill = fs::read_to_string(worktree.path().join(".agents/skills/design-review/SKILL.md")).unwrap();
+    let rule = |needle: &str| skill.find(needle).unwrap_or_else(|| panic!("{needle:?} missing from {skill}"));
+    let blocked = rule("1. `blocked` whenever a blocker");
+    let changes = rule("2. `changes_required` when");
+    let pass = rule("3. `pass` otherwise");
+    assert!(blocked < changes && changes < pass, "{skill}");
+    assert!(!skill.contains("`verdict` is `pass` with no open"), "the overlapping rule is gone: {skill}");
+}
+
 #[test]
 fn a_skill_file_hard_linked_to_a_file_outside_is_replaced_and_the_outside_file_is_untouched() {
     let outside = TempDir::new("design-skills-hardlink-outside");

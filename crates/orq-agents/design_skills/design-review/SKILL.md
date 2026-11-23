@@ -37,8 +37,11 @@ accessibility and UX.
 - List what you could not assess, and why, as a check with status `not_assessed`.
 - A previous issue that is fixed is `resolved`. A resolved issue that came back is reopened under its
   own id with status `regressed`; never give it a new id.
-- `verdict` is `pass` with no open or regressed issue of severity critical or major, `blocked` when a
-  blocker stops the review, and `changes_required` otherwise.
+- `verdict` is decided in this order, the first that applies:
+  1. `blocked` whenever a blocker stops the review (an unusable capture, a missing reference), even
+     with no issue listed: a review that could not be done never passes.
+  2. `changes_required` when any issue of severity critical or major is open or regressed.
+  3. `pass` otherwise.
 
 ## Answer
 
