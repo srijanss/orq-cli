@@ -468,6 +468,17 @@ fn a_text_or_data_difference_with_no_design_md_copy_rule_is_invalid() {
     assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
 }
 
+#[test]
+fn a_copy_issue_quoting_a_design_md_line_that_does_not_make_the_copy_exact_is_invalid() {
+    let mut unrelated = issue("hero-title", "rule", "major");
+    unrelated["expected"] = json!("the title \"Plan your week\"");
+    unrelated["actual"] = json!("the title \"Welcome\"");
+    unrelated["copy"] = json!(true);
+    // A real DESIGN.md line, but about the header's height, not about exact copy.
+    unrelated["quote"] = json!("The header is 64px tall on every viewport.");
+    assert_invalid("an unrelated DESIGN.md line", unrelated, "copy");
+}
+
 /// A fixture whose h1 is measured at weight 600 where a token rule binds it to `--weight-bold`.
 fn violated_token_rule() -> Fixture {
     let f = Fixture::with_design(&format!(

@@ -336,6 +336,18 @@ impl PackageRules {
     }
 }
 
+/// Whether a quoted DESIGN.md passage says copy is exact: it says so (`exact`, `exactly`, `verbatim`,
+/// `word for word`) and names the copy, quoted or as copy, text or wording. Any other line of DESIGN.md
+/// (a header's height, say) leaves the mockup's text guidance only.
+fn makes_copy_exact(quote: &str) -> bool {
+    let quote = quote.to_lowercase();
+    let exact = ["exact", "verbatim", "word for word"].iter().any(|w| quote.contains(w));
+    let names_copy = quote.matches('"').count() >= 2
+        || (quote.contains('“') && quote.contains('”'))
+        || ["copy", "text", "wording"].iter().any(|w| quote.contains(w));
+    exact && names_copy
+}
+
 /// `text` with every run of whitespace one space, trimmed.
 fn collapsed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -928,10 +940,9 @@ fn check_basis(issue: &ReviewIssue, context: &ReviewContext) -> Result<(), Strin
         }
         Some(true) => {
             let copy_rule = basis == IssueBasis::Rule
-                && issue
-                    .quote
-                    .as_deref()
-                    .is_some_and(|quote| context.rules.quotes(quote, Some("DESIGN.md")));
+                && issue.quote.as_deref().is_some_and(|quote| {
+                    makes_copy_exact(quote) && context.rules.quotes(quote, Some("DESIGN.md"))
+                });
             if !copy_rule {
                 return Err(format!(
                     "the issue {id:?} is about copy, which binds only where a quoted DESIGN.md line says \
