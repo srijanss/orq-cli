@@ -659,35 +659,139 @@ fn be16(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
 }
 
-/// Why an SVG is unsafe: a `<script>`, a `<foreignObject>`, an `on*` attribute, or an `href` that
-/// isn't a local fragment or a data image. Read as text, case-insensitively.
+/// Why an SVG is unsafe: a `<script>`, a `<foreignObject>`, an `on*` attribute, an entity
+/// declaration or stylesheet link, or anything that loads a resource (`href`, `src`, CSS `url()`,
+/// `@import`) that isn't a local fragment or a data image. Read as text, case-insensitively, with
+/// XML character references decoded first.
 fn svg_problem(bytes: &[u8]) -> Option<String> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Some("is not a UTF-8 SVG".to_string());
     };
-    let text = text.to_ascii_lowercase();
+    let raw = text.to_ascii_lowercase();
+    if raw.contains("<!entity") {
+        return Some("is refused: it declares an <!ENTITY>".to_string());
+    }
+    if raw.contains("<?xml-stylesheet") {
+        return Some("is refused: it links a stylesheet".to_string());
+    }
+    let text = decode_references(&raw).to_ascii_lowercase();
     if text.contains("<script") {
         return Some("is refused: it has a <script>".to_string());
     }
     if text.contains("<foreignobject") {
         return Some("is refused: it has a <foreignObject>".to_string());
     }
+    if text.contains("@import") {
+        return Some("is refused: its CSS has an @import".to_string());
+    }
+    for target in css_urls(&text) {
+        if !local_resource(&target) {
+            return Some(format!(
+                "is refused: url({target}) is neither a local #fragment nor a data image"
+            ));
+        }
+    }
+    let mut styles = style_elements(&text);
     for (name, value) in svg_attributes(&text) {
         if name.starts_with("on") {
             return Some(format!("is refused: it has the event attribute {name}"));
         }
-        let local = |value: &str| {
-            let value = value.trim();
-            value.starts_with('#')
-                || (value.starts_with("data:image/") && !value.starts_with("data:image/svg"))
-        };
-        if (name == "href" || name.ends_with(":href")) && !local(&value) {
+        if (name == "href" || name.ends_with(":href") || name == "src") && !local_resource(&value)
+        {
             return Some(format!(
                 "is refused: its {name} is neither a local #fragment nor a data image"
             ));
         }
+        if name == "style" {
+            styles.push(value);
+        }
+    }
+    if styles.iter().any(|style| style.contains('\\')) {
+        return Some("is refused: its CSS has a backslash escape".to_string());
     }
     None
+}
+
+/// A resource an SVG may load: a fragment of itself, or a data image that isn't another SVG.
+fn local_resource(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with('#')
+        || (value.starts_with("data:image/") && !value.starts_with("data:image/svg"))
+}
+
+/// `text` with its XML character references (`&#117;`, `&#x75;`, `&lt;` and the like) decoded;
+/// anything else is kept as written.
+fn decode_references(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        // Only a short way ahead, so a text of many bare `&`s stays linear.
+        let decoded = rest[1..]
+            .bytes()
+            .take(11)
+            .position(|b| b == b';')
+            .and_then(|end| {
+                let name = &rest[1..1 + end];
+                let c = match name {
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "amp" => Some('&'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    _ => {
+                        let number = name.strip_prefix('#')?;
+                        let code = match number.strip_prefix('x') {
+                            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                            None => number.parse().ok()?,
+                        };
+                        char::from_u32(code)
+                    }
+                };
+                c.map(|c| (c, end + 2))
+            });
+        match decoded {
+            Some((c, length)) => {
+                out.push(c);
+                rest = &rest[length..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The target of every CSS `url(...)` in `text`, quotes removed.
+fn css_urls(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("url(") {
+        rest = rest[at + 4..].trim_start();
+        let target = match rest.chars().next() {
+            Some(quote @ ('"' | '\'')) => rest[1..].split(quote).next().unwrap_or(""),
+            _ => rest.split(')').next().unwrap_or(""),
+        };
+        found.push(target.trim().to_string());
+    }
+    found
+}
+
+/// The contents of every `<style>` element in `text`.
+fn style_elements(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("<style") {
+        rest = &rest[at + 6..];
+        let end = rest.find("</style").unwrap_or(rest.len());
+        found.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    found
 }
 
 /// Every attribute of every tag in `text`, as (name, value), quotes honoured.

@@ -492,6 +492,60 @@ fn unsafe_svgs_are_refused_and_safe_ones_kept() {
 }
 
 #[test]
+fn svgs_loading_external_resources_through_css_or_attributes_are_refused() {
+    let f = Fixture::new("svg-css");
+    f.full_package();
+    let svg = |body: &str| format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{body}</svg>"#);
+    let refused_bodies = [
+        ("import", r#"<style>@import "https://example.com/a.css";</style>"#),
+        (
+            "cdata",
+            "<style><![CDATA[ rect { fill: url(https://example.com/p.svg#g) } ]]></style>",
+        ),
+        (
+            "fill",
+            r#"<rect fill="url(https://example.com/p.svg#paint)"/>"#,
+        ),
+        (
+            "style-attr",
+            r#"<rect style="filter: url( 'other.svg#f' )"/>"#,
+        ),
+        (
+            "entity",
+            r#"<rect fill="&#117;rl(https://example.com/p.svg#paint)"/>"#,
+        ),
+        ("escape", r"<style>rect { fill: u\72l(https://x/p.svg#a) }</style>"),
+        ("src", r#"<image src="https://example.com/x.png"/>"#),
+    ];
+    for (name, body) in refused_bodies {
+        f.put(&format!("assets/{name}.svg"), svg(body));
+    }
+    f.put(
+        "assets/stylesheet.svg",
+        r#"<?xml-stylesheet href="https://example.com/a.css"?><svg xmlns="http://www.w3.org/2000/svg"/>"#,
+    );
+    f.put(
+        "assets/xxe.svg",
+        r#"<!DOCTYPE svg [<!ENTITY x SYSTEM "https://example.com/x">]><svg xmlns="http://www.w3.org/2000/svg">&x;</svg>"#,
+    );
+    f.put(
+        "assets/local.svg",
+        svg(r##"<style>rect { fill: url(#g) }</style><rect fill="url( '#g' )" style="clip-path:url(#c)"/>"##),
+    );
+
+    let problems = refused(f.start());
+
+    for (name, _) in refused_bodies {
+        let path = format!("assets/{name}.svg");
+        assert!(mentions(&problems, &[&path]), "{path} not refused: {problems:?}");
+    }
+    for path in ["assets/stylesheet.svg", "assets/xxe.svg"] {
+        assert!(mentions(&problems, &[path]), "{path} not refused: {problems:?}");
+    }
+    assert!(!mentions(&problems, &["assets/local.svg"]), "{problems:?}");
+}
+
+#[test]
 fn a_package_over_its_file_count_or_size_limit_is_refused() {
     let mut f = Fixture::new("limits");
     f.full_package();
