@@ -286,7 +286,12 @@ pub fn load_run_settings(
         Some(dir) => read_layer(&dir.join("orq/run.toml"), PRIVATE_LABEL)?,
         None => Layer::default(),
     };
-    let merged = env_layer(env)?.over(private).over(shared);
+    let mut merged = env_layer(env)?.over(private).over(shared);
+    // The design variables are only read, and so only checked, for a project that has the table.
+    if merged.design.present {
+        let get = |name: &str| env(name).filter(|v| !v.trim().is_empty());
+        merged.design = design_env_layer(&get)?.over(merged.design);
+    }
     let script_gate = match merged.gate {
         Some(_) => None,
         None => script_gate(repo)?,
@@ -733,8 +738,8 @@ fn read_design_table(
     Ok(())
 }
 
-/// The `ORQ_DESIGN_*` variables. They only override: a project whose files have no `[design]`
-/// table gets no design settings from them.
+/// The `ORQ_DESIGN_*` variables. They only override: they are read only for a project whose files
+/// have a `[design]` table, so a project without one is never stopped by them.
 fn design_env_layer(get: &dyn Fn(&str) -> Option<String>) -> Result<DesignLayer, SettingsError> {
     let mut design = DesignLayer::default();
     let number = |name: &str, text: &str| -> Result<i64, SettingsError> {
@@ -906,10 +911,7 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     let json = |name: &str, text: &str| -> Result<serde_json::Value, SettingsError> {
         serde_json::from_str(text).map_err(|_| invalid(name, "must be a JSON value"))
     };
-    let mut layer = Layer {
-        design: design_env_layer(&get)?,
-        ..Layer::default()
-    };
+    let mut layer = Layer::default();
     if let Some(v) = get("ORQ_FORGE") {
         layer.forge = Some(forge(v.trim()).map_err(|r| invalid("ORQ_FORGE", r))?);
     }

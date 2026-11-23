@@ -82,6 +82,26 @@ fn a_project_without_a_design_table_loads_as_today_even_with_design_variables_se
 }
 
 #[test]
+fn bad_design_variables_do_not_stop_a_project_without_a_design_table() {
+    let repo = GitFixture::new();
+    shared(&repo, "gate = [\"cargo\", \"test\"]\n");
+    let env = |key: &str| {
+        match key {
+            "ORQ_DESIGN_MODE" => Some("guess"),
+            "ORQ_DESIGN_START_COMMAND" => Some("not json"),
+            "ORQ_DESIGN_VIEWPORTS" => Some(r#"{"desktop": "1x1"}"#),
+            "ORQ_DESIGN_MAX_CORRECTION_ROUNDS" => Some("9"),
+            _ => None,
+        }
+        .map(String::from)
+    };
+
+    let settings = load_run_settings(repo.root(), &env).map_err(|e| e.to_string());
+
+    assert_eq!(settings.unwrap().design, None);
+}
+
+#[test]
 fn every_key_is_read_from_the_shared_file() {
     let repo = GitFixture::new();
     shared(
