@@ -313,9 +313,8 @@ fn a_verification_review_that_passes_lets_delivery_go_on() {
     let _ = fs::remove_dir_all(&w.root);
 }
 
-#[test]
-fn a_resume_into_a_half_copied_design_folder_still_gets_the_frozen_manifest() {
-    let w = world("carry-half-copied");
+/// run-1 froze its package (manifest and a round's review in its logs); run-2 resumes it.
+fn frozen_and_resumed(w: &World) -> (RunRecord, PathBuf, PathBuf) {
     orq_orchestrator::record_design_package(&w.store, "run-1", "stage.completed", serde_json::json!({})).unwrap();
     let from_logs = w.root.join("logs/run-1");
     fs::create_dir_all(from_logs.join("design/round-1")).unwrap();
@@ -324,8 +323,65 @@ fn a_resume_into_a_half_copied_design_folder_still_gets_the_frozen_manifest() {
     let mut resumed = w.store.load("run-1").unwrap();
     resumed.run_id = "run-2".to_string();
     w.store.create(&resumed).unwrap();
+    (resumed, from_logs, w.root.join("logs/run-2"))
+}
+
+#[test]
+fn a_carry_whose_copy_fails_leaves_the_half_copied_folder_and_a_retry_over_its_leftover_installs_the_package() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world("carry-copy-fails");
+    let (resumed, from_logs, to_logs) = frozen_and_resumed(&w);
+    fs::create_dir_all(to_logs.join("design/round-1")).unwrap();
+    fs::write(to_logs.join("design/round-1/note.txt"), "kept").unwrap();
+    let review = from_logs.join("design/round-1/review.json");
+    fs::set_permissions(&review, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&review).is_ok() {
+        // Running with permissions that read anything: the copy cannot be made to fail this way.
+        let _ = fs::remove_dir_all(&w.root);
+        return;
+    }
+
+    let failed = orq_orchestrator::carry_design(&w.store, &resumed, "run-1", &from_logs, &to_logs);
+
+    assert!(failed.is_err(), "a copy that fails is refused: {failed:?}");
+    assert_eq!(fs::read_to_string(to_logs.join("design/round-1/note.txt")).unwrap(), "kept", "the destination is untouched");
+    assert!(!to_logs.join("design/manifest.json").exists());
+    assert!(to_logs.join(".design.carrying").exists(), "the failed copy is left aside, never in place");
+
+    fs::set_permissions(&review, fs::Permissions::from_mode(0o644)).unwrap();
+    orq_orchestrator::carry_design(&w.store, &resumed, "run-1", &from_logs, &to_logs).unwrap();
+
+    assert_eq!(fs::read_to_string(to_logs.join("design/manifest.json")).unwrap(), "{\"frozen\":true}");
+    assert_eq!(fs::read_to_string(to_logs.join("design/round-1/review.json")).unwrap(), "{}");
+    assert!(!to_logs.join(".design.carrying").exists(), "the leftover copy is gone");
+    let _ = fs::remove_dir_all(&w.root);
+}
+
+#[test]
+fn a_design_folder_already_carried_whole_is_kept_on_every_later_carry() {
+    let w = world("carry-repeated");
+    let (resumed, from_logs, to_logs) = frozen_and_resumed(&w);
+    orq_orchestrator::carry_design(&w.store, &resumed, "run-1", &from_logs, &to_logs).unwrap();
+    // The resumed run writes its own round into its design folder.
+    fs::create_dir_all(to_logs.join("design/round-2")).unwrap();
+    fs::write(to_logs.join("design/round-2/review.json"), "{\"round\":2}").unwrap();
+
+    orq_orchestrator::carry_design(&w.store, &resumed, "run-1", &from_logs, &to_logs).unwrap();
+    orq_orchestrator::carry_design(&w.store, &resumed, "run-1", &from_logs, &to_logs).unwrap();
+
+    assert_eq!(fs::read_to_string(to_logs.join("design/round-2/review.json")).unwrap(), "{\"round\":2}");
+    assert_eq!(fs::read_to_string(to_logs.join("design/manifest.json")).unwrap(), "{\"frozen\":true}");
+    let reviews = w.store.events("run-2").unwrap().iter().filter(|e| e.kind == "design_review").count();
+    let carried = w.store.events("run-1").unwrap().iter().filter(|e| e.kind == "design_review").count();
+    assert_eq!(reviews, carried, "nothing is carried twice");
+    let _ = fs::remove_dir_all(&w.root);
+}
+
+#[test]
+fn a_resume_into_a_half_copied_design_folder_still_gets_the_frozen_manifest() {
+    let w = world("carry-half-copied");
+    let (resumed, from_logs, to_logs) = frozen_and_resumed(&w);
     // An earlier carry into run-2 was interrupted: its design folder is there, its manifest is not.
-    let to_logs = w.root.join("logs/run-2");
     fs::create_dir_all(to_logs.join("design/round-1")).unwrap();
 
     orq_orchestrator::carry_design(&w.store, &resumed, "run-1", &from_logs, &to_logs).unwrap();
