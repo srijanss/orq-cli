@@ -1,7 +1,8 @@
 //! With remote actions on, the Settings page's Storage card lists "Kept worktrees": every worktree orq made
 //! that a run left behind, grouped by project, each with its branch, run, how the run ended, why it was kept,
-//! its commits, changed files and size. Delete asks first: a merged worktree with only ignored files names
-//! them; any other asks for the branch name typed back and sends force. "Delete all merged" removes the
+//! its commits, changed files (collapsed under their count) and size. Delete asks first: a merged worktree
+//! with only ignored files says they go with it; any other names the work it holds, without its paths, and
+//! asks for the branch name typed back and sends force. "Delete all merged" removes the
 //! safe ones together. A worktree that changed since it was read is refused in the server's words.
 
 mod web_deps;
@@ -10,7 +11,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 9] = [
+const SELECTORS: [&str; 11] = [
     "[data-kept-worktrees]",
     "[data-kept-worktree]",
     "[data-kept-delete]",
@@ -20,6 +21,8 @@ const SELECTORS: [&str; 9] = [
     "[data-confirm]:disabled",
     "[data-cancel]",
     "[data-kept-file]",
+    "[data-kept-files]",
+    "[data-kept-files][open]",
 ];
 
 fn run(scenario: Value) -> Option<Value> {
@@ -107,9 +110,20 @@ fn the_storage_card_lists_kept_worktrees_grouped_by_project_with_their_run_commi
     let links: Vec<&str> = page["settled"]["links"].as_array().unwrap().iter().filter_map(|l| l["href"].as_str()).collect();
     assert!(links.contains(&"/projects/alpha/orchestrations/run-1"), "{links:?}");
     assert!(links.contains(&"/projects/beta/orchestrations/run-2"), "{links:?}");
+    assert_eq!(count(page, "[data-kept-files]"), 2, "{out}");
+    assert_eq!(count(page, "[data-kept-files][open]"), 0, "each file list starts collapsed: {out}");
     assert_eq!(count(page, "[data-kept-file]"), 2, "{out}");
+    assert!(has(page, "1 file"), "{:?}", shown(page));
     assert!(shown(page).iter().any(|t| t.contains(".claude/settings.local.json")), "{:?}", shown(page));
     assert_eq!(count(page, "[data-kept-delete-merged]"), 0, "one safe worktree is not a batch: {out}");
+}
+
+#[test]
+fn a_kept_worktrees_file_list_opens_when_its_summary_is_clicked() {
+    let Some(out) = on_settings(vec![two_projects()], vec![json!({"click": "[data-kept-files] summary", "index": 0})], false) else { return };
+    let opened = last(&out);
+    assert_eq!(count(opened, "[data-kept-files][open]"), 1, "{out}");
+    assert_eq!(count(opened, "[data-kept-delete]"), 2, "{out}");
 }
 
 #[test]
@@ -121,7 +135,7 @@ fn none_kept_says_so_and_an_unknown_size_and_many_files_are_worded() {
     big["size"] = Value::Null;
     big["bytes"] = Value::Null;
     let Some(out) = on_settings(vec![listing(json!([{"id": "alpha", "name": "Alpha", "worktrees": [big]}]), 1, "0 B")], vec![], false) else { return };
-    for text in ["and 31 more", "size unknown"] {
+    for text in ["1 file and 31 more", "size unknown"] {
         assert!(has(last(&out), text), "{text}: {:?}", shown(last(&out)));
     }
 }
@@ -142,7 +156,9 @@ fn deleting_a_safe_worktree_names_its_ignored_files_and_sends_its_version() {
     let steps = vec![json!({"click": "[data-kept-delete]", "index": 0}), json!({"click": "[data-confirm]"})];
     let Some(out) = on_settings(vec![two_projects(), deleted, after], steps, false) else { return };
     let asked = &out["frames"][2];
-    assert!(has(asked, "Delete this worktree and its branch? Its ignored files (.claude/settings.local.json) are deleted with it."), "{:?}", shown(asked));
+    assert!(has(asked, "Delete this worktree and its branch? Its ignored files are deleted with it."), "{:?}", shown(asked));
+    let mentions: usize = shown(asked).iter().map(|t| t.matches(".claude/settings.local.json").count()).sum();
+    assert_eq!(mentions, 1, "the path is only in its card's file list: {:?}", shown(asked));
     assert_eq!(count(asked, "[data-kept-branch-typed]"), 0, "a safe delete asks for no typing: {out}");
     let sent = storage_posts(&out);
     assert_eq!(sent.len(), 1, "{out}");
@@ -167,7 +183,7 @@ fn deleting_unmerged_work_names_it_and_waits_for_the_branch_typed_back_then_forc
     let Some(out) = on_settings(vec![two_projects(), deleted, two_projects()], steps, false) else { return };
     let asked = &out["frames"][2];
     assert!(
-        has(asked, "Delete this worktree and its branch with 2 commits not on main and its changed files (notes.txt)? They are lost for good."),
+        has(asked, "Delete this worktree and its branch with 2 commits not on main and its changed files? They are lost for good."),
         "{:?}",
         shown(asked)
     );

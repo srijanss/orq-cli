@@ -2689,8 +2689,9 @@ function StorageCleanup({ token, onSignedOut }) {
 
 // The Storage card's "Kept worktrees", while remote actions are on: every worktree orq made that a run left
 // behind, grouped by project, read from /api/storage/worktrees when the card opens (a server without the
-// route shows nothing). Delete asks first: a merged worktree holding only ignored files names them, and any
-// other names the work it holds and waits for its branch name typed back, then sends force. "Delete all
+// route shows nothing). Each card's file list starts collapsed under its count. Delete asks first: a merged
+// worktree holding only ignored files says they go with it, and any other names the kind of work it holds
+// (not its paths) and waits for its branch name typed back, then sends force. "Delete all
 // merged" removes the safe ones together. A refusal, such as a worktree changed since it was read, is shown
 // in the server's words.
 const API_WORKTREES = "/api/storage/worktrees";
@@ -2718,15 +2719,14 @@ function commitsText(worktree) {
 function deleteQuestion(worktree) {
   const files = keptFiles(worktree);
   const more = moreFiles(worktree);
+  // The paths are on the worktree's card right above the question, so it names only what is lost.
   if (worktree.safe === true) {
-    const ignored = files.map((f) => f.path).join(", ") + (more > 0 ? " and " + more + " more" : "");
-    return "Delete this worktree and its branch?" + (ignored !== "" ? " Its ignored files (" + ignored + ") are deleted with it." : "");
+    return "Delete this worktree and its branch?" + (files.length > 0 || more > 0 ? " Its ignored files are deleted with it." : "");
   }
   const parts = [];
   if (Number.isInteger(worktree.commits) && worktree.commits > 0) parts.push(commitsText(worktree));
   else if (!Number.isInteger(worktree.commits)) parts.push("commits that could not be counted");
-  const changed = files.filter((f) => f.kind !== "ignored").map((f) => f.path);
-  if (changed.length > 0 || more > 0) parts.push("its changed files (" + changed.join(", ") + (more > 0 ? (changed.length > 0 ? " and " : "") + more + " more" : "") + ")");
+  if (files.some((f) => f.kind !== "ignored") || more > 0) parts.push("its changed files");
   if (worktree.files_unreadable === true) parts.push("files that could not be read");
   return "Delete this worktree and its branch" + (parts.length > 0 ? " with " + parts.join(" and ") : "") + "? They are lost for good.";
 }
@@ -2749,10 +2749,13 @@ function KeptWorktree({ projectId, worktree, onDelete }) {
       </div>
       {typeof worktree.reason === "string" && worktree.reason !== "" ? <p className="kept-reason muted">{"Kept because " + worktree.reason}</p> : null}
       {files.length > 0 || more > 0 ? (
-        <ul className="kept-files">
-          {files.map((file) => <li key={file.path} data-kept-file>{file.path + " (" + file.kind + ")"}</li>)}
-          {more > 0 ? <li>{"and " + more + " more"}</li> : null}
-        </ul>
+        <details className="kept-files-details" data-kept-files>
+          <summary><span>{files.length === 0 ? plural(more, "file", "files") : plural(files.length, "file", "files") + (more > 0 ? " and " + more + " more" : "")}</span><Icon name="chevronDown" size={16} /></summary>
+          <ul className="kept-files">
+            {files.map((file) => <li key={file.path} data-kept-file>{file.path + " (" + file.kind + ")"}</li>)}
+            {more > 0 ? <li>{"and " + more + " more"}</li> : null}
+          </ul>
+        </details>
       ) : null}
       {worktree.files_unreadable === true ? <p className="muted">The changed files could not be read.</p> : null}
       <div className="kept-actions">

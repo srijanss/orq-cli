@@ -885,6 +885,10 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .kept-facts { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: 0.875rem; }
 .kept-merged { color: var(--status-completed); }
 .kept-reason { margin: 0; font-size: 0.875rem; overflow-wrap: anywhere; }
+.kept-files-details > summary { display: flex; align-items: center; gap: 0.375rem; min-height: 44px; font-size: 0.875rem; cursor: pointer; list-style: none; }
+.kept-files-details > summary::-webkit-details-marker { display: none; }
+.kept-files-details > summary .icon { transition: transform 0.15s; }
+.kept-files-details[open] > summary .icon { transform: rotate(180deg); }
 .kept-files { margin: 0; padding-left: 1.25rem; font-size: 0.8125rem; overflow-wrap: anywhere; }
 .kept-actions { display: flex; justify-content: flex-end; }
 .kept-actions button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; }
