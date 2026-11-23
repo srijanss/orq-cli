@@ -405,6 +405,13 @@ fn a_pass_with_a_failed_required_check_is_invalid() {
 }
 
 #[test]
+fn an_answer_with_a_blocker_that_is_not_blocked_is_invalid() {
+    let mut passing = answer("pass", vec![check("layout", "pass")], vec![]);
+    passing["blockers"] = json!(["the capture shows an error overlay"]);
+    assert_invalid(&passing.to_string());
+}
+
+#[test]
 fn a_required_check_not_assessed_without_blocked_is_invalid() {
     assert_invalid(
         &answer(

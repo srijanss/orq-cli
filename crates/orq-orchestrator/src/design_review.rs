@@ -687,6 +687,14 @@ fn check_review(answer: &str, context: &ReviewContext) -> Result<DesignReview, S
             check.id
         ));
     }
+    if let (Some(blocker), false) = (
+        review.blockers.first(),
+        review.verdict == DesignVerdict::Blocked,
+    ) {
+        return Err(format!(
+            "it names the blocker {blocker:?}, so the verdict is blocked"
+        ));
+    }
     if review.verdict == DesignVerdict::Pass {
         if let Some(check) = review
             .checks
