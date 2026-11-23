@@ -13,6 +13,7 @@ mod design_infer;
 mod design_loop;
 mod design_package;
 mod design_review;
+mod design_tokens;
 mod discard;
 mod fix_features;
 mod format_revert;
@@ -95,6 +96,12 @@ pub use design_package::{
 pub use design_review::{
     review_design, CheckStatus, DesignAgent, DesignReview, DesignReviewOutcome, DesignReviewRun,
     DesignVerdict, IssueStatus, ReviewCheck, ReviewIssue, Severity,
+};
+pub use design_tokens::{
+    apply_token_issues, check_design_tokens, normalize_token_value, parse_token_rules, parse_tokens_css, parse_tokens_json,
+    token_rule_selectors,
+    DesignTokens, Rgba, RuleResult, RuleStatus, TokenBinding, TokenCheck, TokenCheckStatus, TokenRule, TokenValue,
+    TokenWarning,
 };
 pub use discard::{
     discard_preview, discard_run, discard_run_before_remove, discard_run_then,

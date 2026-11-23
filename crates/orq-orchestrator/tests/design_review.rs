@@ -234,6 +234,10 @@ fn fake_capture(run: &CaptureRun) -> CaptureOutcome {
         .join(format!("round-{}", run.round));
     fs::create_dir_all(round.join("desktop")).unwrap();
     fs::write(round.join("desktop/index.png"), png(400, 300)).unwrap();
+    // What a test wants measured: `measured.json` of the run's logs, copied as the desktop's measurements.
+    if let Ok(measured) = fs::read(run.run_logs.join("measured.json")) {
+        fs::write(round.join("desktop/measurements.json"), measured).unwrap();
+    }
     let record = CaptureRecord {
         round: run.round,
         commit: None,
@@ -299,6 +303,38 @@ fn a_pass_answer_is_reported_as_pass() {
     let report = fs::read_to_string(f.design_dir().join("report.md")).unwrap();
     assert!(report.contains("pass"), "{report}");
     assert_eq!(f.calls("verifier"), 0);
+}
+
+#[test]
+fn a_reviewer_cannot_downgrade_a_violated_token_rule_or_pass_over_it() {
+    let f = Fixture::new();
+    let package = f.repo.root().join("designs").join(FEATURE);
+    fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
+    fs::write(package.join("DESIGN.md"), "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n").unwrap();
+    let h1 = json!({"tag": "h1", "index": 0, "box": {"x": 0, "y": 0, "width": 100, "height": 40},
+                    "styles": {"font-weight": "600"}});
+    let measured = json!({"viewport": "desktop", "width": 400, "height": 300, "routes": {"/": {
+        "document": {"width": 400, "height": 300, "root_font_size": 16}, "elements": [h1]}}});
+    fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
+    let mut downgraded = issue("tokens-desktop-h1-font-weight", "minor", "open");
+    downgraded["expected"] = json!("weight 700, near enough");
+    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![downgraded]));
+
+    assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
+
+    let written: Value =
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap()).unwrap();
+    let issues = written["review"]["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{written:#}");
+    assert_eq!(issues[0]["id"], "tokens-desktop-h1-font-weight");
+    assert_eq!(issues[0]["source"], "tokens");
+    assert_eq!(issues[0]["severity"], "major");
+    assert_eq!(issues[0]["confidence"], "high");
+    let check: Value =
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap()).unwrap();
+    assert_eq!(check["status"], "fail");
+    let prompt = f.argv("reviewer", 1).join("\n");
+    assert!(prompt.contains("round-1/token-check.json"), "{prompt}");
 }
 
 #[test]

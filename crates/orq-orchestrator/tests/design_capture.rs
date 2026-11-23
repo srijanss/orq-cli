@@ -68,6 +68,7 @@ const PAGE: &str = r#"<!doctype html>
 <style>
 body { margin: 0; font-family: sans-serif; }
 header { height: 64px; background: rgb(10, 20, 30); color: white; }
+header a { color: white; }
 main { min-height: 2400px; padding: 24px; }
 h1 { font-size: 40px; margin: 0; }
 footer { height: 80px; }
@@ -278,6 +279,40 @@ fn the_fixture_site_is_captured_at_every_viewport_with_sizes_and_measurements() 
         process_is_gone(server_pid(site.root())),
         "the server is stopped after a capture"
     );
+}
+
+#[test]
+fn the_selectors_the_token_rules_name_are_measured_with_the_root_font_size() {
+    let Some(browser) = chromium() else { return };
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-token-selectors");
+    let package = logs.path().join("design/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("DESIGN.md"),
+        "# Fixture\n\n## Token rules\n\nheader nav a: color --link\nmain > h1: font-size --font-title\n\
+         .absent: color --ink\na[: color --ink\n",
+    )
+    .unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(site.root(), logs.path(), &["/".to_string()], &browser, &settings);
+
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert!(record.failures.is_empty(), "failures: {:?}", record.failures);
+    let measured = read_json(&logs.path().join("design/round-1/desktop/measurements.json"));
+    let home = &measured["routes"]["/"];
+    assert_eq!(home["document"]["root_font_size"], 16.0, "{home}");
+    let links = home["selectors"]["header nav a"].as_array().unwrap();
+    assert_eq!(links.len(), 2, "{home}");
+    assert_eq!(links[0]["styles"]["color"], "rgb(255, 255, 255)");
+    assert!(links[0]["box"]["width"].as_f64().unwrap() > 0.0);
+    let h1 = home["selectors"]["main > h1"].as_array().unwrap();
+    assert_eq!(h1[0]["styles"]["font-size"], "40px");
+    assert_eq!(home["selectors"][".absent"], serde_json::json!([]));
+    assert_eq!(home["selectors"]["a["], serde_json::json!([]), "an invalid selector matches nothing");
 }
 
 #[test]

@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 
 use crate::child_groups::TrackedChild;
 use crate::design_package::DesignManifest;
+use crate::design_tokens::token_rule_selectors;
 use crate::run_settings::DesignSettings;
 
 /// Under the run's logs: one folder per round.
@@ -819,6 +820,8 @@ fn capture_pages(
     commit: Option<String>,
 ) -> CaptureRecord {
     let slugs = route_slugs(run.routes);
+    // Besides the landmarks, every selector the token rules name, for the token check.
+    let selectors = token_rule_selectors(&run.run_logs.join(RUN_DESIGN_DIR));
     let mut pages = Vec::new();
     let mut failures = Vec::new();
     for viewport in run.viewports {
@@ -846,7 +849,7 @@ fn capture_pages(
             };
             let captured = usable.clone().and_then(|()| {
                 if plain_route(route) {
-                    capture_page(browser, port, route, viewport)
+                    capture_page(browser, port, route, viewport, &selectors)
                 } else {
                     Err("the route is not a plain path".to_string())
                 }
@@ -908,6 +911,7 @@ fn capture_page(
     port: u16,
     route: &str,
     viewport: &CaptureViewport,
+    selectors: &[String],
 ) -> Result<(Vec<u8>, Value), String> {
     let target = browser.call(
         None,
@@ -930,7 +934,7 @@ fn capture_page(
             .as_str()
             .ok_or("the tab could not be reached")?
             .to_string();
-        let result = capture_in(browser, &session, port, route, viewport);
+        let result = capture_in(browser, &session, port, route, viewport, selectors);
         browser
             .events
             .retain(|m| m["sessionId"] != session.as_str());
@@ -951,6 +955,7 @@ fn capture_in(
     port: u16,
     route: &str,
     viewport: &CaptureViewport,
+    selectors: &[String],
 ) -> Result<(Vec<u8>, Value), String> {
     let s = Some(session);
     for method in ["Page.enable", "Runtime.enable", "Network.enable"] {
@@ -1011,7 +1016,10 @@ fn capture_in(
         s,
         "Runtime.evaluate",
         json!({
-            "expression": MEASURE_SCRIPT.replace("ASSETS_BOUND_MS", &ASSETS_BOUND_MS.to_string()),
+            // The selectors last, as a JSON array: their text never reaches another placeholder.
+            "expression": MEASURE_SCRIPT
+                .replace("ASSETS_BOUND_MS", &ASSETS_BOUND_MS.to_string())
+                .replace("SELECTORS_JSON", &json!(selectors).to_string()),
             "contextId": context,
             "awaitPromise": true,
             "returnByValue": true,
@@ -1154,24 +1162,34 @@ const MEASURE_SCRIPT: &str = r#"(async function () {
     "padding-top", "padding-right", "padding-bottom", "padding-left", "font-family", "font-size", "font-weight",
     "line-height", "letter-spacing", "text-align", "text-transform", "color", "background-color", "border-radius",
     "border-top-width", "border-top-color", "box-shadow", "gap", "flex-direction", "justify-content", "align-items"];
-  var elements = [];
-  var counts = {};
-  var all = document.querySelectorAll("header, main, nav, footer, h1, h2, h3, button, img");
-  for (var i = 0; i < all.length && elements.length < 500; i++) {
-    var element = all[i];
-    var tag = element.tagName.toLowerCase();
-    var index = counts[tag] || 0;
-    counts[tag] = index + 1;
+  function measure(element) {
     var rect = element.getBoundingClientRect();
     var computed = getComputedStyle(element);
     var styles = {};
     props.forEach(function (prop) { styles[prop] = computed.getPropertyValue(prop); });
-    elements.push({
-      tag: tag,
-      index: index,
+    return {
       box: {x: round(rect.left + window.scrollX), y: round(rect.top + window.scrollY), width: round(rect.width), height: round(rect.height)},
       styles: styles
-    });
+    };
   }
-  return JSON.stringify({document: doc, elements: elements});
+  var elements = [];
+  var counts = {};
+  var all = document.querySelectorAll("header, main, nav, footer, h1, h2, h3, button, img");
+  for (var i = 0; i < all.length && elements.length < 500; i++) {
+    var tag = all[i].tagName.toLowerCase();
+    var index = counts[tag] || 0;
+    counts[tag] = index + 1;
+    var measured = measure(all[i]);
+    elements.push({tag: tag, index: index, box: measured.box, styles: measured.styles});
+  }
+  doc.root_font_size = parseFloat(getComputedStyle(root).fontSize) || 16;
+  var selectors = {};
+  SELECTORS_JSON.forEach(function (selector) {
+    var found = [];
+    try { found = document.querySelectorAll(selector); } catch (e) { found = []; }
+    var matched = [];
+    for (var j = 0; j < found.length && matched.length < 50; j++) matched.push(measure(found[j]));
+    selectors[selector] = matched;
+  });
+  return JSON.stringify({document: doc, elements: elements, selectors: selectors});
 })()"#;

@@ -55,6 +55,7 @@ fn issue(id: &str, status: IssueStatus) -> ReviewIssue {
         status,
         fix_direction: "raise the heading size".to_string(),
         selector: None,
+        confidence: None,
     }
 }
 

@@ -13,11 +13,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::design_capture::{capture_viewports, design_routes, CaptureOutcome, CaptureRun};
+use crate::design_capture::{
+    capture_viewports, design_routes, CaptureOutcome, CaptureRecord, CaptureRun,
+};
 use crate::design_package::{
     resume_design_package, DesignManifest, DesignPackageOutcome,
     DesignPackageRun, PackageLimits,
 };
+use crate::design_tokens::{apply_token_issues, check_design_tokens};
 use crate::run_settings::DesignSettings;
 
 /// Under the run's logs: the frozen package, one folder per round, and the report.
@@ -25,6 +28,8 @@ const RUN_DESIGN_DIR: &str = "design";
 const PACKAGE_DIR: &str = "package";
 const CAPTURE_FILE: &str = "capture.json";
 const MEASUREMENTS_FILE: &str = "measurements.json";
+/// The round's token check, as `check_design_tokens` writes it.
+const TOKEN_CHECK_FILE: &str = "token-check.json";
 const REVIEW_FILE: &str = "review.json";
 const REPORT_FILE: &str = "report.md";
 /// The most an agent's answer may hold.
@@ -151,6 +156,9 @@ pub struct ReviewIssue {
     pub fix_direction: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
+    /// `high` on an issue orq measured itself (the token check); a reviewer's issues carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +266,24 @@ fn review_round(
             return Err(format!("the page could not be captured: {why}"))
         }
     };
+    // Measured values are checked by code, not by the model: a violated token rule is an issue the
+    // reviewer's answer can neither drop nor downgrade.
+    let token_issues = check_design_tokens(design_dir, run.round).issues();
+    let mut result = reviewed_round(run, design_dir, &manifest, &record)?;
+    if let Some(review) = result.review.as_mut() {
+        apply_token_issues(review, &token_issues);
+        result.verdict = review.verdict;
+    }
+    Ok(result)
+}
+
+/// The round reviewed by the design reviewer, and by the verifier when it escalates.
+fn reviewed_round(
+    run: &DesignReviewRun,
+    design_dir: &Path,
+    manifest: &DesignManifest,
+    record: &CaptureRecord,
+) -> Result<RoundResult, String> {
     let round_name = format!("round-{}", run.round);
     let capture_bytes =
         std::fs::read(design_dir.join(&round_name).join(CAPTURE_FILE)).map_err(|e| {
@@ -507,6 +533,13 @@ fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> 
     let measurements = format!("round-{}/{MEASUREMENTS_FILE}", context.round);
     if context.design_dir.join(&measurements).is_file() {
         prompt.push_str(&format!("Measured CSS and DOM: {measurements}\n"));
+    }
+    let token_check = format!("round-{}/{TOKEN_CHECK_FILE}", context.round);
+    if context.design_dir.join(&token_check).is_file() {
+        prompt.push_str(&format!(
+            "The token check orq ran on the measured styles: {token_check} (its violated rules are \
+             issues with source \"tokens\" that orq adds itself; don't repeat them)\n"
+        ));
     }
     if !context.previous.is_empty() {
         let issues: Vec<serde_json::Value> = context
