@@ -254,6 +254,35 @@ fn a_resumed_frontend_run_keeps_its_design_rounds_and_its_frozen_package() {
 }
 
 #[test]
+fn a_resume_whose_frozen_package_is_gone_is_refused_instead_of_freezing_the_changed_references() {
+    let w = frontend("resume-package-gone");
+    w.design_reviewer();
+    w.mark_frontend();
+    let agent = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n").commit("feat: the home page").build();
+    let provider = orq_test_support::FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+    assert!(!w.run(&agent, &provider).status.success());
+    let first_run = w.events().iter().find_map(|e| e["run_id"].as_str().map(str::to_string)).unwrap();
+    let log = w.home.join("state/orq/runs").join(&first_run).join("events.jsonl");
+    let kept: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().filter(|l| !l.contains("\"run.completed\"")).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&log, kept.concat()).unwrap();
+    // The frozen package is lost and the references change.
+    std::fs::remove_dir_all(w.home.join("state/orq/logs").join(&first_run).join("design")).unwrap();
+    std::fs::write(w.repo.root().join("designs/home/references/desktop.png"), png(400, 301)).unwrap();
+
+    let resumed = w.resume(&first_run, &agent, &provider);
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    assert!(!resumed.status.success(), "{all}");
+    assert!(all.contains("frozen design package"), "{all}");
+    let events = w.events();
+    assert!(
+        !events.iter().any(|e| e["run_id"] != first_run.as_str() && e["type"] == "stage.started" && e["stage"] == "design_review"),
+        "no review against the changed references: {all}"
+    );
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
+#[test]
 fn a_frontend_run_missing_design_files_pauses_as_design_files_needed_before_the_implementer_with_the_list() {
     let w = frontend_with("files-needed", false);
     w.design_reviewer();

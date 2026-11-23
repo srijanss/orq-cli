@@ -297,8 +297,22 @@ pub fn carry_design(
     to_logs: &std::path::Path,
 ) -> Result<(), StoreError> {
     let carried = |event: &Event| event.stage.as_deref() == Some(DESIGN_REVIEW_STAGE) && CARRIED_KINDS.contains(&event.kind.as_str());
+    let from_events = store.events(from_run_id)?;
+    let from = from_logs.join(DESIGN_DIR);
+    let to = to_logs.join(DESIGN_DIR);
+    // A run that froze its package goes on only with that package: without its manifest the resumed run
+    // would freeze the references as they are now, so the resume is refused instead.
+    let froze = from_events.iter().any(|e| e.stage.as_deref() == Some(DESIGN_PACKAGE_STAGE) && e.kind == "stage.completed");
+    let regular = |path: &std::path::Path, dir: bool| std::fs::symlink_metadata(path).is_ok_and(|m| if dir { m.is_dir() } else { m.is_file() });
+    if froze && !regular(&to.join(MANIFEST), false) && !(regular(&from, true) && regular(&from.join(MANIFEST), false)) {
+        return Err(StoreError::Corrupt(format!(
+            "the frozen design package of {from_run_id} is gone: {} is missing or not a regular file; \
+             the run cannot go on without it, start a new run instead",
+            from.join(MANIFEST).display()
+        )));
+    }
     if !store.events(&record.run_id)?.iter().any(|e| carried(e)) {
-        for event in store.events(from_run_id)?.into_iter().filter(|e| carried(e)) {
+        for event in from_events.into_iter().filter(|e| carried(e)) {
             store.append_event(&Event {
                 event_id: next_event_id(&record.run_id),
                 run_id: record.run_id.clone(),
@@ -308,9 +322,7 @@ pub fn carry_design(
             })?;
         }
     }
-    let from = from_logs.join(DESIGN_DIR);
-    let to = to_logs.join(DESIGN_DIR);
-    if std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_dir()) && std::fs::symlink_metadata(&to).is_err() {
+    if regular(&from, true) && std::fs::symlink_metadata(&to).is_err() {
         copy_tree(&from, &to).map_err(|e| StoreError::Corrupt(format!("cannot carry the design folder of {from_run_id}: {e}")))?;
     }
     Ok(())
@@ -318,6 +330,9 @@ pub fn carry_design(
 
 /// The run's design folder in its logs.
 const DESIGN_DIR: &str = "design";
+
+/// The frozen package's manifest in the design folder.
+const MANIFEST: &str = "manifest.json";
 
 /// Copies the folders and regular files under `from` to `to`; a symlink is never followed or copied.
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
