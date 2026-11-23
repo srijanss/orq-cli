@@ -805,11 +805,12 @@ fn svg_attributes(text: &str) -> Vec<(String, String)> {
             continue;
         }
         if chars[i..].starts_with(&['<', '!', '-', '-']) {
-            // A comment holds no attributes.
-            let rest: String = chars[i + 4..].iter().collect();
-            i = rest
-                .find("-->")
-                .map_or(chars.len(), |end| i + 4 + rest[..end].chars().count() + 3);
+            // A comment holds no attributes. Its end is looked for in place, so each character is
+            // read once however many comments there are.
+            i = chars[i + 4..]
+                .windows(3)
+                .position(|w| w == ['-', '-', '>'])
+                .map_or(chars.len(), |end| i + 4 + end + 3);
             continue;
         }
         i += 1;

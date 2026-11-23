@@ -546,6 +546,31 @@ fn svgs_loading_external_resources_through_css_or_attributes_are_refused() {
 }
 
 #[test]
+fn svg_comments_hide_no_attributes_however_many_there_are() {
+    let f = Fixture::new("svg-comments");
+    f.full_package();
+    let comments = "<!-- onload=\"x\" -->".repeat(5000);
+    f.put(
+        "assets/commented.svg",
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{comments}<g id="a"/></svg>"#),
+    );
+    f.put(
+        "assets/after.svg",
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{comments}<g onclick="x"/></svg>"#),
+    );
+    f.put(
+        "assets/unclosed.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg"><!-- <g onclick="x"/></svg>"#,
+    );
+
+    let problems = refused(f.start());
+
+    assert!(mentions(&problems, &["assets/after.svg", "onclick"]), "{problems:?}");
+    assert!(!mentions(&problems, &["assets/commented.svg"]), "{problems:?}");
+    assert!(!mentions(&problems, &["assets/unclosed.svg"]), "{problems:?}");
+}
+
+#[test]
 fn a_package_over_its_file_count_or_size_limit_is_refused() {
     let mut f = Fixture::new("limits");
     f.full_package();
