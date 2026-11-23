@@ -2099,17 +2099,13 @@ function usePushMutes(token) {
   return { muted, change };
 }
 
-// This browser's push subscription, or null when it has none or cannot tell. Waits for the service worker
-// no longer than workerReady does.
+// This browser's push subscription, or null when it has none. Rejects when it cannot tell: no service
+// worker ready within workerReady's wait, or the subscription could not be read.
 async function currentSubscription() {
   if (!pushSupported()) return null;
-  try {
-    const registration = await workerReady();
-    if (registration === null) return null;
-    return (await registration.pushManager.getSubscription()) || null;
-  } catch (unreadable) {
-    return null;
-  }
+  const registration = await workerReady();
+  if (registration === null) throw new Error(PUSH_NO_WORKER);
+  return (await registration.pushManager.getSubscription()) || null;
 }
 
 // A project's push mute on its settings page: changed at once, apart from Edit/Save. Not shown when this
@@ -2217,9 +2213,14 @@ function PushCard({ token }) {
     let live = true;
     load();
     loadKinds();
-    currentSubscription().then((subscription) => {
-      if (live) setSubscribed(subscription !== null);
-    });
+    currentSubscription().then(
+      (subscription) => {
+        if (live) setSubscribed(subscription !== null);
+      },
+      () => {
+        if (live) setSubscribed(false);
+      },
+    );
     return () => {
       live = false;
     };

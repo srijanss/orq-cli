@@ -173,7 +173,8 @@ if (typeof scenario.user_agent === "string") Object.defineProperty(window.naviga
 // A scenario may give `push`: {permission, subscription, subscribed, supported, ready}. A browser with web push (unless
 // `supported` is false): Notification.requestPermission() answers `permission`, and the service worker's pushManager
 // subscribes with `subscription` (what its toJSON() gives). With `subscribed` true, getSubscription() gives that
-// subscription from the start. `pushed` in the output lists the permission asks, the subscribe options (the key
+// subscription from the start; with `lookup_fails_after` n, every getSubscription() after the first n rejects.
+// `pushed` in the output lists the permission asks, the subscribe options (the key
 // as an array of bytes), and how many times a subscription was unsubscribed.
 const pushed = { asked: 0, subscribed: [], unsubscribed: 0 };
 if (scenario.push) {
@@ -183,6 +184,7 @@ if (scenario.push) {
     window.Notification = { permission: "default", requestPermission: () => { pushed.asked += 1; window.Notification.permission = spec.permission; return Promise.resolve(spec.permission); } };
     window.PushManager = function PushManager() {};
     let current = null;
+    let lookups = 0;
     const subscription = () => {
       const made = { endpoint: (spec.subscription || {}).endpoint, toJSON: () => spec.subscription, unsubscribe: () => { pushed.unsubscribed += 1; if (current === made) current = null; return Promise.resolve(true); } };
       return made;
@@ -193,7 +195,11 @@ if (scenario.push) {
       installing: null,
       addEventListener: () => {},
       pushManager: {
-        getSubscription: () => Promise.resolve(current),
+        getSubscription: () => {
+          lookups += 1;
+          if (Number.isInteger(spec.lookup_fails_after) && lookups > spec.lookup_fails_after) return Promise.reject(new Error("the subscription could not be read"));
+          return Promise.resolve(current);
+        },
         subscribe: (options) => {
           pushed.subscribed.push({ userVisibleOnly: options.userVisibleOnly, applicationServerKey: [...new Uint8Array(options.applicationServerKey)] });
           current = subscription();

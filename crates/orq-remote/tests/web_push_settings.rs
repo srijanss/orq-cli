@@ -283,6 +283,20 @@ fn an_existing_subscription_starts_on_and_switching_off_unsubscribes() {
 }
 
 #[test]
+fn switching_off_when_the_subscription_cannot_be_read_stays_on_and_says_so() {
+    let subscription = json!({"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "au"}});
+    // The first read (when the page opens) finds the subscription; every later read fails.
+    let push = json!({"permission": "granted", "subscription": subscription, "subscribed": true, "lookup_fails_after": 1});
+    let Some(out) = settings_page(push, json!({}), json!([{"click": "[data-push-enable]"}])) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[0], SWITCH_ON), 1, "{out}");
+    assert_eq!(out["pushed"]["unsubscribed"], 0, "{out}");
+    assert_eq!((count(&frames[1], SWITCH_ON), count(&frames[1], SWITCH_OFF)), (1, 0), "still on: {out}");
+    assert_eq!(count(&frames[1], KINDS_IN_BLOCK), orq_remote::web_push::KINDS.len() as u64, "{out}");
+    assert!(shown(&frames[1]).iter().any(|t| t == "Notifications could not be turned off for this device."), "{out}");
+}
+
+#[test]
 fn settings_enables_this_device_lists_devices_removes_one_and_sends_a_test() {
     let subscription = json!({"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "au"}});
     let replies = json!({
