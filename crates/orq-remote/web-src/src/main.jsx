@@ -5400,6 +5400,43 @@ function designOf(run) {
   return rounds.length === 0 ? null : { of: Number.isInteger(design.of) ? design.of : null, rounds };
 }
 
+// The run's design review, read again from the run page each time a design review event arrives live, so a
+// round that ends while the page is open shows without a reload. `onFresh` takes each batch of live events.
+function useLiveDesign(run, follow) {
+  const [read, setRead] = useState(null);
+  const asking = useRef(null);
+  useEffect(() => {
+    setRead(null);
+    return () => {
+      if (asking.current !== null) asking.current.abort();
+      asking.current = null;
+    };
+  }, [run]);
+  const onFresh = (fresh) => {
+    if (follow === null || !fresh.some((event) => event.stage === "design_review")) return;
+    if (asking.current !== null) asking.current.abort();
+    const controller = new AbortController();
+    asking.current = controller;
+    (async () => {
+      try {
+        const response = await get(follow.base, follow.token, controller.signal);
+        if (controller.signal.aborted) return;
+        if (response.status === 401) {
+          follow.onSignedOut();
+          return;
+        }
+        const body = response.ok ? await response.json() : null;
+        if (controller.signal.aborted || body === null || typeof body !== "object" || body.run === null || typeof body.run !== "object") return;
+        const design = designOf(body.run);
+        if (design !== null) setRead(design);
+      } catch (failure) {
+        // Offline or aborted: the panel keeps what it shows and the next design event asks again.
+      }
+    })();
+  };
+  return { design: read ?? designOf(run), onFresh };
+}
+
 // Issues grouped by section, sections in the order the review first names them.
 function bySection(issues) {
   const groups = new Map();
@@ -5495,7 +5532,9 @@ function DesignIssue({ issue }) {
 
 function DesignReview({ design, source }) {
   const latest = design.rounds.length - 1;
-  const [picked, setPicked] = useState(latest);
+  // null follows the latest round, so a round that arrives live shows; a round picked by hand stays.
+  const [picked, setPicked] = useState(null);
+  const at = picked === null ? latest : Math.min(picked, latest);
   const [enlarged, setEnlarged] = useState(null);
   useEffect(() => {
     if (enlarged === null) return undefined;
@@ -5505,7 +5544,7 @@ function DesignReview({ design, source }) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [enlarged]);
-  const round = design.rounds[Math.min(picked, latest)];
+  const round = design.rounds[at];
   const verdict = textOr(round.verdict);
   const issues = listOf(round.issues);
   const suggestions = listOf(round.suggestions).filter((line) => typeof line === "string");
@@ -5520,7 +5559,7 @@ function DesignReview({ design, source }) {
       </div>
       {design.rounds.length < 2 ? null : (
         <div className="segmented design-rounds" role="group" aria-label="Round">
-          {design.rounds.map((each, at) => <button key={each.round} type="button" aria-pressed={at === Math.min(picked, latest) ? "true" : "false"} data-design-pick={each.round} onClick={() => { setEnlarged(null); setPicked(at); }}>{"Round " + each.round}</button>)}
+          {design.rounds.map((each, index) => <button key={each.round} type="button" aria-pressed={index === at ? "true" : "false"} data-design-pick={each.round} onClick={() => { setEnlarged(null); setPicked(index); }}>{"Round " + each.round}</button>)}
         </div>
       )}
       {typeof round.reason === "string" && round.reason !== "" ? <p className="design-reason">{round.reason}</p> : null}
@@ -6477,7 +6516,7 @@ function PlanProposal({ plan, projectId, apiRun, control }) {
 function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null, startTab = "timeline", projectId = null }) {
   const { run, events, next_cursor: next } = timeline;
   const delivery = deliveryOf(run);
-  const design = designOf(run);
+  const { design, onFresh } = useLiveDesign(run, follow);
   const [tab, setTab] = useState(startTab);
   const [logsOpened, setLogsOpened] = useState(startTab === "logs");
   const rounds = timeline.review_rounds;
@@ -6541,7 +6580,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           <button key={id} type="button" role="tab" id={"run-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls={"run-panel-" + id} data-run-tab={id} onClick={() => choose(id)}>{label}</button>
         ))}
       </div>
-      {live ? <FollowLive key={follow.base} rounds={rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} draw={panelsOf} quiet={tab === "logs"} /> : panelsOf(events)}
+      {live ? <FollowLive key={follow.base} rounds={rounds} token={follow.token} base={follow.base} from={events.length > 0 ? events[events.length - 1].event_id : follow.cursor} shown={events} onSignedOut={follow.onSignedOut} draw={panelsOf} quiet={tab === "logs"} onFresh={onFresh} /> : panelsOf(events)}
       {next !== null && tab !== "logs" && <button type="button" data-more="events" onClick={() => navigate(runPath + "/after/" + encodeURIComponent(next))}>Load more events</button>}
       {logsOpened && (
         <div className="feature-panel" id="run-panel-logs" role="tabpanel" aria-labelledby="run-tab-logs" hidden={tab !== "logs"}>
@@ -6568,7 +6607,7 @@ function streamedEvent(block) {
 // The events that came after the page was drawn, read from the run's event stream with the token in
 // the header (the browser's own stream object cannot send one). A stream that ends or breaks is
 // opened again from the last event seen, and an event already shown is never shown twice.
-function FollowLive({ token, base, from, shown, rounds, onSignedOut, draw, quiet = false }) {
+function FollowLive({ token, base, from, shown, rounds, onSignedOut, draw, quiet = false, onFresh = null }) {
   const [more, setMore] = useState([]);
   const [status, setStatus] = useState("live");
   const [retry, setRetry] = useState(0);
@@ -6578,6 +6617,9 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut, draw, quiet
   const restarting = useRef(false);
   // Every event id accepted so far, so a repeat is told apart in constant time.
   const ids = useRef(new Set());
+  // Told of each batch of new events; a ref, so the open stream always calls the latest one.
+  const freshTo = useRef(onFresh);
+  freshTo.current = onFresh;
   useEffect(() => {
     let current = true;
     let timer = null;
@@ -6643,7 +6685,10 @@ function FollowLive({ token, base, from, shown, rounds, onSignedOut, draw, quiet
             ids.current.add(event.event_id);
             fresh.push(event);
           }
-          if (fresh.length > 0) setMore((known) => [...known, ...fresh]);
+          if (fresh.length > 0) {
+            setMore((known) => [...known, ...fresh]);
+            if (freshTo.current !== null) freshTo.current(fresh);
+          }
         }
         again();
       } catch (failure) {

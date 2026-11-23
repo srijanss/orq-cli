@@ -781,6 +781,58 @@ fn the_images_come_from_the_image_route_with_the_token_and_one_opens_large_when_
     assert_eq!(count(last(&out), "[data-design-zoom]"), 1, "{out}");
 }
 
+/// A live design review event, as the run's event stream sends it.
+fn live_design_event(body: &Value, id: &str) -> Value {
+    let mut event = body["events"][0].clone();
+    event["event_id"] = json!(id);
+    json!({"status": 200, "stream": [format!("id: {id}\nevent: event\ndata: {event}\n\n")], "end": "hold"})
+}
+
+#[test]
+fn a_design_review_round_that_ends_while_the_page_is_open_shows_without_a_reload() {
+    let s = setup("design-panel-live");
+    one_round_run(&s, "r-1", "changes_required", json!([issue("gap", "Footer", "critical", "open")]));
+    let after = page(&s, "/api/projects/alpha/runs/r-1");
+    let mut before = after.clone();
+    before["run"]["design"] = Value::Null;
+
+    let responses = vec![json!({"status": 200, "json": before}), projects(), live_design_event(&after, "r-1-9"), json!({"status": 200, "json": after})];
+    let Some(out) = harness(json!({"url": "/projects/alpha/orchestrations/r-1", "responses": responses, "steps": [{"submit": TOKEN}], "selectors": SELECTORS})) else {
+        return;
+    };
+
+    let end = last(&out);
+    assert_eq!(count(end, "[data-design-review]"), 1, "{out}");
+    position(&texts(end), "Changes required");
+    position(&texts(end), "gap expected");
+}
+
+#[test]
+fn a_new_round_that_arrives_live_is_the_one_shown() {
+    let s = setup("design-panel-live-round");
+    two_round_run(&s, "r-1");
+    let before = page(&s, "/api/projects/alpha/runs/r-1");
+    let mut after = before.clone();
+    let mut third = after["run"]["design"]["rounds"][0].clone();
+    third["round"] = json!(3);
+    third["verdict"] = json!("blocked");
+    after["run"]["design"]["rounds"].as_array_mut().unwrap().push(third);
+
+    // The shown round's four images are asked for before the live stream opens.
+    let missing = json!({"status": 404, "json": {"error": "not found"}});
+    let mut responses = vec![json!({"status": 200, "json": before}), projects()];
+    responses.extend(std::iter::repeat_n(missing, 4));
+    responses.extend([live_design_event(&after, "r-1-9"), json!({"status": 200, "json": after})]);
+    let Some(out) = harness(json!({"url": "/projects/alpha/orchestrations/r-1", "responses": responses, "steps": [{"submit": TOKEN}], "selectors": SELECTORS})) else {
+        return;
+    };
+
+    let end = last(&out);
+    assert_eq!(count(end, "[data-design-pick]"), 3, "{out}");
+    position(&texts(end), "Round 3 of 4");
+    position(&texts(end), "Blocked");
+}
+
 #[test]
 fn a_run_waiting_for_design_files_shows_what_is_needed_where_and_why_with_resume_instead_of_a_review(
 ) {
