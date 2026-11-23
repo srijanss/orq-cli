@@ -642,11 +642,12 @@ fn run_agent(
     }
     let status = status?;
     let out = reader.join().unwrap_or_default();
-    if !status.success() {
-        return Err(format!("the {role} failed ({status})"));
-    }
+    // Checked first: an agent still writing when its output is closed at the cap dies of SIGPIPE.
     if out.len() as u64 > MAX_ANSWER {
         return Err(format!("the {role}'s answer is over {MAX_ANSWER} bytes"));
+    }
+    if !status.success() {
+        return Err(format!("the {role} failed ({status})"));
     }
     Ok(String::from_utf8_lossy(&out).into_owned())
 }

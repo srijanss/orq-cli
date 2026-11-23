@@ -196,6 +196,10 @@ impl Fixture {
     }
 
     fn review(&self, round: u32) -> DesignVerdict {
+        self.review_with(round, Duration::from_secs(30))
+    }
+
+    fn review_with(&self, round: u32, agent_timeout: Duration) -> DesignVerdict {
         let agent = |role: &str| DesignAgent {
             program: self.agent_dir(role).join("pi"),
             harness: "pi".to_string(),
@@ -215,7 +219,7 @@ impl Fixture {
             verifier: &verifier,
             skill: "the design-review skill",
             schema: "the review schema",
-            agent_timeout: Duration::from_secs(30),
+            agent_timeout,
         };
         review_design(&run, &fake_capture).verdict
     }
@@ -338,7 +342,12 @@ fn the_reviewer_loads_no_extensions_mcp_servers_or_project_context() {
     f.review(1);
 
     let argv = f.argv("reviewer", 1);
-    for flag in ["--no-extensions", "--no-mcp", "--no-context-files", "--no-session"] {
+    for flag in [
+        "--no-extensions",
+        "--no-mcp",
+        "--no-context-files",
+        "--no-session",
+    ] {
         assert!(argv.iter().any(|a| a == flag), "{flag} missing: {argv:?}");
     }
 }
@@ -718,4 +727,85 @@ fn an_invalid_answer_is_retried_once() {
         retry.iter().any(|line| line.contains("not accepted")),
         "{retry:?}"
     );
+}
+
+// ---------------------------------------------------------------- agents that fail
+
+/// Replaces the fake `role` with a script of `body`.
+fn agent_script(f: &Fixture, role: &str, body: &str) {
+    let script = f.agent_dir(role).join("pi");
+    fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn process_is_alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[test]
+fn a_hanging_reviewer_is_stopped_with_what_it_started_and_blocks_the_review() {
+    let f = Fixture::new();
+    let pid_file = f.agent_dir("reviewer").join("child.pid");
+    agent_script(
+        &f,
+        "reviewer",
+        &format!("sleep 300 &\necho $! > '{}'\nwait\n", pid_file.display()),
+    );
+
+    let started = std::time::Instant::now();
+    assert_eq!(
+        f.review_with(1, Duration::from_secs(1)),
+        DesignVerdict::Blocked
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(reason(&f).contains("did not answer"), "{}", reason(&f));
+
+    let pid = fs::read_to_string(&pid_file).unwrap().trim().to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while process_is_alive(&pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !process_is_alive(&pid),
+        "the reviewer's child {pid} is still running"
+    );
+}
+
+#[test]
+fn a_reviewer_that_exits_nonzero_blocks_the_review() {
+    let f = Fixture::new();
+    agent_script(&f, "reviewer", "echo '{}'\nexit 3\n");
+
+    assert_eq!(f.review(1), DesignVerdict::Blocked);
+    assert!(
+        reason(&f).contains("the design reviewer failed"),
+        "{}",
+        reason(&f)
+    );
+}
+
+#[test]
+fn a_reviewer_that_cannot_start_blocks_the_review() {
+    let f = Fixture::new();
+    fs::remove_file(f.agent_dir("reviewer").join("pi")).unwrap();
+
+    assert_eq!(f.review(1), DesignVerdict::Blocked);
+    assert!(reason(&f).contains("could not start"), "{}", reason(&f));
+}
+
+#[test]
+fn an_answer_over_the_size_limit_blocks_the_review() {
+    let f = Fixture::new();
+    agent_script(&f, "reviewer", "head -c 5000000 /dev/zero | tr '\\0' a\n");
+
+    assert_eq!(f.review(1), DesignVerdict::Blocked);
+    assert!(reason(&f).contains("bytes"), "{}", reason(&f));
 }
