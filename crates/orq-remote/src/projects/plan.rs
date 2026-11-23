@@ -21,9 +21,10 @@ const MAX_DRAFT_PROMPT_BYTES: u64 = 64 * 1024;
 /// Variables claude needs to reach its account, passed through when serve has them.
 const AGENT_ENV: [&str; 2] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
 /// The variables pi reads a provider's key from, by the provider part of a `provider/model` name. A
-/// pi session gets only its model's provider's variables; a provider not listed here (or a model with
-/// no provider part) gets none, and pi falls back to the logins it keeps under HOME.
-const PI_PROVIDER_ENV: [(&str, &[&str]); 11] = [
+/// pi session gets only its model's provider's variables. A provider not listed here gets the one
+/// variable named after it (`deepseek` → `DEEPSEEK_API_KEY`, `minimax-cn` → `MINIMAX_CN_API_KEY`); a
+/// model with no provider part gets none, and pi falls back to the logins it keeps under HOME.
+const PI_PROVIDER_ENV: [(&str, &[&str]); 12] = [
     ("anthropic", &["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"]),
     ("openai", &["OPENAI_API_KEY"]),
     ("azure-openai-responses", &["AZURE_OPENAI_API_KEY"]),
@@ -35,19 +36,30 @@ const PI_PROVIDER_ENV: [(&str, &[&str]); 11] = [
     ("zai", &["ZAI_API_KEY"]),
     ("mistral", &["MISTRAL_API_KEY"]),
     ("minimax", &["MINIMAX_API_KEY"]),
+    ("moonshotai", &["MOONSHOT_API_KEY"]),
 ];
+
+/// The variable a provider pi reads that is not in `PI_PROVIDER_ENV` keeps its key in, or `None` for a
+/// provider name that cannot make a variable name.
+fn derived_provider_key(provider: &str) -> Option<String> {
+    let valid = !provider.is_empty() && provider.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    valid.then(|| format!("{}_API_KEY", provider.to_ascii_uppercase().replace('-', "_")))
+}
 
 /// The planning session's environment for `harness` running `model`. Each variable is read on its
 /// own, so one that is not Unicode is skipped rather than failing the start.
 fn agent_env(harness: &str, model: &str) -> Vec<(String, String)> {
-    let keys: &[&str] = match harness {
-        "pi" => {
-            let provider = model.split_once('/').map(|(provider, _)| provider);
-            PI_PROVIDER_ENV.iter().find(|(name, _)| Some(*name) == provider).map_or(&[], |(_, keys)| keys)
-        }
-        _ => &AGENT_ENV,
+    let keys: Vec<String> = match harness {
+        "pi" => match model.split_once('/').map(|(provider, _)| provider) {
+            None => Vec::new(),
+            Some(provider) => match PI_PROVIDER_ENV.iter().find(|(name, _)| *name == provider) {
+                Some((_, keys)) => keys.iter().map(|key| key.to_string()).collect(),
+                None => derived_provider_key(provider).into_iter().collect(),
+            },
+        },
+        _ => AGENT_ENV.iter().map(|key| key.to_string()).collect(),
     };
-    keys.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect()
+    keys.into_iter().filter_map(|key| std::env::var(&key).ok().map(|value| (key, value))).collect()
 }
 
 static PLAN_RUNS: AtomicU64 = AtomicU64::new(0);

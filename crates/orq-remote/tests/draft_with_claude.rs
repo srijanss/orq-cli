@@ -128,7 +128,7 @@ fn git_repo(root: &Path, name: &str) -> PathBuf {
 
 fn send(s: &Setup, method: &str, path: &str, body: &str) -> (u16, Value) {
     let options: std::sync::Arc<orq_remote::projects::AgentOptionsSource> =
-        std::sync::Arc::new(|| vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string(), "haiku".to_string()]), ("pi".to_string(), vec!["openai/gpt-6.1-sol".to_string()]), ("codex".to_string(), vec!["gpt".to_string()])]);
+        std::sync::Arc::new(|| vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string(), "haiku".to_string()]), ("pi".to_string(), ["openai/gpt-6.1-sol", "deepseek/deepseek-chat", "nvidia/nemotron", "moonshotai/kimi-k2", "minimax-cn/MiniMax-M2"].map(String::from).to_vec()),("codex".to_string(), vec!["gpt".to_string()])]);
     let mut provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_plan_agent(s.agent.clone()).with_pi(s.base.join("fake-pi")).with_agent_options(options);
     if let Some(ms) = std::fs::read_to_string(s.base.join("timeout-ms")).ok().and_then(|ms| ms.trim().parse().ok()) {
         provider = provider.with_plan_timeout(Duration::from_millis(ms));
@@ -277,6 +277,34 @@ fn a_pi_plan_gets_only_its_models_provider_key_of_the_servers_environment() {
     let env = std::fs::read_to_string(s.base.join("pi-env")).unwrap();
     assert!(env.lines().any(|line| line == "OPENAI_API_KEY=sk-provider"), "the openai model's key reaches pi: {env}");
     assert!(!env.contains("not-for-pi"), "the rest of the server's environment does not: {env}");
+}
+
+#[test]
+fn a_pi_plan_gets_the_key_of_every_provider_pi_reads_from_the_environment() {
+    // Names no other test sets or reads, so changing this process's environment touches no other test.
+    let providers = [
+        ("deepseek/deepseek-chat", "DEEPSEEK_API_KEY"),
+        ("nvidia/nemotron", "NVIDIA_API_KEY"),
+        ("moonshotai/kimi-k2", "MOONSHOT_API_KEY"),
+        ("minimax-cn/MiniMax-M2", "MINIMAX_CN_API_KEY"),
+    ];
+    for (_, key) in providers {
+        std::env::set_var(key, format!("key-of-{key}"));
+    }
+    for (model, key) in providers {
+        let s = setup(&format!("plan-pi-env-{key}"));
+        git_repo(&s.scan, "alpha");
+        let pi = s.base.join("fake-pi");
+        let script = format!("#!/bin/sh\nenv > '{env}'\ncat '{answer}'\n", env = s.base.join("pi-env").display(), answer = s.base.join("answer").display());
+        std::fs::write(&pi, script).unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plan = draft_with(&s, json!({"harness": "pi", "model": model}));
+        assert_eq!(plan["state"], "completed", "{model}: {plan}");
+        let env = std::fs::read_to_string(s.base.join("pi-env")).unwrap();
+        assert!(env.lines().any(|line| line == format!("{key}=key-of-{key}")), "{model}'s key reaches pi: {env}");
+        let others: Vec<_> = providers.iter().filter(|(_, other)| *other != key).filter(|(_, other)| env.contains(&format!("key-of-{other}"))).collect();
+        assert!(others.is_empty(), "{model}: other providers' keys do not reach pi: {others:?}");
+    }
 }
 
 #[test]
