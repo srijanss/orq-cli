@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use orq_orchestrator::{
-    capture_design, capture_viewports, design_routes, find_chromium_in, AssignedViewport,
+    capture_design, capture_viewports, check_design_tokens, design_routes, find_chromium_in, AssignedViewport,
     CaptureOutcome, CaptureRun, CaptureViewport, DesignManifest, DesignMode, DesignSettings,
-    ManifestFile, MissingPieces, Viewport,
+    ManifestFile, MissingPieces, TokenCheckStatus, Viewport,
 };
 use orq_test_support::{GitFixture, TempDir};
 use serde_json::Value;
@@ -110,7 +110,19 @@ fn fixture_site() -> GitFixture {
     std::fs::write(root.join("broken.html"), BROKEN).unwrap();
     std::fs::write(root.join("tamper.html"), TAMPER).unwrap();
     std::fs::write(root.join("dot.svg"), DOT).unwrap();
+    std::fs::write(root.join("many.html"), many_items_page()).unwrap();
     repo
+}
+
+/// A list of 60 items in the ink colour but the last, which is red.
+fn many_items_page() -> String {
+    let mut items: Vec<String> = (1..60).map(|n| format!("<li>item {n}</li>")).collect();
+    items.push(r#"<li style="color: rgb(255, 0, 0)">item 60</li>"#.to_string());
+    format!(
+        "<!doctype html>\n<html><head><style>li {{ color: rgb(17, 17, 17); }}</style></head>\n\
+         <body><main><h1>Many</h1><ul>{}</ul></main></body></html>",
+        items.join("")
+    )
 }
 
 /// The Chromium the web tests use, or `None` (printed) and the test returns.
@@ -313,6 +325,32 @@ fn the_selectors_the_token_rules_name_are_measured_with_the_root_font_size() {
     assert_eq!(h1[0]["styles"]["font-size"], "40px");
     assert_eq!(home["selectors"][".absent"], serde_json::json!([]));
     assert_eq!(home["selectors"]["a["], serde_json::json!([]), "an invalid selector matches nothing");
+}
+
+#[test]
+fn a_selector_matching_more_elements_than_the_capture_measures_leaves_the_token_check_not_assessed() {
+    let Some(browser) = chromium() else { return };
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-token-selector-cap");
+    let package = logs.path().join("design/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("tokens.css"), ":root { --ink: #111111; }").unwrap();
+    std::fs::write(package.join("DESIGN.md"), "# Fixture\n\n## Token rules\n\nli: color --ink\n").unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(site.root(), logs.path(), &["/many".to_string()], &browser, &settings);
+
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert!(record.failures.is_empty(), "failures: {:?}", record.failures);
+    let measured = read_json(&logs.path().join("design/round-1/desktop/measurements.json"));
+    let many = &measured["routes"]["/many"];
+    assert_eq!(many["selector_counts"]["li"], 60, "{many}");
+    let check = check_design_tokens(&logs.path().join("design"), 1);
+    assert_ne!(check.status, TokenCheckStatus::Pass, "the red 60th item was never measured: {check:#?}");
+    let reason = check.reason.clone().unwrap_or_default();
+    assert!(reason.contains("li") && reason.contains("/many at desktop"), "{reason}");
 }
 
 #[test]

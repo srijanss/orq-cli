@@ -373,6 +373,13 @@ fn compare_round(
     if !gaps.is_empty() {
         unassessed.push(format!("these pages have no readable measurements: {}", gaps.join(", ")));
     }
+    let partial = partly_measured(rules, viewports);
+    if !partial.is_empty() {
+        unassessed.push(format!(
+            "these selectors matched more elements than the capture measures: {}",
+            partial.join(", ")
+        ));
+    }
     let reason = (!unassessed.is_empty()).then(|| unassessed.join("; "));
     // A violation found stays a failure; short of one, a check with gaps is never a pass.
     let status = if results.iter().any(|r| matches!(r.status, RuleStatus::Fail | RuleStatus::NoMatch)) {
@@ -383,6 +390,32 @@ fn compare_round(
         TokenCheckStatus::Pass
     };
     TokenCheck { round, status, reason, rules: results, warnings: off_token_values(tokens, viewports) }
+}
+
+/// Each rule selector the capture measured only some of the matches of, per page
+/// (`li on / at desktop (50 of 51 measured)`): the elements beyond its cap were never checked.
+fn partly_measured(rules: &[TokenRule], viewports: &[(String, Vec<(String, Value)>)]) -> Vec<String> {
+    let mut partial = Vec::new();
+    for (viewport, routes) in viewports {
+        for (route, page) in routes {
+            let mut seen: Vec<&str> = Vec::new();
+            for rule in rules {
+                let selector = rule.selector.as_str();
+                if seen.contains(&selector) {
+                    continue;
+                }
+                seen.push(selector);
+                let Some(count) = page["selector_counts"][selector].as_u64() else {
+                    continue;
+                };
+                let measured = page["selectors"][selector].as_array().map_or(0, Vec::len) as u64;
+                if count > measured {
+                    partial.push(format!("{selector} on {route} at {viewport} ({measured} of {count} measured)"));
+                }
+            }
+        }
+    }
+    partial
 }
 
 /// The colours and font sizes measured on landmarks that equal no token, once per landmark tag,

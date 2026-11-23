@@ -310,6 +310,34 @@ fn a_captured_page_without_readable_measurements_leaves_the_check_not_assessed()
 }
 
 #[test]
+fn a_selector_that_matched_more_elements_than_were_measured_leaves_the_check_not_assessed() {
+    let ink = || measured(json!({"color": "rgb(17, 17, 17)"}));
+    let dir = design_folder(
+        ":root { --ink: #111111; }",
+        "li: color --ink\nh1: color --ink",
+        vec![],
+        json!({"li": (0..50).map(|_| ink()).collect::<Vec<_>>(), "h1": [ink()]}),
+    );
+    let file = dir.path().join("round-1/desktop/measurements.json");
+    let mut page: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    page["routes"]["/"]["selector_counts"] = json!({"li": 51, "h1": 1});
+    std::fs::write(&file, page.to_string()).unwrap();
+
+    let check = check_design_tokens(dir.path(), 1);
+
+    assert_eq!(check.status, TokenCheckStatus::NotAssessed, "{check:#?}");
+    let reason = check.reason.clone().unwrap_or_default();
+    assert!(reason.contains("li on / at desktop (50 of 51 measured)"), "{reason}");
+    assert!(!reason.contains("h1"), "{reason}");
+
+    // A violation among the measured elements is still a failure.
+    let mut red = page.clone();
+    red["routes"]["/"]["selectors"]["li"][0] = measured(json!({"color": "rgb(255, 0, 0)"}));
+    std::fs::write(&file, red.to_string()).unwrap();
+    assert_eq!(check_design_tokens(dir.path(), 1).status, TokenCheckStatus::Fail);
+}
+
+#[test]
 fn a_bare_id_selector_is_a_rule_not_a_heading_and_the_rules_after_it_are_read() {
     let rules = parse_token_rules(
         "## Token rules\n\n#hero: color --ink\n#hero .title: font-size --font-title\nh1: font-weight --weight-bold\n\n#\n\nh2: color --ink\n",

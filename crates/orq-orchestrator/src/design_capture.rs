@@ -1184,12 +1184,15 @@ const MEASURE_SCRIPT: &str = r#"(async function () {
   }
   doc.root_font_size = parseFloat(getComputedStyle(root).fontSize) || 16;
   var selectors = {};
+  var selectorCounts = {};
   SELECTORS_JSON.forEach(function (selector) {
     var found = [];
     try { found = document.querySelectorAll(selector); } catch (e) { found = []; }
     var matched = [];
     for (var j = 0; j < found.length && matched.length < 50; j++) matched.push(measure(found[j]));
     selectors[selector] = matched;
+    // How many the selector matched in all: more than were measured is a check left incomplete.
+    selectorCounts[selector] = found.length;
   });
-  return JSON.stringify({document: doc, elements: elements, selectors: selectors});
+  return JSON.stringify({document: doc, elements: elements, selectors: selectors, selector_counts: selectorCounts});
 })()"#;
