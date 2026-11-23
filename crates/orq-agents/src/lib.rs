@@ -264,6 +264,9 @@ pub fn install_design_skills(worktree: &Path) -> std::io::Result<()> {
 }
 
 /// Writes `body` to `root/<dirs...>/<file>`, creating the folders, refusing any symlink on the way.
+/// The file is written new beside the destination and renamed over it, so an existing destination
+/// hard-linked to a file elsewhere is replaced, never written through. orq has just made the worktree
+/// and nothing else runs in it during setup, so the folders are not raced.
 fn write_in(root: &Path, dirs: &[&str], file: &str, body: &str) -> std::io::Result<()> {
     let refuse = |path: &Path| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is a symlink", path.display()));
     let mut path = root.to_path_buf();
@@ -276,11 +279,27 @@ fn write_in(root: &Path, dirs: &[&str], file: &str, body: &str) -> std::io::Resu
             Err(err) => return Err(err),
         }
     }
+    let temporary = path.join(format!(".{file}.orq-{}", std::process::id()));
     path.push(file);
     if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Err(refuse(&path));
     }
-    std::fs::write(&path, body)
+    // A leftover of an earlier install that stopped half way is a plain file of ours: remove_file
+    // takes a symlink away without following it.
+    match std::fs::remove_file(&temporary) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut out| std::io::Write::write_all(&mut out, body.as_bytes()))
+        .and_then(|()| std::fs::rename(&temporary, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// Checks `value` against `schema`, for the part of JSON Schema the design review schema uses: `type`,

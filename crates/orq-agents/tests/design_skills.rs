@@ -75,6 +75,28 @@ fn each_design_skill_is_installed_and_found_by_a_fake_claude_and_a_fake_pi_sessi
 }
 
 #[test]
+fn a_skill_file_hard_linked_to_a_file_outside_is_replaced_and_the_outside_file_is_untouched() {
+    let outside = TempDir::new("design-skills-hardlink-outside");
+    let target = outside.path().join("precious.txt");
+    fs::write(&target, "keep me").unwrap();
+    let worktree = TempDir::new("design-skills-hardlink");
+    let commands = worktree.path().join(".claude/commands");
+    let skill = worktree.path().join(".agents/skills/design-review");
+    fs::create_dir_all(&commands).unwrap();
+    fs::create_dir_all(&skill).unwrap();
+    fs::hard_link(&target, commands.join("design-prepare.md")).unwrap();
+    fs::hard_link(&target, skill.join("SKILL.md")).unwrap();
+
+    install_design_skills(worktree.path()).unwrap();
+
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
+    assert!(fs::read_to_string(skill.join("SKILL.md")).unwrap().contains("\nname: design-review\n"));
+    assert!(fs::read_to_string(commands.join("design-prepare.md")).unwrap().contains(".agents/skills/design-prepare/SKILL.md"));
+    let leftovers: Vec<_> = fs::read_dir(&skill).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    assert_eq!(leftovers.len(), 2, "only SKILL.md and the schema, no temporary file: {leftovers:?}");
+}
+
+#[test]
 fn the_skills_are_never_written_through_a_symlink_out_of_the_worktree() {
     let outside = TempDir::new("design-skills-outside");
     for link in [
