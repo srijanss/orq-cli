@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::design_capture::{capture_viewports, design_routes, CaptureOutcome, CaptureRun};
 use crate::design_package::{
-    resume_design_package, start_design_package, DesignManifest, DesignPackageOutcome,
+    resume_design_package, DesignManifest, DesignPackageOutcome,
     DesignPackageRun, PackageLimits,
 };
 use crate::run_settings::DesignSettings;
@@ -399,7 +399,8 @@ fn previous_reviews(design_dir: &Path, round: u32) -> Vec<(u32, DesignReview)> {
         .collect()
 }
 
-/// The package frozen for the run: checked and frozen on the first round, checked unchanged after.
+/// The package frozen for the run, checked unchanged: frozen here only when no step froze it before,
+/// so the page is never reviewed against references that changed after the implementer got them.
 fn freeze_package(run: &DesignReviewRun) -> Result<DesignManifest, String> {
     let package_run = DesignPackageRun {
         main_checkout: run.main_checkout,
@@ -409,12 +410,7 @@ fn freeze_package(run: &DesignReviewRun) -> Result<DesignManifest, String> {
         worktree: run.worktree,
         limits: PackageLimits::default(),
     };
-    let outcome = if run.round <= 1 {
-        start_design_package(&package_run)
-    } else {
-        resume_design_package(&package_run)
-    };
-    match outcome {
+    match resume_design_package(&package_run) {
         DesignPackageOutcome::Frozen(manifest) => Ok(manifest),
         DesignPackageOutcome::FilesNeeded(request) => Err(request.message()),
         DesignPackageOutcome::Refused(problems) => Err(format!(

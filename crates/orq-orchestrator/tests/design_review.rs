@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use orq_orchestrator::{
-    review_design, CaptureOutcome, CaptureRecord, CaptureRun, DesignAgent, DesignMode,
-    DesignReviewRun, DesignSettings, DesignVerdict, PageCapture, Viewport,
+    review_design, start_design_package, CaptureOutcome, CaptureRecord, CaptureRun, DesignAgent,
+    DesignMode, DesignPackageOutcome, DesignPackageRun, DesignReviewRun, DesignSettings,
+    DesignVerdict, PackageLimits, PageCapture, Viewport,
 };
 use orq_test_support::{GitFixture, TempDir};
 use serde_json::{json, Value};
@@ -487,6 +488,41 @@ fn reason(f: &Fixture) -> String {
         serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap())
             .unwrap();
     written["reason"].as_str().unwrap_or_default().to_string()
+}
+
+#[test]
+fn the_first_review_checks_the_package_frozen_before_the_implementer_instead_of_freezing_it_again() {
+    let f = Fixture::new();
+    f.answer(
+        "reviewer",
+        &answer("pass", vec![check("layout", "pass")], vec![]),
+    );
+    let package_run = DesignPackageRun {
+        main_checkout: f.repo.root(),
+        feature: FEATURE,
+        settings: &f.settings,
+        run_logs: f.logs.path(),
+        worktree: f.repo.root(),
+        limits: PackageLimits::default(),
+    };
+    assert!(matches!(
+        start_design_package(&package_run),
+        DesignPackageOutcome::Frozen(_)
+    ));
+    // The reference changes while the implementer works.
+    fs::write(
+        f.repo.root().join("designs").join(FEATURE).join("references/desktop.png"),
+        png(400, 301),
+    )
+    .unwrap();
+
+    assert_eq!(f.review(1), DesignVerdict::Blocked);
+    assert!(
+        reason(&f).contains("the design package changed since this run started"),
+        "{}",
+        reason(&f)
+    );
+    assert_eq!(f.calls("reviewer"), 0, "the page is never reviewed against the new references");
 }
 
 #[test]
