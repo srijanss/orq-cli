@@ -214,6 +214,128 @@ pub trait HarnessAdapter {
     fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError>;
 }
 
+/// The skills of the frontend design workflow orq ships, by name.
+pub const DESIGN_SKILLS: [&str; 3] = ["design-implement", "design-review", "design-prepare"];
+
+/// Each design skill's name and its `SKILL.md`.
+const DESIGN_SKILL_FILES: [(&str, &str); 3] = [
+    ("design-implement", include_str!("../design_skills/design-implement/SKILL.md")),
+    ("design-review", include_str!("../design_skills/design-review/SKILL.md")),
+    ("design-prepare", include_str!("../design_skills/design-prepare/SKILL.md")),
+];
+
+/// The JSON schema a design review answers with, shipped next to the design-review skill.
+pub const DESIGN_REVIEW_SCHEMA: &str = include_str!("../design_skills/design-review/review.schema.json");
+
+/// How a session on `harness` is told to use `skill`: the leading word of its prompt, as the
+/// implement-and-review skill is named (`/<skill>` for Claude, `/skill:<skill>` for pi).
+pub fn skill_command(harness: &str, skill: &str) -> Result<String, AdapterError> {
+    plain("skill", skill)?;
+    match harness {
+        "claude" => Ok(format!("/{skill}")),
+        "pi" => Ok(format!("/skill:{skill}")),
+        other => Err(AdapterError::UnknownHarness(other.to_string())),
+    }
+}
+
+/// The Claude command that points at a skill, as the agent tooling writes it for implement-and-review.
+fn claude_command_for(skill: &str, description: &str) -> String {
+    format!(
+        "---\ndescription: {description}\n---\n\nArguments given: \"$ARGUMENTS\".\n\nRead and follow `.agents/skills/{skill}/SKILL.md` for the full procedure, using\nthe arguments above as the input it refers to.\n"
+    )
+}
+
+/// The `description:` line of a skill's front matter.
+fn skill_description(body: &str) -> &str {
+    body.lines().find_map(|line| line.strip_prefix("description: ")).unwrap_or_default()
+}
+
+/// Installs the design skills in `worktree` where the agent tooling installs the implement-and-review
+/// skill, so a session finds them the same way: `.agents/skills/<name>/` (read by pi's `/skill:<name>`)
+/// and `.claude/commands/<name>.md` (Claude's `/<name>`, pointing at the skill). The review schema goes
+/// next to the design-review skill. A symlink on the way is refused, so nothing is written outside the
+/// worktree.
+pub fn install_design_skills(worktree: &Path) -> std::io::Result<()> {
+    for (skill, body) in DESIGN_SKILL_FILES {
+        write_in(worktree, &[".agents", "skills", skill], "SKILL.md", body)?;
+        write_in(worktree, &[".claude", "commands"], &format!("{skill}.md"), &claude_command_for(skill, skill_description(body)))?;
+    }
+    write_in(worktree, &[".agents", "skills", "design-review"], "review.schema.json", DESIGN_REVIEW_SCHEMA)
+}
+
+/// Writes `body` to `root/<dirs...>/<file>`, creating the folders, refusing any symlink on the way.
+fn write_in(root: &Path, dirs: &[&str], file: &str, body: &str) -> std::io::Result<()> {
+    let refuse = |path: &Path| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is a symlink", path.display()));
+    let mut path = root.to_path_buf();
+    for dir in dirs {
+        path.push(dir);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => return Err(refuse(&path)),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&path)?,
+            Err(err) => return Err(err),
+        }
+    }
+    path.push(file);
+    if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(refuse(&path));
+    }
+    std::fs::write(&path, body)
+}
+
+/// Checks `value` against `schema`, for the part of JSON Schema the design review schema uses: `type`,
+/// `enum`, `required`, `properties`, `additionalProperties: false` and `items`. The error names the
+/// first place that does not match.
+pub fn check_against_schema(schema: &serde_json::Value, value: &serde_json::Value) -> Result<(), String> {
+    check_at(schema, value, "$")
+}
+
+fn check_at(schema: &serde_json::Value, value: &serde_json::Value, at: &str) -> Result<(), String> {
+    use serde_json::Value;
+    if let Some(kind) = schema.get("type").and_then(Value::as_str) {
+        let matches = match kind {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "boolean" => value.is_boolean(),
+            "number" => value.is_number(),
+            "integer" => value.is_i64() || value.is_u64(),
+            "null" => value.is_null(),
+            other => return Err(format!("{at}: the schema has an unknown type {other:?}")),
+        };
+        if !matches {
+            return Err(format!("{at}: not of type {kind}"));
+        }
+    }
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
+        if !allowed.contains(value) {
+            return Err(format!("{at}: {value} is not one of {}", Value::Array(allowed.clone())));
+        }
+    }
+    if let Some(object) = value.as_object() {
+        let properties = schema.get("properties").and_then(Value::as_object);
+        for field in schema.get("required").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            if !object.contains_key(field) {
+                return Err(format!("{at}: the field {field:?} is missing"));
+            }
+        }
+        let closed = schema.get("additionalProperties") == Some(&Value::Bool(false));
+        for (field, item) in object {
+            match properties.and_then(|properties| properties.get(field)) {
+                Some(property) => check_at(property, item, &format!("{at}.{field}"))?,
+                None if closed => return Err(format!("{at}: the field {field:?} is not allowed")),
+                None => {}
+            }
+        }
+    }
+    if let (Some(items), Some(array)) = (schema.get("items"), value.as_array()) {
+        for (index, item) in array.iter().enumerate() {
+            check_at(items, item, &format!("{at}[{index}]"))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn adapter_for(harness: &str) -> Result<Box<dyn HarnessAdapter>, AdapterError> {
     match harness {
         "claude" => Ok(Box::new(Claude)),
@@ -395,7 +517,7 @@ impl HarnessAdapter for Claude {
     }
 
     fn implement_argv(&self, request: &ImplementRequest<'_>) -> Result<Vec<String>, AdapterError> {
-        let prompt = implement_prompt("claude", "/implement-and-review", request)?;
+        let prompt = implement_prompt("claude", &skill_command("claude", "implement-and-review")?, request)?;
         let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];
         if let Some(thinking) = &request.implementer.thinking {
             plain("implementer thinking", thinking)?;
@@ -743,7 +865,7 @@ impl HarnessAdapter for Pi {
     }
 
     fn implement_argv(&self, request: &ImplementRequest<'_>) -> Result<Vec<String>, AdapterError> {
-        let prompt = implement_prompt("pi", "/skill:implement-and-review", request)?;
+        let prompt = implement_prompt("pi", &skill_command("pi", "implement-and-review")?, request)?;
         let mut argv = vec!["--model".to_string(), request.implementer.model.clone()];
         if let Some(thinking) = &request.implementer.thinking {
             plain("implementer thinking", thinking)?;

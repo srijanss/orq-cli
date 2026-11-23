@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "orq design review",
+  "description": "The answer of orq's design reviewer and design verifier: one object, nothing else.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "reference_hash", "capture_revision", "evaluation", "verdict", "checks", "issues", "suggestions", "blockers"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "reference_hash": { "type": "string" },
+    "capture_revision": { "type": "string" },
+    "evaluation": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["pass", "changes_required", "blocked"] },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "required", "status", "evidence"],
+        "properties": {
+          "id": { "type": "string" },
+          "required": { "type": "boolean" },
+          "status": { "type": "string", "enum": ["pass", "fail", "not_assessed"] },
+          "evidence": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "section", "viewport", "source", "expected", "actual", "evidence", "severity", "status", "fix_direction"],
+        "properties": {
+          "id": { "type": "string" },
+          "section": { "type": "string" },
+          "viewport": { "type": "string" },
+          "source": { "type": "string" },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "severity": { "type": "string", "enum": ["critical", "major", "minor"] },
+          "status": { "type": "string", "enum": ["open", "resolved", "regressed"] },
+          "fix_direction": { "type": "string" },
+          "selector": { "type": "string" }
+        }
+      }
+    },
+    "suggestions": { "type": "array", "items": { "type": "string" } },
+    "blockers": { "type": "array", "items": { "type": "string" } }
+  }
+}
