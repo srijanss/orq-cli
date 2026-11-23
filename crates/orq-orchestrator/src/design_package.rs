@@ -880,15 +880,19 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// A PNG's size, once its signature, every chunk's CRC, a leading IHDR, an IDAT and the closing
-/// IEND check out.
+/// The most filtered image data a PNG may inflate to (1 GiB): an 8K 16-bit RGBA image is a
+/// quarter of it.
+const MAX_PNG_DATA: u64 = 1 << 30;
+
+/// A PNG's size, once its signature, every chunk's CRC, a leading IHDR and the closing IEND check
+/// out and its IDAT data inflates to exactly the rows IHDR describes.
 fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return None;
     }
     let mut at = 8;
-    let mut size = None;
-    let mut has_data = false;
+    let mut header = None;
+    let mut zlib = Vec::new();
     loop {
         let length = be32(bytes, at)? as usize;
         let body = bytes.get(at + 4..(at + 8).checked_add(length)?)?;
@@ -898,24 +902,346 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
         }
         let (kind, data) = body.split_at(4);
         match kind {
-            b"IHDR" if at == 8 && data.len() == 13 => size = Some((be32(data, 0)?, be32(data, 4)?)),
+            b"IHDR" if at == 8 && data.len() == 13 => header = Some(data),
             _ if at == 8 => return None,
-            b"IDAT" => has_data = true,
-            b"IEND" => return has_data.then_some(size?),
+            b"IDAT" => zlib.extend_from_slice(data),
+            b"IEND" => break,
             _ => {}
         }
         at += 12 + length;
     }
+    let header = header?;
+    let size = (be32(header, 0)?, be32(header, 4)?);
+    let rows = png_rows(size.0, size.1, header)?;
+    inflate_png(&zlib, &rows).map(|()| size)
 }
 
-/// A JPEG's size from its frame header, once its segments up to the scan are whole and it ends
-/// with EOI.
+/// The rows of a PNG's filtered image data, pass by pass: (bytes in a row with its filter byte,
+/// rows). None for a header PNG doesn't allow, or data over `MAX_PNG_DATA`.
+fn png_rows(width: u32, height: u32, header: &[u8]) -> Option<Vec<(u64, u64)>> {
+    let (depth, colour) = (header[8], header[9]);
+    let channels: u64 = match (colour, depth) {
+        (0, 1 | 2 | 4 | 8 | 16) | (3, 1 | 2 | 4 | 8) => 1,
+        (2, 8 | 16) => 3,
+        (4, 8 | 16) => 2,
+        (6, 8 | 16) => 4,
+        _ => return None,
+    };
+    if header[10] != 0 || header[11] != 0 || header[12] > 1 {
+        return None;
+    }
+    // Adam7's passes: first column and row, then the step between them.
+    const ADAM7: [(u64, u64, u64, u64); 7] = [
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ];
+    let passes: &[(u64, u64, u64, u64)] = if header[12] == 1 {
+        &ADAM7
+    } else {
+        &[(0, 0, 1, 1)]
+    };
+    let bits = channels * depth as u64;
+    let mut rows = Vec::new();
+    let mut total = 0u64;
+    for &(x, y, dx, dy) in passes {
+        let columns = (width as u64).saturating_sub(x).div_ceil(dx);
+        let lines = (height as u64).saturating_sub(y).div_ceil(dy);
+        if columns == 0 || lines == 0 {
+            continue;
+        }
+        let row = 1 + (columns * bits).div_ceil(8);
+        total += row * lines;
+        rows.push((row, lines));
+    }
+    (total <= MAX_PNG_DATA).then_some(rows)
+}
+
+/// Reads a deflate stream's bits, least significant first.
+struct Bits<'a> {
+    data: &'a [u8],
+    at: usize,
+    buffer: u64,
+    count: u32,
+}
+
+impl Bits<'_> {
+    fn take(&mut self, n: u32) -> Option<u32> {
+        while self.count < n {
+            self.buffer |= (*self.data.get(self.at)? as u64) << self.count;
+            self.at += 1;
+            self.count += 8;
+        }
+        let value = (self.buffer & ((1u64 << n) - 1)) as u32;
+        self.buffer >>= n;
+        self.count -= n;
+        Some(value)
+    }
+
+    /// Drops the bits left of the current byte; fewer than 8 are ever held.
+    fn align(&mut self) {
+        self.buffer = 0;
+        self.count = 0;
+    }
+}
+
+/// A canonical Huffman code: how many codes of each length, and the symbols in code order.
+struct Huffman {
+    counts: [u16; 16],
+    symbols: Vec<u16>,
+}
+
+impl Huffman {
+    fn new(lengths: &[u8]) -> Option<Huffman> {
+        let mut counts = [0u16; 16];
+        for &length in lengths {
+            counts[length as usize] += 1;
+        }
+        counts[0] = 0;
+        let mut left = 1i32;
+        for count in &counts[1..] {
+            left = (left << 1) - *count as i32;
+            if left < 0 {
+                return None;
+            }
+        }
+        let mut offsets = [0u16; 16];
+        for length in 1..15 {
+            offsets[length + 1] = offsets[length] + counts[length];
+        }
+        let mut symbols = vec![0u16; lengths.len()];
+        for (symbol, &length) in lengths.iter().enumerate() {
+            if length != 0 {
+                symbols[offsets[length as usize] as usize] = symbol as u16;
+                offsets[length as usize] += 1;
+            }
+        }
+        Some(Huffman { counts, symbols })
+    }
+
+    fn decode(&self, bits: &mut Bits) -> Option<u16> {
+        let (mut code, mut first, mut index) = (0i32, 0i32, 0i32);
+        for count in &self.counts[1..] {
+            code |= bits.take(1)? as i32;
+            let count = *count as i32;
+            if code - first < count {
+                return self.symbols.get((index + code - first) as usize).copied();
+            }
+            index += count;
+            first = (first + count) << 1;
+            code <<= 1;
+        }
+        None
+    }
+}
+
+const WINDOW: usize = 1 << 15;
+
+/// The inflated bytes of a PNG, checked as they come against the rows they must make up; only
+/// deflate's 32 KiB window is kept.
+struct PngData<'a> {
+    rows: &'a [(u64, u64)],
+    pass: usize,
+    row: u64,
+    column: u64,
+    window: Vec<u8>,
+    total: u64,
+    adler: (u32, u32),
+}
+
+impl PngData<'_> {
+    fn push(&mut self, byte: u8) -> Option<()> {
+        // Past the last row is more data than the image holds.
+        let &(length, rows) = self.rows.get(self.pass)?;
+        if self.column == 0 && byte > 4 {
+            return None;
+        }
+        self.column += 1;
+        if self.column == length {
+            self.column = 0;
+            self.row += 1;
+            if self.row == rows {
+                self.row = 0;
+                self.pass += 1;
+            }
+        }
+        self.window[self.total as usize % WINDOW] = byte;
+        self.total += 1;
+        let (a, b) = self.adler;
+        let a = (a + byte as u32) % 65521;
+        self.adler = (a, (b + a) % 65521);
+        Some(())
+    }
+
+    fn copy(&mut self, distance: usize, length: usize) -> Option<()> {
+        if distance as u64 > self.total || distance > WINDOW {
+            return None;
+        }
+        for _ in 0..length {
+            let byte = self.window[(self.total - distance as u64) as usize % WINDOW];
+            self.push(byte)?;
+        }
+        Some(())
+    }
+}
+
+/// Inflates a PNG's zlib stream, checking its bytes make up exactly `rows`, each starting with a
+/// known filter, and that its Adler-32 matches.
+fn inflate_png(zlib: &[u8], rows: &[(u64, u64)]) -> Option<()> {
+    let (cmf, flg) = (*zlib.first()?, *zlib.get(1)?);
+    if cmf & 0x0F != 8 || cmf >> 4 > 7 || (u16::from(cmf) << 8 | u16::from(flg)) % 31 != 0 {
+        return None;
+    }
+    if flg & 0x20 != 0 {
+        return None;
+    }
+    let mut bits = Bits {
+        data: &zlib[2..],
+        at: 0,
+        buffer: 0,
+        count: 0,
+    };
+    let mut out = PngData {
+        rows,
+        pass: 0,
+        row: 0,
+        column: 0,
+        window: vec![0; WINDOW],
+        total: 0,
+        adler: (1, 0),
+    };
+    loop {
+        let last = bits.take(1)?;
+        match bits.take(2)? {
+            0 => {
+                bits.align();
+                let at = bits.at;
+                let length = u16::from_le_bytes(bits.data.get(at..at + 2)?.try_into().ok()?);
+                let check = u16::from_le_bytes(bits.data.get(at + 2..at + 4)?.try_into().ok()?);
+                if length != !check {
+                    return None;
+                }
+                for &byte in bits.data.get(at + 4..at + 4 + length as usize)? {
+                    out.push(byte)?;
+                }
+                bits.at = at + 4 + length as usize;
+            }
+            1 => {
+                let mut lengths = [8u8; 288];
+                lengths[144..256].fill(9);
+                lengths[256..280].fill(7);
+                let literals = Huffman::new(&lengths)?;
+                let distances = Huffman::new(&[5; 30])?;
+                inflate_block(&mut bits, &mut out, &literals, &distances)?;
+            }
+            2 => {
+                let (literals, distances) = dynamic_codes(&mut bits)?;
+                inflate_block(&mut bits, &mut out, &literals, &distances)?;
+            }
+            _ => return None,
+        }
+        if last == 1 {
+            break;
+        }
+    }
+    bits.align();
+    let (a, b) = out.adler;
+    (out.pass == rows.len() && be32(bits.data, bits.at)? == (b << 16 | a)).then_some(())
+}
+
+/// A dynamic block's literal/length and distance codes, read from its header.
+fn dynamic_codes(bits: &mut Bits) -> Option<(Huffman, Huffman)> {
+    const ORDER: [usize; 19] = [
+        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+    ];
+    let literals = bits.take(5)? as usize + 257;
+    let distances = bits.take(5)? as usize + 1;
+    let header = bits.take(4)? as usize + 4;
+    if literals > 286 || distances > 30 {
+        return None;
+    }
+    let mut code_lengths = [0u8; 19];
+    for &i in &ORDER[..header] {
+        code_lengths[i] = bits.take(3)? as u8;
+    }
+    let code = Huffman::new(&code_lengths)?;
+    let mut lengths = vec![0u8; literals + distances];
+    let mut i = 0;
+    while i < lengths.len() {
+        let symbol = code.decode(bits)?;
+        let (value, repeat) = match symbol {
+            0..=15 => (symbol as u8, 1),
+            16 => (*lengths.get(i.checked_sub(1)?)?, 3 + bits.take(2)? as usize),
+            17 => (0, 3 + bits.take(3)? as usize),
+            18 => (0, 11 + bits.take(7)? as usize),
+            _ => return None,
+        };
+        lengths.get_mut(i..i + repeat)?.fill(value);
+        i += repeat;
+    }
+    if lengths[256] == 0 {
+        return None;
+    }
+    Some((
+        Huffman::new(&lengths[..literals])?,
+        Huffman::new(&lengths[literals..])?,
+    ))
+}
+
+/// One compressed block's literals and copies, up to its end-of-block code.
+fn inflate_block(
+    bits: &mut Bits,
+    out: &mut PngData,
+    literals: &Huffman,
+    distances: &Huffman,
+) -> Option<()> {
+    const LENGTH_BASE: [u16; 29] = [
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
+        131, 163, 195, 227, 258,
+    ];
+    const LENGTH_EXTRA: [u8; 29] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+    ];
+    const DISTANCE_BASE: [u16; 30] = [
+        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+        2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    ];
+    const DISTANCE_EXTRA: [u8; 30] = [
+        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
+        13, 13,
+    ];
+    loop {
+        let symbol = literals.decode(bits)? as usize;
+        match symbol {
+            0..=255 => out.push(symbol as u8)?,
+            256 => return Some(()),
+            _ => {
+                let index = symbol - 257;
+                let length = *LENGTH_BASE.get(index)? as usize
+                    + bits.take(LENGTH_EXTRA[index] as u32)? as usize;
+                let code = distances.decode(bits)? as usize;
+                let distance = *DISTANCE_BASE.get(code)? as usize
+                    + bits.take(DISTANCE_EXTRA[code] as u32)? as usize;
+                out.copy(distance, length)?;
+            }
+        }
+    }
+}
+
+/// A JPEG's size from its frame header, once its segments are whole, its quantization and
+/// Huffman (or arithmetic) tables come before a well-formed scan, entropy-coded data follows the
+/// scan header and the file ends with EOI.
 fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if !bytes.starts_with(&[0xFF, 0xD8]) || !bytes.ends_with(&[0xFF, 0xD9]) || bytes.len() < 4 {
         return None;
     }
     let mut at = 2;
     let mut size = None;
+    let (mut quantization, mut huffman, mut arithmetic) = (false, false, false);
     loop {
         if *bytes.get(at)? != 0xFF {
             return None;
@@ -930,25 +1256,44 @@ fn jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
                 at += 2;
                 continue;
             }
-            // The image ends, or its scan starts: what follows is entropy-coded data.
-            0xD9 | 0xDA => return size,
+            // The image ends before any scan.
+            0xD9 => return None,
             _ => {}
         }
         let length = be16(bytes, at + 2)? as usize;
-        if length < 2 || at + 2 + length > bytes.len() {
+        if length < 2 || at + 2 + length > bytes.len() - 2 {
             return None;
         }
-        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
-            if length < 8 {
-                return None;
+        let segment = &bytes[at + 4..at + 2 + length];
+        match marker {
+            0xDB => quantization = true,
+            0xC4 => huffman = true,
+            0xC0..=0xCF if ![0xC8, 0xCC].contains(&marker) => {
+                let components = *segment.get(5)? as usize;
+                if components == 0 || length != 8 + 3 * components {
+                    return None;
+                }
+                size = Some((be16(bytes, at + 7)? as u32, be16(bytes, at + 5)? as u32));
+                arithmetic = marker >= 0xC9;
             }
-            size = Some((be16(bytes, at + 7)? as u32, be16(bytes, at + 5)? as u32));
+            0xDA => {
+                let components = *segment.first()? as usize;
+                if !(1..=4).contains(&components) || length != 6 + 2 * components {
+                    return None;
+                }
+                let entropy = &bytes[at + 2 + length..bytes.len() - 2];
+                let tables = quantization && (huffman || arithmetic);
+                return size.filter(|_| tables && !entropy.is_empty());
+            }
+            _ => {}
         }
         at += 2 + length;
     }
 }
 
-/// A WebP's size from its first chunk (VP8, VP8L or VP8X), once the RIFF length matches the file.
+/// A WebP's size, once the RIFF length matches the file, its chunks are whole and it holds an
+/// image: a VP8 key frame or VP8L bitstream with data after its header, first or after a VP8X
+/// header (whose canvas is the size), or an animation frame.
 fn webp_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if !bytes.starts_with(b"RIFF") || bytes.get(8..12)? != b"WEBP" {
         return None;
@@ -957,26 +1302,51 @@ fn webp_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if riff.checked_add(8)? != bytes.len() && riff.checked_add(9)? != bytes.len() {
         return None;
     }
-    let chunk = le32(bytes, 16)? as usize;
-    let data = bytes.get(20..20usize.checked_add(chunk)?)?;
+    let mut chunks = Vec::new();
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let size = le32(bytes, at + 4)? as usize;
+        let data = bytes.get(at + 8..(at + 8).checked_add(size)?)?;
+        chunks.push((&bytes[at..at + 4], data));
+        at += 8 + size + size % 2;
+    }
+    let image = |kind: &[u8], data: &[u8]| -> Option<(u32, u32)> {
+        match kind {
+            b"VP8L" if data.first() == Some(&0x2F) && data.len() > 5 => {
+                let bits = le32(data, 1)?;
+                (bits >> 29 == 0).then_some(((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1))
+            }
+            b"VP8 " if data.get(3..6)? == [0x9D, 0x01, 0x2A] && data.len() > 10 => {
+                let tag = data[0] as u32 | (data[1] as u32) << 8 | (data[2] as u32) << 16;
+                if tag & 1 != 0 || (tag >> 5) as usize > data.len() - 10 {
+                    return None;
+                }
+                let side = |at: usize| {
+                    Some(
+                        (u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?) & 0x3FFF)
+                            as u32,
+                    )
+                };
+                Some((side(6)?, side(8)?))
+            }
+            b"ANMF" if data.len() > 16 => Some((1, 1)),
+            _ => None,
+        }
+    };
+    let (first, data) = *chunks.first()?;
+    if first != b"VP8X" {
+        return image(first, data);
+    }
     let le24 = |at: usize| -> Option<u32> {
         let b = data.get(at..at + 3)?;
         Some(b[0] as u32 | (b[1] as u32) << 8 | (b[2] as u32) << 16)
     };
-    match bytes.get(12..16)? {
-        b"VP8L" if data.first() == Some(&0x2F) => {
-            let bits = le32(data, 1)?;
-            Some(((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1))
-        }
-        b"VP8X" => Some((le24(4)? + 1, le24(7)? + 1)),
-        b"VP8 " if data.get(3..6)? == [0x9D, 0x01, 0x2A] => {
-            let side = |at: usize| {
-                Some((u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?) & 0x3FFF) as u32)
-            };
-            Some((side(6)?, side(8)?))
-        }
-        _ => None,
-    }
+    let canvas = (le24(4)? + 1, le24(7)? + 1);
+    chunks[1..]
+        .iter()
+        .find(|(kind, _)| matches!(*kind, b"VP8 " | b"VP8L" | b"ANMF"))
+        .and_then(|(kind, data)| image(kind, data))
+        .map(|_| canvas)
 }
 
 fn hex(bytes: &[u8]) -> String {

@@ -35,30 +35,110 @@ fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&crc32(&body).to_be_bytes());
 }
 
-/// A PNG of `width` x `height`; its pixel data is a stored zlib stream of one row only, which the
-/// structural check doesn't inflate.
-fn png(width: u32, height: u32) -> Vec<u8> {
+/// Writes a deflate stream's bits: values least significant bit first, Huffman codes most
+/// significant bit first.
+struct BitWriter {
+    out: Vec<u8>,
+    buffer: u32,
+    count: u32,
+}
+
+impl BitWriter {
+    fn bits(&mut self, value: u32, count: u32) {
+        for i in 0..count {
+            self.buffer |= ((value >> i) & 1) << self.count;
+            self.count += 1;
+            if self.count == 8 {
+                self.out.push(self.buffer as u8);
+                self.buffer = 0;
+                self.count = 0;
+            }
+        }
+    }
+
+    fn code(&mut self, code: u32, length: u32) {
+        for i in (0..length).rev() {
+            self.bits((code >> i) & 1, 1);
+        }
+    }
+}
+
+/// A zlib stream of `n` zero bytes, compressed with deflate's fixed Huffman codes: a literal
+/// zero, then 258-byte copies of the byte before.
+fn zlib_zeros(n: u64) -> Vec<u8> {
+    let mut w = BitWriter {
+        out: vec![0x78, 0x01],
+        buffer: 0,
+        count: 0,
+    };
+    w.bits(1, 1); // the last block
+    w.bits(1, 2); // fixed codes
+    let mut left = n;
+    if left > 0 {
+        w.code(0x30, 8); // literal 0
+        left -= 1;
+    }
+    while left >= 258 {
+        w.code(0xC5, 8); // length 258
+        w.code(0, 5); // distance 1
+        left -= 258;
+    }
+    for _ in 0..left {
+        w.code(0x30, 8);
+    }
+    w.code(0, 7); // end of block
+    if w.count > 0 {
+        w.out.push(w.buffer as u8);
+    }
+    let adler = (((n % 65521) as u32) << 16) | 1;
+    w.out.extend_from_slice(&adler.to_be_bytes());
+    w.out
+}
+
+fn png_with(width: u32, height: u32, idat: &[u8]) -> Vec<u8> {
     let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
     let mut ihdr = width.to_be_bytes().to_vec();
     ihdr.extend_from_slice(&height.to_be_bytes());
     ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
     png_chunk(&mut out, b"IHDR", &ihdr);
-    png_chunk(
-        &mut out,
-        b"IDAT",
-        &[
-            0x78, 0x01, 0x01, 0x01, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x01, 0x00, 0x01,
-        ],
-    );
+    png_chunk(&mut out, b"IDAT", idat);
     png_chunk(&mut out, b"IEND", &[]);
     out
 }
 
+/// A black RGB PNG of `width` x `height`: every row's filter byte and pixels are whole.
+fn png(width: u32, height: u32) -> Vec<u8> {
+    png_with(
+        width,
+        height,
+        &zlib_zeros(height as u64 * (1 + 3 * width as u64)),
+    )
+}
+
+fn jpeg_segment(out: &mut Vec<u8>, marker: u8, body: &[u8]) {
+    out.extend_from_slice(&[0xFF, marker]);
+    out.extend_from_slice(&(body.len() as u16 + 2).to_be_bytes());
+    out.extend_from_slice(body);
+}
+
+/// A baseline JPEG of `width` x `height` with its quantization and Huffman tables, a scan and
+/// entropy-coded data.
 fn jpeg(width: u16, height: u16) -> Vec<u8> {
-    let mut out = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08];
-    out.extend_from_slice(&height.to_be_bytes());
-    out.extend_from_slice(&width.to_be_bytes());
-    out.extend_from_slice(&[0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+    let mut out = vec![0xFF, 0xD8];
+    let mut dqt = vec![0];
+    dqt.extend([1; 64]);
+    jpeg_segment(&mut out, 0xDB, &dqt);
+    let mut sof = vec![8];
+    sof.extend_from_slice(&height.to_be_bytes());
+    sof.extend_from_slice(&width.to_be_bytes());
+    sof.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 0, 3, 0x11, 0]);
+    jpeg_segment(&mut out, 0xC0, &sof);
+    let mut dht = vec![0x00, 1];
+    dht.extend([0; 15]);
+    dht.push(0);
+    jpeg_segment(&mut out, 0xC4, &dht);
+    jpeg_segment(&mut out, 0xDA, &[3, 1, 0x00, 2, 0x00, 3, 0x00, 0, 63, 0]);
+    out.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
     out.extend_from_slice(&[0xFF, 0xD9]);
     out
 }
@@ -415,6 +495,60 @@ fn images_that_do_not_decode_are_refused_and_every_one_is_listed() {
         );
     }
     assert_eq!(problems.len(), 7, "{problems:?}");
+}
+
+#[test]
+fn images_with_whole_headers_but_unusable_pixel_data_are_refused() {
+    let f = Fixture::new("unusable-pixels");
+    f.full_package();
+    // Every chunk's CRC is right, but the data holds one row of 900.
+    f.put(
+        "references/desktop.png",
+        png_with(
+            1440,
+            900,
+            &[0x78, 0x01, 0x01, 0x01, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x01, 0x00, 0x01],
+        ),
+    );
+    // Not a zlib stream at all.
+    f.put("assets/hero.png", png_with(10, 10, b"pixels go here"));
+    // Whole rows, but one too many.
+    f.put("assets/tall.png", png_with(10, 10, &zlib_zeros(11 * 31)));
+    // A frame header, then the end: no tables, no scan.
+    let mut header_only = vec![0xFF, 0xD8];
+    jpeg_segment(
+        &mut header_only,
+        0xC0,
+        &[8, 0x04, 0x00, 0x03, 0x00, 1, 1, 0x11, 0],
+    );
+    header_only.extend_from_slice(&[0xFF, 0xD9]);
+    f.put("references/tablet.jpg", header_only);
+    // A VP8X header with no image after it.
+    let mut vp8x = b"WEBP".to_vec();
+    vp8x.extend_from_slice(b"VP8X");
+    vp8x.extend_from_slice(&10u32.to_le_bytes());
+    vp8x.extend_from_slice(&[0, 0, 0, 0, 0x85, 0x01, 0x00, 0x4B, 0x03, 0x00]);
+    let mut webp_header = b"RIFF".to_vec();
+    webp_header.extend_from_slice(&(vp8x.len() as u32).to_le_bytes());
+    webp_header.extend_from_slice(&vp8x);
+    f.put("references/mobile.webp", webp_header);
+
+    let problems = refused(f.start());
+
+    for path in [
+        "references/desktop.png",
+        "assets/hero.png",
+        "assets/tall.png",
+        "references/tablet.jpg",
+        "references/mobile.webp",
+    ] {
+        assert!(
+            mentions(&problems, &[path, "does not decode"]),
+            "{path} not refused: {problems:?}"
+        );
+    }
+    assert_eq!(problems.len(), 5, "{problems:?}");
+    assert!(!f.logs.path().join("design/manifest.json").exists());
 }
 
 #[test]
