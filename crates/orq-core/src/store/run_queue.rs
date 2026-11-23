@@ -277,6 +277,16 @@ impl Store {
             .map_err(db)
     }
 
+    /// Forgets the run `run` the queue started for `feature`, which never got going: the entry waits to
+    /// be started again. An entry that follows another run by now is left as it is.
+    pub fn queue_unstarted(&self, root: &Path, feature: &str, run: &str) -> Result<()> {
+        let key = project_key(root)?;
+        self.conn
+            .execute("UPDATE run_queue SET run_id = NULL, failed = 0 WHERE project_root = ?1 AND feature = ?2 AND run_id = ?3", params![key, feature, run])
+            .map(drop)
+            .map_err(db)
+    }
+
     /// Marks `feature`'s run as failed; the entry stays in the queue.
     pub fn queue_failed(&self, root: &Path, feature: &str) -> Result<()> {
         let key = project_key(root)?;

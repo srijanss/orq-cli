@@ -33,6 +33,15 @@ pub struct QueueRound {
     pub restart_pending: bool,
 }
 
+/// A run a round of the queues started, which holds its slot for the rest of that round.
+struct RoundStart {
+    /// The id of the run's project.
+    project: String,
+    run: String,
+    /// The queue entry it was started for.
+    feature: String,
+}
+
 /// What became of a queued feature's run.
 enum Settled {
     /// It is still going (or waits for a review that does not hold the queue): the entry stays as it is.
@@ -48,6 +57,8 @@ enum Settled {
     Failed(Option<String>),
     /// Its MR was closed without merging: it counts as a failed run.
     MrClosed,
+    /// Its runner refused to start it because a run limit was reached: the entry waits to start again.
+    LimitRefused,
 }
 
 impl StoreProjects {
@@ -83,13 +94,16 @@ impl StoreProjects {
         // whose entry that may start now was added first, until a pass starts nothing.
         let one_at_a_time = machine.limits.max_active.is_some();
         let runs = RunStore::new(&self.roots.state);
+        // Every run this round started: each holds its project's and the machine's slot for the rest
+        // of the round, though its runner may not have recorded it yet.
+        let mut round_runs = Vec::new();
         loop {
             if one_at_a_time {
                 projects.sort_by_cached_key(|(_, git, root)| oldest_waiting(&store, &runs, git, root));
             }
             let mut started = false;
             for (project, git, root) in &projects {
-                match self.project_round(&store, &project.id, git, root, round, &machine, one_at_a_time) {
+                match self.project_round(&store, &project.id, git, root, round, &machine, one_at_a_time, &mut round_runs) {
                     Ok(true) if one_at_a_time => {
                         started = true;
                         break;
@@ -125,9 +139,11 @@ impl StoreProjects {
     }
 
     /// One round of project `id`'s queue under the `machine`'s limits; with `one`, it starts at most
-    /// one run. Whether it started any.
+    /// one run. Every run it starts that takes a slot is added to `round_runs`, the runs the whole
+    /// round started. Whether it started any.
     #[allow(clippy::too_many_arguments)]
-    fn project_round(&self, store: &Store, id: &str, git: &orq_git::Project, root: &Path, round: &QueueRound, machine: &super::MachineRuns, one: bool) -> Result<bool, String> {
+    fn project_round(&self, store: &Store, id: &str, git: &orq_git::Project, root: &Path, round: &QueueRound, machine: &super::MachineRuns, one: bool, round_runs: &mut Vec<RoundStart>) -> Result<bool, String> {
+        let project_id = orq_git::project_id(git);
         let settings = self.settings_of_git(git)?;
         let runs = RunStore::new(&self.roots.state);
         let failed = |e: std::io::Error| e.to_string();
@@ -142,7 +158,9 @@ impl StoreProjects {
             let mut run = run.clone();
             // A start's run is named by its feature, as before the queue held other actions.
             let what = entry.action.as_ref().map_or_else(|| entry.feature.clone(), action_label);
+            // A run this round started is going: its runner may not have recorded it yet.
             let mut settled = match &entry.action {
+                _ if round_runs.iter().any(|start| start.run == run) => Settled::Going,
                 Some(QueueAction { kind: QueueKind::Accept, .. }) => self.settle_accept(store, &runs, &run, Some(root), settings.queue_wait_for_review),
                 _ => settle(store, &runs, &run, Some(root), settings.queue_wait_for_review),
             };
@@ -152,7 +170,7 @@ impl StoreProjects {
             if entry.failed {
                 match &settled {
                     Settled::Failed(_) | Settled::MrClosed => continue,
-                    Settled::ContinuedAs(_) => {}
+                    Settled::ContinuedAs(_) | Settled::LimitRefused => {}
                     Settled::Going | Settled::InReview(_) | Settled::Done => store.queue_started(root, &entry.feature, &run).map_err(failed)?,
                 }
             }
@@ -199,6 +217,11 @@ impl StoreProjects {
                         self.push_queue_news(id, "queue_paused", None);
                     }
                 }
+                // Nothing failed: the entry waits for a free slot like one never started.
+                Settled::LimitRefused => {
+                    store.queue_unstarted(root, &entry.feature, &run).map_err(failed)?;
+                    LimitWaits::of(&self.roots, git).add(&entry.feature);
+                }
                 Settled::MrClosed => {
                     store.queue_failed(root, &entry.feature).map_err(failed)?;
                     if settings.queue_stop_on_failure {
@@ -210,6 +233,7 @@ impl StoreProjects {
             }
         }
         let queue = store.queue(root).map_err(failed)?;
+        LimitWaits::of(&self.roots, git).keep_waiting(&queue);
         // A review the queue waits for holds what is left to start: told once for each run it waits on.
         if let Some(run) = waits_on.filter(|_| queue.paused.is_none() && queue.entries.iter().any(|entry| entry.run.is_none())) {
             self.push_queue_news(id, "queue_paused", Some(&run));
@@ -260,8 +284,10 @@ impl StoreProjects {
             }
             // A queued Accept holds a slot while its tests run, though an accepting run holds none; one
             // this round read as going or started holds it until the round ends.
+            // A run this round started holds its slot too, though its runner may not have recorded it yet.
             let mut accepting = accepts_going.clone();
-            for going in self.queued_accepts_going(&now, &runs) {
+            let started_here = round_runs.iter().filter(|start| start.project == project_id).map(|start| (start.run.clone(), start.feature.clone()));
+            for going in started_here.chain(self.queued_accepts_going(&now, &runs)) {
                 if !accepting.iter().any(|(run, _)| *run == going.0) {
                     accepting.push(going);
                 }
@@ -269,8 +295,12 @@ impl StoreProjects {
             let active = match keeps_slot {
                 true => Vec::new(),
                 false => {
-                    let mut active = runs.active_project_runs(&orq_git::project_id(git)).map_err(|error| format!("{error:?}"))?;
-                    active.extend(accepting.iter().cloned());
+                    let mut active = runs.active_project_runs(&project_id).map_err(|error| format!("{error:?}"))?;
+                    for going in accepting {
+                        if !active.iter().any(|(run, _)| *run == going.0) {
+                            active.push(going);
+                        }
+                    }
                     active
                 }
             };
@@ -282,8 +312,9 @@ impl StoreProjects {
                 Some(_) => {
                     // Every project's queued Accepts that are running their tests hold a machine slot.
                     let mut all = runs.active_machine_runs().map_err(|error| format!("{error:?}"))?;
-                    let held = accepts_going.iter().map(|(run, _)| (orq_git::project_id(git), run.clone()));
-                    for going in held.chain(self.machine_queued_accepts_going(store, &runs)?) {
+                    let held = accepts_going.iter().map(|(run, _)| (project_id.clone(), run.clone()));
+                    let this_round = round_runs.iter().map(|start| (start.project.clone(), start.run.clone()));
+                    for going in held.chain(this_round).chain(self.machine_queued_accepts_going(store, &runs)?) {
                         if !all.iter().any(|(_, run)| *run == going.1) {
                             all.push(going);
                         }
@@ -305,7 +336,11 @@ impl StoreProjects {
                     match self.start_queued_action(id, action) {
                         Ok(RunControlOutcome::Done(run)) => {
                             store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                            LimitWaits::of(&self.roots, git).remove(&entry.feature);
                             after_merge::watch(&self.roots.state, root, &run);
+                            if !keeps_slot {
+                                round_runs.push(RoundStart { project: project_id.clone(), run: run.clone(), feature: entry.feature.clone() });
+                            }
                             if action.kind == QueueKind::Accept {
                                 accepts_going.push((run, entry.feature.clone()));
                             }
@@ -347,8 +382,10 @@ impl StoreProjects {
                             // Removed while it started, the queue no longer follows the run, which
                             // goes on; removed and added again, the new entry follows this run.
                             store.queue_started(root, &entry.feature, &run).map_err(failed)?;
+                            LimitWaits::of(&self.roots, git).remove(&entry.feature);
                             // Watched from its launch, so a run that merges before the next round still gets its go.
                             after_merge::watch(&self.roots.state, root, &run);
+                            round_runs.push(RoundStart { project: project_id.clone(), run, feature: entry.feature.clone() });
                             started = true;
                             None
                         }
@@ -626,7 +663,7 @@ impl StoreProjects {
         });
         let store = if self.roots.database().exists() { Some(Store::open(&self.roots.database()).map_err(|error| error.to_string())?) } else { None };
         let unlanded = unlanded_dependencies(store.as_ref(), &RunStore::new(&self.roots.state), &git, &queue, &ledger)?;
-        let mut answer = queue_json_with(&queue, &ledger, &review, &unlanded);
+        let mut answer = queue_json_with(&queue, &ledger, &review, &unlanded, &LimitWaits::of(&self.roots, &git).entries());
         if let Some(warning) = PullWarning::of(&self.roots, &git).read() {
             answer["target_pull_warning"] = json!(warning);
         }
@@ -812,7 +849,7 @@ pub fn project_queue_json(store: &Store, runs: &RunStore, git: &orq_git::Project
     let ledger = read_ledger(&orq_features::ledger_path(git))?;
     let wait = store.project_settings(root).map_or(true, |stored| stored.settings.queue_wait_for_review);
     let unlanded = unlanded_dependencies(Some(store), runs, git, &queue, &ledger)?;
-    Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait), &unlanded))
+    Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait), &unlanded, &[]))
 }
 
 /// For the features queued to start, why each dependency that has a run in `runs` has not landed yet
@@ -969,13 +1006,14 @@ fn in_review(store: &Store, runs: &RunStore, queue: &RunQueue, git: &orq_git::Pr
 /// The queue as the page and `orq queue list` show it: entries in the order they will start, each
 /// with its state (`running`, `failed`, `next`, `queued` or `waiting`) and why it waits.
 pub fn queue_json(queue: &RunQueue, ledger: &[FeatureEntry]) -> Value {
-    queue_json_with(queue, ledger, &std::collections::HashMap::new(), &std::collections::HashMap::new())
+    queue_json_with(queue, ledger, &std::collections::HashMap::new(), &std::collections::HashMap::new(), &[])
 }
 
 /// [`queue_json`], with the entries whose run waits for a person's review (`review`: feature to its
-/// open MR's address, if any) shown waiting for review, and those whose dependency's work has not
-/// landed (`unlanded`: dependency to why) shown waiting for it.
-fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::collections::HashMap<String, Option<String>>, unlanded: &std::collections::HashMap<String, String>) -> Value {
+/// open MR's address, if any) shown waiting for review, those whose dependency's work has not
+/// landed (`unlanded`: dependency to why) shown waiting for it, and those whose start was refused
+/// for a run limit (`limit_waits`) shown waiting for a slot.
+fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::collections::HashMap<String, Option<String>>, unlanded: &std::collections::HashMap<String, String>, limit_waits: &[String]) -> Value {
     let mut next_given = false;
     let mut waiting_for_review = None;
     let entries: Vec<Value> = ordered(&queue.entries, ledger)
@@ -991,6 +1029,11 @@ fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::coll
                 (Some(_), false) if review.contains_key(&entry.feature) => ("review", None),
                 (Some(_), false) => ("running", None),
                 (None, _) => match eligible() {
+                    // Still the one to start next, once a slot frees.
+                    Ok(_) if limit_waits.contains(&entry.feature) => {
+                        next_given = true;
+                        ("waiting", Some(LIMIT_WAIT_REASON.to_string()))
+                    }
                     Ok(_) if !next_given => {
                         next_given = true;
                         ("next", None)
@@ -1185,6 +1228,59 @@ impl PullWarning {
     }
 }
 
+/// The entries of a project's queue whose start its runner refused for a run limit, which wait for a
+/// slot again, kept in a file under the state root until each starts or leaves the queue.
+struct LimitWaits(std::path::PathBuf);
+
+impl LimitWaits {
+    fn of(roots: &orq_core::storage::StorageRoots, git: &orq_git::Project) -> Self {
+        Self(roots.state.join("queue-limit-wait").join(orq_git::project_id(git)))
+    }
+
+    /// The entries that wait so; none when the file is missing or cannot be read.
+    fn entries(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.0).ok().and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok()).unwrap_or_default()
+    }
+
+    fn save(&self, entries: &[String]) {
+        if entries.is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+            return;
+        }
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&self.0, json!(entries).to_string());
+    }
+
+    fn add(&self, entry: &str) {
+        let mut entries = self.entries();
+        if !entries.iter().any(|kept| kept == entry) {
+            entries.push(entry.to_string());
+            self.save(&entries);
+        }
+    }
+
+    fn remove(&self, entry: &str) {
+        let entries = self.entries();
+        if entries.iter().any(|kept| kept == entry) {
+            self.save(&entries.into_iter().filter(|kept| kept != entry).collect::<Vec<_>>());
+        }
+    }
+
+    /// Forgets the entries that are no longer in `queue` waiting to start.
+    fn keep_waiting(&self, queue: &RunQueue) {
+        let entries = self.entries();
+        let waiting = |kept: &String| queue.entries.iter().any(|entry| entry.feature == *kept && entry.run.is_none() && entry.skipped.is_none());
+        if !entries.iter().all(waiting) {
+            self.save(&entries.into_iter().filter(waiting).collect::<Vec<_>>());
+        }
+    }
+}
+
+/// How the queue page says an entry waits because its runner refused it for a run limit.
+const LIMIT_WAIT_REASON: &str = "run limit reached";
+
 /// How many queue rounds in a row the target may fail to fetch before the queue pauses.
 const FETCH_FAILURES_BEFORE_PAUSE: u32 = 3;
 
@@ -1243,7 +1339,13 @@ fn launch_error_line(feature: &str, why: &str) -> String {
 /// review is done and one that needs a person's review is still going, as before the queue waited.
 /// A run that cannot be read anymore counts as failed.
 fn settle(store: &Store, runs: &RunStore, run: &str, repo: Option<&Path>, wait: bool) -> Settled {
-    let Ok(events) = runs.events(run) else { return Settled::Failed(Some(format!("the run {run} cannot be read"))) };
+    let Ok(events) = runs.events(run) else {
+        // A start its runner refused for a run limit has no record, and never began.
+        if orq_orchestrator::recorded_limit_refusal(runs, run).is_some() {
+            return Settled::LimitRefused;
+        }
+        return Settled::Failed(Some(format!("the run {run} cannot be read")));
+    };
     // A failed stage the run's process goes on to fix is not the run's end.
     let summary = orq_orchestrator::summarize_live_run(&events);
     if let Some(next) = summary.resumed_as {

@@ -154,6 +154,39 @@ fn start_with(repo: &Path, home: &Path, feature: &str, extra: &[&str], env: &[(&
     orq(repo, home, &args, env)
 }
 
+/// The detached runner of a launched run (`--run-id`) that finds a run limit reached records the
+/// refusal under the run's id, for the queue that launched it; a disk refusal is not recorded so.
+#[test]
+fn a_runner_refused_for_a_run_limit_records_the_refusal_and_one_refused_for_disk_does_not() {
+    use orq_orchestrator::{recorded_limit_refusal, RunLimit};
+    let repo = repo();
+    let home = home("runner-refused");
+    save(&home, repo.root(), &limited(Some(1), None));
+    seed_active(&home, repo.root(), "run-seed", "COM-02");
+    let name = project(repo.root()).name;
+
+    let refused = start(repo.root(), &home, "COM-01", &["--run-id", "run-project"]);
+    assert_eq!(refused.status.code(), Some(EXIT_LIMIT), "{}", text(&refused.stderr));
+    let recorded = recorded_limit_refusal(&runs(&home), "run-project").expect("the refusal is recorded");
+    assert_eq!(recorded.limit, RunLimit::Project);
+    assert!(recorded.reason.starts_with(&format!("{name} already has 1 active run (run-seed, COM-02)")), "{}", recorded.reason);
+    assert!(runs(&home).load("run-project").is_err(), "no run was recorded");
+
+    save(&home, repo.root(), &limited(None, None));
+    std::fs::write(home.join("config/orq/config.toml"), "[models.opus]\nharness = \"claude\"\nmodel = \"opus\"\n\n[roles]\nimplementer = \"opus\"\n\n[runs]\nmax_active = 1\n").unwrap();
+    let refused = start(repo.root(), &home, "COM-01", &["--run-id", "run-machine"]);
+    assert_eq!(refused.status.code(), Some(EXIT_LIMIT), "{}", text(&refused.stderr));
+    let recorded = recorded_limit_refusal(&runs(&home), "run-machine").expect("the refusal is recorded");
+    assert_eq!(recorded.limit, RunLimit::Machine);
+    assert!(recorded.reason.starts_with("this machine already has 1 active run"), "{}", recorded.reason);
+
+    append(&home, repo.root(), "run-seed", "COM-02", "run.completed", serde_json::json!({"ending": "merged"}));
+    save(&home, repo.root(), &limited(None, Some(15)));
+    let refused = start_with(repo.root(), &home, "COM-01", &["--run-id", "run-disk"], &[("ORQ_TEST_FREE_DISK_BYTES", "9800000000")]);
+    assert_eq!(refused.status.code(), Some(EXIT_LIMIT), "{}", text(&refused.stderr));
+    assert_eq!(recorded_limit_refusal(&runs(&home), "run-disk"), None, "a disk refusal is not a run-limit refusal");
+}
+
 #[test]
 fn a_paused_run_counts_toward_the_limit_but_its_resume_is_not_refused_by_it() {
     let repo = repo();

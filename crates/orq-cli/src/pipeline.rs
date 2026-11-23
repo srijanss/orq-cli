@@ -12,7 +12,7 @@ use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
     plan_setup, push_run_branch, rebase_onto_target, record_launch, run_ci_fix_loop, run_gate_with_fixes_then, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
     CiFixConfig, CiFixOutcome, CiFixSteps, CiOutcome, CiWaitConfig, DraftSession, FixSessionSpec, GateFixOutcome, ImplementCheck, ImplementSession, PushOutcome,
-    RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunRecord, RunStore, StoreError,
+    RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunLimit, RunRecord, RunStore, StoreError,
 };
 
 /// How many times a red gate is handed to a fix session before the run fails.
@@ -474,17 +474,29 @@ fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartEr
         if machine.max_active.is_some() {
             let active = store.active_machine_runs()?;
             if let Some(reason) = orq_orchestrator::machine_limit_refusal(machine.max_active, &active) {
-                return Err(StartError::Limit(reason));
+                return Err(run_limit_refused(options, store, reason, RunLimit::Machine));
             }
         }
         if options.max_active_runs.is_some() {
             let active = store.active_project_runs(&project_id(options.project))?;
             if let Some(reason) = orq_orchestrator::limit_refusal(name, options.max_active_runs, &active) {
-                return Err(StartError::Limit(reason));
+                return Err(run_limit_refused(options, store, reason, RunLimit::Project));
             }
         }
     }
     Ok(())
+}
+
+/// The refusal of a start for the run `limit`, recorded under the run's id when it was launched
+/// with one (a detached runner), so whoever launched it can tell the refusal from a failure.
+fn run_limit_refused(options: &Options<'_>, store: &RunStore, reason: String, limit: RunLimit) -> StartError {
+    if let Some(run_id) = options.run_id {
+        let refusal = orq_orchestrator::LimitRefusal { reason: reason.clone(), limit };
+        if let Err(err) = orq_orchestrator::record_limit_refusal(store, run_id, &refusal) {
+            eprintln!("orq: cannot record the refusal of {run_id}: {err:?}");
+        }
+    }
+    StartError::Limit(reason)
 }
 
 /// The worktree recorded by the run a resume of `options` would continue, read without changing
@@ -591,12 +603,12 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
         Err(StoreError::MachineAtLimit { active }) => {
             let reason = orq_orchestrator::machine_limit_refusal(limits.machine, &active)
                 .unwrap_or_else(|| "this machine is at its limit of active runs".to_string());
-            return Err(StartError::Limit(reason));
+            return Err(run_limit_refused(options, &store, reason, RunLimit::Machine));
         }
         Err(StoreError::ProjectAtLimit { active }) => {
             let reason = orq_orchestrator::limit_refusal(&options.project.name, max_active, &active)
                 .unwrap_or_else(|| format!("{} is at its limit of active runs", options.project.name));
-            return Err(StartError::Limit(reason));
+            return Err(run_limit_refused(options, &store, reason, RunLimit::Project));
         }
         Err(err) => return Err(other(format!("{err:?}"))),
     }

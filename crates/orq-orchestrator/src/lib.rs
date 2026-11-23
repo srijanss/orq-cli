@@ -222,7 +222,8 @@ pub use session_settings::{
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use start_limits::{
     disk_refusal, free_disk, limit_refusal, machine_disk_refusal, machine_limit_refusal,
-    worktrees_free_disk, FreeDisk,
+    record_limit_refusal, recorded_limit_refusal, worktrees_free_disk, FreeDisk, LimitRefusal,
+    RunLimit, LIMIT_REFUSAL_FILE,
 };
 pub use stop::{
     owner_state, owner_state_in, run_ending_lock, stop_run, terminate_process, OwnerState,

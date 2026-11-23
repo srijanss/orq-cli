@@ -5,6 +5,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::store::{RunStore, StoreError};
+
 /// The free space on a filesystem, and where it is mounted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FreeDisk {
@@ -154,6 +156,65 @@ pub fn machine_disk_refusal(floor_gb: Option<u32>, free: &FreeDisk) -> Option<St
         shown_gb(free.bytes),
         free.mount.display()
     ))
+}
+
+/// The run limit a start was refused for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunLimit {
+    /// The project's `max_active_runs`.
+    Project,
+    /// The machine's `[runs] max_active`.
+    Machine,
+}
+
+impl RunLimit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunLimit::Project => "project",
+            RunLimit::Machine => "machine",
+        }
+    }
+
+    fn parse(name: &str) -> Option<RunLimit> {
+        [RunLimit::Project, RunLimit::Machine]
+            .into_iter()
+            .find(|limit| limit.as_str() == name)
+    }
+}
+
+/// A start a run's own runner refused because a run limit was reached, before the run was recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitRefusal {
+    pub reason: String,
+    pub limit: RunLimit,
+}
+
+/// The file in a run's logs that records a [`LimitRefusal`] of it.
+pub const LIMIT_REFUSAL_FILE: &str = "refused.json";
+
+/// Records that the start of `run_id` was refused for a run limit, in its logs, for whoever launched
+/// it to read: a run refused so has no record of its own.
+pub fn record_limit_refusal(
+    store: &RunStore,
+    run_id: &str,
+    refusal: &LimitRefusal,
+) -> Result<(), StoreError> {
+    let dir = store.log_dir(run_id)?;
+    std::fs::create_dir_all(&dir)?;
+    let body = serde_json::json!({"reason": refusal.reason, "limit": refusal.limit.as_str()});
+    std::fs::write(dir.join(LIMIT_REFUSAL_FILE), body.to_string())?;
+    Ok(())
+}
+
+/// The run-limit refusal recorded for `run_id`, if its start was refused so.
+pub fn recorded_limit_refusal(store: &RunStore, run_id: &str) -> Option<LimitRefusal> {
+    let path = store.log_dir(run_id).ok()?.join(LIMIT_REFUSAL_FILE);
+    let text = std::fs::read_to_string(path).ok()?;
+    let body: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(LimitRefusal {
+        reason: body["reason"].as_str()?.to_string(),
+        limit: RunLimit::parse(body["limit"].as_str()?)?,
+    })
 }
 
 /// A project's name from its id, `<name>-<8 hex digits>`; an id of another shape as it is.
