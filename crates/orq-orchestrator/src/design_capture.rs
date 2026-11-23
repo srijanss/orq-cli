@@ -375,13 +375,6 @@ fn head_commit(worktree: &Path) -> Option<String> {
 }
 
 fn capture_round(run: &CaptureRun, round_dir: &Path, commit: Option<String>) -> CaptureOutcome {
-    let browser_path = match run.browser {
-        Some(path) => path.to_path_buf(),
-        None => match find_chromium_in(&|name| std::env::var(name).ok()) {
-            Ok(path) => path,
-            Err(why) => return CaptureOutcome::Blocked(why),
-        },
-    };
     if round_dir.exists() {
         // A round captured again starts empty, so no capture of an earlier attempt is left in it.
         if let Err(e) = std::fs::remove_dir_all(round_dir) {
@@ -397,6 +390,13 @@ fn capture_round(run: &CaptureRun, round_dir: &Path, commit: Option<String>) -> 
             e.kind()
         ));
     }
+    let browser_path = match run.browser {
+        Some(path) => path.to_path_buf(),
+        None => match find_chromium_in(&|name| std::env::var(name).ok()) {
+            Ok(path) => path,
+            Err(why) => return CaptureOutcome::Blocked(why),
+        },
+    };
     let port = match RunPort::take() {
         Ok(port) => port,
         Err(e) => return CaptureOutcome::Blocked(format!("no free port for the page ({e})")),

@@ -473,6 +473,44 @@ fn a_missing_chromium_says_how_to_install_it() {
 }
 
 #[test]
+fn a_round_blocked_for_want_of_a_browser_keeps_nothing_of_an_earlier_attempt() {
+    let empty = TempDir::new("design-capture-no-browser-env");
+    let bin = empty.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let name = "a_round_blocked_for_want_of_a_browser_keeps_nothing_of_an_earlier_attempt";
+    if orq_test_support::in_own_process_with_env(
+        name,
+        &[("PATH", bin.as_os_str()), ("HOME", empty.path().as_os_str()), ("ORQ_CHROMIUM", "".as_ref())],
+    ) {
+        return;
+    }
+    // No git on this PATH, so a plain folder stands for the worktree; no server is started.
+    let worktree = TempDir::new("design-capture-stale-worktree");
+    let logs = TempDir::new("design-capture-stale");
+    let stale = logs.path().join("design/round-1/desktop");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("index.png"), b"stale").unwrap();
+    std::fs::write(stale.join("measurements.json"), b"{}").unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(5));
+
+    let outcome = capture_design(&CaptureRun {
+        worktree: worktree.path(),
+        settings: &settings,
+        routes: &["/".to_string()],
+        viewports: &viewports(),
+        run_logs: logs.path(),
+        round: 1,
+        browser: None,
+    });
+
+    let CaptureOutcome::Blocked(reason) = outcome else { panic!("not blocked: {outcome:?}") };
+    assert!(reason.contains("npx playwright install"), "{reason}");
+    assert!(!stale.exists(), "the earlier attempt's captures are gone");
+    let written = read_json(&logs.path().join("design/round-1/capture.json"));
+    assert_eq!(written["outcome"], "blocked");
+}
+
+#[test]
 fn routes_come_from_design_md_else_the_root() {
     let doc = "# Design\n\nIntro mentions /nowhere.\n\n## Routes\n\n- `/`\n- /pricing — the plans\n* `/docs/getting-started`\n- not a route\n- https://example.com/x\n- /../etc\n- /pricing\n\n## Layout\n\n- /ignored\n";
     assert_eq!(
