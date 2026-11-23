@@ -211,7 +211,11 @@ pub fn resume_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
     });
     let now = match current {
         Ok(scanned) if scanned.manifest.package_sha256 == frozen.package_sha256 => {
-            return DesignPackageOutcome::Frozen(frozen)
+            // The same files as frozen: the worktree's copy is put back whole from them.
+            return match copy_to_worktree(run, &scanned) {
+                Ok(()) => DesignPackageOutcome::Frozen(frozen),
+                Err(problem) => DesignPackageOutcome::Refused(vec![problem]),
+            };
         }
         Ok(_) => "its files differ".to_string(),
         Err(problems) => problems.join("; "),
@@ -886,15 +890,34 @@ fn package_hash(files: &[ManifestFile]) -> String {
     hex(&hasher.finalize())
 }
 
-/// Writes the package and its manifest into the run's logs, then the worktree's copy.
+/// Writes the package into the run's logs and the worktree's copy, then the manifest. The
+/// manifest is what marks the package frozen, so it is published last, once every copy is whole.
 fn freeze(run: &DesignPackageRun, scanned: &Scanned) -> Result<(), String> {
     let design = run.run_logs.join(RUN_DESIGN_DIR);
+    let manifest = design.join(MANIFEST_FILE);
+    match std::fs::remove_file(&manifest) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "the old design manifest could not be removed ({:?})",
+                e.kind()
+            ))
+        }
+        _ => {}
+    }
     write_tree(&design.join(PACKAGE_DIR), scanned, false)
         .map_err(|e| format!("the design package could not be frozen: {e}"))?;
+    copy_to_worktree(run, scanned)?;
     let json = serde_json::to_vec_pretty(&scanned.manifest)
         .map_err(|e| format!("the design manifest could not be written ({e})"))?;
-    std::fs::write(design.join(MANIFEST_FILE), json)
-        .map_err(|e| format!("the design manifest could not be written ({:?})", e.kind()))?;
+    // Written whole under another name, then renamed into place.
+    let partial = design.join(format!("{MANIFEST_FILE}.partial"));
+    std::fs::write(&partial, json)
+        .and_then(|()| std::fs::rename(&partial, &manifest))
+        .map_err(|e| format!("the design manifest could not be written ({:?})", e.kind()))
+}
+
+/// The implementer's read-only copy at the worktree's `.orq-design/`, kept out of git.
+fn copy_to_worktree(run: &DesignPackageRun, scanned: &Scanned) -> Result<(), String> {
     // Kept out of git before any file is written.
     crate::local_files::exclude_locally(run.worktree, WORKTREE_COPY_DIR)
         .map_err(|e| format!("{WORKTREE_COPY_DIR} could not be kept out of git: {e}"))?;

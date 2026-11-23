@@ -722,3 +722,43 @@ fn the_implementer_gets_a_read_only_copy_in_the_worktree_that_git_never_sees() {
         b"Two primary actions.\n"
     );
 }
+
+#[test]
+fn a_freeze_whose_worktree_copy_fails_publishes_no_manifest_so_resume_starts_again() {
+    let f = Fixture::new("partial-freeze");
+    f.full_package();
+    let not_a_worktree = f.logs.path().join("not-a-worktree");
+    fs::write(&not_a_worktree, "a file, not a folder").unwrap();
+    let run = DesignPackageRun {
+        worktree: &not_a_worktree,
+        ..f.run()
+    };
+
+    refused(start_design_package(&run));
+    assert!(!f.logs.path().join("design/manifest.json").exists());
+
+    // The run resumes in its real worktree: the package is frozen afresh, copy included.
+    frozen(f.resume());
+    assert_eq!(
+        read(&f.worktree.join(".orq-design/DESIGN.md")),
+        read(&f.package().join("DESIGN.md"))
+    );
+}
+
+#[test]
+fn resuming_a_frozen_run_restores_the_worktree_copy() {
+    let f = Fixture::new("restore-copy");
+    f.full_package();
+    frozen(f.start());
+    fs::remove_file(f.worktree.join(".orq-design/DESIGN.md")).unwrap();
+    fs::remove_file(f.worktree.join(".orq-design/references/desktop.png")).unwrap();
+
+    frozen(f.resume());
+    assert_eq!(
+        read(&f.worktree.join(".orq-design/DESIGN.md")),
+        read(&f.package().join("DESIGN.md"))
+    );
+    let copy = f.worktree.join(".orq-design/references/desktop.png");
+    assert_eq!(read(&copy), png(1440, 900));
+    assert!(fs::metadata(&copy).unwrap().permissions().readonly());
+}
