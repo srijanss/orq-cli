@@ -338,6 +338,38 @@ fn a_selector_that_matched_more_elements_than_were_measured_leaves_the_check_not
 }
 
 #[test]
+fn off_token_values_are_found_quickly_with_many_tokens_and_landmarks() {
+    let tokens: String = (0..10_000)
+        .map(|i| format!("--c{i}: rgb({}, {}, 200); --s{i}: {}px;", i % 256, (i / 256) % 256, 100 + i))
+        .collect();
+    let landmark = |n: usize| {
+        json!({"tag": "h2", "index": n,
+               "styles": {"color": "rgb(0, 0, 0)", "background-color": "rgb(1, 2, 3)", "font-size": "13px"}})
+    };
+    let dir = design_folder(&format!(":root {{ {tokens} }}"), "", (0..500).map(landmark).collect(), json!({}));
+    let file = dir.path().join("round-1/desktop/measurements.json");
+    let mut measured: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let page = measured["routes"]["/"].clone();
+    for route in ["/a", "/b", "/c"] {
+        measured["routes"][route] = page.clone();
+    }
+    std::fs::write(&file, measured.to_string()).unwrap();
+
+    let started = std::time::Instant::now();
+    let check = check_design_tokens(dir.path(), 1);
+    let took = started.elapsed();
+
+    assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
+    let warned: Vec<(&str, &str)> =
+        check.warnings.iter().map(|w| (w.property.as_str(), w.measured.as_str())).collect();
+    assert_eq!(
+        warned,
+        vec![("color", "rgb(0, 0, 0)"), ("background-color", "rgb(1, 2, 3)"), ("font-size", "13px")],
+        "each off-token value once per tag at the viewport"
+    );
+}
+
+#[test]
 fn a_bare_id_selector_is_a_rule_not_a_heading_and_the_rules_after_it_are_read() {
     let rules = parse_token_rules(
         "## Token rules\n\n#hero: color --ink\n#hero .title: font-size --font-title\nh1: font-weight --weight-bold\n\n#\n\nh2: color --ink\n",

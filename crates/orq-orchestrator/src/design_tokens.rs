@@ -3,7 +3,7 @@
 //! weights to numbers) and the page's measured styles are compared with them through the
 //! `## Token rules` of DESIGN.md. The package is data: its values are parsed, never acted on.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -422,34 +422,35 @@ fn partly_measured(rules: &[TokenRule], viewports: &[(String, Vec<(String, Value
 /// property and value at each viewport. A transparent background is no colour.
 fn off_token_values(tokens: &DesignTokens, viewports: &[(String, Vec<(String, Value)>)]) -> Vec<TokenWarning> {
     let mut warnings: Vec<TokenWarning> = Vec::new();
+    // The tokens' values for each root size met, and whether each measured value seen is a token's.
+    let mut indexes: Vec<(u64, TokenIndex)> = Vec::new();
+    let mut known_values: HashMap<(u64, &str, &str), bool> = HashMap::new();
+    let mut warned: HashSet<(&str, &str, &str, &str)> = HashSet::new();
     for (viewport, routes) in viewports {
         for (route, page) in routes {
             let root = page["document"]["root_font_size"].as_f64().unwrap_or(DEFAULT_ROOT_PX);
-            let values = tokens.all(root);
+            let root_key = root.to_bits();
+            if !indexes.iter().any(|(key, _)| *key == root_key) {
+                indexes.push((root_key, TokenIndex::new(&tokens.all(root))));
+            }
+            let index = &indexes.iter().find(|(key, _)| *key == root_key).expect("indexed above").1;
             for element in page["elements"].as_array().into_iter().flatten() {
-                let tag = element["tag"].as_str().unwrap_or("").to_string();
+                let tag = element["tag"].as_str().unwrap_or("");
                 for property in ["color", "background-color", "font-size"] {
+                    if warnings.len() >= MAX_WARNINGS {
+                        return warnings;
+                    }
                     let Some(text) = element["styles"][property].as_str().map(str::trim) else {
                         continue;
                     };
-                    let known = match normalize_token_value(text, DEFAULT_ROOT_PX) {
-                        TokenValue::Color(color) if property != "font-size" => {
-                            color.a == 0.0
-                                || values.iter().any(|v| matches!(v, TokenValue::Color(t) if color_close(t, &color)))
-                        }
-                        TokenValue::Px(px) if property == "font-size" => values.iter().any(|v| {
-                            matches!(v, TokenValue::Px(t) if (t - px).abs() <= OFF_TOKEN_SIZE_TOLERANCE_PX)
-                        }),
-                        _ => true,
-                    };
-                    let seen = warnings.iter().any(|w| {
-                        w.viewport == *viewport && w.selector == tag && w.property == property && w.measured == text
-                    });
-                    if !known && !seen && warnings.len() < MAX_WARNINGS {
+                    let known = *known_values
+                        .entry((root_key, property, text))
+                        .or_insert_with(|| index.knows(property, text));
+                    if !known && warned.insert((viewport.as_str(), tag, property, text)) {
                         warnings.push(TokenWarning {
                             viewport: viewport.clone(),
                             route: route.clone(),
-                            selector: tag.clone(),
+                            selector: tag.to_string(),
                             property: property.to_string(),
                             measured: text.to_string(),
                             severity: "minor".to_string(),
@@ -460,6 +461,45 @@ fn off_token_values(tokens: &DesignTokens, viewports: &[(String, Vec<(String, Va
         }
     }
     warnings
+}
+
+/// The tokens' colours, in CIELAB with their alpha, and sizes at one root size: what a measured
+/// value is matched against without converting each token again.
+struct TokenIndex {
+    colors: Vec<((f64, f64, f64), f64)>,
+    sizes: Vec<f64>,
+}
+
+impl TokenIndex {
+    fn new(values: &[TokenValue]) -> Self {
+        let mut index = TokenIndex { colors: Vec::new(), sizes: Vec::new() };
+        for value in values {
+            match value {
+                TokenValue::Color(color) => index.colors.push((lab(color), color.a)),
+                TokenValue::Px(px) => index.sizes.push(*px),
+                _ => {}
+            }
+        }
+        index
+    }
+
+    /// Whether `text`, measured as `property`, equals a token (a transparent colour counts as one).
+    fn knows(&self, property: &str, text: &str) -> bool {
+        match normalize_token_value(text, DEFAULT_ROOT_PX) {
+            TokenValue::Color(color) if property != "font-size" => {
+                let measured = lab(&color);
+                color.a == 0.0
+                    || self.colors.iter().any(|(token, alpha)| {
+                        (alpha - color.a).abs() <= ALPHA_TOLERANCE
+                            && lab_distance(token, &measured) <= COLOR_TOLERANCE_DELTA_E
+                    })
+            }
+            TokenValue::Px(px) if property == "font-size" => {
+                self.sizes.iter().any(|size| (size - px).abs() <= OFF_TOKEN_SIZE_TOLERANCE_PX)
+            }
+            _ => true,
+        }
+    }
 }
 
 fn read_text(path: &Path) -> Option<String> {
@@ -589,8 +629,10 @@ fn color_close(a: &Rgba, b: &Rgba) -> bool {
 
 /// CIE76 delta E between two colours, in CIELAB (D65).
 fn delta_e(a: &Rgba, b: &Rgba) -> f64 {
-    let (l1, a1, b1) = lab(a);
-    let (l2, a2, b2) = lab(b);
+    lab_distance(&lab(a), &lab(b))
+}
+
+fn lab_distance((l1, a1, b1): &(f64, f64, f64), (l2, a2, b2): &(f64, f64, f64)) -> f64 {
     ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt()
 }
 
