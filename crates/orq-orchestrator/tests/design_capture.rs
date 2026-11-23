@@ -600,6 +600,42 @@ fn a_browser_that_cannot_be_started_blocks_and_the_server_is_stopped() {
 }
 
 #[test]
+fn a_browser_answer_that_arrives_in_pieces_is_read_whole() {
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-pieces");
+    let fake = TempDir::new("design-capture-pieces-browser");
+    let browser = fake.path().join("chromium");
+    // An event and half the answer, a pause, the rest; then the connection closes.
+    orq_test_support::write_executable(
+        &browser,
+        "#!/bin/sh\n\
+         printf '{\"method\":\"Target.targetCreated\",\"params\":{}}\\000{\"id\":1,\"res' >&4\n\
+         sleep 0.3\n\
+         printf 'ult\":{\"product\":\"FakeChrome/1\"}}\\000' >&4\n\
+         exec 4>&-\n\
+         exec sleep 5\n",
+    );
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(
+        site.root(),
+        logs.path(),
+        &["/".to_string()],
+        &browser,
+        &settings,
+    );
+
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert_eq!(record.browser_version, "FakeChrome/1");
+    assert!(
+        process_is_gone(server_pid(site.root())),
+        "the server is stopped"
+    );
+}
+
+#[test]
 fn chromium_keeps_its_sandbox_unless_it_is_turned_off_on_purpose() {
     let site = fixture_site();
     let logs = TempDir::new("design-capture-sandbox");

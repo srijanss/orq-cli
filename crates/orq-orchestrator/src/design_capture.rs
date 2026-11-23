@@ -533,6 +533,10 @@ struct Browser {
     to: File,
     from: File,
     buffer: Vec<u8>,
+    /// How much of `buffer` is known to hold no message end.
+    scanned: usize,
+    /// The browser closed its end; nothing more will be read.
+    closed: bool,
     next_id: u64,
     /// Events kept for the page being captured.
     events: Vec<Value>,
@@ -656,6 +660,8 @@ impl Browser {
             to: File::from(commands_write),
             from,
             buffer: Vec::new(),
+            scanned: 0,
+            closed: false,
             next_id: 0,
             events: Vec::new(),
             profile,
@@ -669,10 +675,18 @@ impl Browser {
 
     fn next_message(&mut self, deadline: Instant) -> Result<Value, String> {
         loop {
-            if let Some(end) = self.buffer.iter().position(|b| *b == 0) {
+            // Only bytes not looked at before are searched, so a large message read in many
+            // chunks is scanned once, not once per chunk.
+            if let Some(found) = self.buffer[self.scanned..].iter().position(|b| *b == 0) {
+                let end = self.scanned + found;
+                self.scanned = 0;
                 let message: Vec<u8> = self.buffer.drain(..=end).collect();
                 return serde_json::from_slice(&message[..end])
                     .map_err(|_| "the browser sent a message that is not JSON".to_string());
+            }
+            self.scanned = self.buffer.len();
+            if self.closed {
+                return Err("the browser closed its connection".to_string());
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -689,7 +703,11 @@ impl Browser {
             let mut chunk = [0u8; 65536];
             loop {
                 match self.from.read(&mut chunk) {
-                    Ok(0) => return Err("the browser closed its connection".to_string()),
+                    // What came before the close is still read; the close is reported after it.
+                    Ok(0) => {
+                        self.closed = true;
+                        break;
+                    }
                     Ok(read) => {
                         self.buffer.extend_from_slice(&chunk[..read]);
                         if self.buffer.len() > MAX_MESSAGE {
