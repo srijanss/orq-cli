@@ -269,21 +269,23 @@ fn review_round(
     // Measured values are checked by code, not by the model: a violated token rule is an issue the
     // reviewer's answer can neither drop nor downgrade.
     let token_issues = check_design_tokens(design_dir, run.round).issues();
-    let mut result = reviewed_round(run, design_dir, &manifest, &record)?;
-    if let Some(review) = result.review.as_mut() {
-        apply_token_issues(review, &token_issues);
-        result.verdict = review.verdict;
-    }
-    Ok(result)
+    reviewed_round(run, design_dir, &manifest, &record, &token_issues)
 }
 
-/// The round reviewed by the design reviewer, and by the verifier when it escalates.
+/// The round reviewed by the design reviewer, and by the verifier when it escalates. Each review
+/// gets the token check's issues before anything is decided from it, so a token violation left open
+/// round after round escalates like any other issue.
 fn reviewed_round(
     run: &DesignReviewRun,
     design_dir: &Path,
     manifest: &DesignManifest,
     record: &CaptureRecord,
+    token_issues: &[ReviewIssue],
 ) -> Result<RoundResult, String> {
+    let checked = |mut review: DesignReview| {
+        apply_token_issues(&mut review, token_issues);
+        review
+    };
     let round_name = format!("round-{}", run.round);
     let capture_bytes =
         std::fs::read(design_dir.join(&round_name).join(CAPTURE_FILE)).map_err(|e| {
@@ -326,7 +328,7 @@ fn reviewed_round(
         previous: previous_reviews(design_dir, run.round),
     };
     let review = match valid_review(run, run.reviewer, "design reviewer", &context) {
-        Ok(review) => review,
+        Ok(review) => checked(review),
         Err(why) => return Ok(RoundResult::blocked(why)),
     };
     let Some(escalation) = escalation(
@@ -346,14 +348,17 @@ fn reviewed_round(
     };
     // The verifier reviews once more; its verdict replaces the reviewer's for the round.
     let mut result = match valid_review(run, run.verifier, "design verifier", &context) {
-        Ok(verified) => RoundResult {
-            verdict: verified.verdict,
-            reason: None,
-            review: Some(verified),
-            decided_by: "design verifier",
-            escalation: None,
-            reviewer_review: None,
-        },
+        Ok(verified) => {
+            let verified = checked(verified);
+            RoundResult {
+                verdict: verified.verdict,
+                reason: None,
+                review: Some(verified),
+                decided_by: "design verifier",
+                escalation: None,
+                reviewer_review: None,
+            }
+        }
         Err(why) => RoundResult::blocked(why),
     };
     result.escalation = Some(escalation);

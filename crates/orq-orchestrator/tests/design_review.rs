@@ -338,6 +338,31 @@ fn a_reviewer_cannot_downgrade_a_violated_token_rule_or_pass_over_it() {
 }
 
 #[test]
+fn a_token_violation_open_for_verify_after_rounds_rounds_goes_to_the_verifier() {
+    let f = Fixture::new();
+    let package = f.repo.root().join("designs").join(FEATURE);
+    fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
+    fs::write(package.join("DESIGN.md"), "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n").unwrap();
+    let h1 = json!({"tag": "h1", "index": 0, "box": {"x": 0, "y": 0, "width": 100, "height": 40},
+                    "styles": {"font-weight": "600"}});
+    let measured = json!({"viewport": "desktop", "width": 400, "height": 300, "routes": {"/": {
+        "document": {"width": 400, "height": 300, "root_font_size": 16}, "elements": [h1]}}});
+    fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
+    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
+    f.answer("verifier", &answer("pass", vec![check("layout", "pass")], vec![]));
+
+    assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
+    assert_eq!(f.calls("verifier"), 0);
+    assert_eq!(f.review(2), DesignVerdict::ChangesRequired);
+
+    assert_eq!(f.calls("verifier"), 1, "the token issue has been open for two rounds");
+    let written: Value =
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-2/review.json")).unwrap()).unwrap();
+    let issues = written["review"]["issues"].as_array().unwrap();
+    assert!(issues.iter().any(|i| i["id"] == "tokens-desktop-h1-font-weight" && i["severity"] == "major"), "{written:#}");
+}
+
+#[test]
 fn the_reviewer_runs_read_only_with_the_references_and_captures_attached() {
     let f = Fixture::new();
     f.answer(
