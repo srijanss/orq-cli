@@ -653,8 +653,10 @@ pub fn parse_token_rules(doc: &str) -> Vec<TokenRule> {
     let mut in_rules = false;
     for line in doc.lines() {
         let line = line.trim();
-        if line.starts_with('#') {
-            in_rules = line.trim_start_matches('#').trim().eq_ignore_ascii_case("token rules");
+        // A Markdown heading is `#`s then a space (or nothing); `#hero: color --ink` is a rule.
+        let after_marks = line.trim_start_matches('#');
+        if line.starts_with('#') && (after_marks.is_empty() || after_marks.starts_with(char::is_whitespace)) {
+            in_rules = after_marks.trim().eq_ignore_ascii_case("token rules");
             continue;
         }
         if !in_rules || rules.len() >= MAX_RULES {

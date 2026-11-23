@@ -247,6 +247,16 @@ fn the_token_rules_section_binds_selectors_to_tokens_one_rule_per_line() {
     );
 }
 
+#[test]
+fn a_bare_id_selector_is_a_rule_not_a_heading_and_the_rules_after_it_are_read() {
+    let rules = parse_token_rules(
+        "## Token rules\n\n#hero: color --ink\n#hero .title: font-size --font-title\nh1: font-weight --weight-bold\n\n#\n\nh2: color --ink\n",
+    );
+
+    let selectors: Vec<&str> = rules.iter().map(|rule| rule.selector.as_str()).collect();
+    assert_eq!(selectors, vec!["#hero", "#hero .title", "h1"]);
+}
+
 fn rgb(r: f64, g: f64, b: f64) -> TokenValue {
     TokenValue::Color(Rgba { r, g, b, a: 1.0 })
 }
