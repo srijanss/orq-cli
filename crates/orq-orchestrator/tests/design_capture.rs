@@ -480,7 +480,11 @@ fn a_round_blocked_for_want_of_a_browser_keeps_nothing_of_an_earlier_attempt() {
     let name = "a_round_blocked_for_want_of_a_browser_keeps_nothing_of_an_earlier_attempt";
     if orq_test_support::in_own_process_with_env(
         name,
-        &[("PATH", bin.as_os_str()), ("HOME", empty.path().as_os_str()), ("ORQ_CHROMIUM", "".as_ref())],
+        &[
+            ("PATH", bin.as_os_str()),
+            ("HOME", empty.path().as_os_str()),
+            ("ORQ_CHROMIUM", "".as_ref()),
+        ],
     ) {
         return;
     }
@@ -503,11 +507,85 @@ fn a_round_blocked_for_want_of_a_browser_keeps_nothing_of_an_earlier_attempt() {
         browser: None,
     });
 
-    let CaptureOutcome::Blocked(reason) = outcome else { panic!("not blocked: {outcome:?}") };
+    let CaptureOutcome::Blocked(reason) = outcome else {
+        panic!("not blocked: {outcome:?}")
+    };
     assert!(reason.contains("npx playwright install"), "{reason}");
     assert!(!stale.exists(), "the earlier attempt's captures are gone");
     let written = read_json(&logs.path().join("design/round-1/capture.json"));
     assert_eq!(written["outcome"], "blocked");
+}
+
+/// A stand-in for Chromium that writes its arguments, one per line, to `args` in its folder and exits.
+fn browser_recording_args(dir: &Path) -> PathBuf {
+    let path = dir.join("chromium");
+    let args = dir.join("args");
+    orq_test_support::write_executable(
+        &path,
+        &format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args.display()),
+    );
+    path
+}
+
+#[test]
+fn chromium_keeps_its_sandbox_unless_it_is_turned_off_on_purpose() {
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-sandbox");
+    let fake = TempDir::new("design-capture-sandbox-browser");
+    let browser = browser_recording_args(fake.path());
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(
+        site.root(),
+        logs.path(),
+        &["/".to_string()],
+        &browser,
+        &settings,
+    );
+
+    let CaptureOutcome::Blocked(reason) = outcome else {
+        panic!("not blocked: {outcome:?}")
+    };
+    assert!(reason.contains("Chromium did not answer"), "{reason}");
+    let args = std::fs::read_to_string(fake.path().join("args")).unwrap();
+    assert!(args.lines().any(|a| a == "--headless"), "{args}");
+    assert!(
+        !args.lines().any(|a| a == "--no-sandbox"),
+        "the sandbox is kept: {args}"
+    );
+    assert!(
+        process_is_gone(server_pid(site.root())),
+        "the server is stopped"
+    );
+}
+
+#[test]
+fn the_sandbox_is_turned_off_only_when_orq_chromium_no_sandbox_is_1() {
+    let name = "the_sandbox_is_turned_off_only_when_orq_chromium_no_sandbox_is_1";
+    if orq_test_support::in_own_process_with_env(name, &[("ORQ_CHROMIUM_NO_SANDBOX", "1".as_ref())])
+    {
+        return;
+    }
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-no-sandbox");
+    let fake = TempDir::new("design-capture-no-sandbox-browser");
+    let browser = browser_recording_args(fake.path());
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(
+        site.root(),
+        logs.path(),
+        &["/".to_string()],
+        &browser,
+        &settings,
+    );
+
+    assert!(matches!(outcome, CaptureOutcome::Blocked(_)), "{outcome:?}");
+    let args = std::fs::read_to_string(fake.path().join("args")).unwrap();
+    assert!(
+        args.lines().any(|a| a == "--no-sandbox"),
+        "turned off on purpose: {args}"
+    );
 }
 
 #[test]
@@ -527,8 +605,20 @@ fn routes_come_from_design_md_else_the_root() {
 #[test]
 fn every_viewport_with_a_reference_or_in_the_settings_is_captured() {
     let mut settings = settings(vec!["true".to_string()], Duration::from_secs(1));
-    settings.viewports.insert("desktop".to_string(), Viewport { width: 1440, height: 900 });
-    settings.viewports.insert("wide".to_string(), Viewport { width: 1920, height: 1080 });
+    settings.viewports.insert(
+        "desktop".to_string(),
+        Viewport {
+            width: 1440,
+            height: 900,
+        },
+    );
+    settings.viewports.insert(
+        "wide".to_string(),
+        Viewport {
+            width: 1920,
+            height: 1080,
+        },
+    );
     let file = |path: &str, kind: &str, viewport: Option<AssignedViewport>| ManifestFile {
         path: path.to_string(),
         sha256: "0".repeat(64),
@@ -542,8 +632,24 @@ fn every_viewport_with_a_reference_or_in_the_settings_is_captured() {
         feature: "f".to_string(),
         package_sha256: "0".repeat(64),
         files: vec![
-            file("references/phone.png", "reference", Some(AssignedViewport { name: "phone".to_string(), width: 390, height: 844 })),
-            file("references/desktop.png", "reference", Some(AssignedViewport { name: "desktop".to_string(), width: 1440, height: 900 })),
+            file(
+                "references/phone.png",
+                "reference",
+                Some(AssignedViewport {
+                    name: "phone".to_string(),
+                    width: 390,
+                    height: 844,
+                }),
+            ),
+            file(
+                "references/desktop.png",
+                "reference",
+                Some(AssignedViewport {
+                    name: "desktop".to_string(),
+                    width: 1440,
+                    height: 900,
+                }),
+            ),
             file("assets/logo.svg", "asset", None),
         ],
         unassigned: vec![],
@@ -553,8 +659,18 @@ fn every_viewport_with_a_reference_or_in_the_settings_is_captured() {
 
     let got = capture_viewports(Some(&manifest), &settings);
 
-    let named: Vec<(&str, u32, u32)> = got.iter().map(|v| (v.name.as_str(), v.width, v.height)).collect();
-    assert_eq!(named, vec![("desktop", 1440, 900), ("phone", 390, 844), ("wide", 1920, 1080)]);
+    let named: Vec<(&str, u32, u32)> = got
+        .iter()
+        .map(|v| (v.name.as_str(), v.width, v.height))
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            ("desktop", 1440, 900),
+            ("phone", 390, 844),
+            ("wide", 1920, 1080)
+        ]
+    );
     assert_eq!(capture_viewports(None, &settings).len(), 2);
 }
 

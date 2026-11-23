@@ -595,8 +595,6 @@ impl Browser {
         command
             .args([
                 "--headless",
-                // The page is the project's own, on this machine; containers often have no sandbox.
-                "--no-sandbox",
                 "--disable-gpu",
                 "--hide-scrollbars",
                 "--mute-audio",
@@ -612,7 +610,12 @@ impl Browser {
                 "--lang=en-US",
                 "--remote-debugging-pipe",
             ])
-            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(format!("--user-data-dir={}", profile.display()));
+        // The sandbox stays on; only a machine that cannot run it turns it off, on purpose.
+        if std::env::var_os("ORQ_CHROMIUM_NO_SANDBOX").is_some_and(|v| v == "1") {
+            command.arg("--no-sandbox");
+        }
+        command
             .arg("about:blank")
             .env("LANG", "en_US.UTF-8")
             .env("LANGUAGE", "en_US")
