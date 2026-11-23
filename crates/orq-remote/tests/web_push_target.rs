@@ -11,7 +11,7 @@ use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const HEAD: &str = "2222222222222222222222222222222222222222";
-const SELECTORS: [&str; 23] = [
+const SELECTORS: [&str; 24] = [
     "details[data-unpushed-details]",
     "details[data-unpushed-details][open]",
     ".unpushed-warning",
@@ -35,6 +35,7 @@ const SELECTORS: [&str; 23] = [
     "[data-push-modal] [data-push-confirm]",
     "[data-push-modal] [data-push-error]",
     "[data-modal-close]:disabled",
+    "[data-push-modal] [data-cancel]",
 ];
 
 fn harness(scenario: Value) -> Option<Value> {
@@ -424,6 +425,27 @@ fn a_failed_push_keeps_the_popup_with_the_error() {
     assert!(in_popup(failed), "{out}");
     assert_eq!(count(failed, "[data-push-modal] [data-push-error]"), 1, "{out}");
     assert!(shows(failed, "rejected by the remote"), "{:?}", texts(failed));
+}
+
+fn focused(frame: &Value, selector: &str) -> bool {
+    frame["settled"]["focusMatches"][selector].as_bool().unwrap()
+}
+
+#[test]
+fn the_popup_takes_the_focus_keeps_tab_inside_and_gives_it_back_to_push_on_close() {
+    let steps = vec![
+        json!({"click": "[data-push-target]"}),
+        json!({"keydown": "Tab", "on": "[data-push-modal] [data-cancel]"}),
+        json!({"keydown": "Tab", "shift": true, "on": "[data-modal-close]"}),
+        json!({"keydown": "Escape"}),
+    ];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true)], steps) else { return };
+    let all = frames(&out);
+    assert!(focused(&all[1], "[data-push-modal] [data-cancel]"), "opening focuses Cancel: {:?}", all[1]["settled"]["focusMatches"]);
+    assert!(focused(&all[2], "[data-modal-close]"), "Tab from the last stop wraps to Close: {:?}", all[2]["settled"]["focusMatches"]);
+    assert!(focused(&all[3], "[data-push-modal] [data-cancel]"), "Shift+Tab from Close wraps to Cancel: {:?}", all[3]["settled"]["focusMatches"]);
+    assert_eq!(count(&all[4], "[data-push-modal]"), 0, "{out}");
+    assert!(focused(&all[4], "[data-push-target]"), "closing gives the focus back to Push: {:?}", all[4]["settled"]["focusMatches"]);
 }
 
 #[test]

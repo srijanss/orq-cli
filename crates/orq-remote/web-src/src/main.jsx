@@ -890,6 +890,30 @@ function Unpushed({ unpushed, subjects = false, push = null }) {
   );
 }
 
+// While `active`, Tab and Shift+Tab wrap around inside `box`, so the page under a popup is out of reach.
+function useTabInside(box, active = true) {
+  useEffect(() => {
+    if (!active) return undefined;
+    const keepFocus = (event) => {
+      if (event.key !== "Tab" || box.current === null) return;
+      const stops = [...box.current.querySelectorAll("button, input, textarea, select, a[href]")].filter((el) => !el.disabled && el.tabIndex >= 0);
+      if (stops.length === 0) return;
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const at = document.activeElement;
+      if (event.shiftKey && (at === first || !box.current.contains(at))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (at === last || !box.current.contains(at))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", keepFocus);
+    return () => document.removeEventListener("keydown", keepFocus);
+  }, [active]);
+}
+
 // Most commits a push confirmation lists before "and N more".
 const PUSH_LISTED = 50;
 
@@ -960,16 +984,30 @@ function PushTarget({ target, push, onPushed }) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, busy]);
-  const error = note !== "" ? <span role="status" className="run-action-note error-text" data-push-error>{note}</span> : null;
+  // Opening moves the focus to Cancel, Tab stays inside the popup, and closing gives it back to Push.
+  const box = useRef(null);
+  const button = useRef(null);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      const cancelButton = box.current === null ? null : box.current.querySelector("[data-cancel]");
+      if (cancelButton !== null) cancelButton.focus();
+    } else if (!open && wasOpen.current && button.current !== null && button.current.isConnected) {
+      button.current.focus();
+    }
+    wasOpen.current = open;
+  }, [open]);
+  useTabInside(box, open);
+  const error =note !== "" ? <span role="status" className="run-action-note error-text" data-push-error>{note}</span> : null;
   // The confirmation is a popup over the page, so the card or line the button sits in keeps its size.
   return (
     <div className="push-target">
-      <button type="button" className="primary-button" data-push-target disabled={!session || phase !== "idle"} onClick={ask}><Icon name="arrowUp" size={16} />{"Push " + target}</button>
+      <button type="button" className="primary-button" ref={button} data-push-target disabled={!session || phase !== "idle"} onClick={ask}><Icon name="arrowUp" size={16} />{"Push " + target}</button>
       {session ? null : <p className="muted" data-push-needs-passkey>Pushing needs a passkey sign-in.</p>}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {open ? (
         <div className="feature-modal" data-push-modal onClick={(event) => { if (event.target === event.currentTarget && !busy) cancel(); }}>
-          <div className="feature-modal-box" role="dialog" aria-modal="true" aria-label={"Push " + target}>
+          <div className="feature-modal-box" ref={box} role="dialog" aria-modal="true" aria-label={"Push " + target}>
             <div className="feature-modal-head">
               <h2>{"Push " + target}</h2>
               <button type="button" className="icon-button" data-modal-close aria-label="Close" disabled={busy} onClick={cancel}><Icon name="close" size={18} /></button>
@@ -1201,26 +1239,7 @@ function TodoEditDialog({ item, token, onSignedOut, onClose, onSaved }) {
     if (why === null) onSaved();
     else setNote(why);
   };
-  // Tab and Shift+Tab wrap around inside the popup, so the page under it is out of reach.
-  useEffect(() => {
-    const keepFocus = (event) => {
-      if (event.key !== "Tab" || box.current === null) return;
-      const stops = [...box.current.querySelectorAll("button, input, textarea, select, a[href]")].filter((el) => !el.disabled && el.tabIndex >= 0);
-      if (stops.length === 0) return;
-      const first = stops[0];
-      const last = stops[stops.length - 1];
-      const at = document.activeElement;
-      if (event.shiftKey && (at === first || !box.current.contains(at))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (at === last || !box.current.contains(at))) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", keepFocus);
-    return () => document.removeEventListener("keydown", keepFocus);
-  }, []);
+  useTabInside(box);
   return (
     <div className="feature-modal" data-feature-modal data-todo-edit-dialog onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <div className="feature-modal-box" ref={box} role="dialog" aria-modal="true" aria-labelledby="todo-edit-title">
