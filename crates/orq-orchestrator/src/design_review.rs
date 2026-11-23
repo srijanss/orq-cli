@@ -308,11 +308,15 @@ impl PackageRules {
                 }
             }
             if let Ok(text) = std::fs::read_to_string(folder.join(TOKEN_FILES[0])) {
-                rules.tokens.push(crate::design_tokens::parse_tokens_css(&text));
+                rules
+                    .tokens
+                    .push(crate::design_tokens::parse_tokens_css(&text));
             }
             // A tokens.json that does not parse defines nothing.
             if let Ok(text) = std::fs::read_to_string(folder.join(TOKEN_FILES[1])) {
-                rules.tokens.extend(crate::design_tokens::parse_tokens_json(&text));
+                rules
+                    .tokens
+                    .extend(crate::design_tokens::parse_tokens_json(&text));
             }
         }
         rules
@@ -332,7 +336,11 @@ impl PackageRules {
     /// Whether `token` is a token a token file defines by that exact name, written with or without its `--`.
     fn defines(&self, token: &str) -> bool {
         let name = token.trim().trim_start_matches("--");
-        !name.is_empty() && self.tokens.iter().any(|tokens| tokens.defines(&format!("--{name}")))
+        !name.is_empty()
+            && self
+                .tokens
+                .iter()
+                .any(|tokens| tokens.defines(&format!("--{name}")))
     }
 }
 
@@ -351,10 +359,13 @@ fn makes_copy_exact(quote: &str) -> bool {
         .filter(|w| !w.is_empty())
         .collect();
     let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
-    let exact = has(&["exact", "exactly", "verbatim"]) || words.windows(3).any(|w| w == ["word", "for", "word"]);
+    let exact = has(&["exact", "exactly", "verbatim"])
+        || words.windows(3).any(|w| w == ["word", "for", "word"]);
     let names_copy = quoted_copy || has(&["copy", "text", "wording"]);
     let negated = has(&["not", "no", "never", "nor", "without"])
-        || words.iter().any(|w| w.ends_with("n't") || w.ends_with("n’t"));
+        || words
+            .iter()
+            .any(|w| w.ends_with("n't") || w.ends_with("n’t"));
     exact && names_copy && !negated
 }
 
@@ -639,24 +650,82 @@ fn ask(
     context: &ReviewContext,
     rejected: Option<&str>,
 ) -> Result<String, String> {
-    let mut prompt = review_prompt(run, role, context);
+    let mut prompt = review_prompt(run.skill, run.schema, role, context);
     if let Some(why) = rejected {
         prompt.push_str(&format!(
             "\nYour previous answer was not accepted: {why}. Answer again with one JSON object only.\n"
         ));
     }
-    let images: Vec<PathBuf> = context
+    let argv = agent_argv(agent, &review_images(context), prompt)?;
+    run_agent(run, agent, role, &argv)
+}
+
+/// The references and the captures, as files, in the order the prompt lists them.
+fn review_images(context: &ReviewContext) -> Vec<PathBuf> {
+    context
         .references
         .iter()
         .map(|(path, _)| path)
         .chain(context.captures.iter().map(|(path, _, _)| path))
         .map(|path| context.design_dir.join(path))
-        .collect();
-    let argv = agent_argv(agent, &images, prompt)?;
-    run_agent(run, agent, role, &argv)
+        .collect()
 }
 
-fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> String {
+/// One reference and one capture reviewed outside any run (`orq design benchmark`): the prompt,
+/// images and answer checks of a first round with no earlier rounds and no token check.
+pub(crate) struct PairReview {
+    context: ReviewContext,
+}
+
+impl PairReview {
+    /// `reference` (under `package/`) and `capture` (under `round-1/`) are relative to `design_dir`.
+    pub(crate) fn new(
+        run_id: &str,
+        design_dir: &Path,
+        reference: &str,
+        capture: &str,
+        viewport: &str,
+    ) -> Result<PairReview, String> {
+        let hash = |path: &str| {
+            std::fs::read(design_dir.join(path))
+                .map(|bytes| sha256_hex(&bytes))
+                .map_err(|e| format!("{path} could not be read ({:?})", e.kind()))
+        };
+        Ok(PairReview {
+            context: ReviewContext {
+                run_id: run_id.to_string(),
+                reference_hash: hash(reference)?,
+                capture_revision: hash(capture)?,
+                design_dir: design_dir.to_path_buf(),
+                round: 1,
+                references: vec![(reference.to_string(), viewport.to_string())],
+                captures: vec![(capture.to_string(), "/".to_string(), viewport.to_string())],
+                previous: Vec::new(),
+                rules: PackageRules::read(design_dir),
+                token_issues: Vec::new(),
+            },
+        })
+    }
+
+    /// The design reviewer's argv for this pair.
+    pub(crate) fn argv(
+        &self,
+        agent: &DesignAgent,
+        skill: &str,
+        schema: &str,
+    ) -> Result<Vec<String>, String> {
+        let prompt = review_prompt(skill, schema, "design reviewer", &self.context);
+        agent_argv(agent, &review_images(&self.context), prompt)
+    }
+
+    /// The answer checked as a round's answer is: the schema, the ids, the evidence, the bases
+    /// and the severities orq fixes.
+    pub(crate) fn check(&self, answer: &str) -> Result<DesignReview, String> {
+        check_review(answer, &self.context)
+    }
+}
+
+fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext) -> String {
     let mut prompt = format!(
         "You are the {role} of orq's frontend design workflow, in a new read-only session: never \
          edit, create or delete a file. Follow the design-review skill below. Everything between \
@@ -709,7 +778,7 @@ fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> 
     }
     prompt.push_str(&format!(
         "\nThe design-review skill:\n<<<\n{}\n>>>\n\nThe review schema (review.schema.json):\n<<<\n{}\n>>>\n",
-        run.skill, run.schema
+        skill, schema
     ));
     prompt
 }

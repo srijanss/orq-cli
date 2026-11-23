@@ -8,6 +8,7 @@ mod ci_fix;
 mod ci_wait;
 mod cleanup;
 mod conflict_fix;
+mod design_benchmark;
 mod design_capture;
 mod design_infer;
 mod design_loop;
@@ -75,6 +76,10 @@ pub use ci_fix::{run_ci_fix_loop, CiFixConfig, CiFixOutcome, CiFixSteps};
 pub use ci_wait::{retry_ci, wait_for_ci, wait_for_ci_logged, CiOutcome, CiWaitConfig};
 pub use cleanup::{cleanup_worktree, CleanupOutcome};
 pub use conflict_fix::{conflict_fix_task, fix_rebase_conflicts, ConflictFixOutcome};
+pub use design_benchmark::{
+    run_design_benchmark, Agreement, BenchmarkTotals, CaseResult, DesignBenchmarkOutcome,
+    DesignBenchmarkRun, RepeatResult,
+};
 pub use design_capture::{
     capture_design, capture_viewports, design_routes, find_chromium_in, CaptureOutcome,
     CaptureRecord, CaptureRun, CaptureViewport, PageCapture,

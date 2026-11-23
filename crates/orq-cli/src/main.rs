@@ -19,7 +19,7 @@ mod worktree;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending [--reopen] | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq feature kind --repo <path> --id <name> frontend|standard | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>] | orq design review --repo <path> --feature <name>";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending [--reopen] | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq feature kind --repo <path> --id <name> frontend|standard | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>] | orq design review --repo <path> --feature <name> | orq design benchmark --repo <path> --cases <dir> [--agent <harness>/<model>[:effort]] [--repeat <1-5>]";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -65,6 +65,7 @@ fn main() -> ExitCode {
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
         (Some("design"), Some("review")) => design_review(&args[2..]),
+        (Some("design"), Some("benchmark")) => design_benchmark(&args[2..]),
         _ => usage_error(),
     }
 }
@@ -1695,6 +1696,116 @@ fn design_review(args: &[OsString]) -> ExitCode {
     }
     println!("report: {}", printable(&outcome.report.display().to_string()));
     ExitCode::from(outcome.verdict.exit_code())
+}
+
+/// `orq design benchmark --repo <path> --cases <dir> [--agent <harness>/<model>[:effort]] [--repeat N]`:
+/// measures a design reviewer (the project's, or `--agent`) on known cases through the real review
+/// path, and writes `<state>/design-benchmarks/<time>/report.md` and `results.json`. No run,
+/// worktree, commit or settings change. Prints the summary and the report's path; exits 0 when the
+/// benchmark ran, 2 when it was refused.
+fn design_benchmark(args: &[OsString]) -> ExitCode {
+    const AGENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+    let refuse = |message: String| {
+        eprintln!("orq: {}", printable(&message));
+        ExitCode::from(2)
+    };
+    let (mut repo, mut cases, mut agent_flag, mut repeat) = (None, None, None, 1u32);
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let Some(value) = rest.next() else { return usage_error() };
+        match flag.to_str() {
+            Some("--repo") if repo.is_none() => repo = Some(PathBuf::from(value)),
+            Some("--cases") if cases.is_none() => cases = Some(PathBuf::from(value)),
+            Some("--agent") if agent_flag.is_none() => match value.to_str() {
+                Some(agent) => agent_flag = Some(agent.to_string()),
+                None => return usage_error(),
+            },
+            // Its range is the benchmark's to refuse.
+            Some("--repeat") => match value.to_str().and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) => repeat = n,
+                None => return refuse(format!("--repeat must be a number, not {:?}", value.to_string_lossy())),
+            },
+            _ => return usage_error(),
+        }
+    }
+    let (Some(repo), Some(cases)) = (repo, cases) else { return usage_error() };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return refuse(format!("cannot resolve project: {err:?}")),
+    };
+    let chosen = match agent_flag {
+        Some(flag) => match parse_agent_flag(&flag) {
+            Some(agent) => agent,
+            None => return refuse(format!("--agent must be <harness>/<model>[:effort], not {flag:?}")),
+        },
+        None => match project_settings(&project) {
+            Ok(settings) => match settings.design_reviewer {
+                Some(agent) => agent,
+                None => return refuse(orq_core::project_settings::NO_DESIGN_REVIEWER.to_string()),
+            },
+            Err(err) => return refuse(err),
+        },
+    };
+    let listing = if chosen.harness == "pi" {
+        find_program("pi").and_then(|program| pi_model_listing(&program, std::time::Duration::from_secs(5)))
+    } else {
+        None
+    };
+    let levels = orq_agents::effort_levels(&chosen.harness);
+    if let Some(refusal) = orq_core::project_settings::design_agent_refusal("design reviewer", &chosen, levels, listing.as_deref()) {
+        return refuse(refusal);
+    }
+    let reviewer = orq_orchestrator::DesignAgent {
+        program: PathBuf::from(&chosen.harness),
+        harness: chosen.harness.clone(),
+        model: chosen.model.clone(),
+        thinking: chosen.effort.clone(),
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let roots = match orq_core::storage::StorageRoots::resolve(&env) {
+        Ok(roots) => roots,
+        Err(err) => return refuse(format!("cannot locate the Orq data directory: {err}")),
+    };
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let benchmarks = roots.state.join("design-benchmarks");
+    let mut output = benchmarks.join(orq_core::storage::utc_stamp(since));
+    if output.exists() {
+        output = benchmarks.join(format!("{}-{}", orq_core::storage::utc_stamp(since), std::process::id()));
+    }
+    let run = orq_orchestrator::DesignBenchmarkRun {
+        cases: &cases,
+        output: &output,
+        agent: &reviewer,
+        repeat,
+        skill: orq_agents::design_skill("design-review").unwrap_or_default(),
+        schema: orq_agents::DESIGN_REVIEW_SCHEMA,
+        agent_timeout: AGENT_TIMEOUT,
+    };
+    match orq_orchestrator::run_design_benchmark(&run) {
+        Ok(outcome) => {
+            println!("{}", printable(&outcome.summary));
+            println!("report: {}", printable(&outcome.report.display().to_string()));
+            ExitCode::SUCCESS
+        }
+        Err(why) => refuse(why),
+    }
+}
+
+/// `<harness>/<model>[:effort]` as a design agent; `None` when a part is missing.
+fn parse_agent_flag(flag: &str) -> Option<orq_core::project_settings::ProjectAgent> {
+    let (harness, rest) = flag.split_once('/')?;
+    let (model, effort) = match rest.rsplit_once(':') {
+        Some((model, effort)) if !effort.contains('/') => (model, Some(effort)),
+        _ => (rest, None),
+    };
+    if harness.is_empty() || model.is_empty() || effort.is_some_and(str::is_empty) {
+        return None;
+    }
+    Some(orq_core::project_settings::ProjectAgent {
+        harness: harness.to_string(),
+        model: model.to_string(),
+        effort: effort.map(str::to_string),
+    })
 }
 
 /// The executable for `harness`: a bare name found on PATH, never a path.
