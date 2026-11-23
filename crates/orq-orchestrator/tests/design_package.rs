@@ -507,7 +507,9 @@ fn images_with_whole_headers_but_unusable_pixel_data_are_refused() {
         png_with(
             1440,
             900,
-            &[0x78, 0x01, 0x01, 0x01, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x01, 0x00, 0x01],
+            &[
+                0x78, 0x01, 0x01, 0x01, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x01, 0x00, 0x01,
+            ],
         ),
     );
     // Not a zlib stream at all.
@@ -662,7 +664,10 @@ fn svgs_loading_external_resources_through_css_or_attributes_are_refused() {
     f.full_package();
     let svg = |body: &str| format!(r#"<svg xmlns="http://www.w3.org/2000/svg">{body}</svg>"#);
     let refused_bodies = [
-        ("import", r#"<style>@import "https://example.com/a.css";</style>"#),
+        (
+            "import",
+            r#"<style>@import "https://example.com/a.css";</style>"#,
+        ),
         (
             "cdata",
             "<style><![CDATA[ rect { fill: url(https://example.com/p.svg#g) } ]]></style>",
@@ -679,7 +684,10 @@ fn svgs_loading_external_resources_through_css_or_attributes_are_refused() {
             "entity",
             r#"<rect fill="&#117;rl(https://example.com/p.svg#paint)"/>"#,
         ),
-        ("escape", r"<style>rect { fill: u\72l(https://x/p.svg#a) }</style>"),
+        (
+            "escape",
+            r"<style>rect { fill: u\72l(https://x/p.svg#a) }</style>",
+        ),
         ("src", r#"<image src="https://example.com/x.png"/>"#),
     ];
     for (name, body) in refused_bodies {
@@ -702,12 +710,69 @@ fn svgs_loading_external_resources_through_css_or_attributes_are_refused() {
 
     for (name, _) in refused_bodies {
         let path = format!("assets/{name}.svg");
-        assert!(mentions(&problems, &[&path]), "{path} not refused: {problems:?}");
+        assert!(
+            mentions(&problems, &[&path]),
+            "{path} not refused: {problems:?}"
+        );
     }
     for path in ["assets/stylesheet.svg", "assets/xxe.svg"] {
-        assert!(mentions(&problems, &[path]), "{path} not refused: {problems:?}");
+        assert!(
+            mentions(&problems, &[path]),
+            "{path} not refused: {problems:?}"
+        );
     }
     assert!(!mentions(&problems, &["assets/local.svg"]), "{problems:?}");
+}
+
+#[test]
+fn namespace_prefixed_svg_elements_are_checked_like_unprefixed_ones() {
+    let f = Fixture::new("svg-prefixed");
+    f.full_package();
+    let svg = |body: &str| {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg">{body}<rect width="100" height="100"/></svg>"#
+        )
+    };
+    let refused_bodies = [
+        (
+            "prefixed-url",
+            "<s:style>rect { fill: url(https://example.com/image.svg); }</s:style>",
+        ),
+        (
+            "prefixed-import",
+            r#"<s:style>@import "https://example.com/a.css";</s:style>"#,
+        ),
+        (
+            "prefixed-escape",
+            r"<s:style>rect { fill: u\72l(https://x/p.svg#a) }</s:style>",
+        ),
+        ("prefixed-script", "<s:script>alert(1)</s:script>"),
+        (
+            "prefixed-foreign",
+            "<s:foreignObject><div/></s:foreignObject>",
+        ),
+    ];
+    for (name, body) in refused_bodies {
+        f.put(&format!("assets/{name}.svg"), svg(body));
+    }
+    f.put(
+        "assets/prefixed-local.svg",
+        svg("<s:style>rect { fill: url(#g) }</s:style><title>a\\b</title>"),
+    );
+
+    let problems = refused(f.start());
+
+    for (name, _) in refused_bodies {
+        let path = format!("assets/{name}.svg");
+        assert!(
+            mentions(&problems, &[&path]),
+            "{path} not refused: {problems:?}"
+        );
+    }
+    assert!(
+        !mentions(&problems, &["assets/prefixed-local.svg"]),
+        "{problems:?}"
+    );
 }
 
 #[test]
@@ -784,9 +849,18 @@ fn svg_comments_hide_no_attributes_however_many_there_are() {
 
     let problems = refused(f.start());
 
-    assert!(mentions(&problems, &["assets/after.svg", "onclick"]), "{problems:?}");
-    assert!(!mentions(&problems, &["assets/commented.svg"]), "{problems:?}");
-    assert!(!mentions(&problems, &["assets/unclosed.svg"]), "{problems:?}");
+    assert!(
+        mentions(&problems, &["assets/after.svg", "onclick"]),
+        "{problems:?}"
+    );
+    assert!(
+        !mentions(&problems, &["assets/commented.svg"]),
+        "{problems:?}"
+    );
+    assert!(
+        !mentions(&problems, &["assets/unclosed.svg"]),
+        "{problems:?}"
+    );
 }
 
 #[test]

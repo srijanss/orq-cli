@@ -675,10 +675,10 @@ fn svg_problem(bytes: &[u8]) -> Option<String> {
     if text.contains("<?xml-stylesheet") {
         return Some("is refused: it links a stylesheet".to_string());
     }
-    if text.contains("<script") {
+    if !tags_named(&text, "script", false).is_empty() {
         return Some("is refused: it has a <script>".to_string());
     }
-    if text.contains("<foreignobject") {
+    if !tags_named(&text, "foreignobject", false).is_empty() {
         return Some("is refused: it has a <foreignObject>".to_string());
     }
     let decoded = |raw: &str| decode_references(raw).to_ascii_lowercase();
@@ -691,8 +691,7 @@ fn svg_problem(bytes: &[u8]) -> Option<String> {
         if name.starts_with("on") {
             return Some(format!("is refused: it has the event attribute {name}"));
         }
-        if (name == "href" || name.ends_with(":href") || name == "src") && !local_resource(&value)
-        {
+        if (name == "href" || name.ends_with(":href") || name == "src") && !local_resource(&value) {
             return Some(format!(
                 "is refused: its {name} is neither a local #fragment nor a data image"
             ));
@@ -777,12 +776,8 @@ fn css_url_problem(text: &str) -> Option<String> {
         let (target, after) = match rest.chars().next() {
             Some(quote @ ('"' | '\'')) => {
                 let end = rest[1..].find(quote).map(|end| end + 1);
-                let closed = end.and_then(|end| {
-                    rest[end + 1..]
-                        .trim_start()
-                        .starts_with(')')
-                        .then_some(end)
-                });
+                let closed = end
+                    .and_then(|end| rest[end + 1..].trim_start().starts_with(')').then_some(end));
                 match closed {
                     Some(end) => (&rest[1..end], end + 1),
                     None => return Some("is refused: it has an unterminated url(".to_string()),
@@ -804,15 +799,47 @@ fn css_url_problem(text: &str) -> Option<String> {
     None
 }
 
-/// The contents of every `<style>` element in `text`.
-fn style_elements(text: &str) -> Vec<String> {
+/// Every opening (or, with `closing`, closing) tag in `text` whose local name is `local`,
+/// whatever its namespace prefix (`<style`, `<s:style`), as (where the tag starts, where its name
+/// ends). A name ends at whitespace, `>`, `/` or the next `<`, so each character is read once.
+fn tags_named(text: &str, local: &str, closing: bool) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.find("<style") {
-        rest = &rest[at + 6..];
-        let end = rest.find("</style").unwrap_or(rest.len());
-        found.push(rest[..end].to_string());
-        rest = &rest[end..];
+    for (at, _) in text.match_indices('<') {
+        let mut start = at + 1;
+        if closing {
+            if !text[start..].starts_with('/') {
+                continue;
+            }
+            start += 1;
+        }
+        let length = text[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '>' | '/' | '<'))
+            .unwrap_or(text.len() - start);
+        let name = &text[start..start + length];
+        if name.rsplit(':').next() == Some(local) {
+            found.push((at, start + length));
+        }
+    }
+    found
+}
+
+/// The contents of every `<style>` element in `text`, prefixed (`<s:style>`) or not.
+fn style_elements(text: &str) -> Vec<String> {
+    let opening = tags_named(text, "style", false);
+    let closing = tags_named(text, "style", true);
+    let mut found = Vec::new();
+    let mut from = 0;
+    let mut next_close = 0;
+    for (tag, name_end) in opening {
+        if tag < from {
+            continue;
+        }
+        while next_close < closing.len() && closing[next_close].0 < name_end {
+            next_close += 1;
+        }
+        let end = closing.get(next_close).map_or(text.len(), |close| close.0);
+        found.push(text[name_end..end].to_string());
+        from = end;
     }
     found
 }
