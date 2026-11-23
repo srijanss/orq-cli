@@ -23,6 +23,8 @@ pub trait DesignLoopSteps {
     /// Gives the implementer one consolidated batch of `issues` (the existing fix path), and has its
     /// fix commits go through the code review again.
     fn correct(&mut self, batch: u32, issues: &[ReviewIssue]) -> Result<CorrectionOutcome, StoreError>;
+    /// Has the fix commits of batch `batch`, made on top of `from`, go through the code review again.
+    fn review_code(&mut self, batch: u32, from: &str) -> Result<CorrectionOutcome, StoreError>;
 }
 
 /// How a correction batch ended.
@@ -53,6 +55,20 @@ pub fn run_design_loop(
 ) -> Result<DesignLoopOutcome, StoreError> {
     loop {
         let state = read_state(store, run_id)?;
+        // A finished batch whose fix commits have not been code reviewed yet gets that review first,
+        // so a resume between the two neither repeats the batch nor skips its review.
+        if let Some((batch, from)) = state.corrections.get(state.code_reviews as usize) {
+            if let CorrectionOutcome::Stopped(reason) = steps.review_code(*batch, from)? {
+                return Ok(DesignLoopOutcome::Stopped { reason });
+            }
+            // Batch n answers review n, so its code review belongs to that round.
+            record(store, run_id, "design_code_review", *batch, serde_json::json!({
+                "batch": batch,
+                "round": batch,
+                "reviews_of": max_correction_rounds + 1,
+            }))?;
+            continue;
+        }
         let head = steps.head()?;
         // Evidence is bound to the commit: a pass holds only for the head it reviewed.
         if let Some(last) = state.reviews.last().filter(|r| r.verdict == DesignVerdict::Pass && r.head == head) {
@@ -88,6 +104,8 @@ pub fn run_design_loop(
                 "batch": batch,
                 "of": max_correction_rounds,
                 "round": last.round,
+                "reviews_of": max_correction_rounds + 1,
+                "from": head,
             }))?;
             continue;
         }
@@ -126,6 +144,20 @@ pub fn run_design_loop(
     }
 }
 
+/// How the run page names an event of the `design_review` step: `design_review round 2 of 4`, the round
+/// of the review it belongs to out of the most reviews the budget allows (one per batch and one to verify).
+/// `None` for an event of another step or one that records no round.
+pub fn design_round_label(event: &Event) -> Option<String> {
+    if event.stage.as_deref() != Some(DESIGN_REVIEW_STAGE) {
+        return None;
+    }
+    let number = |key: &str| event.payload.get(key).and_then(serde_json::Value::as_u64);
+    let round = number("round")?;
+    // A correction's `of` is its batch budget; its review budget is `reviews_of`.
+    let of = number("reviews_of").or_else(|| number("of"))?;
+    Some(format!("{DESIGN_REVIEW_STAGE} round {round} of {of}"))
+}
+
 /// The stage a correction batch's implementer session is recorded under, numbered by its batch.
 pub const DESIGN_FIX_STAGE: &str = "design_fix";
 
@@ -146,13 +178,50 @@ pub fn run_design_correction(
     session: &crate::implement::ImplementSession<'_>,
     batch: u32,
 ) -> Result<CorrectionOutcome, StoreError> {
-    let outcome = crate::implement::run_session_stage(store, run_id, session, DESIGN_FIX_STAGE, batch)?;
+    run_design_session(store, run_id, session, DESIGN_FIX_STAGE, batch, "design correction")
+}
+
+/// The stage the code review of a correction batch's fix commits is recorded under, numbered by its batch.
+pub const DESIGN_CODE_REVIEW_STAGE: &str = "design_code_review";
+
+/// The task of the session that has batch `batch`'s fix commits (`from..HEAD`) go through the code review
+/// again: `skill` is the review-and-fix skill as the implementer's harness names it and `reviewer` the
+/// reviewer options. `None` when `from` is not a commit name.
+pub fn design_code_review_task(skill: &str, from: &str, reviewer: &str, batch: u32) -> Option<String> {
+    let commit = (7..=64).contains(&from.len()) && from.bytes().all(|b| b.is_ascii_hexdigit());
+    commit.then(|| {
+        format!(
+            "{skill} {from}..HEAD {reviewer}\n\nThese are the fix commits of design correction round {batch}: \
+             they go through the code review again before the page is captured and reviewed once more."
+        )
+    })
+}
+
+/// Runs the session that has batch `batch`'s fix commits code reviewed again; it stops the run when it fails.
+pub fn run_design_code_review(
+    store: &RunStore,
+    run_id: &str,
+    session: &crate::implement::ImplementSession<'_>,
+    batch: u32,
+) -> Result<CorrectionOutcome, StoreError> {
+    run_design_session(store, run_id, session, DESIGN_CODE_REVIEW_STAGE, batch, "code review of the design correction")
+}
+
+fn run_design_session(
+    store: &RunStore,
+    run_id: &str,
+    session: &crate::implement::ImplementSession<'_>,
+    stage: &str,
+    batch: u32,
+    what: &str,
+) -> Result<CorrectionOutcome, StoreError> {
+    let outcome = crate::implement::run_session_stage(store, run_id, session, stage, batch)?;
     Ok(if outcome.success {
         CorrectionOutcome::Done
     } else {
         CorrectionOutcome::Stopped(match outcome.reported {
-            Some(problem) => format!("the design correction session reported a problem: {problem}"),
-            None => format!("the design correction session of round {batch} failed"),
+            Some(problem) => format!("the {what} session of round {batch} reported a problem: {problem}"),
+            None => format!("the {what} session of round {batch} failed"),
         })
     })
 }
@@ -183,10 +252,14 @@ struct Recorded {
 struct State {
     reviews: Vec<Recorded>,
     batches: u32,
+    /// Each finished batch and the head its fix commits start from.
+    corrections: Vec<(u32, String)>,
+    /// The batches whose fix commits went through the code review again.
+    code_reviews: u32,
 }
 
 fn read_state(store: &RunStore, run_id: &str) -> Result<State, StoreError> {
-    let mut state = State { reviews: Vec::new(), batches: 0 };
+    let mut state = State { reviews: Vec::new(), batches: 0, corrections: Vec::new(), code_reviews: 0 };
     for event in store.events(run_id)? {
         if event.stage.as_deref() != Some(DESIGN_REVIEW_STAGE) {
             continue;
@@ -197,7 +270,12 @@ fn read_state(store: &RunStore, run_id: &str) -> Result<State, StoreError> {
                     .map_err(|e| StoreError::Corrupt(format!("a design_review event of {run_id}: {e}")))?;
                 state.reviews.push(review);
             }
-            "design_correction" => state.batches += 1,
+            "design_correction" => {
+                state.batches += 1;
+                let from = event.payload.get("from").and_then(|f| f.as_str()).unwrap_or_default().to_string();
+                state.corrections.push((state.batches, from));
+            }
+            "design_code_review" => state.code_reviews += 1,
             _ => {}
         }
     }

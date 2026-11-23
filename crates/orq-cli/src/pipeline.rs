@@ -2518,7 +2518,48 @@ fn stages(
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "design_fix");
             outcome
         };
-        let mut steps = PipelineDesignSteps { worktree, review: &review, correct: &correct };
+        // The fix commits of a batch go through the project's code review again (review-and-fix over them).
+        let review_code = |batch: u32, from: &str| {
+            let reviewer = spec(&options.reviewer);
+            let mut reviewer_options = format!("--reviewer {} --model {}", reviewer.harness, reviewer.model);
+            if let Some(thinking) = &reviewer.thinking {
+                reviewer_options.push_str(&format!(" --thinking {thinking}"));
+            }
+            let skill = orq_agents::skill_command(&options.implementer.harness, "review-and-fix").map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+            let Some(task) = orq_orchestrator::design_code_review_task(&skill, from, &reviewer_options, batch) else {
+                return Ok(orq_orchestrator::CorrectionOutcome::Stopped(format!("design correction round {batch} recorded no head to review its fix commits from")));
+            };
+            let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+            let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-code-review.done"));
+            let args = adapter_for(&options.implementer.harness)
+                .and_then(|adapter| {
+                    adapter.fix_argv(&FixRequest {
+                        implementer: spec(&implementer),
+                        task: &task,
+                        exit_marker: marker.as_deref().and_then(Path::to_str),
+                        attended: options.interactive,
+                        allowed_commands: &allowed_commands,
+                    })
+                })
+                .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+            let session = ImplementSession {
+                program: claude_program,
+                args: &args,
+                env: database_env,
+                cwd: worktree,
+                session_id: None,
+                log: &logs.join("design-code-review.log"),
+                terminal: options.interactive,
+                exit_marker: marker.as_deref(),
+            };
+            fix_features.before("design_code_review");
+            let outcome = orq_orchestrator::run_design_code_review(store, run_id, &session, batch);
+            fix_features.settle();
+            record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "design code review");
+            record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "design_code_review");
+            outcome
+        };
+        let mut steps = PipelineDesignSteps { worktree, review: &review, correct: &correct, review_code: &review_code };
         match orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)? {
             orq_orchestrator::DesignLoopOutcome::Passed { .. } => Ok(None),
             orq_orchestrator::DesignLoopOutcome::NeedsReview { reason, report } => needs_review(match report {
@@ -2867,6 +2908,7 @@ struct PipelineDesignSteps<'a> {
     worktree: &'a Path,
     review: &'a dyn Fn(u32) -> orq_orchestrator::DesignReviewOutcome,
     correct: &'a dyn Fn(u32, &[orq_orchestrator::ReviewIssue]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
+    review_code: &'a dyn Fn(u32, &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
 }
 
 impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
@@ -2889,6 +2931,10 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
 
     fn correct(&mut self, batch: u32, issues: &[orq_orchestrator::ReviewIssue]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
         (self.correct)(batch, issues)
+    }
+
+    fn review_code(&mut self, batch: u32, from: &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
+        (self.review_code)(batch, from)
     }
 }
 

@@ -78,9 +78,9 @@ pub use design_capture::{
     CaptureRecord, CaptureRun, CaptureViewport, PageCapture,
 };
 pub use design_loop::{
-    design_fix_task, record_design_package, run_design_correction, run_design_loop,
-    CorrectionOutcome, DesignLoopOutcome, DesignLoopSteps, DESIGN_FIX_STAGE, DESIGN_PACKAGE_STAGE,
-    DESIGN_REVIEW_STAGE,
+    design_code_review_task, design_fix_task, design_round_label, record_design_package, run_design_code_review,
+    run_design_correction, run_design_loop, CorrectionOutcome, DesignLoopOutcome, DesignLoopSteps,
+    DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE,
 };
 pub use design_package::{
     resume_design_package, start_design_package, AssignedViewport, DesignFilesNeeded,

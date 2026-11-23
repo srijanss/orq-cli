@@ -93,11 +93,22 @@ struct Fake {
     reviewed: Vec<u32>,
     /// The batches given to the implementer, with the issue ids in each.
     batches: Vec<(u32, Vec<String>)>,
+    /// The code reviews of a batch's fix commits: the batch and the head its fix commits start from.
+    code_reviews: Vec<(u32, String)>,
+    /// Stop the run (as an interruption) right after this batch, before its code review.
+    interrupt_after_batch: Option<u32>,
 }
 
 impl Fake {
     fn new(head: &str, reviews: Vec<DesignReviewOutcome>) -> Fake {
-        Fake { head: head.to_string(), reviews: reviews.into(), reviewed: Vec::new(), batches: Vec::new() }
+        Fake {
+            head: head.to_string(),
+            reviews: reviews.into(),
+            reviewed: Vec::new(),
+            batches: Vec::new(),
+            code_reviews: Vec::new(),
+            interrupt_after_batch: None,
+        }
     }
 }
 
@@ -117,6 +128,53 @@ impl DesignLoopSteps for Fake {
         self.head = format!("fix-{batch}");
         Ok(CorrectionOutcome::Done)
     }
+
+    fn review_code(&mut self, batch: u32, from: &str) -> Result<CorrectionOutcome, StoreError> {
+        if self.interrupt_after_batch.take() == Some(batch) {
+            return Err(StoreError::Corrupt("interrupted".to_string()));
+        }
+        self.code_reviews.push((batch, from.to_string()));
+        Ok(CorrectionOutcome::Done)
+    }
+}
+
+#[test]
+fn each_correction_batch_has_its_fix_commits_code_reviewed_again_once_even_across_a_resume() {
+    let w = world("review-again");
+    // Batch 1's fix commits are made, and the run is interrupted before their code review.
+    let mut before = Fake::new("head-1", vec![changes()]);
+    before.interrupt_after_batch = Some(1);
+    assert!(run_design_loop(&w.store, "run-1", 3, &mut before).is_err());
+    assert_eq!(before.batches.len(), 1);
+    assert!(before.code_reviews.is_empty());
+
+    // The resumed run reviews batch 1's fix commits (from the head before it) without giving the batch again.
+    let mut after = Fake::new("fix-1", vec![changes(), pass()]);
+    let got = run_design_loop(&w.store, "run-1", 3, &mut after).unwrap();
+    assert_eq!(got, DesignLoopOutcome::Passed { head: "fix-2".to_string() });
+    assert_eq!(after.batches.iter().map(|b| b.0).collect::<Vec<_>>(), [2]);
+    assert_eq!(after.code_reviews, [(1, "head-1".to_string()), (2, "fix-1".to_string())]);
+    assert_eq!(after.reviewed, [2, 3]);
+    let _ = fs::remove_dir_all(&w.root);
+}
+
+#[test]
+fn a_code_review_of_a_batch_that_stops_the_run_stops_the_design_step() {
+    struct Stops(Fake);
+    impl DesignLoopSteps for Stops {
+        fn head(&mut self) -> Result<String, StoreError> { self.0.head() }
+        fn review(&mut self, round: u32) -> Result<DesignReviewOutcome, StoreError> { self.0.review(round) }
+        fn correct(&mut self, batch: u32, issues: &[ReviewIssue]) -> Result<CorrectionOutcome, StoreError> { self.0.correct(batch, issues) }
+        fn review_code(&mut self, _batch: u32, _from: &str) -> Result<CorrectionOutcome, StoreError> {
+            Ok(CorrectionOutcome::Stopped("the code review escalated".to_string()))
+        }
+    }
+    let w = world("review-again-stops");
+    let mut steps = Stops(Fake::new("head-1", vec![changes(), pass()]));
+    let got = run_design_loop(&w.store, "run-1", 3, &mut steps).unwrap();
+    assert_eq!(got, DesignLoopOutcome::Stopped { reason: "the code review escalated".to_string() });
+    assert_eq!(steps.0.reviewed, [1], "the page is not reviewed again before its fix commits pass code review");
+    let _ = fs::remove_dir_all(&w.root);
 }
 
 #[test]
@@ -221,6 +279,26 @@ fn the_events_show_the_design_review_step_with_its_round_for_the_run_page() {
     assert_eq!((last.kind.as_str(), last.stage.as_deref()), ("stage.completed", Some("design_review")));
     let activity = orq_orchestrator::run_activity(&events, None, std::time::Duration::from_secs(60));
     assert_eq!(activity.attempt, 2);
+    let _ = fs::remove_dir_all(&w.root);
+}
+
+#[test]
+fn the_run_page_names_each_design_review_event_with_its_round_of_the_budget() {
+    let w = world("round-label");
+    let mut fake = Fake::new("head-1", vec![changes(), pass()]);
+    run_design_loop(&w.store, "run-1", 3, &mut fake).unwrap();
+    let events = w.store.events("run-1").unwrap();
+    let labels: Vec<Option<String>> = events
+        .iter()
+        .filter(|e| e.stage.as_deref() == Some("design_review"))
+        .map(orq_orchestrator::design_round_label)
+        .collect();
+    assert!(!labels.is_empty());
+    assert!(labels.iter().all(Option::is_some), "every event of the step names its round: {labels:?}");
+    assert_eq!(labels.first().unwrap().as_deref(), Some("design_review round 1 of 4"));
+    assert_eq!(labels.last().unwrap().as_deref(), Some("design_review round 2 of 4"));
+    let other = events.iter().find(|e| e.stage.as_deref() != Some("design_review"));
+    assert!(other.map_or(true, |e| orq_orchestrator::design_round_label(e).is_none()));
     let _ = fs::remove_dir_all(&w.root);
 }
 

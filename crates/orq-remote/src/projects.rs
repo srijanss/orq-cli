@@ -2232,6 +2232,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                     round = advance(round, event);
                     listed["review_round"] = serde_json::json!(round);
                 }
+                if let Some(round) = orq_orchestrator::design_round_label(event) {
+                    listed["design_round"] = serde_json::json!(round);
+                }
                 if event.kind == "mcp.setup" {
                     listed["mcp"] = mcp_setup_shown(&event.payload);
                 }

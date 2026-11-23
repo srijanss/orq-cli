@@ -5895,9 +5895,11 @@ function groupEvents(events, seed = 0) {
       items.push({
         stage: event.stage,
         attempt: event.attempt,
-        title: review ? "Review round " + round : event.stage + ", attempt " + event.attempt,
+        // A design review step is named by its round of the budget, as the server words it.
+        title: review ? "Review round " + round : typeof event.design_round === "string" ? event.design_round : event.stage + ", attempt " + event.attempt,
         failed: event.kind.endsWith(".failed"),
         round: review ? round : 0,
+        designRound: typeof event.design_round === "string" ? event.design_round : null,
         events: [event],
       });
     }
@@ -6095,7 +6097,7 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
         const outside = undeclared.length + reverted.length;
         const flakyList = flakyTests(step.events);
         const place = runId + "\n" + step.events[0].event_id;
-        const name = step.round > 0 ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
+        const name = step.round > 0 || step.designRound ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
         const failure = kind === "failed" ? latestFailure(step.events) : null;
         const failedLog = failure === null ? null : failure.log;
         return (
