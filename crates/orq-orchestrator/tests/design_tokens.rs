@@ -329,6 +329,34 @@ fn configured_rules_with_a_tokens_file_that_does_not_parse_are_a_tokens_issue_no
 }
 
 #[test]
+fn a_tokens_file_that_exists_but_cannot_be_read_is_a_tokens_issue_never_an_absent_file() {
+    let unreadable: [(&str, fn(&std::path::Path)); 2] = [
+        ("invalid UTF-8", |path| std::fs::write(path, b":root { --weight-bold: \xff700; }").unwrap()),
+        ("a directory", |path| std::fs::create_dir(path).unwrap()),
+    ];
+    for (case, make) in unreadable {
+        let dir = design_folder(
+            ":root { --weight-bold: 700; }",
+            "h1: font-weight --weight-bold",
+            vec![json!({"tag": "h1", "index": 0, "styles": {"font-weight": "700"}})],
+            json!({}),
+        );
+        let css = dir.path().join("package/tokens.css");
+        std::fs::remove_file(&css).unwrap();
+        make(&css);
+        // A readable fallback must not stand in for the package's own tokens file.
+        std::fs::write(dir.path().join("package/tokens.json"), "{\"weight-bold\": 700}").unwrap();
+
+        let check = check_design_tokens(dir.path(), 1);
+
+        assert_eq!((check.status, check.rules_configured), (TokenCheckStatus::NotAssessed, 1), "{case}: {check:#?}");
+        assert!(check.reason.as_deref().is_some_and(|r| r.contains("tokens.css")), "{case}: {:?}", check.reason);
+        let ids: Vec<String> = check.issues().into_iter().map(|issue| issue.id).collect();
+        assert_eq!(ids, vec!["tokens-not-assessed"], "{case}");
+    }
+}
+
+#[test]
 fn a_captured_page_without_readable_measurements_leaves_the_check_not_assessed() {
     let dir = design_folder(
         ":root { --weight-bold: 700; }",

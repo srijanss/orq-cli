@@ -237,18 +237,34 @@ pub fn check_design_tokens(design_dir: &Path, round: u32) -> TokenCheck {
 }
 
 /// The frozen package's tokens: its `tokens.css`, else its `tokens.json`, else (infer mode) the
-/// prepared folder's. `None` when there is no tokens file; an error when the one found does not load.
+/// prepared folder's. `None` when there is no tokens file; an error when the first one there is
+/// does not load (unreadable, not UTF-8, not a regular file, or not valid tokens), never a fallback.
 fn package_tokens(design_dir: &Path) -> Result<Option<DesignTokens>, String> {
     for folder in [PACKAGE_DIR, PREPARED_DIR] {
         let folder = design_dir.join(folder);
-        if let Some(text) = read_text(&folder.join(TOKENS_CSS)) {
+        if let Some(text) = read_tokens_file(&folder.join(TOKENS_CSS))? {
             return Ok(Some(parse_tokens_css(&text)));
         }
-        if let Some(text) = read_text(&folder.join(TOKENS_JSON)) {
+        if let Some(text) = read_tokens_file(&folder.join(TOKENS_JSON))? {
             return parse_tokens_json(&text).map(Some);
         }
     }
     Ok(None)
+}
+
+/// A tokens file's text: `None` when nothing is at `path`, an error naming the file when something
+/// is there that can't be read as a regular UTF-8 file (a symlink is not followed).
+fn read_tokens_file(path: &Path) -> Result<Option<String>, String> {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("the tokens file");
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{name} could not be read ({e})")),
+    };
+    if !meta.is_file() {
+        return Err(format!("{name} is not a regular file"));
+    }
+    std::fs::read_to_string(path).map(Some).map_err(|e| format!("{name} could not be read ({e})"))
 }
 
 /// The token rules of the frozen package's DESIGN.md and, in infer mode, of the prepared DESIGN.md

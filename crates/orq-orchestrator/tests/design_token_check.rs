@@ -280,3 +280,22 @@ fn a_reviewer_pass_with_a_violated_token_rule_becomes_changes_required_with_the_
     let check: Value = serde_json::from_slice(&std::fs::read(design.join("round-1/token-check.json")).unwrap()).unwrap();
     assert_eq!(check["status"], "fail");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_tokens_file_is_not_loaded_and_leaves_the_configured_rules_a_tokens_issue() {
+    let f = Fixture::new();
+    f.package("DESIGN.md", "# Page\n\n## Token rules\n\nh1: font-weight --weight-bold\n")
+        .measured("desktop", page(vec![element("h1", json!({"font-weight": "700"}))], json!({})));
+    let outside = f.dir().join("outside.css");
+    std::fs::write(&outside, TOKENS).unwrap();
+    std::os::unix::fs::symlink(&outside, f.dir().join("package/tokens.css")).unwrap();
+
+    let check = check_design_tokens(f.dir(), 1);
+
+    assert_eq!((check.status, check.rules_configured), (TokenCheckStatus::NotAssessed, 1), "{check:#?}");
+    assert!(check.reason.as_deref().is_some_and(|r| r.contains("tokens.css")), "{:?}", check.reason);
+    assert_eq!(f.written()["status"], "not_assessed");
+    let ids: Vec<String> = check.issues().into_iter().map(|issue| issue.id).collect();
+    assert_eq!(ids, vec!["tokens-not-assessed"]);
+}
