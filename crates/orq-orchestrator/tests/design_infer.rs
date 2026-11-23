@@ -535,6 +535,22 @@ fn a_preparation_frozen_for_the_same_package_is_kept_without_a_preparer_call_and
     assert!(matches!(f.prepare(&manifest, &mut tampered), DesignPrepareOutcome::Prepared(_)));
     assert_eq!(tampered.calls, 1);
 
+    // A recorded preparation that is hash-consistent but lacks a required document is prepared
+    // again, as one from an older orq could be.
+    let prepared_dir = f.logs.path().join("design/prepared");
+    fs::remove_file(prepared_dir.join("DESIGN.md")).unwrap();
+    let mut incomplete = first.clone();
+    incomplete.files.retain(|file| file.path != "DESIGN.md");
+    fs::write(f.logs.path().join("design/prepared.json"), serde_json::to_vec_pretty(&incomplete).unwrap()).unwrap();
+    let mut redone = Fake::writing();
+    match f.prepare(&manifest, &mut redone) {
+        DesignPrepareOutcome::Prepared(prepared) => {
+            assert!(prepared.files.iter().any(|file| file.path == "DESIGN.md"), "{prepared:?}")
+        }
+        other => panic!("expected the package prepared again, got {other:?}"),
+    }
+    assert_eq!(redone.calls, 1, "an incomplete recorded preparation is not kept");
+
     // A changed package is prepared again.
     f.put("UX.md", "One action.\n");
     let changed = f.freeze();
