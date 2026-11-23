@@ -3449,6 +3449,12 @@ function featureHref(projectId, name) {
   return "/projects/" + encodeURIComponent(projectId) + "/features/" + encodeURIComponent(name);
 }
 
+// A run's feature as a link to its page: a plain left click opens it in the app, a modified one is left to the browser.
+function FeatureLink({ projectId, name, className = undefined, children }) {
+  const href = featureHref(projectId, name);
+  return <a className={className} data-run-feature href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>{children}</a>;
+}
+
 function whenOf(text) {
   const at = typeof text === "string" ? Date.parse(text) : NaN;
   return Number.isNaN(at) ? 0 : at;
@@ -5281,6 +5287,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                     {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectOf(run), run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
                     <FrontendBadge kind={run.feature_kind} />
                     <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "") + (showProject ? " · " + run.projectName : "")}</span>
+                    {run.kind === "plan" || projectOf(run) === null ? null : <FeatureLink className="run-feature-link" projectId={projectOf(run)} name={run.feature}>Feature</FeatureLink>}
                   </td>
                   <td>
                     <RunState state={run.state} />
@@ -6707,7 +6714,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
         <button type="button" className="back-arrow" data-back="list" aria-label="Back to the runs" onClick={() => navigate(listPath)}><Icon name="arrowLeft" size={22} /></button>
         <div className="feature-detail-title">
           <div className="feature-detail-line">
-            <h2>{run.feature}</h2>
+            <h2>{projectId !== null && run.kind !== "plan" ? <FeatureLink projectId={projectId} name={run.feature}>{run.feature}</FeatureLink> : run.feature}</h2>
             <RunState state={run.state} />
           </div>
           <EndingReason run={run} events={events} />

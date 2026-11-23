@@ -747,6 +747,8 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .run-table td:first-child { display: flex; flex-direction: column; gap: 0.125rem; }
 .run-table .run-open { align-self: flex-start; min-height: 44px; padding: 0; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .run-table .run-id { color: var(--text-muted); font-size: 0.8125rem; overflow-wrap: anywhere; }
+.run-table .run-feature-link { align-self: flex-start; color: var(--text-muted); font-size: 0.8125rem; }
+.run-table .run-feature-link:hover, .run-table .run-feature-link:focus-visible { color: var(--text); }
 .run-ending, .run-resume-links { overflow-wrap: anywhere; }
 @media (min-width: 701px) { .run-table .run-ending { width: max-content; max-width: 20rem; white-space: normal; } }
 .run-table td { vertical-align: middle; }
