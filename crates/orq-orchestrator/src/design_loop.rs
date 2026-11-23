@@ -322,10 +322,39 @@ pub fn carry_design(
             })?;
         }
     }
-    if regular(&from, true) && std::fs::symlink_metadata(&to).is_err() {
-        copy_tree(&from, &to).map_err(|e| StoreError::Corrupt(format!("cannot carry the design folder of {from_run_id}: {e}")))?;
+    // A design folder left without its manifest (an interrupted carry) is replaced by a whole copy, made
+    // aside and moved into place so it is never seen half copied.
+    let incomplete = regular(&from.join(MANIFEST), false) && !regular(&to.join(MANIFEST), false);
+    if regular(&from, true) && (std::fs::symlink_metadata(&to).is_err() || incomplete) {
+        install_copy(&from, &to).map_err(|e| StoreError::Corrupt(format!("cannot carry the design folder of {from_run_id}: {e}")))?;
+    }
+    if froze && !regular(&to.join(MANIFEST), false) {
+        return Err(StoreError::Corrupt(format!(
+            "the frozen design package of {from_run_id} was not carried: {} is missing; start a new run instead",
+            to.join(MANIFEST).display()
+        )));
     }
     Ok(())
+}
+
+/// Copies `from` next to `to` and then moves the copy into `to`'s place, replacing what is there.
+fn install_copy(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let staged = to.with_file_name(format!(".{name}.carrying"));
+    remove_any(&staged)?;
+    copy_tree(from, &staged)?;
+    remove_any(to)?;
+    std::fs::rename(&staged, to)
+}
+
+/// Removes a folder, file or symlink at `path` (never following a symlink); nothing there is fine.
+fn remove_any(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// The run's design folder in its logs.

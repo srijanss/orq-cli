@@ -312,3 +312,25 @@ fn a_verification_review_that_passes_lets_delivery_go_on() {
     assert_eq!(rebased.reviewed, [2]);
     let _ = fs::remove_dir_all(&w.root);
 }
+
+#[test]
+fn a_resume_into_a_half_copied_design_folder_still_gets_the_frozen_manifest() {
+    let w = world("carry-half-copied");
+    orq_orchestrator::record_design_package(&w.store, "run-1", "stage.completed", serde_json::json!({})).unwrap();
+    let from_logs = w.root.join("logs/run-1");
+    fs::create_dir_all(from_logs.join("design/round-1")).unwrap();
+    fs::write(from_logs.join("design/manifest.json"), "{\"frozen\":true}").unwrap();
+    fs::write(from_logs.join("design/round-1/review.json"), "{}").unwrap();
+    let mut resumed = w.store.load("run-1").unwrap();
+    resumed.run_id = "run-2".to_string();
+    w.store.create(&resumed).unwrap();
+    // An earlier carry into run-2 was interrupted: its design folder is there, its manifest is not.
+    let to_logs = w.root.join("logs/run-2");
+    fs::create_dir_all(to_logs.join("design/round-1")).unwrap();
+
+    orq_orchestrator::carry_design(&w.store, &resumed, "run-1", &from_logs, &to_logs).unwrap();
+
+    assert_eq!(fs::read_to_string(to_logs.join("design/manifest.json")).unwrap(), "{\"frozen\":true}");
+    assert_eq!(fs::read_to_string(to_logs.join("design/round-1/review.json")).unwrap(), "{}");
+    let _ = fs::remove_dir_all(&w.root);
+}
