@@ -243,11 +243,11 @@ fn a_pi_whose_descendant_keeps_its_output_open_is_given_up_on_and_the_descendant
     let (answer, took) = save_with_pi(&mut s, "pi-descendant", &script);
     assert_eq!(answer, (422, json!({"error": "pi's models could not be listed"})));
     assert!(took < std::time::Duration::from_secs(10), "given up on in bounded time: {took:?}");
-    let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    // The orphaned descendant may stay a zombie until whoever adopted it reaps it, so a zombie counts as stopped.
     let gone = (0..100).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let alive = unsafe { libc::kill(pid, 0) } == 0;
-        !alive
+        process_stopped(pid)
     });
     assert!(gone, "the descendant holding pi's output was stopped");
     assert_eq!(Store::open(&s.roots.database()).unwrap().project_settings(&alpha).unwrap().revision, 0, "nothing saved");
@@ -269,6 +269,32 @@ fn a_pi_that_hangs_says_too_much_or_fails_after_a_good_table_is_refused_in_bound
         assert!(took < std::time::Duration::from_secs(within), "{name} took {took:?}");
     }
     assert_eq!(Store::open(&s.roots.database()).unwrap().project_settings(&alpha).unwrap().revision, 0, "nothing saved");
+}
+
+/// Whether process `pid` no longer runs: it is gone, or a zombie (state `Z`, or `X` while being reaped).
+fn process_stopped(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return true };
+    // The state follows the command name, which is in parentheses and may itself hold spaces or parentheses.
+    let state = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().next());
+    matches!(state, Some("Z" | "X") | None)
+}
+
+#[test]
+fn a_zombie_counts_as_stopped_and_a_running_process_does_not() {
+    let mut running = Command::new("sleep").arg("60").spawn().unwrap();
+    assert!(!process_stopped(running.id()), "a sleeping process is running");
+    let mut zombie = Command::new("true").spawn().unwrap();
+    let pid = zombie.id();
+    // Not yet waited for, so once it exits it stays a zombie.
+    let became = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| stat.rsplit_once(')').is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')))
+    });
+    assert!(became, "the child became a zombie");
+    assert!(process_stopped(pid), "a zombie counts as stopped");
+    let _ = running.kill();
+    let _ = running.wait();
+    let _ = zombie.wait();
 }
 
 impl Setup {
