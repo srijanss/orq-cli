@@ -1,5 +1,5 @@
 //! Web push settings: which kinds of notification are on and which projects are muted, read and changed
-//! with a passkey session, and the Settings and project card controls that change them.
+//! with a passkey session, and the Settings and project settings controls that change them.
 
 mod web_deps;
 mod web_push_session;
@@ -169,12 +169,14 @@ fn a_kind_change_that_cannot_be_saved_whole_changes_nothing() {
     assert_eq!((kind_on(&kinds, "failed"), kind_on(&kinds, "queue_paused")), (Some(true), Some(true)), "nothing changed: {kinds}");
 }
 
-// The Settings section and the project card menu, in the page.
+// The Settings section and the project settings Notifications card, in the page.
 
 const FAILED_ON: &str = "input[data-push-kind=\"failed\"]:checked";
+const BETA_MUTE: &str = "[data-push-mute=\"beta\"]";
 const BETA_MUTED: &str = "[data-push-muted=\"beta\"]";
 const ENABLE_OFF: &str = "[data-push-enable]:disabled";
-const SELECTORS: [&str; 9] = ["[data-push-device]", "[data-push-enable]", "input[data-push-kind]", "input[data-push-kind]:checked", "[data-push-mute]", "[data-push-muted]", FAILED_ON, BETA_MUTED, ENABLE_OFF];
+const MORE_FOR: &str = "button[aria-label^=\"More for \"]";
+const SELECTORS: [&str; 11] = ["[data-push-device]", "[data-push-enable]", "input[data-push-kind]", "input[data-push-kind]:checked", "[data-push-mute]", "[data-push-muted]", FAILED_ON, BETA_MUTE, BETA_MUTED, ENABLE_OFF, MORE_FOR];
 const FIREFOX: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
 
 fn page(scenario: Value) -> Option<Value> {
@@ -288,13 +290,22 @@ fn enable_gives_up_when_no_service_worker_becomes_ready() {
     assert!(sent(&out, "POST").is_empty(), "nothing sent: {out}");
 }
 
-/// The Dashboard, signed in with a passkey, with the given /api/push replies.
-fn dashboard_page(replies: Value, steps: Value) -> Option<Value> {
+fn projects() -> Value {
     let project = |id: &str| json!({"id": id, "name": id, "available": true, "features": 3, "active_runs": 0, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
-    let projects = json!({"status": 200, "json": {"projects": [project("alpha"), project("beta")]}});
+    json!({"status": 200, "json": {"projects": [project("alpha"), project("beta")]}})
+}
+
+/// Beta's project settings, signed in with a passkey, with the given /api/push replies.
+fn project_settings_page(replies: Value, steps: Value) -> Option<Value> {
+    let settings = json!({"status": 200, "json": {"settings": {
+        "implementer": {"project": null, "fallback": {"harness": "claude", "model": "opus", "effort": "high", "source": "machine_default"}},
+        "reviewer": {"project": null, "fallback": {"harness": "pi", "model": "kimi", "effort": null, "source": "tdd_config"}},
+        "delivery": "review",
+        "revision": 1
+    }}});
     page(json!({
-        "url": "/dashboard", "auth": {"passkeys": true, "signed_in": true, "csrf": "c-1"}, "auth_replies": {"/auth/passkeys": {"passkeys": []}},
-        "responses": [projects.clone(), projects.clone(), projects.clone(), projects], "push_replies": replies, "steps": steps, "selectors": SELECTORS
+        "url": "/projects/beta/settings", "auth": {"passkeys": true, "signed_in": true, "csrf": "c-1"}, "auth_replies": {"/auth/passkeys": {"passkeys": []}},
+        "responses": [settings.clone(), projects(), settings, projects()], "push_replies": replies, "steps": steps, "selectors": SELECTORS
     }))
 }
 
@@ -316,19 +327,21 @@ fn a_kind_switched_off_and_a_muted_project_show_as_such_after_reload() {
     assert_eq!(count(&frames[2], FAILED_ON), 0, "still off after a reload: {out}");
     assert_eq!(out["pushRequests"].as_array().unwrap().iter().filter(|r| r["url"] == "/api/push/kinds" && r["method"] == "GET").count(), 2, "{out}");
 
-    // Dashboard: each project card's menu mutes it; once muted, a reload shows it so and offers Unmute.
+    // Project settings: the Notifications card mutes the project at once; once muted, a reload shows it so and offers Unmute.
     let replies = json!({"GET /api/push/mutes": [{"muted": []}, {"muted": ["beta"]}], "PUT /api/push/mutes/beta": {"project": "beta", "muted": true}});
-    let Some(out) = dashboard_page(replies, json!([{"click": "[data-push-mute=\"beta\"]"}])) else { return };
+    let Some(out) = project_settings_page(replies, json!([{"click": "[data-push-mute=\"beta\"]"}])) else { return };
     let frames = out["frames"].as_array().unwrap();
-    assert_eq!((count(&frames[0], "[data-push-mute]"), count(&frames[0], "[data-push-muted]")), (2, 0), "{out}");
-    assert_eq!(buttons(&frames[0]).iter().filter(|b| *b == "Mute notifications").count(), 2, "{out}");
+    assert_eq!((count(&frames[0], BETA_MUTE), count(&frames[0], "[data-push-muted]")), (1, 0), "{out}");
+    assert!(shown(&frames[0]).iter().any(|t| t == "Push notifications on"), "{out}");
+    assert_eq!(buttons(&frames[0]).iter().filter(|b| *b == "Mute notifications").count(), 1, "{out}");
     let puts = sent(&out, "PUT");
     assert_eq!(puts.len(), 1, "{out}");
     assert_eq!((puts[0]["url"].as_str(), puts[0]["headers"]["X-CSRF-Token"].as_str()), (Some("/api/push/mutes/beta"), Some("c-1")), "{out}");
     assert_eq!(count(&frames[1], BETA_MUTED), 1, "{out}");
+    assert_eq!(out["pushRequests"].as_array().unwrap().iter().filter(|r| r["url"] == "/api/push/mutes" && r["method"] == "GET").count(), 2, "read again after the change: {out}");
 
     let replies = json!({"GET /api/push/mutes": [{"muted": ["beta"]}, {"muted": []}], "DELETE /api/push/mutes/beta": {"project": "beta", "muted": false}});
-    let Some(out) = dashboard_page(replies, json!([{"click": "[data-push-mute=\"beta\"]"}])) else { return };
+    let Some(out) = project_settings_page(replies, json!([{"click": "[data-push-mute=\"beta\"]"}])) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[0], BETA_MUTED), 1, "muted after a reload: {out}");
     assert!(shown(&frames[0]).iter().any(|t| t == "Notifications muted"), "{out}");
@@ -353,11 +366,11 @@ fn a_kind_switch_or_mute_that_fails_keeps_what_was_shown_says_why_and_can_be_tri
     assert_eq!(count(&frames[3], FAILED_ON), 0, "the third try takes: {out}");
     assert_eq!(sent(&out, "PUT").len(), 3, "{out}");
 
-    // Dashboard: no answer, then a refused mute, then one that takes.
+    // Project settings: no answer, then a refused mute, then one that takes.
     let refused = json!({"status": 500, "json": {"error": "the project could not be muted"}});
     let replies = json!({"GET /api/push/mutes": [{"muted": []}, {"muted": ["beta"]}], "PUT /api/push/mutes/beta": ["reject", refused, {"project": "beta", "muted": true}]});
     let click = json!({"click": "[data-push-mute=\"beta\"]"});
-    let Some(out) = dashboard_page(replies, json!([click, click, click])) else { return };
+    let Some(out) = project_settings_page(replies, json!([click, click, click])) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[1], "[data-push-muted]"), 0, "not shown as muted: {out}");
     assert!(shown(&frames[1]).iter().any(|t| t == "The project could not be muted."), "{out}");
@@ -365,4 +378,28 @@ fn a_kind_switch_or_mute_that_fails_keeps_what_was_shown_says_why_and_can_be_tri
     assert!(shown(&frames[2]).iter().any(|t| t == "the project could not be muted"), "{out}");
     assert_eq!(count(&frames[3], BETA_MUTED), 1, "the third try takes: {out}");
     assert_eq!(sent(&out, "PUT").len(), 3, "{out}");
+}
+
+#[test]
+fn project_settings_hides_notifications_without_a_passkey_session() {
+    let replies = json!({"GET /api/push/mutes": {"status": 401, "json": {"error": "sign in with a passkey"}}});
+    let Some(out) = project_settings_page(replies, json!([])) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(shown(last).iter().any(|t| t == "Queue"), "the settings are drawn: {out}");
+    assert_eq!(count(last, "[data-push-mute]"), 0, "{out}");
+    assert!(!shown(last).iter().any(|t| t == "Notifications" || t == "Push notifications on"), "{out}");
+    assert_eq!(out["pushRequests"].as_array().unwrap().iter().filter(|r| r["url"] == "/api/push/mutes").count(), 1, "the mutes were asked for: {out}");
+}
+
+#[test]
+fn the_dashboard_card_has_no_mute_control() {
+    let replies = json!({"GET /api/push/mutes": {"muted": ["beta"]}});
+    let Some(out) = page(json!({
+        "url": "/dashboard", "auth": {"passkeys": true, "signed_in": true, "csrf": "c-1"}, "auth_replies": {"/auth/passkeys": {"passkeys": []}},
+        "responses": [projects(), projects()], "push_replies": replies, "steps": [], "selectors": SELECTORS
+    })) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(shown(last).iter().any(|t| t == "beta"), "the cards are drawn: {out}");
+    assert_eq!((count(last, "[data-push-mute]"), count(last, "[data-push-muted]"), count(last, MORE_FOR)), (0, 0, 0), "{out}");
+    assert!(!shown(last).iter().any(|t| t == "Notifications muted"), "{out}");
 }

@@ -998,8 +998,7 @@ function PushConfirm({ state, target, projectId, busy, onConfirm, onCancel }) {
   );
 }
 
-// `mute`, when this page may see the push settings: {muted, onToggle}, for the card's Mute notifications / Unmute.
-function ProjectCard({ project, selected = false, pinned = false, onPin = null, push = null, mute = null }) {
+function ProjectCard({ project, selected = false, pinned = false, onPin = null, push = null }) {
   const base = "/projects/" + encodeURIComponent(project.id) + "/";
   return (
     <li className={selected ? "project card selected" : "project card"} data-selected={selected ? project.id : undefined}>
@@ -1008,18 +1007,6 @@ function ProjectCard({ project, selected = false, pinned = false, onPin = null, 
         {project.name}
         <Icon name="chevronRight" />
       </button>
-      {mute !== null ? (
-        <MoreMenu label={"More for " + project.name}>
-          <button type="button" role="menuitem" data-push-mute={project.id} onClick={mute.onToggle}>
-            {mute.muted ? "Unmute" : "Mute notifications"}
-          </button>
-        </MoreMenu>
-      ) : null}
-      {mute !== null && mute.muted ? (
-        <span className="badge" data-push-muted={project.id}>
-          Notifications muted
-        </span>
-      ) : null}
       {onPin !== null ? (
         <button type="button" className="pin-button" data-pin={project.id} aria-pressed={pinned ? "true" : "false"} aria-label={(pinned ? "Unpin " : "Pin ") + project.name} title={pinned ? "Unpin" : "Pin to the top"} onClick={onPin}>
           <Icon name="pin" size={18} />
@@ -1522,19 +1509,6 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
     setNotice(text);
     reread();
   };
-  const mutes = usePushMutes(token);
-  const muteOf = (project) => {
-    if (mutes.muted === null) return null;
-    const muted = mutes.muted.includes(project.id);
-    return {
-      muted,
-      onToggle: async () => {
-        setNotice("");
-        const refused = await mutes.change(project.id, !muted);
-        if (refused !== null) setNotice(refused);
-      },
-    };
-  };
   const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
   const toggle = (id) => {
     const next = pins.includes(id) ? pins.filter((pin) => pin !== id) : [...pins, id];
@@ -1543,7 +1517,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
   };
   const pinned = projects.filter((project) => pins.includes(project.id));
   const rest = projects.filter((project) => !pins.includes(project.id));
-  const card = (project) => <ProjectCard key={project.id} project={project} selected={project.id === lastProject} pinned={pins.includes(project.id)} onPin={() => toggle(project.id)} push={{ token, projectId: project.id, onSignedOut }} mute={muteOf(project)} />;
+  const card = (project) => <ProjectCard key={project.id} project={project} selected={project.id === lastProject} pinned={pins.includes(project.id)} onPin={() => toggle(project.id)} push={{ token, projectId: project.id, onSignedOut }} />;
   return (
     <>
       <div className="stats">
@@ -1987,6 +1961,35 @@ function usePushMutes(token) {
     }
   };
   return { muted, change };
+}
+
+// A project's push mute on its settings page: changed at once, apart from Edit/Save. Not shown when this
+// page may not see the push settings.
+function ProjectNotificationsCard({ token, projectId }) {
+  const mutes = usePushMutes(token);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (mutes.muted === null) return null;
+  const muted = mutes.muted.includes(projectId);
+  const toggle = async () => {
+    setBusy(true);
+    setNote("");
+    const refused = await mutes.change(projectId, !muted);
+    setNote(refused ?? "");
+    setBusy(false);
+  };
+  return (
+    <section className="card settings-card" data-project-notifications>
+      <SettingsHead icon="alert">Notifications</SettingsHead>
+      <div className="settings-block settings-actions">
+        {muted ? <span data-push-muted={projectId}>Notifications muted</span> : <span>Push notifications on</span>}
+        <button type="button" data-push-mute={projectId} disabled={busy} onClick={toggle}>
+          {muted ? "Unmute" : "Mute notifications"}
+        </button>
+      </div>
+      {note !== "" ? <p role="status" className="run-action-note" data-push-mute-note>{note}</p> : null}
+    </section>
+  );
 }
 
 const isPushDevice = (device) => device !== null && typeof device === "object" && Number.isInteger(device.id) && typeof device.label === "string";
@@ -7145,7 +7148,7 @@ function DesignAgentsCard({ settings, editing, draft, options, disabled, onChoos
 // A project's settings: each role and the delivery, read only until Edit. Edit checks that remote actions
 // are on and reads the machine's options; Save asks, then sends the whole record with the revision Edit
 // read, and a refusal shows the server's reason, with Reload when the settings changed meanwhile.
-function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) {
+function ProjectSettingsView({ settings, path, token, projectId, onSignedOut, onChanged }) {
   const [phase, setPhase] = useState("idle");
   const [options, setOptions] = useState([]);
   const [draft, setDraft] = useState(null);
@@ -7295,6 +7298,7 @@ function ProjectSettingsView({ settings, path, token, onSignedOut, onChanged }) 
           <SettingsRow label="After an MR merges" editing={false} value={<span data-project-after-merge>{settings.after_merge === "auto" ? "Cleans up on its own and tells you" : "Offers Clean up on the run"}</span>} />
         )}
       </section>
+      <ProjectNotificationsCard token={token} projectId={projectId} />
       {phase === "editing" ? (
         <div className="settings-block settings-actions">
           <button type="button" className="primary-button" data-project-settings-save disabled={!isOfferedDelivery(draft.delivery) || typedFloor(draft.minFreeDisk) === undefined || typedHours(draft.queueHours) === undefined} onClick={() => setPhase("asking")}><Icon name="check" size={16} />Save</button>
@@ -7330,7 +7334,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
           <PageHeader title="Project settings" subtitle="How this project's runs work, over the machine defaults" onRefresh={onRefresh} />
           <ProjectSelect projects={projects} projectId={projectId} section="settings" />
         </>
-      )} token={token} path={settingsPath} loading="Loading the project's settings…" parse={parseProjectSettings} draw={(settings) => <ProjectSettingsView settings={settings} path={settingsPath} token={token} onSignedOut={onSignedOut} onChanged={onRefresh} />} onSignedOut={onSignedOut} />
+      )} token={token} path={settingsPath} loading="Loading the project's settings…" parse={parseProjectSettings} draw={(settings) => <ProjectSettingsView settings={settings} path={settingsPath} token={token} projectId={projectId} onSignedOut={onSignedOut} onChanged={onRefresh} />} onSignedOut={onSignedOut} />
     );
   }
   if (/^\/projects\/[^/]+\/queue$/.test(address)) {
