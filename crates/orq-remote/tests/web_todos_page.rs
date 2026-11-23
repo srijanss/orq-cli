@@ -32,13 +32,18 @@ fn todos(count: i64) -> Value {
 }
 
 fn run(url: &str, todo: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
+    run_with(url, vec![projects()], todo, steps)
+}
+
+/// As `run`, answering the page's other reads with `responses` in turn.
+fn run_with(url: &str, responses: Vec<Value>, todo: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
     let mut all = vec![json!({"submit": TOKEN})];
     all.extend(steps);
-    let scenario = json!({"url": url, "responses": [projects()], "todo": todo, "steps": all, "selectors": SELECTORS});
+    let scenario = json!({"url": url, "responses": responses, "todo": todo, "steps": all, "selectors": SELECTORS});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -131,6 +136,20 @@ fn show_all_and_delete_work_on_the_todos_page() {
     let todo: Vec<(&str, &str)> = out["todoRequests"].as_array().unwrap().iter().map(|r| (r["method"].as_str().unwrap_or("GET"), r["url"].as_str().unwrap())).collect();
     assert_eq!(todo, [("GET", "/api/todo"), ("POST", "/api/todo/12/delete"), ("GET", "/api/todo")], "{out}");
     assert_eq!(count(last(&out), SELECTORS[0]), 11, "the list was read again: {out}");
+}
+
+#[test]
+fn refresh_reads_the_todo_list_again_and_recovers_after_a_failed_read() {
+    let failed = json!({"status": 500, "json": {"error": "boom"}});
+    let Some(out) = run_with("/todos", vec![projects(), projects()], vec![failed, todos(3)], vec![json!({"nav": "[data-refresh]"})]) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert!(has(&frames[1], "The Todo list could not be read."), "{out}");
+    assert_eq!(count(&frames[1], SELECTORS[0]), 0, "{out}");
+    let reads: Vec<&str> = out["todoRequests"].as_array().unwrap().iter().map(|r| r["url"].as_str().unwrap()).collect();
+    assert_eq!(reads, ["/api/todo", "/api/todo"], "Refresh reads the list again: {out}");
+    let refreshed = last(&out);
+    assert_eq!(count(refreshed, SELECTORS[0]), 3, "{out}");
+    assert!(!has(refreshed, "The Todo list could not be read."), "{out}");
 }
 
 #[test]
