@@ -68,7 +68,9 @@ fn an_unknown_and_an_unauthorised_page_look_the_same_and_keep_the_token() {
         let frame = &out["frames"][2];
         assert!(shown(frame).contains("Not found"), "{status}: {out}");
         assert!(frame["settled"]["inputs"].as_array().unwrap().is_empty(), "{status}: {out}");
-        pages.push(shown(frame));
+        // The "Last updated" clock is left out: the two runs can straddle a minute.
+        let is_clock = |t: &str| (t.ends_with(" AM") || t.ends_with(" PM")) && t.contains(':');
+        pages.push(shown(frame).split(" | ").filter(|t| !is_clock(t)).collect::<Vec<_>>().join(" | "));
     }
     assert_eq!(pages[0], pages[1], "the two must not be told apart");
 }
