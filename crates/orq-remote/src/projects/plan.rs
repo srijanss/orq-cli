@@ -1,5 +1,5 @@
-//! Draft with Claude: a planning run (a run of kind `plan`) hands a Todo idea, or a draft feature, to an
-//! unattended read-only Claude session and acts on the marker it answers with. A Todo idea becomes a draft
+//! Draft with orq: a planning run (a run of kind `plan`) hands a Todo idea, or a draft feature, to an
+//! unattended read-only session of the chosen harness (claude or pi) and acts on the marker it answers with. A Todo idea becomes a draft
 //! feature and only then leaves the Todo list; an improved draft waits for the person's Replace or Discard.
 
 use std::path::{Path, PathBuf};
@@ -111,13 +111,16 @@ impl StoreProjects {
                 (feature.clone(), feature.clone(), entry.description.clone().unwrap_or_default(), Some(draft_fields(entry)), "draft")
             }
         };
-        let agent = self.stored_settings_at(&root)?.settings.implementer.filter(|agent| agent.harness == "claude");
         let current_text = current.as_ref().map(|fields| serde_json::to_string_pretty(fields).unwrap_or_default());
         let idea = orq_orchestrator::PlanIdea { title: &title, text: &text, notes: &request.notes, current: current_text.as_deref() };
         let prompt = orq_orchestrator::plan_prompt(&draft_guidance(&root), &idea);
-        let args = orq_orchestrator::plan_agent_args(agent.as_ref().map(|agent| agent.model.as_str()), agent.as_ref().and_then(|agent| agent.effort.as_deref()), &prompt);
+        let args = orq_orchestrator::plan_agent_args(&request.harness, &request.model, &prompt)?;
+        let program = match request.harness.as_str() {
+            "pi" => self.pi.clone(),
+            _ => self.plan_agent.clone(),
+        };
         let session = orq_orchestrator::DraftSession {
-            program: self.plan_agent.as_ref().map_or_else(|| "claude".to_string(), |program| program.to_string_lossy().into_owned()),
+            program: program.map_or_else(|| request.harness.clone(), |program| program.to_string_lossy().into_owned()),
             args,
             env: AGENT_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect(),
             cwd: root.clone(),
@@ -155,6 +158,7 @@ impl StoreProjects {
         let requested = json!({
             "source": source, "todo": todo, "todo_version": todo_version, "title": title,
             "feature": current.as_ref().map(|_| feature_id.clone()), "current": current, "notes": request.notes,
+            "harness": request.harness, "model": request.model,
         });
         if let Err(error) = orq_orchestrator::record_plan_event(&store, &run_id, PLAN_REQUESTED, requested) {
             let _ = store.finish_run(&record.project_id, &feature_id, &run_id);

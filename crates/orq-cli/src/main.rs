@@ -1808,12 +1808,13 @@ fn parse_agent_flag(flag: &str) -> Option<orq_core::project_settings::ProjectAge
 }
 
 /// The executable for `harness`: a bare name found on PATH, never a path.
-/// The harnesses `find` locates and the models each offers: claude lists no models, so its two
-/// aliases are offered; pi is asked for its list. The popup and the web choose from this.
+/// The harnesses `find` locates and the models each offers: claude lists no models, so its
+/// aliases are offered (haiku for Draft with orq's default); pi is asked for its list. The popup
+/// and the web choose from this.
 fn agent_options(find: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<(String, Vec<String>)> {
     let mut options = Vec::new();
     if find("claude").is_some() {
-        options.push(("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string()]));
+        options.push(("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string(), "haiku".to_string()]));
     }
     if let Some(program) = find("pi") {
         options.push(("pi".to_string(), list_pi_models(&program, std::time::Duration::from_secs(5))));
@@ -3499,14 +3500,15 @@ mod ledger_backend_tests {
     }
 
     #[test]
-    fn agent_options_offer_claudes_two_aliases_and_the_models_pi_lists_for_the_harnesses_found() {
+    fn agent_options_offer_claudes_three_aliases_and_the_models_pi_lists_for_the_harnesses_found() {
         let agent = orq_test_support::FakeAgent::builder().stdout(TABLE).build();
         let programs = [("claude", agent.path().to_path_buf()), ("pi", agent.path().to_path_buf())];
         let find = |name: &str| programs.iter().find(|(n, _)| *n == name).map(|(_, p)| p.clone());
 
         let options = super::agent_options(&find);
 
-        assert_eq!(options, vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string()]), ("pi".to_string(), vec!["openai/gpt-6-astra".to_string()])]);
+        // haiku is offered so Draft with orq's claude/haiku default is one this machine offers.
+        assert_eq!(options, vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string(), "haiku".to_string()]), ("pi".to_string(), vec!["openai/gpt-6-astra".to_string()])]);
         assert!(super::agent_options(&|_: &str| None).is_empty());
     }
 

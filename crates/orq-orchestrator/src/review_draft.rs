@@ -404,7 +404,7 @@ fn record_event(
     })
 }
 
-// Draft with Claude: a planning run, an unattended read-only session that turns an idea into a draft.
+// Draft with orq: a planning run, an unattended read-only session that turns an idea into a draft.
 
 /// The stage a planning run's session is recorded under.
 pub const PLAN_STAGE: &str = "plan";
@@ -488,9 +488,32 @@ pub fn plan_prompt(guidance: &str, idea: &PlanIdea) -> String {
     prompt
 }
 
-/// The arguments of a planning session of the Claude CLI: the prompt, only the read-only tools, no MCP
-/// servers, and the project's model and effort when it has them.
-pub fn plan_agent_args(model: Option<&str>, effort: Option<&str>, prompt: &str) -> Vec<String> {
+/// The arguments of a planning session of `harness` with `model`: the prompt and only the read-only tools.
+/// Claude gets no MCP servers, hooks or project settings; pi gets no MCP, extensions, context files or
+/// session. Any other harness cannot draft read-only, so it gets none.
+pub fn plan_agent_args(harness: &str, model: &str, prompt: &str) -> Result<Vec<String>, String> {
+    match harness {
+        "claude" => Ok(claude_plan_args(model, prompt)),
+        "pi" => Ok([
+            "--model",
+            model,
+            "--tools",
+            "read,grep,find,ls",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-context-files",
+            "--no-session",
+            "-p",
+            prompt,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()),
+        other => Err(format!("{other} cannot draft read-only")),
+    }
+}
+
+fn claude_plan_args(model: &str, prompt: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-p".into(),
         prompt.into(),
@@ -507,12 +530,7 @@ pub fn plan_agent_args(model: Option<&str>, effort: Option<&str>, prompt: &str) 
         "--output-format".into(),
         "text".into(),
     ];
-    if let Some(model) = model {
-        args.extend(["--model".into(), model.into()]);
-    }
-    if let Some(effort) = effort {
-        args.extend(["--effort".into(), effort.into()]);
-    }
+    args.extend(["--model".into(), model.into()]);
     args
 }
 

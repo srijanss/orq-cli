@@ -1207,7 +1207,7 @@ function TodoItem({ item, actions, token, onSignedOut, onChanged, onMove, onDraf
       {actions && mode === "view" ? (
         <div className="todo-item-actions">
           <button type="button" data-todo-move onClick={() => onMove(item)}><Icon name="chevronRight" size={16} />Move to project</button>
-          <button type="button" data-todo-draft onClick={() => onDraft(item)}><Icon name="doc" size={16} />Draft with Claude</button>
+          <button type="button" data-todo-draft onClick={() => onDraft(item)}><Icon name="doc" size={16} />Draft with orq</button>
           <button type="button" data-todo-edit onClick={() => onEdit(item)}><Icon name="pencil" size={16} />Edit</button>
           <button type="button" data-todo-delete onClick={() => setMode("delete")}><Icon name="close" size={16} />Delete</button>
         </div>
@@ -1428,15 +1428,55 @@ function AddFeatureDialog({ projects, item = null, todoActions, token, onSignedO
   );
 }
 
-// Draft with Claude, as a popup: a Todo item's idea (with a project to choose) or a draft feature to improve (its
-// project fixed), plus optional notes. Start begins a planning run and opens its page.
-function DraftWithClaudeDialog({ projects = [], item = null, draft = null, token, onSignedOut, onClose }) {
+// The harnesses orq can run read-only for a planning run, claude first; a planning run starts on claude with haiku.
+const PLAN_HARNESSES = ["claude", "pi"];
+const PLAN_MODEL = "haiku";
+
+// The model a planning run starts on with `option`: claude's haiku when it offers it, else its first model.
+function planModel(option) {
+  return option.harness === "claude" && option.models.includes(PLAN_MODEL) ? PLAN_MODEL : option.models[0];
+}
+
+// Draft with orq, as a popup: a Todo item's idea (with a project to choose) or a draft feature to improve (its
+// project fixed), the harness and model that draft it, plus optional notes. Start begins a planning run and
+// opens its page.
+function DraftWithOrqDialog({ projects = [], item = null, draft = null, token, onSignedOut, onClose }) {
   const improving = draft !== null;
   const [target, setTarget] = useState(improving ? draft.project : "");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  // The harnesses offered here (null while they are read) and the one chosen with its model.
+  const [options, setOptions] = useState(null);
+  const [agent, setAgent] = useState(null);
   const choices = projects.filter((project) => project.available).sort((a, b) => a.name.localeCompare(b.name));
+  useEffect(() => {
+    const controller = new AbortController();
+    (async () => {
+      let listed = null;
+      try {
+        const response = await get(API_SETTINGS + "/options", token, controller.signal);
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        listed = response.ok ? parseOptions(await jsonOrNull(response)) : null;
+      } catch (unreachable) {
+        listed = null;
+      }
+      if (controller.signal.aborted) return;
+      const offered = PLAN_HARNESSES.map((harness) => (listed || []).find((option) => option.harness === harness)).filter(Boolean);
+      setOptions(offered);
+      if (offered.length === 0) setNote("There are no harnesses to choose from.");
+      else setAgent({ harness: offered[0].harness, model: planModel(offered[0]) });
+    })();
+    return () => controller.abort();
+  }, []);
+  const current = agent === null ? null : options.find((option) => option.harness === agent.harness);
+  const pickHarness = (harness) => {
+    const option = options.find((each) => each.harness === harness);
+    if (option) setAgent({ harness, model: planModel(option) });
+  };
   useEffect(() => {
     if (busy) return undefined;
     const onKeyDown = (event) => {
@@ -1451,8 +1491,9 @@ function DraftWithClaudeDialog({ projects = [], item = null, draft = null, token
     const path = improving
       ? API_PROJECTS + "/" + encodeURIComponent(draft.project) + "/features/" + encodeURIComponent(draft.name) + "/draft-with-claude"
       : API_TODO + "/" + item.id + "/draft-with-claude";
-    const body = improving ? { notes } : { project: target, version: item.version, notes };
-    let why = "Claude could not be started.";
+    const chosen = { harness: agent.harness, model: agent.model };
+    const body = improving ? { notes, ...chosen } : { project: target, version: item.version, notes, ...chosen };
+    let why = "The planning run could not be started.";
     try {
       const response = await actionRequest(path, token, body);
       if (response.status === 401) {
@@ -1473,7 +1514,7 @@ function DraftWithClaudeDialog({ projects = [], item = null, draft = null, token
     setBusy(false);
     setNote(why);
   };
-  const title = improving ? "Improve draft" : "Draft with Claude";
+  const title = improving ? "Improve draft" : "Draft with orq";
   return (
     <div className="feature-modal" data-feature-modal data-plan-dialog>
       <div className="feature-modal-box" role="dialog" aria-modal="true" aria-labelledby="plan-title">
@@ -1495,9 +1536,25 @@ function DraftWithClaudeDialog({ projects = [], item = null, draft = null, token
             </div>
           </>
         )}
+        {agent !== null ? (
+          <>
+            <label className="field">
+              <span className="field-label">Harness</span>
+              <select data-plan-harness value={agent.harness} disabled={busy} onChange={(event) => pickHarness(event.target.value)}>
+                {options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">Model</span>
+              <select data-plan-model value={agent.model} disabled={busy} onChange={(event) => setAgent({ ...agent, model: event.target.value })}>
+                {current.models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            </label>
+          </>
+        ) : options === null ? <span role="status">Reading the harnesses…</span> : null}
         <label className="field field-wide"><span className="field-label">Notes (optional)</span><textarea data-plan-notes rows={4} value={notes} disabled={busy} onChange={(event) => setNotes(event.target.value)} /></label>
         <div className="feature-editor-actions">
-          <button type="button" className="primary-button" data-plan-start disabled={busy || target === ""} onClick={start}><Icon name="play" size={16} />Start</button>
+          <button type="button" className="primary-button" data-plan-start disabled={busy || target === "" || agent === null} onClick={start}><Icon name="play" size={16} />Start</button>
           <button type="button" data-cancel disabled={busy} onClick={onClose}>Cancel</button>
         </div>
         {busy ? <span role="status">Starting…</span> : null}
@@ -1557,7 +1614,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
   const todo = useTodo(token, onSignedOut, reads);
   // The open popup: { item } (null for Add feature, a Todo item for its move), or null when none is.
   const [adding, setAdding] = useState(null);
-  // The Todo item whose Draft with Claude popup is open, or null.
+  // The Todo item whose Draft with orq popup is open, or null.
   const [drafting, setDrafting] = useState(null);
   const [notice, setNotice] = useState("");
   const reread = () => setReads((n) => n + 1);
@@ -1587,7 +1644,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
       {machine === null ? null : <MachineRuns machine={machine} />}
       <TodoList todo={todo} token={token} onSignedOut={onSignedOut} onChanged={reread} onMove={(item) => { setNotice(""); setAdding({ item }); }} onDraft={(item) => { setNotice(""); setDrafting(item); }} />
       {projects.length === 0 ? <p>No projects found.</p> : null}
-      {drafting !== null ? <DraftWithClaudeDialog projects={projects} item={drafting} token={token} onSignedOut={onSignedOut} onClose={() => setDrafting(null)} /> : null}
+      {drafting !== null ? <DraftWithOrqDialog projects={projects} item={drafting} token={token} onSignedOut={onSignedOut} onClose={() => setDrafting(null)} /> : null}
       {adding !== null ? <AddFeatureDialog projects={projects} item={adding.item} todoActions={todo !== null && typeof todo === "object" && todo.actions} token={token} onSignedOut={onSignedOut} onClose={() => setAdding(null)} onFinished={finished} /> : null}
       {pinned.length > 0 ? (
         <>
@@ -4758,7 +4815,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           </div>
         ) : null}
         <p className="muted" data-design-package>Design package: <code>{"designs/" + feature.name + "/"}</code></p>
-        {control !== null && improving ? <DraftWithClaudeDialog draft={{ project: projectId, name: feature.name }} token={control.token} onSignedOut={control.onSignedOut} onClose={() => setImproving(false)} /> : null}
+        {control !== null && improving ? <DraftWithOrqDialog draft={{ project: projectId, name: feature.name }} token={control.token} onSignedOut={control.onSignedOut} onClose={() => setImproving(false)} /> : null}
         {control !== null && feature.status === "draft" ? <QueueWish key={feature.name} feature={feature} control={control} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
           {FEATURE_TABS.map(([id, label]) => (
@@ -5230,7 +5287,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                     {endingOf(run) === null ? null : <div className="run-ending muted" data-run-ending>{endingOf(run)}</div>}
                     <EndingFirst run={run} />
                     {run.unattended === true ? <div className="run-ending muted" data-run-unattended>Unattended (queue)</div> : null}
-                    {run.kind === "plan" ? <div className="run-ending feature-state state-draft" data-run-plan>Draft with Claude</div> : null}
+                    {run.kind === "plan" ? <div className="run-ending feature-state state-draft" data-run-plan>Draft with orq</div> : null}
                     <DirtyCheckout run={run} />
                   </td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
@@ -5771,7 +5828,7 @@ function RowActions({ run, control, menu = false }) {
   const runPath = (tail) => controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/" + tail);
   const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" answers={run.state !== "needs_review"} decision={decisionOf(run)} label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next, reply, answered) => resumedNote(next, run.state === "needs_review" ? null : answered)} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "?" + (run.kind === "plan" ? " Claude stops drafting." : " Its process ends and it can be resumed later.")} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
-  // A Draft with Claude run has no worktree or branch to pause, resume, accept or discard: it can only be stopped.
+  // A Draft with orq run has no worktree or branch to pause, resume, accept or discard: it can only be stopped.
   if (run.kind === "plan") return stop === null ? null : <span className="run-actions">{stop}</span>;
   const discard = DISCARDABLE.includes(run.state) ? <RunAction kind="discard" tone="danger" icon="trash" label={run.state === "merged" ? "Clear" : "Discard"} question={(reply) => discardQuestion(run, reply)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/discard-warning")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(gone, reply) => discardDone(gone || run.run_id, reply)} /> : null;
   // A merge-local run that passes its accept is merged into its target; any other is marked review ready.
@@ -6525,7 +6582,7 @@ const RUN_TABS = [["timeline", "Timeline"], ["logs", "Logs"], ["events", "Events
 // One run: its header, then three tabs that switch in place: its steps, its logs, and every event.
 // The events are fetched a page at a time; the next page is its own address, so every request stays
 // one plain GET. The logs are fetched the first time their tab opens, and kept while it is hidden.
-// A draft's fields as Draft with Claude shows them, one block per field.
+// A draft's fields as Draft with orq shows them, one block per field.
 function PlanFields({ fields, ...marks }) {
   const list = (value) => (Array.isArray(value) && value.length > 0 ? value.join(", ") : "None");
   return (
@@ -6541,7 +6598,7 @@ function PlanFields({ fields, ...marks }) {
 
 const PLAN_DECISIONS = { replaced: "Replaced: the draft now has Claude's text.", discarded: "Discarded: the draft was left as it was." };
 
-// What a Draft with Claude run came to: still drafting, why it failed, the draft a Todo idea became, or an
+// What a Draft with orq run came to: still drafting, why it failed, the draft a Todo idea became, or an
 // improvement shown beside the current draft (side by side where there is room, stacked on a phone) with
 // Replace and Discard until one is chosen. Nothing changes the draft before Replace.
 function PlanProposal({ plan, projectId, apiRun, control }) {

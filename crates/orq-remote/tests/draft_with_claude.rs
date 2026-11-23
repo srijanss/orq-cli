@@ -1,4 +1,4 @@
-//! "Draft with Claude": a Todo idea, or a draft feature, is handed to an unattended, read-only Claude
+//! "Draft with orq": a Todo idea, or a draft feature, is handed to an unattended, read-only claude or pi
 //! session (a run of kind `plan`) that answers with a marker `{name, description, test_file, target_files,
 //! depends_on}`. A Todo idea becomes a draft feature and leaves the Todo list; an improved draft waits for
 //! the person's Replace or Discard. The agent here is a fake CLI that prints a marker.
@@ -52,7 +52,7 @@ fn answer_when_told(s: &Setup) {
     std::fs::set_permissions(&s.agent, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// Starts Draft with Claude on a new Todo item for project alpha, without waiting for the run to end.
+/// Starts Draft with orq on a new Todo item for project alpha, without waiting for the run to end.
 fn start_todo_plan(s: &Setup) -> String {
     let item = add_todo(s, "dark mode", "Make it dark");
     let (status, started) = post(s, &format!("/api/todo/{}/draft-with-claude", item["id"]), json!({"project": "alpha", "version": item["version"], "notes": ""}));
@@ -127,7 +127,9 @@ fn git_repo(root: &Path, name: &str) -> PathBuf {
 }
 
 fn send(s: &Setup, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let mut provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_plan_agent(s.agent.clone());
+    let options: std::sync::Arc<orq_remote::projects::AgentOptionsSource> =
+        std::sync::Arc::new(|| vec![("claude".to_string(), vec!["opus".to_string(), "sonnet".to_string(), "haiku".to_string()]), ("pi".to_string(), vec!["openai/gpt-6.1-sol".to_string()]), ("codex".to_string(), vec!["gpt".to_string()])]);
+    let mut provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_plan_agent(s.agent.clone()).with_pi(s.base.join("fake-pi")).with_agent_options(options);
     if let Some(ms) = std::fs::read_to_string(s.base.join("timeout-ms")).ok().and_then(|ms| ms.trim().parse().ok()) {
         provider = provider.with_plan_timeout(Duration::from_millis(ms));
     }
@@ -170,7 +172,7 @@ fn ledger(repo: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(repo.join(".tdd-features.json")).unwrap()).unwrap()
 }
 
-/// Starts Draft with Claude on Todo item `item` for project alpha and waits for the run to end.
+/// Starts Draft with orq on Todo item `item` for project alpha and waits for the run to end.
 fn draft_todo(s: &Setup, item: &Value, notes: &str) -> (String, Value) {
     let path = format!("/api/todo/{}/draft-with-claude", item["id"]);
     let (status, started) = post(s, &path, json!({"project": "alpha", "version": item["version"], "notes": notes}));
@@ -195,6 +197,90 @@ fn a_todo_idea_becomes_a_draft_feature_with_the_markers_fields_and_leaves_the_to
     assert_eq!(todos(&s), Vec::<Value>::new(), "the item went once the draft was saved");
     let prompt = agent_args(&s).join("\n");
     assert!(prompt.contains("Make it dark") && prompt.contains("keep it small"), "the idea and the notes reach the agent: {prompt}");
+}
+
+/// The value after `flag` in the fake agent's last arguments.
+fn arg_after(s: &Setup, flag: &str) -> Option<String> {
+    let args = agent_args(s);
+    args.iter().position(|arg| arg == flag).and_then(|at| args.get(at + 1).cloned())
+}
+
+#[test]
+fn a_plan_with_no_harness_or_model_runs_claude_with_haiku() {
+    let s = setup("plan-default-agent");
+    git_repo(&s.scan, "alpha");
+    let item = add_todo(&s, "dark mode", "Make it dark");
+    let (_, plan) = draft_todo(&s, &item, "");
+    assert_eq!(plan["state"], "completed", "{plan}");
+    assert_eq!(arg_after(&s, "--model").as_deref(), Some("haiku"), "{:?}", agent_args(&s));
+}
+
+/// Starts Draft with orq on a new Todo item for project alpha with `agent` (harness and model) and waits for the run to end.
+fn draft_with(s: &Setup, agent: Value) -> Value {
+    let item = add_todo(s, "dark mode", "Make it dark");
+    let mut body = json!({"project": "alpha", "version": item["version"], "notes": ""});
+    body.as_object_mut().unwrap().extend(agent.as_object().unwrap().clone());
+    let (status, started) = post(s, &format!("/api/todo/{}/draft-with-claude", item["id"]), body);
+    assert_eq!(status, 200, "{started}");
+    finished_plan(s, "alpha", started["run"].as_str().unwrap())
+}
+
+#[test]
+fn a_plan_uses_the_chosen_claude_model() {
+    let s = setup("plan-claude-model");
+    git_repo(&s.scan, "alpha");
+    let plan = draft_with(&s, json!({"harness": "claude", "model": "sonnet"}));
+    assert_eq!(plan["state"], "completed", "{plan}");
+    assert_eq!(arg_after(&s, "--model").as_deref(), Some("sonnet"), "{:?}", agent_args(&s));
+}
+
+#[test]
+fn a_pi_plan_runs_pi_read_only() {
+    let s = setup("plan-pi");
+    let alpha = git_repo(&s.scan, "alpha");
+    // The fake pi records its arguments apart from the fake claude's, then prints the answer.
+    let pi = s.base.join("fake-pi");
+    let script = format!("#!/bin/sh\nprintf '%s\\0' \"$@\" > '{args}'\ncat '{answer}'\n", args = s.base.join("pi-args").display(), answer = s.base.join("answer").display());
+    std::fs::write(&pi, script).unwrap();
+    std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plan = draft_with(&s, json!({"harness": "pi", "model": "openai/gpt-6.1-sol"}));
+    assert_eq!(plan["state"], "completed", "{plan}");
+    assert!(!s.base.join("args").exists(), "claude was not started");
+    let bytes = std::fs::read(s.base.join("pi-args")).unwrap();
+    let args: Vec<String> = bytes.split(|b| *b == 0).filter(|part| !part.is_empty()).map(|part| String::from_utf8_lossy(part).into_owned()).collect();
+    let after = |flag: &str| args.iter().position(|arg| arg == flag).and_then(|at| args.get(at + 1).cloned());
+    assert_eq!(after("--tools").as_deref(), Some("read,grep,find,ls"), "{args:?}");
+    assert_eq!(after("--model").as_deref(), Some("openai/gpt-6.1-sol"), "{args:?}");
+    for flag in ["--no-mcp", "--no-extensions", "--no-context-files", "--no-session"] {
+        assert!(args.iter().any(|arg| arg == flag), "{flag}: {args:?}");
+    }
+    assert!(after("-p").is_some_and(|prompt| prompt.contains("Make it dark")), "{args:?}");
+    assert_eq!(ledger(&alpha)[0]["featureName"], "dark-mode", "the marker became a draft");
+    assert_eq!(ledger(&alpha)[0]["status"], "draft");
+}
+
+#[test]
+fn a_harness_or_model_not_offered_is_refused() {
+    let s = setup("plan-not-offered");
+    git_repo(&s.scan, "alpha");
+    let item = add_todo(&s, "dark mode", "Make it dark");
+    for agent in [json!({"harness": "claude", "model": "gpt-9"}), json!({"harness": "codex", "model": "gpt"}), json!({"harness": "pi", "model": "sonnet"})] {
+        let mut body = json!({"project": "alpha", "version": item["version"]});
+        body.as_object_mut().unwrap().extend(agent.as_object().unwrap().clone());
+        let (status, reply) = post(&s, &format!("/api/todo/{}/draft-with-claude", item["id"]), body);
+        assert_eq!(status, 422, "{agent}: {reply}");
+        assert_eq!(reply["error"], "That harness or model is not one this machine offers", "{agent}");
+    }
+    let alpha = s.scan.join("alpha");
+    std::fs::write(alpha.join(".tdd-features.json"), r#"[{"featureName":"dark-mode","description":"old text","status":"draft"}]"#).unwrap();
+    let (status, _) = post(&s, "/api/projects/alpha/features/dark-mode/draft-with-claude", json!({"harness": "claude", "model": "gpt-9"}));
+    assert_eq!(status, 422, "Improve draft checks the pair too");
+    let (status, _) = post(&s, "/api/projects/alpha/features/dark-mode/draft-with-claude", json!({"harness": 3}));
+    assert_eq!(status, 400, "a harness that is not text is a bad body");
+    assert!(!s.base.join("args").exists(), "no agent was started");
+    let (_, runs) = send(&s, "GET", "/api/projects/alpha/runs", "");
+    assert_eq!(runs["runs"], json!([]), "no run started: {runs}");
+    assert_eq!(todos(&s).len(), 1);
 }
 
 #[test]
@@ -360,7 +446,7 @@ fn draft_with_claude_is_refused_while_remote_actions_are_off() {
 }
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const WEB_SELECTORS: [&str; 13] = [
+const WEB_SELECTORS: [&str; 18] = [
     "[data-todo-draft]",
     "[data-plan-dialog]",
     "[data-plan-start]:disabled",
@@ -374,6 +460,11 @@ const WEB_SELECTORS: [&str; 13] = [
     "[data-stop]",
     "[data-pause]",
     "[data-discard]",
+    "[data-plan-harness] option",
+    "[data-plan-model] option",
+    "[data-plan-harness] option[value=\"claude\"]:checked",
+    "[data-plan-model] option[value=\"haiku\"]:checked",
+    "[data-plan-model] option[value=\"openai/gpt-6.1-sol\"]:checked",
 ];
 
 /// The built page in jsdom with scripted replies; `None` when the web dependencies are not installed.
@@ -408,9 +499,69 @@ fn web_posts(out: &Value) -> Vec<(String, Value)> {
     all.filter(|r| r["method"] == "POST").map(|r| (r["url"].as_str().unwrap().to_string(), serde_json::from_str(r["body"].as_str().unwrap()).unwrap())).collect()
 }
 
+/// The harnesses and models this machine offers, codex and pi listed before claude.
+fn web_options() -> Value {
+    json!({"status": 200, "json": {"options": [
+        {"harness": "codex", "models": ["gpt"]},
+        {"harness": "pi", "models": ["openai/gpt-6.1-sol", "openai/gpt-6.1-terra"]},
+        {"harness": "claude", "models": ["opus", "sonnet", "haiku"], "efforts": ["low", "high"]}
+    ]}})
+}
+
+fn web_todo_item() -> Value {
+    json!({"id": 7, "name": "dark mode", "description": "Make it dark", "created_at": 100, "updated_at": 100, "version": 3})
+}
+
+/// The Dashboard with one Todo item, its Draft with orq popup opened, then `steps`; the Todo POST is answered with `started`.
+fn draft_popup(started: Value, steps: Vec<Value>) -> Option<Value> {
+    let todo = vec![json!({"status": 200, "json": {"todos": [web_todo_item()], "remote_actions": true}}), started];
+    let mut all = vec![json!({"click": "[data-todo-draft]"})];
+    all.extend(steps);
+    page("/dashboard", vec![web_projects(), web_options()], todo, all)
+}
+
+fn shows_selected(frame: &Value, select: &str, value: &str) -> bool {
+    frame["settled"]["matches"][format!("{select} option[value=\"{value}\"]:checked")].as_u64() == Some(1)
+}
+
 #[test]
-fn draft_with_claude_on_a_todo_item_asks_for_a_project_and_notes_then_opens_the_run() {
-    let item = json!({"id": 7, "name": "dark mode", "description": "Make it dark", "created_at": 100, "updated_at": 100, "version": 3});
+fn the_todo_button_and_dialog_say_draft_with_orq() {
+    let Some(out) = draft_popup(json!({"status": 500, "json": {}}), vec![]) else { return };
+    let opened = out["frames"].as_array().unwrap().last().unwrap();
+    assert!(shows(opened, "Draft with orq"), "{out}");
+    assert!(!shows(opened, "Draft with Claude"), "{out}");
+    assert!(shows_selected(opened, "[data-plan-harness]", "claude"), "the harness starts at claude: {out}");
+    assert!(shows_selected(opened, "[data-plan-model]", "haiku"), "the model starts at haiku: {out}");
+    assert_eq!(matches(opened, "[data-plan-harness] option"), 2, "only claude and pi: {out}");
+    assert_eq!(matches(opened, "[data-plan-model] option"), 3, "only claude's models: {out}");
+    let urls: Vec<&str> = out["requests"].as_array().unwrap().iter().map(|r| r["url"].as_str().unwrap()).collect();
+    assert!(urls.contains(&"/api/settings/options"), "{urls:?}");
+}
+
+#[test]
+fn start_sends_the_chosen_harness_and_model() {
+    let refused = json!({"status": 422, "json": {"error": "That harness or model is not one this machine offers"}});
+    let steps = vec![
+        json!({"click": "[data-plan-project]"}),
+        json!({"click": ".feature-modal [data-project-choice=alpha]"}),
+        json!({"set": "[data-plan-harness]", "value": "pi"}),
+        json!({"set": "[data-plan-model]", "value": "openai/gpt-6.1-terra"}),
+        json!({"click": "[data-plan-start]"}),
+    ];
+    let Some(out) = draft_popup(refused, steps) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    // frames[0] is the page before any step; frames[5] follows the harness change.
+    assert!(shows_selected(&frames[5], "[data-plan-model]", "openai/gpt-6.1-sol"), "pi starts at its first model: {out}");
+    assert_eq!(matches(&frames[5], "[data-plan-model] option"), 2, "only pi's models: {out}");
+    assert_eq!(web_posts(&out), [("/api/todo/7/draft-with-claude".to_string(), json!({"project": "alpha", "version": 3, "notes": "", "harness": "pi", "model": "openai/gpt-6.1-terra"}))], "{out}");
+    let end = frames.last().unwrap();
+    assert!(shows(end, "That harness or model is not one this machine offers"), "{out}");
+    assert_eq!(matches(end, WEB_SELECTORS[1]), 1, "the popup stays open: {out}");
+}
+
+#[test]
+fn draft_with_orq_on_a_todo_item_asks_for_a_project_and_notes_then_opens_the_run() {
+    let item = web_todo_item();
     let todo = vec![json!({"status": 200, "json": {"todos": [item], "remote_actions": true}}), json!({"status": 200, "json": {"run": "plan-1-2-0", "project": "alpha"}})];
     let steps = vec![
         json!({"click": "[data-todo-draft]"}),
@@ -419,13 +570,13 @@ fn draft_with_claude_on_a_todo_item_asks_for_a_project_and_notes_then_opens_the_
         json!({"click": ".feature-modal [data-project-choice=alpha]"}),
         json!({"click": "[data-plan-start]"}),
     ];
-    let Some(out) = page("/dashboard", vec![web_projects()], todo, steps) else { return };
+    let Some(out) = page("/dashboard", vec![web_projects(), web_options()], todo, steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(matches(&frames[1], WEB_SELECTORS[0]), 1, "{out}");
     assert_eq!(matches(&frames[2], WEB_SELECTORS[1]), 1, "the popup opened: {out}");
     assert!(shows(&frames[2], "Make it dark"), "the idea shows: {out}");
     assert_eq!(matches(&frames[3], WEB_SELECTORS[2]), 1, "Start waits for a project: {out}");
-    assert_eq!(web_posts(&out), [("/api/todo/7/draft-with-claude".to_string(), json!({"project": "alpha", "version": 3, "notes": "keep it small"}))], "{out}");
+    assert_eq!(web_posts(&out), [("/api/todo/7/draft-with-claude".to_string(), json!({"project": "alpha", "version": 3, "notes": "keep it small", "harness": "claude", "model": "haiku"}))], "{out}");
     let opened = out["requests"].as_array().unwrap().iter().any(|r| r["url"] == "/api/projects/alpha/runs/plan-1-2-0");
     assert!(opened, "the run's page opened: {out}");
 }
@@ -437,14 +588,14 @@ fn improve_draft_on_a_draft_feature_asks_for_notes_only_and_opens_the_run() {
     let started = json!({"status": 200, "json": {"run": "plan-1-2-0", "project": "alpha"}});
     let wish = json!({"status": 200, "json": {"queue_when_approved": false}});
     let steps = vec![json!({"click": "[data-improve-draft]"}), json!({"set": "[data-plan-notes]", "value": "tighter"}), json!({"click": "[data-plan-start]"})];
-    let Some(out) = page("/projects/alpha/features/dark-mode", vec![ledger, runs, web_projects(), started], vec![wish], steps) else { return };
+    let Some(out) = page("/projects/alpha/features/dark-mode", vec![ledger, runs, web_projects(), web_options(), started], vec![wish], steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     let urls: Vec<&str> = out["requests"].as_array().unwrap().iter().chain(out["todoRequests"].as_array().unwrap()).map(|r| r["url"].as_str().unwrap()).collect();
     assert_eq!(matches(&frames[1], WEB_SELECTORS[7]), 1, "{out}");
     assert_eq!(matches(&frames[2], WEB_SELECTORS[1]), 1, "{out}");
     assert_eq!(matches(&frames[2], WEB_SELECTORS[8]), 0, "the project is the feature's own: {out}");
     assert!(shows(&frames[2], "Improve draft"), "{out}");
-    assert_eq!(web_posts(&out), [("/api/projects/alpha/features/dark-mode/draft-with-claude".to_string(), json!({"notes": "tighter"}))], "{urls:?}");
+    assert_eq!(web_posts(&out), [("/api/projects/alpha/features/dark-mode/draft-with-claude".to_string(), json!({"notes": "tighter", "harness": "claude", "model": "haiku"}))], "{urls:?}");
     assert!(urls.contains(&"/api/projects/alpha/runs/plan-1-2-0"), "the run's page opened: {urls:?}");
 }
 
@@ -455,7 +606,7 @@ fn a_planning_run_has_its_own_badge_in_runs_and_offers_only_stop() {
     let Some(out) = page("/projects/alpha/orchestrations", vec![list, web_projects()], vec![], vec![]) else { return };
     let end = out["frames"].as_array().unwrap().last().unwrap();
     assert_eq!(matches(end, WEB_SELECTORS[9]), 2, "{out}");
-    assert!(shows(end, "Draft with Claude"), "{out}");
+    assert!(shows(end, "Draft with orq"), "{out}");
     assert_eq!(matches(end, WEB_SELECTORS[10]), 1, "the running one can be stopped: {out}");
     assert_eq!(matches(end, WEB_SELECTORS[11]), 0, "no pause: {out}");
     assert_eq!(matches(end, WEB_SELECTORS[12]), 0, "no discard: {out}");

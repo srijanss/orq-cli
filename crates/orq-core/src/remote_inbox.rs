@@ -461,7 +461,7 @@ pub trait ProjectsProvider {
         None
     }
 
-    /// Starts Draft with Claude in project `id`: a planning run that drafts `request`'s idea. A provider that
+    /// Starts Draft with orq in project `id`: a planning run that drafts `request`'s idea. A provider that
     /// cannot does not know the project.
     fn start_plan(&self, _id: &str, _request: &PlanRequest) -> Result<PlanStart, String> {
         Ok(PlanStart::Unknown)
@@ -479,7 +479,7 @@ pub trait ProjectsProvider {
     }
 }
 
-/// What Draft with Claude drafts from.
+/// What Draft with orq drafts from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanIdea {
     /// Todo item `id` as read at `version`, which becomes a draft feature and leaves the list.
@@ -488,11 +488,13 @@ pub enum PlanIdea {
     Draft { feature: String },
 }
 
-/// A Draft with Claude request: the idea and the person's notes for Claude.
+/// A Draft with orq request: the idea, the person's notes for the agent, and the harness and model that draft it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanRequest {
     pub idea: PlanIdea,
     pub notes: String,
+    pub harness: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1704,9 +1706,9 @@ fn todo_fields(sent: &serde_json::Map<String, Value>, edit: bool) -> Option<(Str
     Some((name, description, version))
 }
 
-/// The last part of the paths that start Draft with Claude.
+/// The last part of the paths that start Draft with orq.
 const PLAN_LEAF: &str = "draft-with-claude";
-/// The most characters of notes for Claude a request takes.
+/// The most characters of notes for the agent a request takes.
 const MAX_PLAN_NOTES: usize = 8000;
 
 /// The Todo item of `/api/todo/{id}/draft-with-claude`, when the path has that shape.
@@ -1715,12 +1717,40 @@ fn todo_plan_target(path: &str) -> Option<i64> {
     id.parse::<i64>().ok().filter(|number| *number > 0 && number.to_string() == id)
 }
 
-/// The notes of a Draft with Claude body: a string of at most MAX_PLAN_NOTES characters, empty when not sent.
+/// The notes of a Draft with orq body: a string of at most MAX_PLAN_NOTES characters, empty when not sent.
 fn plan_notes(sent: &serde_json::Map<String, Value>) -> Option<String> {
     match sent.get("notes") {
         None | Some(Value::Null) => Some(String::new()),
         Some(Value::String(notes)) if notes.chars().count() <= MAX_PLAN_NOTES => Some(notes.clone()),
         _ => None,
+    }
+}
+
+/// The harness and model Draft with orq uses when the body leaves them out.
+const PLAN_HARNESS: &str = "claude";
+const PLAN_MODEL: &str = "haiku";
+
+/// The harness and model of a Draft with orq body, `claude` and `haiku` when left out; `None` when one is not a string.
+fn plan_agent(sent: &serde_json::Map<String, Value>) -> Option<(String, String)> {
+    let field = |key: &str, default: &str| match sent.get(key) {
+        None | Some(Value::Null) => Some(default.to_string()),
+        Some(Value::String(text)) => Some(text.clone()),
+        _ => None,
+    };
+    Some((field("harness", PLAN_HARNESS)?, field("model", PLAN_MODEL)?))
+}
+
+/// Why `harness` with `model` cannot draft on this machine: a harness orq cannot run read-only, or a harness and
+/// model the provider's options do not offer. The refusal is the response and its audit reason.
+fn plan_agent_refusal(provider: Option<&dyn ProjectsProvider>, harness: &str, model: &str) -> Option<(Response, &'static str)> {
+    let not_offered = || Some((error(422, "That harness or model is not one this machine offers"), "not an offered harness or model"));
+    if !crate::project_settings::DESIGN_HARNESSES.contains(&harness) {
+        return not_offered();
+    }
+    match provider.map(|provider| provider.setting_options()) {
+        Some(Ok(Some(options))) if offered(&options, harness, model) => None,
+        Some(Err(_)) => Some((error(500, "the options could not be read"), "the options could not be read")),
+        _ => not_offered(),
     }
 }
 
@@ -1748,7 +1778,7 @@ fn plan_started(audit: &dyn Fn(crate::remote_audit::Outcome, &str), label: &str,
     }
 }
 
-/// Draft with Claude on Todo item `id`, if actions are on: a planning run in the project the body names, from the
+/// Draft with orq on Todo item `id`, if actions are on: a planning run in the project the body names, from the
 /// item as read at the body's version. Audited as plan.start.
 fn plan_from_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: i64, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
@@ -1769,11 +1799,17 @@ fn plan_from_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>,
             return refusal;
         }
     };
-    const KEYS: [&str; 3] = ["project", "version", "notes"];
-    let (true, Some(read), Some(notes)) = (sent.keys().all(|key| KEYS.contains(&key.as_str())) && !project.is_empty(), sent.get("version").and_then(Value::as_i64), plan_notes(&sent)) else {
+    const KEYS: [&str; 5] = ["project", "version", "notes", "harness", "model"];
+    let (true, Some(read), Some(notes), Some((harness, model))) =
+        (sent.keys().all(|key| KEYS.contains(&key.as_str())) && !project.is_empty(), sent.get("version").and_then(Value::as_i64), plan_notes(&sent), plan_agent(&sent))
+    else {
         audit(Outcome::Refused, "bad request body");
         return error(400, "the request body is not one this action takes");
     };
+    if let Some((refusal, why)) = plan_agent_refusal(provider, &harness, &model) {
+        audit(Outcome::Refused, why);
+        return refusal;
+    }
     let item = if roots.database().exists() { Store::open(&roots.database()).and_then(|store| store.todo(id)) } else { Ok(None) };
     let item = match item {
         Ok(Some(item)) => item,
@@ -1790,11 +1826,11 @@ fn plan_from_todo(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>,
         audit(Outcome::Refused, &format!("{}: the item changed since it was read", item.name));
         return error(409, "The item changed since you opened it; nothing was started");
     }
-    let request = PlanRequest { idea: PlanIdea::Todo { id, version: item.version, name: item.name.clone(), text: item.description.clone() }, notes };
+    let request = PlanRequest { idea: PlanIdea::Todo { id, version: item.version, name: item.name.clone(), text: item.description.clone() }, notes, harness, model };
     plan_started(&audit, &item.name, &project, provider.map(|provider| provider.start_plan(&project, &request)))
 }
 
-/// Draft with Claude on draft `feature` of project `id` ("Improve draft"), if actions are on. Audited as plan.start.
+/// Draft with orq on draft `feature` of project `id` ("Improve draft"), if actions are on. Audited as plan.start.
 fn plan_from_draft(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, feature: &str, body: &[u8]) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
@@ -1809,15 +1845,19 @@ fn plan_from_draft(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>
         audit(Outcome::Refused, &format!("{feature}: remote actions are off"));
         return error(404, "not found");
     }
-    let notes = match body_object(body, MAX_TODO_BODY) {
-        Ok(sent) if sent.keys().all(|key| key == "notes") => plan_notes(&sent),
+    let fields = match body_object(body, MAX_TODO_BODY) {
+        Ok(sent) if sent.keys().all(|key| ["notes", "harness", "model"].contains(&key.as_str())) => plan_notes(&sent).zip(plan_agent(&sent)),
         _ => None,
     };
-    let Some(notes) = notes else {
+    let Some((notes, (harness, model))) = fields else {
         audit(Outcome::Refused, &format!("{feature}: bad request body"));
         return error(400, "the request body is not one this action takes");
     };
-    let request = PlanRequest { idea: PlanIdea::Draft { feature: feature.to_string() }, notes };
+    if let Some((refusal, why)) = plan_agent_refusal(provider, &harness, &model) {
+        audit(Outcome::Refused, &format!("{feature}: {why}"));
+        return refusal;
+    }
+    let request = PlanRequest { idea: PlanIdea::Draft { feature: feature.to_string() }, notes, harness, model };
     plan_started(&audit, feature, id, provider.map(|provider| provider.start_plan(id, &request)))
 }
 

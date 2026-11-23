@@ -230,20 +230,23 @@ const MOVE_PICKER: &str = ".feature-modal .project-switcher[data-add-target][dat
 #[test]
 fn move_and_draft_with_claude_use_the_same_picker_waiting_on_a_project() {
     let one = || todos(vec![item(7, "dark mode")]);
-    let selectors = [PLAN_PICKER, MOVE_PICKER, ".feature-modal select", "[data-plan-start]:disabled", ".feature-modal [data-plan-project][data-value=alpha]", "[data-feature-save]", ".feature-modal [data-project-choice]"];
-    let scenario = |steps: Vec<Value>, todo: Vec<Value>| run_with("/dashboard", vec![projects(), ledger()], todo, steps, &selectors);
+    // The project picker is never a select; Draft with orq's harness and model pickers are.
+    const PROJECT_SELECT: &str = ".feature-modal select:not([data-plan-harness]):not([data-plan-model])";
+    let selectors = [PLAN_PICKER, MOVE_PICKER, ".feature-modal select", "[data-plan-start]:disabled", ".feature-modal [data-plan-project][data-value=alpha]", "[data-feature-save]", ".feature-modal [data-project-choice]", PROJECT_SELECT];
+    let scenario = |steps: Vec<Value>, todo: Vec<Value>, second: Value| run_with("/dashboard", vec![projects(), second], todo, steps, &selectors);
+    let options = json!({"status": 200, "json": {"options": [{"harness": "claude", "models": ["haiku"]}]}});
     let steps = vec![json!({"click": "[data-todo-draft]"}), json!({"click": ".feature-modal [data-plan-project]"}), json!({"click": ".feature-modal [data-project-choice=alpha]"})];
-    let Some(out) = scenario(steps, vec![one()]) else { return };
+    let Some(out) = scenario(steps, vec![one()], options) else { return };
     let all = frames(&out);
     assert_eq!(count(&all[2], PLAN_PICKER), 1, "{out}");
     assert!(texts(&all[2]).iter().any(|t| t == "Choose a project"), "{out}");
-    assert_eq!(count(&all[2], ".feature-modal select"), 0, "{out}");
+    assert_eq!(count(&all[2], PROJECT_SELECT), 0, "{out}");
     assert_eq!(count(&all[2], ".feature-modal [data-project-choice]"), 2, "alpha and beta: {out}");
     assert_eq!(count(&all[2], "[data-plan-start]:disabled"), 1, "Start waits for a project: {out}");
     let last = all.last().unwrap();
     assert_eq!(count(last, ".feature-modal [data-plan-project][data-value=alpha]"), 1, "{out}");
     assert_eq!(count(last, "[data-plan-start]:disabled"), 0, "{out}");
-    let Some(out) = scenario(vec![json!({"click": "[data-todo-move]"})], vec![one()]) else { return };
+    let Some(out) = scenario(vec![json!({"click": "[data-todo-move]"})], vec![one()], ledger()) else { return };
     let moved = frames(&out).last().unwrap();
     assert_eq!(count(moved, MOVE_PICKER), 1, "{out}");
     assert_eq!(count(moved, ".feature-modal select"), 0, "{out}");
@@ -275,6 +278,7 @@ fn dashboard_in_chromium(width: u32, open: &str, wait: &str, measured: Value) ->
         web_chromium::get("/api/projects", projects()["json"].clone()),
         web_chromium::get("/api/todo", todos(vec![item(7, "dark mode")])["json"].clone()),
         web_chromium::get("/api/projects/alpha/features", ledger()["json"].clone()),
+        web_chromium::get("/api/settings/options", json!({"options": [{"harness": "claude", "models": ["haiku"]}]})),
     ];
     let mut steps = vec![json!({"wait": "[data-todo-edit]"}), json!({"click": open}), json!({"wait": wait})];
     steps.extend(measured.as_array().unwrap().iter().cloned());
