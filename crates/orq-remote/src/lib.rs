@@ -510,8 +510,9 @@ const ASSETS: [Asset; 9] = [
 const WORKER_PATH: &str = "/sw.js";
 
 /// Only same-origin scripts, styles, requests, the app manifest, its icons and the service worker; no inline code,
-/// framing, form posts or base tag.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; worker-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'";
+/// framing, form posts or base tag. Images may also be blobs the page made itself: a design review's references and
+/// captures, fetched with the page's auth.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self' blob:; worker-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'";
 
 fn asset_response(asset: &Asset, head_only: bool) -> Response {
     let body = if head_only { &[][..] } else { asset.body };

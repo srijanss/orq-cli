@@ -4985,7 +4985,7 @@ function FeaturesPage({ token, onSignedOut, projectId, projects, name, reloads, 
   );
 }
 
-const RUN_STATES = { running: "Running", accepting: "Accepting", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused", resumed: "Resumed" };
+const RUN_STATES = { running: "Running", accepting: "Accepting", completed: "Completed", failed: "Failed", blocked: "Blocked", needs_review: "Needs review", pause_requested: "Pause requested", paused: "Paused", resumed: "Resumed", design_files_needed: "Design files needed" };
 
 function isOrchestration(run) {
   const text = (value) => value === null || typeof value === "string";
@@ -5013,7 +5013,7 @@ function byUpdated(runs, order) {
 }
 
 // A run's state as a coloured pill. A state the page does not know is "Unknown", never a success.
-const RUN_ICONS = { running: "play", accepting: "clock", completed: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock", resumed: "rotate" };
+const RUN_ICONS = { running: "play", accepting: "clock", completed: "check", failed: "close", blocked: "close", needs_review: "doc", pause_requested: "clock", paused: "clock", resumed: "rotate", design_files_needed: "doc" };
 
 // How a completed run that was delivered without a review was delivered: pushed, or merged into its base.
 const DELIVERED = { pushed: "Pushed", merged: "Merged locally" };
@@ -5376,6 +5376,233 @@ function MissingReport({ run, control }) {
         {build}
       </div>
     </div>
+  );
+}
+
+// The design review of a frontend run, read-only: a round's verdict, per viewport the reference beside each capture,
+// the issues grouped by section, then suggestions, the checks not assessed and what blocked the review. The latest
+// round shows first; the others open from the round buttons. Images come from the run's image route with the page's
+// own auth, as blobs, so a token session sees them too.
+const DESIGN_VERDICTS = { pass: "Pass", changes_required: "Changes required", blocked: "Blocked" };
+const DESIGN_SEVERITIES = { critical: "Critical", major: "Major", minor: "Minor" };
+const DESIGN_STATUSES = { open: "Open", resolved: "Resolved", regressed: "Regressed" };
+const DESIGN_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+const textOr = (value, fallback = "") => (typeof value === "string" ? value : fallback);
+const listOf = (value) => (Array.isArray(value) ? value : []);
+const sizeOf = (width, height) => (Number.isInteger(width) && Number.isInteger(height) ? width + " × " + height : null);
+
+// The run's design rounds as the server shapes them, or null when there are none or they are not that shape.
+function designOf(run) {
+  const design = run.design;
+  if (design === null || typeof design !== "object") return null;
+  const rounds = listOf(design.rounds).filter((round) => round !== null && typeof round === "object" && Number.isInteger(round.round));
+  return rounds.length === 0 ? null : { of: Number.isInteger(design.of) ? design.of : null, rounds };
+}
+
+// Issues grouped by section, sections in the order the review first names them.
+function bySection(issues) {
+  const groups = new Map();
+  for (const issue of issues) {
+    if (issue === null || typeof issue !== "object") continue;
+    const section = textOr(issue.section, "Other") || "Other";
+    if (!groups.has(section)) groups.set(section, []);
+    groups.get(section).push(issue);
+  }
+  return [...groups.entries()];
+}
+
+// One design image as a blob URL, fetched with the page's auth; revoked when it is no longer shown.
+function useDesignImage(source, path) {
+  const [url, setUrl] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (source === null || path === "") return undefined;
+    let current = true;
+    let made = null;
+    const controller = new AbortController();
+    setUrl(null);
+    setFailed(false);
+    (async () => {
+      try {
+        const response = await get(source.base + "/design/image?path=" + encodeURIComponent(path), source.token, controller.signal);
+        if (!current) return;
+        if (response.status === 401) {
+          source.onSignedOut();
+          return;
+        }
+        const data = response.ok ? await response.json() : null;
+        if (!current) return;
+        if (data === null || typeof data !== "object" || !DESIGN_IMAGE_TYPES.includes(data.content_type) || typeof data.data !== "string") {
+          setFailed(true);
+          return;
+        }
+        const raw = atob(data.data);
+        const bytes = new Uint8Array(raw.length);
+        for (let at = 0; at < raw.length; at += 1) bytes[at] = raw.charCodeAt(at);
+        made = URL.createObjectURL(new Blob([bytes], { type: data.content_type }));
+        setUrl(made);
+      } catch (error) {
+        if (current) setFailed(true);
+      }
+    })();
+    return () => {
+      current = false;
+      controller.abort();
+      if (made !== null) URL.revokeObjectURL(made);
+    };
+  }, [source === null ? null : source.base, path]);
+  return { url, failed };
+}
+
+// A reference or capture: a button that opens it large; a capture that failed says why instead.
+function DesignImage({ source, path, label, kind, failure = null, onEnlarge }) {
+  const { url, failed } = useDesignImage(failure === null ? source : null, failure === null ? path : "");
+  const marker = { ["data-design-" + kind]: "" };
+  let body;
+  if (failure !== null) body = <p className="design-image-note error-text">{"Not captured: " + failure}</p>;
+  else if (url !== null) body = <button type="button" className="design-image-open" aria-label={"Enlarge " + label} onClick={() => onEnlarge({ url, label })}><img src={url} alt={label} /></button>;
+  else body = <p className="design-image-note muted">{failed ? "Image not available" : "Loading…"}</p>;
+  return (
+    <figure className="design-image" {...marker}>
+      {body}
+      <figcaption>{label}</figcaption>
+    </figure>
+  );
+}
+
+function DesignIssue({ issue }) {
+  const severity = textOr(issue.severity);
+  const status = textOr(issue.status);
+  return (
+    <li className="design-issue" data-design-issue={textOr(issue.id)}>
+      <div className="design-issue-head">
+        <span className={"pill design-severity design-severity-" + (DESIGN_SEVERITIES[severity] ? severity : "unknown")}>{DESIGN_SEVERITIES[severity] ?? "Unknown"}</span>
+        <span className={"pill design-status design-status-" + (DESIGN_STATUSES[status] ? status : "unknown")}>{DESIGN_STATUSES[status] ?? "Unknown"}</span>
+        {typeof issue.viewport === "string" && issue.viewport !== "" ? <span className="muted">{issue.viewport}</span> : null}
+      </div>
+      <dl className="design-issue-detail">
+        <dt>Expected</dt>
+        <dd>{textOr(issue.expected)}</dd>
+        <dt>Actual</dt>
+        <dd>{textOr(issue.actual)}</dd>
+        <dt>Fix direction</dt>
+        <dd>{textOr(issue.fix_direction)}</dd>
+      </dl>
+    </li>
+  );
+}
+
+function DesignReview({ design, source }) {
+  const latest = design.rounds.length - 1;
+  const [picked, setPicked] = useState(latest);
+  const [enlarged, setEnlarged] = useState(null);
+  useEffect(() => {
+    if (enlarged === null) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setEnlarged(null);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [enlarged]);
+  const round = design.rounds[Math.min(picked, latest)];
+  const verdict = textOr(round.verdict);
+  const issues = listOf(round.issues);
+  const suggestions = listOf(round.suggestions).filter((line) => typeof line === "string");
+  const unassessed = listOf(round.not_assessed).filter((check) => check !== null && typeof check === "object");
+  const blockers = listOf(round.blockers).filter((line) => typeof line === "string");
+  return (
+    <section className="design-review" aria-label="Design review" data-design-review>
+      <div className="design-review-head">
+        <h3>Design review</h3>
+        <span className={"pill design-verdict design-verdict-" + (DESIGN_VERDICTS[verdict] ? verdict : "unknown")} data-design-verdict>{DESIGN_VERDICTS[verdict] ?? "Unknown"}</span>
+        <span className="muted" data-design-round>{"Round " + round.round + (design.of === null ? "" : " of " + design.of)}</span>
+      </div>
+      {design.rounds.length < 2 ? null : (
+        <div className="segmented design-rounds" role="group" aria-label="Round">
+          {design.rounds.map((each, at) => <button key={each.round} type="button" aria-pressed={at === Math.min(picked, latest) ? "true" : "false"} data-design-pick={each.round} onClick={() => { setEnlarged(null); setPicked(at); }}>{"Round " + each.round}</button>)}
+        </div>
+      )}
+      {typeof round.reason === "string" && round.reason !== "" ? <p className="design-reason">{round.reason}</p> : null}
+      {listOf(round.viewports).filter((viewport) => viewport !== null && typeof viewport === "object").map((viewport) => {
+        const name = textOr(viewport.name);
+        const size = sizeOf(viewport.width, viewport.height);
+        const captures = listOf(viewport.captures).filter((capture) => capture !== null && typeof capture === "object");
+        return (
+          <div key={name} className="design-viewport" data-design-viewport={name}>
+            <h4>{size === null ? name : name + " · " + size}</h4>
+            {(captures.length === 0 ? [null] : captures).map((capture, at) => (
+              <div key={at} className="design-pair">
+                {typeof viewport.reference === "string" ? <DesignImage source={source} path={viewport.reference} label={"Reference, " + name} kind="reference" onEnlarge={setEnlarged} /> : <p className="design-image-note muted">No reference</p>}
+                {capture === null ? <p className="design-image-note muted">No capture</p> : <DesignImage source={source} path={textOr(capture.image)} label={"Capture of " + textOr(capture.route, "/") + ", " + name} kind="capture" failure={typeof capture.failure === "string" ? capture.failure : null} onEnlarge={setEnlarged} />}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      <h4>Issues</h4>
+      {issues.length === 0 ? <p className="muted">No issues.</p> : bySection(issues).map(([section, inSection]) => (
+        <div key={section} className="design-section" data-design-section={section}>
+          <h5>{section}</h5>
+          <ul className="design-issues">{inSection.map((issue, at) => <DesignIssue key={at} issue={issue} />)}</ul>
+        </div>
+      ))}
+      {suggestions.length === 0 ? null : (
+        <>
+          <h4>Suggestions</h4>
+          <ul data-design-suggestions>{suggestions.map((line, at) => <li key={at}>{line}</li>)}</ul>
+        </>
+      )}
+      {unassessed.length === 0 ? null : (
+        <>
+          <h4>Not assessed</h4>
+          <ul data-design-not-assessed>{unassessed.map((check, at) => <li key={at}>{textOr(check.id) + (listOf(check.evidence).length === 0 ? "" : ": " + listOf(check.evidence).filter((line) => typeof line === "string").join("; "))}</li>)}</ul>
+        </>
+      )}
+      {blockers.length === 0 ? null : (
+        <>
+          <h4>Blocked by</h4>
+          <ul className="error-text" data-design-blockers>{blockers.map((line, at) => <li key={at}>{line}</li>)}</ul>
+        </>
+      )}
+      {enlarged === null ? null : (
+        <div className="design-zoom" role="dialog" aria-modal="true" aria-label={enlarged.label} data-design-zoom onClick={() => setEnlarged(null)}>
+          <button type="button" className="design-zoom-close" aria-label="Close" data-design-zoom-close onClick={() => setEnlarged(null)}><Icon name="close" size={20} /></button>
+          <img src={enlarged.url} alt={enlarged.label} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+// A run that stopped for want of design files: each one, where it goes, why it is needed and, for a reference, the
+// viewport size; Resume rechecks the folder and the page then shows what is still missing.
+function DesignFilesNeeded({ run, control }) {
+  const needed = run.design_files_needed;
+  if (needed === null || typeof needed !== "object") return null;
+  const files = listOf(needed.files).filter((file) => file !== null && typeof file === "object" && typeof file.path === "string");
+  const feature = textOr(needed.feature, run.feature);
+  const path = (tail) => controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/" + tail);
+  const resume = control === null || !RUN_ID.test(run.run_id) ? null : <RunAction kind="resume" tone="primary" icon="rotate" label="Resume" question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={path("resume")} check={path("resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next, reply, answered) => resumedNote(next, answered)} />;
+  return (
+    <section className="design-files-needed" aria-label="Design files needed" data-design-files-needed>
+      <h3>Design files needed</h3>
+      <p>{"Add these to designs/" + feature + "/, then resume."}</p>
+      <ul className="design-needed-files">
+        {files.map((file) => {
+          const viewport = file.viewport !== null && typeof file.viewport === "object" ? sizeOf(file.viewport.width, file.viewport.height) : null;
+          return (
+            <li key={file.path} data-design-needed-file={file.path}>
+              <code>{file.path}</code>
+              <span>{textOr(file.what)}</span>
+              {typeof file.why === "string" && file.why !== "" ? <span className="muted">{file.why}</span> : null}
+              {viewport === null ? null : <span>{"Viewport: " + viewport}</span>}
+            </li>
+          );
+        })}
+      </ul>
+      {resume}
+    </section>
   );
 }
 
@@ -6250,6 +6477,7 @@ function PlanProposal({ plan, projectId, apiRun, control }) {
 function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null, startTab = "timeline", projectId = null }) {
   const { run, events, next_cursor: next } = timeline;
   const delivery = deliveryOf(run);
+  const design = designOf(run);
   const [tab, setTab] = useState(startTab);
   const [logsOpened, setLogsOpened] = useState(startTab === "logs");
   const rounds = timeline.review_rounds;
@@ -6307,6 +6535,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           )}
         </div>
       </div>
+      {run.design_files_needed !== null && typeof run.design_files_needed === "object" ? <DesignFilesNeeded run={run} control={control} /> : design === null ? null : <DesignReview design={design} source={follow === null ? null : { base: follow.base, token: follow.token, onSignedOut: follow.onSignedOut }} />}
       <div className="feature-tabs" role="tablist" aria-label="Run details">
         {RUN_TABS.map(([id, label]) => (
           <button key={id} type="button" role="tab" id={"run-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls={"run-panel-" + id} data-run-tab={id} onClick={() => choose(id)}>{label}</button>

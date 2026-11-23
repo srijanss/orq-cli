@@ -242,6 +242,13 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// One design image of a run of project `id` as `{content_type, data}` (data in base64): `path` is
+    /// relative to the run's design folder and must be one its own design records list. `None` when the
+    /// project, the run (of that project) or such an image is unknown.
+    fn run_design_image(&self, _id: &str, _run: &str, _path: &str) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// The redacted run settings as JSON, `None` when this provider has none.
     fn settings(&self) -> Result<Option<Value>, String> {
         Ok(None)
@@ -3153,6 +3160,18 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
             return match provider.map(|provider| provider.run_logs(id, run, file, after)) {
                 Some(Ok(Some(logs))) => reply(200, logs),
                 Some(Err(_)) => error(500, "the logs could not be read"),
+                _ => error(404, "not found"),
+            };
+        }
+        if let [id, "runs", run, "design", "image"] = parts.as_slice() {
+            let image = query.split('&').find_map(|pair| pair.strip_prefix("path=")).and_then(query_decode).filter(|path| !path.is_empty());
+            return match (provider, image) {
+                (Some(provider), Some(image)) if !id.is_empty() && !run.is_empty() => match provider.run_design_image(id, run, &image) {
+                    Ok(Some(found)) => reply(200, found),
+                    // The reason can name a path on this machine, so the caller is only told it failed.
+                    Err(_) => error(500, "the image could not be read"),
+                    Ok(None) => error(404, "not found"),
+                },
                 _ => error(404, "not found"),
             };
         }

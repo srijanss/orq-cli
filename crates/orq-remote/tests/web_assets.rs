@@ -220,7 +220,7 @@ fn the_page_head_links_the_manifest_and_icons_and_the_csp_allows_only_those_from
     }
     assert_eq!(
         header(&reply, "content-security-policy").as_deref(),
-        Some("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; worker-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'")
+        Some("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self' blob:; worker-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'")
     );
 }
 

@@ -351,6 +351,234 @@ fn add_missing_report(row: &mut serde_json::Value, roots: &orq_core::storage::St
     }
 }
 
+/// The most a design record (a manifest, a capture or a review answer) may hold before it is left unread.
+const DESIGN_RECORD_CAP: u64 = 4 * 1024 * 1024;
+
+/// A design record of the run as JSON: a plain file (never a link) under the cap; `None` otherwise.
+fn design_record(path: &Path) -> Option<serde_json::Value> {
+    use std::io::Read;
+    let meta = path.symlink_metadata().ok().filter(|meta| meta.is_file())?;
+    if meta.len() > DESIGN_RECORD_CAP {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|file| file.take(DESIGN_RECORD_CAP).read_to_end(&mut bytes)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// A design path as recorded, when it stays inside its folder: relative, with plain segments only.
+fn plain_design_path(path: &str) -> bool {
+    !path.is_empty() && !path.starts_with('/') && !path.contains('\\') && !path.chars().any(char::is_control) && path.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// The reference images of the run's frozen package, as (viewport, width, height, path from the design folder).
+fn design_references(manifest: Option<&serde_json::Value>) -> Vec<(String, u64, u64, String)> {
+    let files = manifest.and_then(|manifest| manifest["files"].as_array()).cloned().unwrap_or_default();
+    files
+        .iter()
+        .filter(|file| file["kind"] == "reference")
+        .filter_map(|file| {
+            let viewport = &file["viewport"];
+            let (name, path) = (viewport["name"].as_str()?, file["path"].as_str().filter(|path| plain_design_path(path))?);
+            Some((name.to_string(), viewport["width"].as_u64().unwrap_or(0), viewport["height"].as_u64().unwrap_or(0), format!("package/{path}")))
+        })
+        .collect()
+}
+
+/// How many design reviews the run allows at most, as its latest design review event says.
+fn design_reviews_of(events: &[orq_orchestrator::Event]) -> Option<u64> {
+    events.iter().filter(|event| event.stage.as_deref() == Some("design_review")).filter_map(|event| event.payload.get("reviews_of").or_else(|| event.payload.get("of")).and_then(serde_json::Value::as_u64)).last()
+}
+
+/// The highest design review round the run's events name.
+fn design_last_round(events: &[orq_orchestrator::Event]) -> u64 {
+    events.iter().filter(|event| event.stage.as_deref() == Some("design_review")).filter_map(|event| event.payload.get("round").and_then(serde_json::Value::as_u64)).max().unwrap_or(0)
+}
+
+fn shown_text(value: &serde_json::Value) -> serde_json::Value {
+    value.as_str().map_or(serde_json::Value::Null, |text| orq_core::redact::redact(text).into())
+}
+
+fn shown_texts(value: &serde_json::Value) -> Vec<serde_json::Value> {
+    value.as_array().map(|all| all.iter().map(shown_text).filter(|text| !text.is_null()).collect()).unwrap_or_default()
+}
+
+/// One design review round as the run page shows it, `None` when it left neither captures nor a review.
+fn design_round_shown(dir: &Path, round: u64, references: &[(String, u64, u64, String)]) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let round_dir = dir.join(format!("round-{round}"));
+    let (capture, record) = (design_record(&round_dir.join("capture.json")), design_record(&round_dir.join("review.json")));
+    if capture.is_none() && record.is_none() {
+        return None;
+    }
+    let pages = capture.as_ref().and_then(|capture| capture["pages"].as_array()).cloned().unwrap_or_default();
+    let mut viewports: Vec<(String, u64, u64, Option<String>)> = references.iter().map(|(name, width, height, path)| (name.clone(), *width, *height, Some(path.clone()))).collect();
+    for page in &pages {
+        let Some(name) = page["viewport"].as_str() else { continue };
+        if !viewports.iter().any(|known| known.0 == name) {
+            viewports.push((name.to_string(), page["viewport_width"].as_u64().unwrap_or(0), page["viewport_height"].as_u64().unwrap_or(0), None));
+        }
+    }
+    let viewports: Vec<serde_json::Value> = viewports
+        .into_iter()
+        .map(|(name, width, height, reference)| {
+            let captures: Vec<serde_json::Value> = pages
+                .iter()
+                .filter(|page| page["viewport"] == name.as_str())
+                .map(|page| {
+                    let image = page["image"].as_str().filter(|image| plain_design_path(image)).map(|image| format!("round-{round}/{image}"));
+                    json!({"route": shown_text(&page["route"]), "image": image, "failure": shown_text(&page["failure"])})
+                })
+                .collect();
+            json!({"name": name, "width": width, "height": height, "reference": reference, "captures": captures})
+        })
+        .collect();
+    let record = record.unwrap_or(serde_json::Value::Null);
+    let review = &record["review"];
+    let issues: Vec<serde_json::Value> = review["issues"]
+        .as_array()
+        .map(|issues| {
+            issues
+                .iter()
+                .map(|issue| {
+                    let field = |name: &str| shown_text(&issue[name]);
+                    json!({"id": field("id"), "section": field("section"), "viewport": field("viewport"), "severity": field("severity"), "status": field("status"), "expected": field("expected"), "actual": field("actual"), "fix_direction": field("fix_direction")})
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let not_assessed: Vec<serde_json::Value> = review["checks"].as_array().map(|checks| checks.iter().filter(|check| check["status"] == "not_assessed").map(|check| json!({"id": shown_text(&check["id"]), "evidence": shown_texts(&check["evidence"])})).collect()).unwrap_or_default();
+    Some(json!({
+        "round": round,
+        "verdict": shown_text(&record["verdict"]),
+        "decided_by": shown_text(&record["decided_by"]),
+        "reason": shown_text(&record["reason"]),
+        "viewports": viewports,
+        "issues": issues,
+        "suggestions": shown_texts(&review["suggestions"]),
+        "not_assessed": not_assessed,
+        "blockers": shown_texts(&review["blockers"]),
+    }))
+}
+
+/// A frontend run's design review as the run page shows it: the most reviews it allows (`of`) and each
+/// round. Image paths are relative to the run's design folder, the only ones the design image route serves.
+/// `None` for a run without a design review round.
+fn design_shown(events: &[orq_orchestrator::Event], logs_dir: &Path) -> Option<serde_json::Value> {
+    let last = design_last_round(events);
+    if last == 0 {
+        return None;
+    }
+    let dir = logs_dir.join("design");
+    let references = design_references(design_record(&dir.join("manifest.json")).as_ref());
+    let rounds: Vec<serde_json::Value> = (1..=last).filter_map(|round| design_round_shown(&dir, round, &references)).collect();
+    if rounds.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({"of": design_reviews_of(events), "rounds": rounds}))
+}
+
+/// The most bytes a design image may have to be served.
+const DESIGN_IMAGE_CAP: u64 = 16 * 1024 * 1024;
+
+/// Every image the run's own design records list, relative to its design folder: the package's references
+/// and approved assets, and each round's captures.
+fn design_images_listed(events: &[orq_orchestrator::Event], dir: &Path) -> Vec<String> {
+    let manifest = design_record(&dir.join("manifest.json"));
+    let files = manifest.as_ref().and_then(|manifest| manifest["files"].as_array()).cloned().unwrap_or_default();
+    let mut listed: Vec<String> = files.iter().filter(|file| file["kind"] == "reference" || file["kind"] == "asset").filter_map(|file| file["path"].as_str().filter(|path| plain_design_path(path)).map(|path| format!("package/{path}"))).collect();
+    for round in 1..=design_last_round(events) {
+        let capture = design_record(&dir.join(format!("round-{round}")).join("capture.json"));
+        let pages = capture.as_ref().and_then(|capture| capture["pages"].as_array()).cloned().unwrap_or_default();
+        listed.extend(pages.iter().filter_map(|page| page["image"].as_str().filter(|image| plain_design_path(image)).map(|image| format!("round-{round}/{image}"))));
+    }
+    listed
+}
+
+/// The content type of an image the page can show, by its extension.
+fn design_image_type(path: &str) -> Option<&'static str> {
+    match path.rsplit_once('.')?.1.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+        for at in 0..4 {
+            out.push(if at <= chunk.len() { ALPHABET[(n >> (18 - 6 * at) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+/// The image at `path` in run `run`'s design folder as `{content_type, data}`: every folder on the way and
+/// the file itself must be real (no link), the file an image under the cap. `None` otherwise.
+fn design_image(logs_root: &Path, run: &str, path: &str) -> Result<Option<serde_json::Value>, String> {
+    use std::io::Read;
+    let Some(content_type) = design_image_type(path) else { return Ok(None) };
+    let mut at = logs_root.to_path_buf();
+    let mut steps: Vec<&str> = vec![run, "design"];
+    steps.extend(path.split('/'));
+    let last = steps.len() - 1;
+    if logs_root.symlink_metadata().map_or(true, |meta| !meta.is_dir()) {
+        return Ok(None);
+    }
+    for (n, step) in steps.into_iter().enumerate() {
+        at.push(step);
+        let Ok(meta) = at.symlink_metadata() else { return Ok(None) };
+        let fits = if n == last { meta.is_file() && meta.len() <= DESIGN_IMAGE_CAP } else { meta.is_dir() };
+        if !fits {
+            return Ok(None);
+        }
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&at).and_then(|file| file.take(DESIGN_IMAGE_CAP).read_to_end(&mut bytes)).map_err(|error| format!("design image {path} is unreadable: {error}"))?;
+    Ok(Some(serde_json::json!({"content_type": content_type, "data": base64(&bytes)})))
+}
+
+/// The viewport a needed reference is for, as its request names it: `the mobile reference, 390x844 (...)`
+/// at `designs/<feature>/references/mobile.png`.
+fn needed_viewport(what: &str, path: &str) -> Option<serde_json::Value> {
+    let file = path.rsplit_once("/references/")?.1;
+    let name = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    let size = what.split_once(", ")?.1.split_whitespace().next()?;
+    let (width, height) = size.split_once('x')?;
+    Some(serde_json::json!({"name": name, "width": width.parse::<u64>().ok()?, "height": height.parse::<u64>().ok()?}))
+}
+
+/// Why a needed design file is needed, by what it is.
+fn needed_why(what: &str, path: &str) -> &'static str {
+    if path.contains("/references/") {
+        "The design review compares the page at this size with it."
+    } else if what.starts_with("the asset ") {
+        "DESIGN.md names it: the page uses it as an approved asset, unchanged."
+    } else {
+        "The implementer builds the page from it."
+    }
+}
+
+/// What a run waiting for design files still needs, from its last request: each file's description, path in
+/// `designs/<feature>/`, why it is needed and, for a reference, its viewport.
+fn design_files_needed(events: &[orq_orchestrator::Event]) -> Option<serde_json::Value> {
+    let payload = &events.iter().rev().find(|event| event.kind == "design.files_needed")?.payload;
+    let files: Vec<serde_json::Value> = payload["files"]
+        .as_array()?
+        .iter()
+        .filter_map(|file| {
+            let (what, path) = (file["what"].as_str()?, file["path"].as_str()?);
+            Some(serde_json::json!({"what": orq_core::redact::redact(what), "path": orq_core::redact::redact(path), "why": needed_why(what, path), "viewport": needed_viewport(what, path)}))
+        })
+        .collect();
+    Some(serde_json::json!({"feature": shown_text(&payload["feature"]), "files": files}))
+}
+
 /// Records as failed every accept a server that stopped left without a result: nothing runs its tests anymore.
 fn fail_interrupted_accepts(store: &orq_orchestrator::RunStore) {
     let Ok(runs) = store.run_ids() else { return };
@@ -2187,6 +2415,31 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         Ok(Some(serde_json::json!({"name": file, "lines": page, "next_cursor": next, "truncated": truncated})))
     }
 
+    fn run_design_image(&self, id: &str, run: &str, path: &str) -> Result<Option<serde_json::Value>, String> {
+        use orq_orchestrator::StoreError;
+        let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
+        let key = orq_git::project_id(&orq_git::resolve_project(&project.path).map_err(|error| format!("{error:?}"))?);
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        let record = match store.load(run) {
+            Ok(record) => record,
+            Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => return Ok(None),
+            Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
+        };
+        if record.project_id != key {
+            return Ok(None);
+        }
+        let events = match store.events(run) {
+            Ok(events) => events,
+            Err(StoreError::NotFound(_)) => return Ok(None),
+            Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
+        };
+        let logs_dir = self.roots.state.join("logs").join(run);
+        if !plain_design_path(path) || !design_images_listed(&events, &logs_dir.join("design")).iter().any(|listed| listed == path) {
+            return Ok(None);
+        }
+        design_image(&self.roots.state.join("logs"), run, path)
+    }
+
     fn run_timeline(&self, id: &str, run: &str, after: Option<&str>) -> Result<Option<serde_json::Value>, String> {
         use orq_orchestrator::StoreError;
         let Some(project) = discover(&self.scan_root).into_iter().find(|project| project.id == id) else { return Ok(None) };
@@ -2288,6 +2541,17 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             shown["merge_pending"] = serde_json::json!(true);
         }
         add_missing_report(&mut shown, &self.roots, run);
+        // Read once, for the run's first page: a followed run asks for its later pages every second.
+        if after.is_none() {
+            if let Some(design) = design_shown(&events, &logs_dir) {
+                shown["design"] = design;
+            }
+        }
+        if summary.phase == orq_orchestrator::RunPhase::DesignFilesNeeded {
+            if let Some(needed) = design_files_needed(&events) {
+                shown["design_files_needed"] = needed;
+            }
+        }
         let planning = plan::is_plan(&events);
         if planning {
             shown["kind"] = serde_json::json!("plan");
