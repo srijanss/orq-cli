@@ -575,12 +575,12 @@ fn web_todo_item() -> Value {
     json!({"id": 7, "name": "dark mode", "description": "Make it dark", "created_at": 100, "updated_at": 100, "version": 3})
 }
 
-/// The Dashboard with one Todo item, its Draft with orq popup opened, then `steps`; the Todo POST is answered with `started`.
+/// The Todos page with one Todo item, its Draft with orq popup opened, then `steps`; the Todo POST is answered with `started`.
 fn draft_popup(started: Value, steps: Vec<Value>) -> Option<Value> {
     let todo = vec![json!({"status": 200, "json": {"todos": [web_todo_item()], "remote_actions": true}}), started];
     let mut all = vec![json!({"click": "[data-todo-draft]"})];
     all.extend(steps);
-    page("/dashboard", vec![web_projects(), web_options()], todo, all)
+    page("/todos", vec![web_projects(), web_options()], todo, all)
 }
 
 fn shows_selected(frame: &Value, select: &str, value: &str) -> bool {
@@ -633,7 +633,7 @@ fn draft_with_orq_on_a_todo_item_asks_for_a_project_and_notes_then_opens_the_run
         json!({"click": ".feature-modal [data-project-choice=alpha]"}),
         json!({"click": "[data-plan-start]"}),
     ];
-    let Some(out) = page("/dashboard", vec![web_projects(), web_options()], todo, steps) else { return };
+    let Some(out) = page("/todos", vec![web_projects(), web_options()], todo, steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(matches(&frames[1], WEB_SELECTORS[0]), 1, "{out}");
     assert_eq!(matches(&frames[2], WEB_SELECTORS[1]), 1, "the popup opened: {out}");

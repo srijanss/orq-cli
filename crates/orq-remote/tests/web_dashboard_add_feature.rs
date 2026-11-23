@@ -1,6 +1,6 @@
 //! The Dashboard's fourth tile (the Todo count) opens Add feature: a popup whose Project choice starts at "Todo (no project)",
 //! which keeps a name and a description on the Todo list, or names a project, which opens the full feature
-//! editor and saves a draft there. Above the projects sits the Todo list, newest first, ten at a time, each
+//! editor and saves a draft there. The Todos page holds the Todo list, newest first, ten at a time, each
 //! item with Move to project, Edit and Delete. A draft moved with "Queue once approved" says so on its page,
 //! with a Cancel.
 
@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 11] = [
+const SELECTORS: [&str; 12] = [
     ".stats > [data-dashboard-add]",
     ".feature-modal [data-add-target]",
     ".todo-item",
@@ -22,6 +22,7 @@ const SELECTORS: [&str; 11] = [
     "[data-field-name]",
     ".feature-modal [data-add-target]:disabled",
     "[data-modal-close]:disabled",
+    "[data-dashboard-add][aria-label=\"1 Todo, add feature\"]",
 ];
 
 fn projects() -> Value {
@@ -77,16 +78,16 @@ fn posts(out: &Value) -> Vec<(String, Value)> {
 }
 
 #[test]
-fn the_fourth_tile_opens_add_feature_and_an_empty_todo_list_sits_above_the_projects() {
+fn the_fourth_tile_opens_add_feature_and_an_empty_todo_list_says_so_on_the_todos_page() {
     let Some(out) = run("/dashboard", vec![projects()], vec![todos(vec![], true)], vec![]) else { return };
     let frame = last(&out);
     assert_eq!(count(frame, SELECTORS[0]), 1, "{out}");
     assert!(!has(frame, "Last updated"), "the tile replaces Last updated: {out}");
-    let shown = texts(frame);
-    let todo = shown.iter().position(|t| t == "Todos").expect("a Todos heading");
+    let Some(out) = run("/todos", vec![projects()], vec![todos(vec![], true)], vec![]) else { return };
+    let shown = texts(last(&out));
+    let todo = shown.iter().rposition(|t| t == "Todos").expect("a Todos heading");
     let empty = shown.iter().position(|t| t == "Nothing to do. Add feature puts ideas here.").expect("the empty text");
-    let heading = shown.iter().rposition(|t| t == "Projects").unwrap();
-    assert!(todo < empty && empty < heading, "{shown:?}");
+    assert!(todo < empty, "{shown:?}");
 }
 
 #[test]
@@ -113,7 +114,7 @@ fn adding_to_todo_posts_the_name_and_description_and_says_where_it_went() {
     let frame = last(&out);
     assert_eq!(count(frame, SELECTORS[5]), 0, "the popup closed: {out}");
     assert!(has(frame, "Added to Todo"), "{out}");
-    assert_eq!(count(frame, SELECTORS[2]), 1, "{out}");
+    assert_eq!(count(frame, SELECTORS[11]), 1, "the tile counts the new item: {out}");
 }
 
 #[test]
@@ -179,7 +180,7 @@ fn with_remote_actions_off_save_is_held_back_and_the_reason_shown() {
 #[test]
 fn more_than_ten_items_show_ten_until_show_all() {
     let items: Vec<Value> = (1..=12).rev().map(|n| item(n, &format!("idea {n}"), n * 10)).collect();
-    let Some(out) = run("/dashboard", vec![projects()], vec![todos(items, true)], vec![json!({"click": "[data-todo-show-all]"})]) else { return };
+    let Some(out) = run("/todos", vec![projects()], vec![todos(items, true)], vec![json!({"click": "[data-todo-show-all]"})]) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[1], SELECTORS[2]), 10, "{out}");
     assert!(has(&frames[1], "Show all (12)"), "{out}");
@@ -200,7 +201,7 @@ fn an_item_is_edited_with_its_version_and_deleted_after_asking() {
         json!({"click": "[data-confirm]"}),
     ];
     let todo = vec![todos(vec![one], true), edited, todos(vec![item(7, "one better", 100)], true), deleted, todos(vec![], true)];
-    let Some(out) = run("/dashboard", vec![projects()], todo, steps) else { return };
+    let Some(out) = run("/todos", vec![projects()], todo, steps) else { return };
     assert!(has(&out["frames"][5], "Delete this Todo item?"), "{out}");
     assert_eq!(
         posts(&out),
@@ -222,7 +223,7 @@ fn move_to_project_prefills_the_editor_and_can_ask_for_the_draft_to_be_queued_on
         json!({"click": "[data-confirm]"}),
     ];
     let todo = vec![todos(vec![item(7, "Fix the thing", 100)], true), moved, todos(vec![], true)];
-    let Some(out) = run("/dashboard", vec![projects(), ledger(true)], todo, steps) else { return };
+    let Some(out) = run("/todos", vec![projects(), ledger(true)], todo, steps) else { return };
     assert!(!has(&out["frames"][2], "Todo (no project)"), "a move goes to a project: {out}");
     let sent = posts(&out);
     assert_eq!(sent.len(), 1, "{out}");

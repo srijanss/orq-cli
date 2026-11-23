@@ -1,4 +1,4 @@
-//! The Dashboard's popups (Add feature, Move to project, Draft with Claude and a Todo item's Edit) are one kind of
+//! The Todo popups (the Dashboard's Add feature; Move to project, Draft with Claude and Edit on the Todos page) are one kind of
 //! box at every width, with one spacing inside, and they choose the project with the app's own project picker
 //! rather than a native select.
 
@@ -133,7 +133,7 @@ fn name_values(frame: &Value) -> Vec<String> {
 
 #[test]
 fn edit_opens_an_edit_todo_popup_that_saves_with_the_version_or_keeps_the_error() {
-    let edit = |todo: Vec<Value>, steps: Vec<Value>| run_with("/dashboard", vec![projects()], todo, steps, &EDIT);
+    let edit = |todo: Vec<Value>, steps: Vec<Value>| run_with("/todos", vec![projects()], todo, steps, &EDIT);
     let saved = json!({"status": 200, "json": {"todo": item(7, "one better")}});
     let steps = vec![json!({"click": "[data-todo-edit]"}), json!({"set": ".feature-modal [data-todo-name]", "value": "one better"}), json!({"click": ".feature-modal [data-todo-save]"})];
     let Some(out) = edit(vec![todos(vec![item(7, "one")]), saved, todos(vec![item(7, "one better")])], steps) else { return };
@@ -163,7 +163,7 @@ fn edit_opens_an_edit_todo_popup_that_saves_with_the_version_or_keeps_the_error(
 fn escape_cancel_and_close_leave_the_edit_popup_unsaved_and_give_edit_the_focus_back() {
     for close in [json!({"keydown": "Escape"}), json!({"click": ".feature-modal [data-cancel]"}), json!({"click": ".feature-modal [data-modal-close]"})] {
         let steps = vec![json!({"click": "[data-todo-edit]"}), json!({"set": ".feature-modal [data-todo-name]", "value": "typed"}), close.clone()];
-        let Some(out) = run_with("/dashboard", vec![projects()], vec![todos(vec![item(7, "one")])], steps, &EDIT) else { return };
+        let Some(out) = run_with("/todos", vec![projects()], vec![todos(vec![item(7, "one")])], steps, &EDIT) else { return };
         let last = frames(&out).last().unwrap();
         assert_eq!(count(last, EDIT[0]), 0, "{close} closed it: {out}");
         assert!(todo_posts(&out).is_empty(), "{close} saved nothing: {out}");
@@ -185,7 +185,7 @@ fn while_a_save_is_out_nothing_closes_the_edit_popup_and_after_a_failure_it_clos
         json!({"release": "todo:1"}),
         json!({"keydown": "Escape"}),
     ];
-    let Some(out) = run_with("/dashboard", vec![projects()], vec![todos(vec![item(7, "one")]), held], steps, &EDIT) else { return };
+    let Some(out) = run_with("/todos", vec![projects()], vec![todos(vec![item(7, "one")]), held], steps, &EDIT) else { return };
     let all = frames(&out);
     for (at, how) in [(5, "Escape"), (6, "Cancel"), (7, "Close"), (8, "the backdrop")] {
         assert_eq!(count(&all[at], EDIT[0]), 1, "{how} leaves it open while the save is out: {out}");
@@ -210,7 +210,7 @@ fn tab_stays_in_the_edit_popup_and_another_items_edit_starts_from_that_items_tex
         json!({"keydown": "Tab"}),
         json!({"keydown": "Tab", "shift": true}),
     ];
-    let Some(out) = run_with("/dashboard", vec![projects()], vec![todos(vec![item(8, "two"), item(7, "one")])], steps, &selectors) else { return };
+    let Some(out) = run_with("/todos", vec![projects()], vec![todos(vec![item(8, "two"), item(7, "one")])], steps, &selectors) else { return };
     let all = frames(&out);
     assert!(focused(&all[4], CLOSE), "Tab from the last control wraps to Close: {out}");
     assert!(focused(&all[5], CANCEL), "Shift+Tab from Close wraps to Cancel: {out}");
@@ -220,7 +220,7 @@ fn tab_stays_in_the_edit_popup_and_another_items_edit_starts_from_that_items_tex
         json!({"set": ".feature-modal [data-todo-name]", "value": "typed for one"}),
         json!({"click": "[data-todo-item=\"8\"] [data-todo-edit]"}),
     ];
-    let Some(out) = run_with("/dashboard", vec![projects()], vec![todos(vec![item(8, "two"), item(7, "one")])], steps, &selectors) else { return };
+    let Some(out) = run_with("/todos", vec![projects()], vec![todos(vec![item(8, "two"), item(7, "one")])], steps, &selectors) else { return };
     assert_eq!(name_values(frames(&out).last().unwrap()), ["two"], "item 8's own name, not item 7's typing: {out}");
 }
 
@@ -233,7 +233,7 @@ fn move_and_draft_with_claude_use_the_same_picker_waiting_on_a_project() {
     // The project picker is never a select; Draft with orq's harness and model pickers are.
     const PROJECT_SELECT: &str = ".feature-modal select:not([data-plan-harness]):not([data-plan-model])";
     let selectors = [PLAN_PICKER, MOVE_PICKER, ".feature-modal select", "[data-plan-start]:disabled", ".feature-modal [data-plan-project][data-value=alpha]", "[data-feature-save]", ".feature-modal [data-project-choice]", PROJECT_SELECT];
-    let scenario = |steps: Vec<Value>, todo: Vec<Value>, second: Value| run_with("/dashboard", vec![projects(), second], todo, steps, &selectors);
+    let scenario = |steps: Vec<Value>, todo: Vec<Value>, second: Value| run_with("/todos", vec![projects(), second], todo, steps, &selectors);
     let options = json!({"status": 200, "json": {"options": [{"harness": "claude", "models": ["haiku"]}]}});
     let steps = vec![json!({"click": "[data-todo-draft]"}), json!({"click": ".feature-modal [data-plan-project]"}), json!({"click": ".feature-modal [data-project-choice=alpha]"})];
     let Some(out) = scenario(steps, vec![one()], options) else { return };
@@ -261,7 +261,7 @@ fn an_empty_picker_opened_from_the_keyboard_chooses_nothing_on_enter_or_space() 
     for key in ["Enter", " "] {
         let steps = vec![json!({"click": "[data-todo-draft]"}), json!({"keydown": "ArrowDown", "on": ".feature-modal [data-plan-project]"}), json!({"keydown": key, "on": ".feature-modal [data-plan-project]"})];
         // A page error fails the run, so a crash on the empty list fails here.
-        let Some(out) = run_with("/dashboard", vec![unavailable.clone()], vec![todos(vec![item(7, "dark mode")])], steps, &selectors) else { return };
+        let Some(out) = run_with("/todos", vec![unavailable.clone()], vec![todos(vec![item(7, "dark mode")])], steps, &selectors) else { return };
         let all = frames(&out);
         assert_eq!(count(&all[3], selectors[0]), 1, "the empty list opens: {out}");
         let last = all.last().unwrap();
@@ -270,9 +270,11 @@ fn an_empty_picker_opened_from_the_keyboard_chooses_nothing_on_enter_or_space() 
     }
 }
 
-/// The Dashboard in Chromium at `width` with one Todo item, after pressing `open` and waiting for `wait`, then the
-/// `measured` steps; `None` without a Chromium.
+/// The Dashboard (for its Todos tile) or the Todos page (for an item's buttons) in Chromium at `width` with one
+/// Todo item, after pressing `open` and waiting for `wait`, then the `measured` steps; `None` without a Chromium.
 fn dashboard_in_chromium(width: u32, open: &str, wait: &str, measured: Value) -> Option<Value> {
+    // Wait for the Todo list to be read: the tile counts it, the page shows its item.
+    let (page, ready) = if open == "[data-dashboard-add]" { ("/dashboard", "[data-dashboard-add][aria-label=\"1 Todo, add feature\"]") } else { ("/todos", "[data-todo-edit]") };
     let chromium = web_chromium::binary()?;
     let replies = [
         web_chromium::get("/api/projects", projects()["json"].clone()),
@@ -280,9 +282,9 @@ fn dashboard_in_chromium(width: u32, open: &str, wait: &str, measured: Value) ->
         web_chromium::get("/api/projects/alpha/features", ledger()["json"].clone()),
         web_chromium::get("/api/settings/options", json!({"options": [{"harness": "claude", "models": ["haiku"]}]})),
     ];
-    let mut steps = vec![json!({"wait": "[data-todo-edit]"}), json!({"click": open}), json!({"wait": wait})];
+    let mut steps = vec![json!({"wait": ready}), json!({"click": open}), json!({"wait": wait})];
     steps.extend(measured.as_array().unwrap().iter().cloned());
-    let out = web_chromium::measure(&chromium, width, "/dashboard", &replies, Value::Array(steps));
+    let out = web_chromium::measure(&chromium, width, page, &replies, Value::Array(steps));
     assert!(out.result.get("error").is_none(), "{}\nunanswered: {:?}", out.result, out.unanswered);
     Some(out.result)
 }
@@ -342,7 +344,7 @@ fn a_failed_save_shows_its_status_half_a_rem_under_the_actions_and_the_features_
     const ACTIONS: &str = "[data-todo-edit-dialog] .feature-editor-actions";
     const STATUS: &str = "[data-todo-edit-dialog] .error-text";
     let steps = json!([{"click": "[data-todo-edit]"}, {"click": "[data-todo-edit-dialog] [data-todo-save]"}, {"wait": STATUS}, {"boxes": ACTIONS}, {"boxes": STATUS}]);
-    let out = web_chromium::measure(&chromium, 1024, "/dashboard", &replies, steps);
+    let out = web_chromium::measure(&chromium, 1024, "/todos", &replies, steps);
     let result = &out.result;
     assert!(result.get("error").is_none(), "{result}\nunanswered: {:?}", out.unanswered);
     assert_eq!(side(result, STATUS, "top") - side(result, ACTIONS, "bottom"), 8, "{result}");

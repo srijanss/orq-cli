@@ -12,7 +12,10 @@ import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./
 const PHONE_QUERY = "(max-width: 700px)";
 
 export function navigationEntries(projectId) {
-  const entries = [{ label: "Dashboard", icon: "home", href: "/dashboard" }];
+  const entries = [
+    { label: "Dashboard", icon: "home", href: "/dashboard" },
+    { label: "Todos", icon: "check", href: "/todos" },
+  ];
   const base = typeof projectId === "string" && projectId !== "" ? `/projects/${encodeURIComponent(projectId)}` : "";
   entries.push(
     { label: "Features", icon: "flag", href: `${base}/features` },

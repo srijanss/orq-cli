@@ -29,16 +29,16 @@ fn current(frame: &Value) -> Vec<String> {
 #[test]
 fn without_a_project_the_sidebar_offers_every_section_with_all_project_addresses() {
     let Some(out) = run(json!({"path": "/dashboard"})) else { return };
-    assert_eq!(names(&out["frames"][0]), ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
+    assert_eq!(names(&out["frames"][0]), ["Dashboard", "Todos", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
 }
 
 #[test]
 fn a_chosen_project_adds_its_features_orchestrations_and_reviews() {
     let Some(out) = run(json!({"projectId": "my app", "path": "/projects/my%20app/reviews"})) else { return };
     let frame = &out["frames"][0];
-    assert_eq!(names(frame), ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
+    assert_eq!(names(frame), ["Dashboard", "Todos", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
     let hrefs: Vec<&str> = frame["links"].as_array().unwrap().iter().map(|l| l["href"].as_str().unwrap()).collect();
-    assert_eq!(hrefs, ["/dashboard", "/projects/my%20app/features", "/projects/my%20app/orchestrations", "/projects/my%20app/queue", "/projects/my%20app/reviews", "/settings"]);
+    assert_eq!(hrefs, ["/dashboard", "/todos", "/projects/my%20app/features", "/projects/my%20app/orchestrations", "/projects/my%20app/queue", "/projects/my%20app/reviews", "/settings"]);
     assert_eq!(current(frame), ["Reviews"], "the place comes from the address: {out}");
 }
 

@@ -1,4 +1,4 @@
-//! The Dashboard's fourth tile counts the Todo items and still opens Add feature; the Todo Edit popup holds the
+//! The Dashboard's fourth tile counts the Todo items and still opens Add feature; the Todos page's Edit popup holds the
 //! same fields as Add; text areas take the inputs' design tokens; at phone width the tiles fit.
 
 mod web_chromium;
@@ -36,13 +36,18 @@ fn todos(count: i64) -> Value {
 }
 
 fn run(todo: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
+    run_at("/dashboard", todo, steps)
+}
+
+/// As `run`, on the page at `url` (the Todos page for an item's own buttons).
+fn run_at(url: &str, todo: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
     let mut all = vec![json!({"submit": TOKEN})];
     all.extend(steps);
-    let scenario = json!({"url": "/dashboard", "responses": [projects()], "todo": todo, "steps": all, "selectors": SELECTORS});
+    let scenario = json!({"url": url, "responses": [projects()], "todo": todo, "steps": all, "selectors": SELECTORS});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     Some(serde_json::from_slice(&output.stdout).unwrap())
@@ -91,7 +96,7 @@ fn pressing_the_tile_opens_the_add_feature_popup() {
 }
 
 #[test]
-fn the_count_follows_an_add_and_a_delete_without_a_reload() {
+fn the_count_follows_an_add_and_the_todos_page_a_delete_without_a_reload() {
     let steps = vec![
         json!({"click": "[data-dashboard-add]"}),
         json!({"set": "[data-todo-name]", "value": "idea 3"}),
@@ -102,14 +107,14 @@ fn the_count_follows_an_add_and_a_delete_without_a_reload() {
     assert_eq!(count(&out["frames"][1], SELECTORS[6]), 1, "{out}");
     assert_eq!(count(last(&out), SELECTORS[2]), 1, "one more after the add: {out}");
     let deleted = json!({"status": 200, "json": {"deleted": 2}});
-    let Some(out) = run(vec![todos(2), deleted, todos(1)], vec![json!({"click": "[data-todo-delete]"}), json!({"click": "[data-confirm]"})]) else { return };
-    assert_eq!(count(&out["frames"][1], SELECTORS[6]), 1, "{out}");
-    assert_eq!(count(last(&out), SELECTORS[3]), 1, "one fewer after the delete: {out}");
+    let Some(out) = run_at("/todos", vec![todos(2), deleted, todos(1)], vec![json!({"click": "[data-todo-delete]"}), json!({"click": "[data-confirm]"})]) else { return };
+    assert_eq!(count(&out["frames"][1], SELECTORS[5]), 2, "{out}");
+    assert_eq!(count(last(&out), SELECTORS[5]), 1, "one fewer after the delete: {out}");
 }
 
 #[test]
 fn the_edit_form_is_the_feature_editor_card_with_its_actions_under_the_fields() {
-    let Some(out) = run(vec![todos(1)], vec![json!({"click": "[data-todo-edit]"})]) else { return };
+    let Some(out) = run_at("/todos", vec![todos(1)], vec![json!({"click": "[data-todo-edit]"})]) else { return };
     let frame = last(&out);
     assert_eq!(count(frame, SELECTORS[8]), 1, "Name: {out}");
     assert_eq!(count(frame, SELECTORS[9]), 1, "Description, full width: {out}");

@@ -1612,16 +1612,13 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
   const [pins, setPins] = useState(readPins);
   const [reads, setReads] = useState(0);
   const todo = useTodo(token, onSignedOut, reads);
-  // The open popup: { item } (null for Add feature, a Todo item for its move), or null when none is.
+  // The open Add feature popup ({ item: null }), or null when none is.
   const [adding, setAdding] = useState(null);
-  // The Todo item whose Draft with orq popup is open, or null.
-  const [drafting, setDrafting] = useState(null);
   const [notice, setNotice] = useState("");
-  const reread = () => setReads((n) => n + 1);
   const finished = (text) => {
     setAdding(null);
     setNotice(text);
-    reread();
+    setReads((n) => n + 1);
   };
   const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
   const toggle = (id) => {
@@ -1642,9 +1639,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
       </div>
       {notice !== "" ? <p role="status" className="run-action-note" data-dashboard-notice>{notice}</p> : null}
       {machine === null ? null : <MachineRuns machine={machine} />}
-      <TodoList todo={todo} token={token} onSignedOut={onSignedOut} onChanged={reread} onMove={(item) => { setNotice(""); setAdding({ item }); }} onDraft={(item) => { setNotice(""); setDrafting(item); }} />
       {projects.length === 0 ? <p>No projects found.</p> : null}
-      {drafting !== null ? <DraftWithOrqDialog projects={projects} item={drafting} token={token} onSignedOut={onSignedOut} onClose={() => setDrafting(null)} /> : null}
       {adding !== null ? <AddFeatureDialog projects={projects} item={adding.item} todoActions={todo !== null && typeof todo === "object" && todo.actions} token={token} onSignedOut={onSignedOut} onClose={() => setAdding(null)} onFinished={finished} /> : null}
       {pinned.length > 0 ? (
         <>
@@ -1658,6 +1653,32 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
           <ul className="projects projects-rest">{rest.map(card)}</ul>
         </>
       ) : null}
+    </>
+  );
+}
+
+// The Todo list's own page: newest first, with each item's Move to project, Draft with orq, Edit and Delete.
+// The projects are read because the move and draft popups offer them. Refresh reads the list again too.
+function TodosPage({ projects, reloads, token, onSignedOut }) {
+  const [reads, setReads] = useState(0);
+  const todo = useTodo(token, onSignedOut, reloads + ":" + reads);
+  // The open Move to project popup ({ item }), or null when none is.
+  const [adding, setAdding] = useState(null);
+  // The Todo item whose Draft with orq popup is open, or null.
+  const [drafting, setDrafting] = useState(null);
+  const [notice, setNotice] = useState("");
+  const reread = () => setReads((n) => n + 1);
+  const finished = (text) => {
+    setAdding(null);
+    setNotice(text);
+    reread();
+  };
+  return (
+    <>
+      {notice !== "" ? <p role="status" className="run-action-note" data-dashboard-notice>{notice}</p> : null}
+      <TodoList todo={todo} token={token} onSignedOut={onSignedOut} onChanged={reread} onMove={(item) => { setNotice(""); setAdding({ item }); }} onDraft={(item) => { setNotice(""); setDrafting(item); }} />
+      {drafting !== null ? <DraftWithOrqDialog projects={projects} item={drafting} token={token} onSignedOut={onSignedOut} onClose={() => setDrafting(null)} /> : null}
+      {adding !== null ? <AddFeatureDialog projects={projects} item={adding.item} todoActions={todo !== null && typeof todo === "object" && todo.actions} token={token} onSignedOut={onSignedOut} onClose={() => setAdding(null)} onFinished={finished} /> : null}
     </>
   );
 }
@@ -7597,6 +7618,11 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
       <>
         <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects, machine }) => <Dashboard projects={projects} machine={machine} token={token} onSignedOut={onSignedOut} />} onSignedOut={onSignedOut} />
       </>
+    );
+  }
+  if (hash === "/todos") {
+    return (
+      <Loaded key={API_PROJECTS} reloads={reloads} header={() => <PageHeader title="Todos" subtitle="Ideas waiting for a project" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects }) => <TodosPage projects={projects} reloads={reloads} token={token} onSignedOut={onSignedOut} />} onSignedOut={onSignedOut} />
     );
   }
   if (hash === "/features") {

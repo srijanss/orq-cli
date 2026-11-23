@@ -93,13 +93,13 @@ fn past_five_sections_the_bar_shows_five_tabs_and_a_handle_and_no_more_tab() {
 }
 
 #[test]
-fn with_a_project_the_bar_has_five_tabs_and_settings_is_behind_the_handle() {
+fn with_a_project_the_bar_has_five_tabs_and_reviews_and_settings_are_behind_the_handle() {
     let Some(out) = shell(json!({"path": "/projects/demo/features", "projectId": "demo", "phone": true, "probe": [TABS, HANDLE, TILES]})) else { return };
     let frame = &out["frames"][0];
-    assert_eq!(texts(frame, TABS), ["Dashboard", "Features", "Orchestrations", "Queue", "Reviews"], "{out}");
-    assert_eq!(probed(frame, TABS)[1]["current"], "page", "Features is the current tab: {out}");
+    assert_eq!(texts(frame, TABS), ["Dashboard", "Todos", "Features", "Orchestrations", "Queue"], "{out}");
+    assert_eq!(probed(frame, TABS)[2]["current"], "page", "Features is the current tab: {out}");
     assert!(probed(frame, TABS).iter().all(|item| item["icon"].is_string() && item["iconSize"] == "28"), "every tab has its icon: {out}");
-    assert_eq!(texts(frame, TILES), ["Settings"], "{out}");
+    assert_eq!(texts(frame, TILES), ["Reviews", "Settings"], "{out}");
     assert_eq!(handle(frame)["label"], "Show all sections", "{out}");
 }
 
@@ -385,15 +385,18 @@ fn opened_on_a_section_in_the_extra_rows_it_is_marked_and_focused_there() {
 
 #[test]
 fn tab_stays_within_the_bar_while_open() {
-    // Open on Features: focus is on Settings, the one extra link and the bar's last stop; Tab wraps to the handle
-    // at the bar's top, Shift+Tab comes back, and Shift+Tab again goes up to the tab row's last tab.
+    // Open on Features: focus is on Reviews, the first extra link; Tab goes to Settings, the bar's last stop, and
+    // Tab again wraps to the handle at the bar's top. Shift+Tab comes back through the extra links and then goes up
+    // to the tab row's last tab.
     let back = json!({"press": "Tab", "shift": true});
-    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"press": "Tab"}, back, back])) else { return };
+    let Some(out) = phone_shell(json!([{"click": HANDLE}, {"press": "Tab"}, {"press": "Tab"}, back, back, back])) else { return };
     let focus: Vec<Value> = out["frames"].as_array().unwrap()[1..].iter().map(|frame| frame["active"].clone()).collect();
-    assert_eq!(focus[0], json!({"text": "Settings", "handle": false, "inDrawer": true}), "{out}");
-    assert_eq!(focus[1], json!({"text": "", "handle": true, "inDrawer": false}), "wraps to the handle: {out}");
-    assert_eq!(focus[2], json!({"text": "Settings", "handle": false, "inDrawer": true}), "and back: {out}");
-    assert_eq!(focus[3], json!({"text": "Reviews", "handle": false, "inDrawer": false}), "the tab row comes before the extra rows: {out}");
+    assert_eq!(focus[0], json!({"text": "Reviews", "handle": false, "inDrawer": true}), "{out}");
+    assert_eq!(focus[1], json!({"text": "Settings", "handle": false, "inDrawer": true}), "{out}");
+    assert_eq!(focus[2], json!({"text": "", "handle": true, "inDrawer": false}), "wraps to the handle: {out}");
+    assert_eq!(focus[3], json!({"text": "Settings", "handle": false, "inDrawer": true}), "and back: {out}");
+    assert_eq!(focus[4], json!({"text": "Reviews", "handle": false, "inDrawer": true}), "{out}");
+    assert_eq!(focus[5], json!({"text": "Queue", "handle": false, "inDrawer": false}), "the tab row comes before the extra rows: {out}");
 }
 
 #[test]
