@@ -153,6 +153,9 @@ fn database_from_before_pins_were_removed(s: &Sandbox, pins: &[&str]) -> rusqlit
          ALTER TABLE project_settings DROP COLUMN max_active_runs; ALTER TABLE project_settings DROP COLUMN min_free_disk_gb; \
          ALTER TABLE project_settings DROP COLUMN queue_hours; ALTER TABLE project_settings DROP COLUMN queue_stop_on_failure; ALTER TABLE project_settings DROP COLUMN queue_wait_for_review; \
          ALTER TABLE project_settings DROP COLUMN pull_target_before_runs; ALTER TABLE project_settings DROP COLUMN after_merge; \
+         ALTER TABLE project_settings DROP COLUMN design_preparer_harness; ALTER TABLE project_settings DROP COLUMN design_preparer_model; ALTER TABLE project_settings DROP COLUMN design_preparer_effort; \
+         ALTER TABLE project_settings DROP COLUMN design_reviewer_harness; ALTER TABLE project_settings DROP COLUMN design_reviewer_model; ALTER TABLE project_settings DROP COLUMN design_reviewer_effort; \
+         ALTER TABLE project_settings DROP COLUMN design_verifier_harness; ALTER TABLE project_settings DROP COLUMN design_verifier_model; ALTER TABLE project_settings DROP COLUMN design_verifier_effort; \
          ALTER TABLE run_queue RENAME TO run_queue_old; ALTER TABLE run_queue_paused RENAME TO run_queue_paused_old; \
          ALTER TABLE todos RENAME TO todos_old; ALTER TABLE queue_wishes RENAME TO queue_wishes_old; \
          ALTER TABLE push_subscriptions RENAME TO push_subscriptions_old; ALTER TABLE push_kinds RENAME TO push_kinds_old; \

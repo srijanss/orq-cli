@@ -125,7 +125,8 @@ fn listing_reads_an_older_database_as_all_standard_without_upgrading_it() {
     let db = s.roots.database();
     let version = || -> u32 { rusqlite::Connection::open(&db).unwrap().pragma_query_value(None, "user_version", |row| row.get(0)).unwrap() };
     let tables = || -> i64 { rusqlite::Connection::open(&db).unwrap().query_row("SELECT count(*) FROM sqlite_master WHERE name = 'feature_kinds'", [], |row| row.get(0)).unwrap() };
-    let before_kinds = orq_core::store::Store::LATEST_VERSION - 1;
+    // Schema 16 added feature_kinds.
+    let before_kinds = 15;
     let conn = rusqlite::Connection::open(&db).unwrap();
     conn.execute_batch("ALTER TABLE feature_kinds RENAME TO feature_kinds_old;").unwrap();
     conn.pragma_update(None, "user_version", before_kinds).unwrap();
