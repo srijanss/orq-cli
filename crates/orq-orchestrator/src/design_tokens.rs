@@ -904,6 +904,11 @@ impl DesignTokens {
         self.resolve_at(name, root_px, 0)
     }
 
+    /// Whether the package defines the token `name` (`--name`), by that exact name.
+    pub fn defines(&self, name: &str) -> bool {
+        self.values.contains_key(name)
+    }
+
     /// Every token's value, normalised with `root_px`.
     fn all(&self, root_px: f64) -> Vec<TokenValue> {
         self.values

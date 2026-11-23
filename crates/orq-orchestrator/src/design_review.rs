@@ -286,7 +286,8 @@ struct ReviewContext {
 struct PackageRules {
     /// Each document's name and text.
     documents: Vec<(&'static str, String)>,
-    tokens: Vec<String>,
+    /// Each token file's tokens, parsed as the token check parses them.
+    tokens: Vec<crate::design_tokens::DesignTokens>,
 }
 
 const RULE_DOCUMENTS: [&str; 3] = ["DESIGN.md", "UX.md", "RESPONSIVE.md"];
@@ -306,10 +307,12 @@ impl PackageRules {
                     rules.documents.push((name, collapsed(&text)));
                 }
             }
-            for name in TOKEN_FILES {
-                if let Ok(text) = std::fs::read_to_string(folder.join(name)) {
-                    rules.tokens.push(text);
-                }
+            if let Ok(text) = std::fs::read_to_string(folder.join(TOKEN_FILES[0])) {
+                rules.tokens.push(crate::design_tokens::parse_tokens_css(&text));
+            }
+            // A tokens.json that does not parse defines nothing.
+            if let Ok(text) = std::fs::read_to_string(folder.join(TOKEN_FILES[1])) {
+                rules.tokens.extend(crate::design_tokens::parse_tokens_json(&text));
             }
         }
         rules
@@ -326,13 +329,10 @@ impl PackageRules {
                 .any(|(_, text)| text.contains(&quote))
     }
 
-    /// Whether `token` is a token a token file defines, written with or without its `--`.
+    /// Whether `token` is a token a token file defines by that exact name, written with or without its `--`.
     fn defines(&self, token: &str) -> bool {
         let name = token.trim().trim_start_matches("--");
-        !name.is_empty()
-            && self.tokens.iter().any(|text| {
-                text.contains(&format!("--{name}")) || text.contains(&format!("\"{name}\""))
-            })
+        !name.is_empty() && self.tokens.iter().any(|tokens| tokens.defines(&format!("--{name}")))
     }
 }
 

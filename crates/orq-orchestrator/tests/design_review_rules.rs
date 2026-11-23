@@ -727,3 +727,34 @@ fn a_rule_issue_quoting_a_package_document_or_naming_a_package_token_stands() {
     assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
     assert_eq!(f.calls("reviewer"), 1);
 }
+
+/// A rule issue naming `token` against a package whose tokens file `file` holds `text`.
+fn token_issue_against(file: &str, text: &str, token: &str) -> Fixture {
+    let f = Fixture::new();
+    let package = f.repo.root().join("designs").join(FEATURE);
+    fs::write(package.join(file), text).unwrap();
+    let mut issue = issue("header-token", "rule", "major");
+    issue.as_object_mut().unwrap().remove("quote");
+    issue["token"] = json!(token);
+    f.answer("reviewer", &answer("changes_required", vec![issue]));
+    f
+}
+
+#[test]
+fn a_rule_issue_stands_only_on_a_token_the_package_defines_by_that_exact_name() {
+    // A token is defined: a prefix of one, a comment or a var() reference is not a definition.
+    for (case, text) in [
+        ("a prefix of a defined token", ":root { --header-height: 64px; }\n"),
+        ("named in a comment", "/* --header: 64px */\n:root { --gap: 8px; }\n"),
+        ("only referenced", ":root { --gap: var(--header); }\n"),
+    ] {
+        let f = token_issue_against("tokens.css", text, "--header");
+        assert_eq!(f.review(1), DesignVerdict::Blocked, "{case}");
+        assert_eq!(f.calls("reviewer"), 2, "{case}: one retry");
+    }
+
+    // A nested tokens.json group defines its joined name.
+    let f = token_issue_against("tokens.json", r#"{"font": {"title": "32px"}}"#, "--font-title");
+    assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
+    assert_eq!(f.calls("reviewer"), 1);
+}
