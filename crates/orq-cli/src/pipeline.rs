@@ -474,13 +474,13 @@ fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartEr
         if machine.max_active.is_some() {
             let active = store.active_machine_runs()?;
             if let Some(reason) = orq_orchestrator::machine_limit_refusal(machine.max_active, &active) {
-                return Err(run_limit_refused(options, store, reason, RunLimit::Machine));
+                return Err(run_limit_refused(options.run_id, store, reason, RunLimit::Machine));
             }
         }
         if options.max_active_runs.is_some() {
             let active = store.active_project_runs(&project_id(options.project))?;
             if let Some(reason) = orq_orchestrator::limit_refusal(name, options.max_active_runs, &active) {
-                return Err(run_limit_refused(options, store, reason, RunLimit::Project));
+                return Err(run_limit_refused(options.run_id, store, reason, RunLimit::Project));
             }
         }
     }
@@ -488,15 +488,34 @@ fn project_limits(options: &Options<'_>, store: &RunStore) -> Result<(), StartEr
 }
 
 /// The refusal of a start for the run `limit`, recorded under the run's id when it was launched
-/// with one (a detached runner), so whoever launched it can tell the refusal from a failure.
-fn run_limit_refused(options: &Options<'_>, store: &RunStore, reason: String, limit: RunLimit) -> StartError {
-    if let Some(run_id) = options.run_id {
+/// with one (`run_id`, a detached runner), so whoever launched it can tell the refusal from a failure.
+fn run_limit_refused(run_id: Option<&str>, store: &RunStore, reason: String, limit: RunLimit) -> StartError {
+    if let Some(run_id) = run_id {
         let refusal = orq_orchestrator::LimitRefusal { reason: reason.clone(), limit };
         if let Err(err) = orq_orchestrator::record_limit_refusal(store, run_id, &refusal) {
             eprintln!("orq: cannot record the refusal of {run_id}: {err:?}");
         }
     }
     StartError::Limit(reason)
+}
+
+/// The refusal of project `project`'s start when the store's locked admission, under `limits`, turned
+/// it down for a run limit that a run started since its own checks reached, recorded as
+/// [`run_limit_refused`] does; `None` for any other error.
+fn admission_limit_refusal(run_id: Option<&str>, project: &str, store: &RunStore, err: &StoreError, limits: orq_orchestrator::RunLimits) -> Option<StartError> {
+    let (reason, limit) = match err {
+        StoreError::MachineAtLimit { active } => {
+            let reason = orq_orchestrator::machine_limit_refusal(limits.machine, active).unwrap_or_else(|| "this machine is at its limit of active runs".to_string());
+            (reason, RunLimit::Machine)
+        }
+        StoreError::ProjectAtLimit { active } => {
+            let max_active = limits.project.and_then(|max| u8::try_from(max).ok());
+            let reason = orq_orchestrator::limit_refusal(project, max_active, active).unwrap_or_else(|| format!("{project} is at its limit of active runs"));
+            (reason, RunLimit::Project)
+        }
+        _ => return None,
+    };
+    Some(run_limit_refused(run_id, store, reason, limit))
 }
 
 /// The worktree recorded by the run a resume of `options` would continue, read without changing
@@ -600,17 +619,7 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
     match store.start_group_run_within(&record, &members, limits) {
         Ok(()) => {}
         Err(StoreError::FeatureBusy { active_run_id }) => return Err(StartError::Busy(active_run_id)),
-        Err(StoreError::MachineAtLimit { active }) => {
-            let reason = orq_orchestrator::machine_limit_refusal(limits.machine, &active)
-                .unwrap_or_else(|| "this machine is at its limit of active runs".to_string());
-            return Err(run_limit_refused(options, &store, reason, RunLimit::Machine));
-        }
-        Err(StoreError::ProjectAtLimit { active }) => {
-            let reason = orq_orchestrator::limit_refusal(&options.project.name, max_active, &active)
-                .unwrap_or_else(|| format!("{} is at its limit of active runs", options.project.name));
-            return Err(run_limit_refused(options, &store, reason, RunLimit::Project));
-        }
-        Err(err) => return Err(other(format!("{err:?}"))),
+        Err(err) => return Err(admission_limit_refusal(options.run_id, &options.project.name, &store, &err, limits).unwrap_or_else(|| other(format!("{err:?}")))),
     }
     orq_orchestrator::end_children_with_this_process();
     // Every run names its owner process (detached or not), so a killed one can be told from a live
@@ -3275,6 +3284,39 @@ mod tests {
         assert!(ahead_count(&output(128, "")).unwrap_err().contains("bad object"));
         assert!(ahead_count(&output(0, "")).is_err());
         assert!(ahead_count(&output(0, "many\n")).is_err());
+    }
+
+    /// A runner the store's locked admission turns down for a run limit, once its own checks passed,
+    /// is refused for it and records the refusal under its run id; any other error is not a refusal.
+    #[test]
+    fn a_locked_admission_at_a_run_limit_is_refused_and_recorded_for_the_launched_run() {
+        use orq_orchestrator::{recorded_limit_refusal, RunLimit, RunLimits, RunStore, StoreError};
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-locked-admission-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = RunStore::new(&dir);
+        let limits = RunLimits { project: Some(1), machine: Some(1) };
+        let run_a = || vec![("run-a".to_string(), "COM-02".to_string())];
+
+        let project = StoreError::ProjectAtLimit { active: run_a() };
+        match super::admission_limit_refusal(Some("run-project"), "alpha", &store, &project, limits) {
+            Some(super::StartError::Limit(reason)) => assert!(reason.starts_with("alpha already has 1 active run (run-a, COM-02)"), "{reason}"),
+            other => panic!("not a limit refusal: {}", other.map_or("none", |_| "another refusal")),
+        }
+        assert_eq!(recorded_limit_refusal(&store, "run-project").map(|r| r.limit), Some(RunLimit::Project));
+
+        let machine = StoreError::MachineAtLimit { active: vec![("beta-0123abcd".to_string(), "run-b".to_string())] };
+        match super::admission_limit_refusal(Some("run-machine"), "alpha", &store, &machine, limits) {
+            Some(super::StartError::Limit(reason)) => assert!(reason.starts_with("this machine already has 1 active run (beta run-b)"), "{reason}"),
+            other => panic!("not a limit refusal: {}", other.map_or("none", |_| "another refusal")),
+        }
+        assert_eq!(recorded_limit_refusal(&store, "run-machine").map(|r| r.limit), Some(RunLimit::Machine));
+
+        // Without a run id (a start in the foreground) nothing is recorded; a busy feature is no limit.
+        assert!(matches!(super::admission_limit_refusal(None, "alpha", &store, &StoreError::ProjectAtLimit { active: run_a() }, limits), Some(super::StartError::Limit(_))));
+        let busy = StoreError::FeatureBusy { active_run_id: "run-a".to_string() };
+        assert!(super::admission_limit_refusal(Some("run-busy"), "alpha", &store, &busy, limits).is_none());
+        assert_eq!(recorded_limit_refusal(&store, "run-busy"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
