@@ -23,6 +23,9 @@ const PACKAGE_DIR: &str = "package";
 const PREPARED_DIR: &str = "prepared";
 const MANIFEST_FILE: &str = "manifest.json";
 const DESIGN_DOC: &str = "DESIGN.md";
+const RESPONSIVE_DOC: &str = "RESPONSIVE.md";
+/// The package's own design tokens, which stand in for a prepared token mapping.
+const TOKEN_FILES: [&str; 2] = ["tokens.css", "tokens.json"];
 const PREPARED_FILE: &str = "prepared.json";
 const PREPARED_REPORT: &str = "prepared.md";
 /// The implementer's read-only copy of the prepared files, in the worktree.
@@ -316,6 +319,13 @@ pub fn prepare_design(
             )),
         };
     }
+    let missing = missing_documents(manifest, &files);
+    if !missing.is_empty() {
+        return DesignPrepareOutcome::Failed(format!(
+            "the design preparer left the package without {}: nothing it prepared is used",
+            missing.join(", ")
+        ));
+    }
     let result = PreparedDesign {
         package_sha256: manifest.package_sha256.clone(),
         files: files.iter().map(|(file, _)| file.clone()).collect(),
@@ -389,6 +399,27 @@ fn files_needed(feature: &str, answer: &PrepareAnswer) -> Result<DesignFilesNeed
         });
     }
     Ok(DesignFilesNeeded { feature: feature.to_string(), files })
+}
+
+/// What neither the package nor the prepared files supply: DESIGN.md, RESPONSIVE.md, and a token
+/// mapping (the package's tokens.css or tokens.json, or a prepared `tokens*` document).
+fn missing_documents(manifest: &DesignManifest, files: &[(PreparedFile, Vec<u8>)]) -> Vec<&'static str> {
+    let in_package = |name: &str| manifest.files.iter().any(|file| file.path == name);
+    let prepared = |name: &str| files.iter().any(|(file, _)| file.path == name);
+    let mut missing = Vec::new();
+    for doc in [DESIGN_DOC, RESPONSIVE_DOC] {
+        if !in_package(doc) && !prepared(doc) {
+            missing.push(doc);
+        }
+    }
+    let tokens = TOKEN_FILES.iter().any(|name| in_package(name))
+        || files.iter().any(|(file, _)| {
+            file.path.rsplit('/').next().is_some_and(|name| name.starts_with("tokens"))
+        });
+    if !tokens {
+        missing.push("a token mapping");
+    }
+    missing
 }
 
 /// Removes the file or folder at `path`, never following a symlink; nothing there is fine.

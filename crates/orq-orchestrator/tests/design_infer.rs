@@ -473,6 +473,35 @@ fn the_agent_preparer_runs_a_read_only_harness_and_orq_writes_the_files_it_answe
     }
 }
 
+#[test]
+fn a_preparation_that_leaves_a_document_missing_fails_and_one_the_package_already_has_is_not_needed() {
+    let f = Fixture::new("incomplete");
+    let manifest = f.freeze();
+    let only_design = |request: &PrepareRequest| fs::write(request.prepared.join("DESIGN.md"), "# Checkout\n").unwrap();
+    let cases: [(&str, Fake, &[&str]); 3] = [
+        ("nothing", Fake::new(|_| {}, clean_answer()), &["DESIGN.md", "RESPONSIVE.md", "token mapping"]),
+        ("unrelated", Fake::new(|r| fs::write(r.prepared.join("notes.txt"), "hi\n").unwrap(), clean_answer()), &["DESIGN.md"]),
+        ("partial", Fake::new(only_design, clean_answer()), &["RESPONSIVE.md", "token mapping"]),
+    ];
+    for (tag, mut preparer, missing) in cases {
+        let why = failed(f.prepare(&manifest, &mut preparer));
+        for doc in missing {
+            assert!(why.contains(doc), "{tag}: {why}");
+        }
+        assert!(!f.logs.path().join("design/prepared.json").exists(), "{tag}");
+    }
+
+    // A package with its own documents and tokens needs nothing prepared.
+    f.put("DESIGN.md", "# Checkout\n");
+    f.put("RESPONSIVE.md", "Stack.\n");
+    f.put("tokens.css", ":root {}\n");
+    let manifest = f.freeze();
+    match f.prepare(&manifest, &mut Fake::new(|_| {}, clean_answer())) {
+        DesignPrepareOutcome::Prepared(prepared) => assert!(prepared.files.is_empty()),
+        other => panic!("expected the package prepared, got {other:?}"),
+    }
+}
+
 fn failed(outcome: DesignPrepareOutcome) -> String {
     match outcome {
         DesignPrepareOutcome::Failed(why) => why,
