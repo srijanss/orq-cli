@@ -10,6 +10,7 @@ mod cleanup;
 mod conflict_fix;
 mod design_capture;
 mod design_package;
+mod design_review;
 mod discard;
 mod fix_features;
 mod format_revert;
@@ -79,6 +80,10 @@ pub use design_package::{
     resume_design_package, start_design_package, AssignedViewport, DesignFilesNeeded,
     DesignManifest, DesignPackageOutcome, DesignPackageRun, ManifestFile, MissingPieces,
     NeededFile, PackageLimits,
+};
+pub use design_review::{
+    review_design, CheckStatus, DesignAgent, DesignReview, DesignReviewOutcome, DesignReviewRun,
+    DesignVerdict, IssueStatus, ReviewCheck, ReviewIssue, Severity,
 };
 pub use discard::{
     discard_preview, discard_run, discard_run_before_remove, discard_run_then,

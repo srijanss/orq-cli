@@ -19,7 +19,7 @@ mod worktree;
 use orq_git::ResolveError;
 use orq_tui::{PopupModel, PopupView};
 
-const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending [--reopen] | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq feature kind --repo <path> --id <name> frontend|standard | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>]";
+const USAGE: &str = "usage: orq --version | orq project inspect [--cwd <path>] | orq features --repo <path> | orq features archive --repo <path> [--keep <N>] [--dry-run] | orq feature set-status --repo <path> --id <name> --status pending [--reopen] | orq feature add --repo <path> --name <name> [--description <text>] [--depends-on <name>]... [--parallelizable yes|no] [--test-file <path>] [--target-file <path>]... | orq feature edit --repo <path> --name <name> [same field flags as add] | orq feature kind --repo <path> --id <name> frontend|standard | orq models --repo <path> | orq runs --repo <path> [--json] | orq review build <run-id> --repo <path> --feature <id> --base <rev> [--head <rev>] [--review-input <file>] | orq review show <run-id> [--json] | orq review backfill | orq storage status|list|prune [--dry-run]|maintain | orq snapshots list [--project <path>] | orq snapshots diff <snapshot> [--repo <path>] | orq snapshots restore <snapshot> [--repo <path>] [--yes] | orq queue list [--json]|add <feature>...|remove <feature>|pause|resume --repo <path> | orq worktree list|remove --repo <path> [<branch>] [--yes] [--force] | orq push --repo <path> [--branch <target>] [--yes] |orq run merge <run-id> --set-aside [--no-ci-check] [--detach [--in-herdr]] [--repo <path>] | orq run --repo <path> (--feature <id> | --group <id,id,...>) --remote <name> --target <branch> [--delivery review|merge-local] [--detach [--in-herdr] | --check] | orq serve [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] [--upgrade-now] | orq serve restart (--when-idle | --now [--force]) | orq serve install [--repo <path>] [--listen <addr:port>] [--passkey-host <name> [--no-loopback-token]] | orq serve status | orq serve uninstall | orq remote passkey list | orq remote passkey remove <label> | orq ui [--snapshot] | orq doctor herdr [--cwd <path>] | orq design review --repo <path> --feature <name>";
 
 /// Width and height of the frame printed by `orq ui --snapshot`.
 const SNAPSHOT_SIZE: (u16, u16) = (100, 3);
@@ -64,6 +64,7 @@ fn main() -> ExitCode {
         (Some("run"), _) => run(&args[1..]),
         (Some("ui"), _) => ui(&args[1..]),
         (Some("doctor"), Some("herdr")) => doctor_herdr(&args[2..]),
+        (Some("design"), Some("review")) => design_review(&args[2..]),
         _ => usage_error(),
     }
 }
@@ -1567,6 +1568,11 @@ fn read_capped(reader: impl std::io::Read, cap: u64) -> Option<Vec<u8>> {
 /// process's end; whatever is still running then is killed. Empty when it
 /// cannot be listed, in which case the picker falls back to free text.
 fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
+    pi_model_listing(program, timeout).map(|listing| parse_pi_models(&listing)).unwrap_or_default()
+}
+
+/// The output of `pi --list-models`, as [`list_pi_models`] runs it; `None` when it cannot be listed.
+fn pi_model_listing(program: &Path, timeout: std::time::Duration) -> Option<String> {
     const CAP: u64 = 256 * 1024;
     let Ok(mut child) = std::process::Command::new(program)
         .arg("--list-models")
@@ -1575,11 +1581,9 @@ fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
         .stderr(std::process::Stdio::null())
         .spawn()
     else {
-        return Vec::new();
+        return None;
     };
-    let Some(stdout) = child.stdout.take() else {
-        return Vec::new();
-    };
+    let stdout = child.stdout.take()?;
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = sender.send(read_capped(stdout, CAP));
@@ -1596,18 +1600,101 @@ fn list_pi_models(program: &Path, timeout: std::time::Duration) -> Vec<String> {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Vec::new();
+                return None;
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
-    let Some(output) = output.flatten() else {
-        return Vec::new();
-    };
+    let output = output.flatten()?;
     if !status.success() || output.len() as u64 > CAP {
-        return Vec::new();
+        return None;
     }
-    parse_pi_models(&String::from_utf8_lossy(&output))
+    Some(String::from_utf8_lossy(&output).into_owned())
+}
+
+/// `orq design review --repo <path> --feature <name>`: reviews the page as it is with the project's
+/// design reviewer, changing nothing: no implementer, commit or push. Prints the verdict and the
+/// report's path; exits 0 on pass, 1 on changes required, 2 when blocked, invalid or refused.
+fn design_review(args: &[OsString]) -> ExitCode {
+    const AGENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+    let refuse = |message: String| {
+        eprintln!("orq: {}", printable(&message));
+        ExitCode::from(2)
+    };
+    let (repo, feature) = match args {
+        [r, repo, f, feature] if r == "--repo" && f == "--feature" => match feature.to_str() {
+            Some(feature) => (PathBuf::from(repo), feature.to_string()),
+            None => return usage_error(),
+        },
+        _ => return usage_error(),
+    };
+    let project = match orq_git::resolve_project(&repo) {
+        Ok(project) => project,
+        Err(err) => return refuse(format!("cannot resolve project: {err:?}")),
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let design = match orq_orchestrator::load_run_settings(&project.root, &env) {
+        Ok(settings) => match settings.design {
+            Some(design) => design,
+            None => return refuse("this project has no design settings: add a [design] table to .orq/run.toml".to_string()),
+        },
+        Err(err) => return refuse(err.to_string()),
+    };
+    let settings = match project_settings(&project) {
+        Ok(settings) => settings,
+        Err(err) => return refuse(err),
+    };
+    let uses_pi = [&settings.design_reviewer, &settings.design_verifier, &settings.design_preparer]
+        .iter()
+        .any(|agent| agent.as_ref().is_some_and(|agent| agent.harness == "pi"));
+    let listing = if uses_pi {
+        find_program("pi").and_then(|program| pi_model_listing(&program, std::time::Duration::from_secs(5)))
+    } else {
+        None
+    };
+    let agents = match orq_core::project_settings::design_agents(&settings, orq_agents::effort_levels, listing.as_deref()) {
+        Ok(agents) => agents,
+        Err(err) => return refuse(err),
+    };
+    let agent = |agent: &orq_core::project_settings::ProjectAgent| orq_orchestrator::DesignAgent {
+        program: PathBuf::from(&agent.harness),
+        harness: agent.harness.clone(),
+        model: agent.model.clone(),
+        thinking: agent.effort.clone(),
+    };
+    let (reviewer, verifier) = (agent(&agents.reviewer), agent(&agents.verifier));
+    let roots = match orq_core::storage::StorageRoots::resolve(&env) {
+        Ok(roots) => roots,
+        Err(err) => return refuse(format!("cannot locate the Orq data directory: {err}")),
+    };
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let run_id = format!("design-review-{since}-{}", std::process::id());
+    let run_logs = roots.logs().join(&run_id);
+    if let Err(err) = std::fs::create_dir_all(&run_logs) {
+        return refuse(format!("cannot create {}: {err}", run_logs.display()));
+    }
+    let main_checkout = kind_root(&project);
+    let run = orq_orchestrator::DesignReviewRun {
+        run_id: &run_id,
+        main_checkout: &main_checkout,
+        feature: &feature,
+        settings: &design,
+        run_logs: &run_logs,
+        worktree: &project.root,
+        round: 1,
+        reviewer: &reviewer,
+        verifier: &verifier,
+        skill: orq_agents::design_skill("design-review").unwrap_or_default(),
+        schema: orq_agents::DESIGN_REVIEW_SCHEMA,
+        agent_timeout: AGENT_TIMEOUT,
+    };
+    let outcome = orq_orchestrator::review_design(&run, &orq_orchestrator::capture_design);
+    match &outcome.reason {
+        Some(reason) => println!("{}: {}", outcome.verdict.as_str(), printable(reason)),
+        None => println!("{}", outcome.verdict.as_str()),
+    }
+    println!("report: {}", printable(&outcome.report.display().to_string()));
+    ExitCode::from(outcome.verdict.exit_code())
 }
 
 /// The executable for `harness`: a bare name found on PATH, never a path.

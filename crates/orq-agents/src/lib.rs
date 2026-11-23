@@ -224,6 +224,11 @@ const DESIGN_SKILL_FILES: [(&str, &str); 3] = [
     ("design-prepare", include_str!("../design_skills/design-prepare/SKILL.md")),
 ];
 
+/// The `SKILL.md` of the design skill called `name`, as orq ships it; `None` for no such skill.
+pub fn design_skill(name: &str) -> Option<&'static str> {
+    DESIGN_SKILL_FILES.iter().find(|(skill, _)| *skill == name).map(|(_, body)| *body)
+}
+
 /// The JSON schema a design review answers with, shipped next to the design-review skill.
 pub const DESIGN_REVIEW_SCHEMA: &str = include_str!("../design_skills/design-review/review.schema.json");
 
