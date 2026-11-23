@@ -273,6 +273,25 @@ fn the_image_route_serves_a_reference_and_a_capture_the_runs_records_list() {
 }
 
 #[test]
+fn a_listed_image_reached_through_a_linked_folder_is_refused() {
+    let s = setup("design-image-linked-folder");
+    two_round_run(&s, "r-1");
+    // Round 1's folder swapped for a link to a copy of it outside the run.
+    let copy = s.roots.state.join("elsewhere");
+    write(&copy.join("desktop/index.png"), PNG);
+    let round = design_dir(&s, "r-1").join("round-1");
+    write(&copy.join("capture.json"), &std::fs::read(round.join("capture.json")).unwrap());
+    std::fs::remove_dir_all(&round).unwrap();
+    std::os::unix::fs::symlink(&copy, &round).unwrap();
+
+    let (status, body) = image(&s, "r-1", "round-1/desktop/index.png");
+
+    assert_eq!(status, 404, "served through a linked folder: {body}");
+    let (status, body) = image(&s, "r-1", "round-2/desktop/index.png");
+    assert_eq!(status, 200, "a real folder still serves: {body}");
+}
+
+#[test]
 fn the_image_route_refuses_dot_dot_an_absolute_path_a_link_an_unlisted_file_another_runs_file_and_no_auth(
 ) {
     let s = setup("design-image-refused");

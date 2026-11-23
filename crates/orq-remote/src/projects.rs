@@ -519,27 +519,33 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 /// The image at `path` in run `run`'s design folder as `{content_type, data}`: every folder on the way and
-/// the file itself must be real (no link), the file an image under the cap. `None` otherwise.
+/// the file itself must be real (no link), the file an image under the cap. `None` otherwise. Each step is
+/// opened from the folder already open, never following a link, and the file is checked once open, so a
+/// link swapped in between a check and the read is refused all the same.
 fn design_image(logs_root: &Path, run: &str, path: &str) -> Result<Option<serde_json::Value>, String> {
     use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
     let Some(content_type) = design_image_type(path) else { return Ok(None) };
-    let mut at = logs_root.to_path_buf();
+    let at = |dir: &std::fs::File, entry: &str, flags: libc::c_int| -> Option<std::fs::File> {
+        let entry = std::ffi::CString::new(entry).ok()?;
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), entry.as_ptr(), flags | libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+        (fd >= 0).then(|| unsafe { std::fs::File::from_raw_fd(fd) })
+    };
+    let Ok(mut dir) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(logs_root) else { return Ok(None) };
     let mut steps: Vec<&str> = vec![run, "design"];
     steps.extend(path.split('/'));
-    let last = steps.len() - 1;
-    if logs_root.symlink_metadata().map_or(true, |meta| !meta.is_dir()) {
+    let Some((name, folders)) = steps.split_last() else { return Ok(None) };
+    for folder in folders {
+        let Some(next) = at(&dir, folder, libc::O_DIRECTORY) else { return Ok(None) };
+        dir = next;
+    }
+    let Some(file) = at(&dir, name, libc::O_NONBLOCK) else { return Ok(None) };
+    if !file.metadata().is_ok_and(|meta| meta.is_file() && meta.len() <= DESIGN_IMAGE_CAP) {
         return Ok(None);
     }
-    for (n, step) in steps.into_iter().enumerate() {
-        at.push(step);
-        let Ok(meta) = at.symlink_metadata() else { return Ok(None) };
-        let fits = if n == last { meta.is_file() && meta.len() <= DESIGN_IMAGE_CAP } else { meta.is_dir() };
-        if !fits {
-            return Ok(None);
-        }
-    }
     let mut bytes = Vec::new();
-    std::fs::File::open(&at).and_then(|file| file.take(DESIGN_IMAGE_CAP).read_to_end(&mut bytes)).map_err(|error| format!("design image {path} is unreadable: {error}"))?;
+    file.take(DESIGN_IMAGE_CAP).read_to_end(&mut bytes).map_err(|error| format!("design image {path} is unreadable: {error}"))?;
     Ok(Some(serde_json::json!({"content_type": content_type, "data": base64(&bytes)})))
 }
 
