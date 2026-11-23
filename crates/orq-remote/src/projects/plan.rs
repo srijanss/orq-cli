@@ -28,7 +28,8 @@ const PROVIDER_KEY_SUFFIX: &str = "_API_KEY";
 fn agent_env(harness: &str) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = AGENT_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect();
     if harness == "pi" {
-        env.extend(std::env::vars().filter(|(key, _)| key.ends_with(PROVIDER_KEY_SUFFIX) && !AGENT_ENV.contains(&key.as_str())));
+        // vars_os, as a variable that is not Unicode would make env::vars panic; such a key is skipped.
+        env.extend(std::env::vars_os().filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))).filter(|(key, _)| key.ends_with(PROVIDER_KEY_SUFFIX) && !AGENT_ENV.contains(&key.as_str())));
     }
     env
 }

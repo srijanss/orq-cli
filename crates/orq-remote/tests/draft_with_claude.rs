@@ -278,6 +278,21 @@ fn a_pi_plan_gets_the_provider_keys_and_nothing_else_of_the_servers_environment(
 }
 
 #[test]
+fn a_pi_plan_still_runs_when_an_unrelated_variable_is_not_unicode() {
+    use std::os::unix::ffi::OsStrExt;
+    // A name no other test sets; its value is not valid UTF-8.
+    std::env::set_var("ORQ_PLAN_TEST_BYTES", std::ffi::OsStr::from_bytes(b"\xff\xfe"));
+    let s = setup("plan-pi-bytes");
+    let alpha = git_repo(&s.scan, "alpha");
+    let pi = s.base.join("fake-pi");
+    std::fs::write(&pi, format!("#!/bin/sh\ncat '{}'\n", s.base.join("answer").display())).unwrap();
+    std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plan = draft_with(&s, json!({"harness": "pi", "model": "openai/gpt-6.1-sol"}));
+    assert_eq!(plan["state"], "completed", "{plan}");
+    assert_eq!(ledger(&alpha)[0]["status"], "draft");
+}
+
+#[test]
 fn a_harness_or_model_not_offered_is_refused() {
     let s = setup("plan-not-offered");
     git_repo(&s.scan, "alpha");
