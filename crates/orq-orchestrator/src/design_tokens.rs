@@ -9,7 +9,9 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::design_review::{DesignReview, DesignVerdict, IssueStatus, ReviewIssue, Severity};
+use crate::design_review::{
+    DesignReview, DesignVerdict, IssueBasis, IssueStatus, ReviewIssue, Severity,
+};
 
 const PACKAGE_DIR: &str = "package";
 /// Infer mode's prepared documents, frozen by the design preparer step.
@@ -109,7 +111,10 @@ impl TokenCheck {
     pub fn issues(&self) -> Vec<ReviewIssue> {
         let mut issues = self.violations();
         if self.status == TokenCheckStatus::NotAssessed && self.rules_configured > 0 {
-            let reason = self.reason.as_deref().unwrap_or("the token check did not complete");
+            let reason = self
+                .reason
+                .as_deref()
+                .unwrap_or("the token check did not complete");
             issues.push(ReviewIssue {
                 id: "tokens-not-assessed".to_string(),
                 section: "token rules".to_string(),
@@ -125,6 +130,7 @@ impl TokenCheck {
                     .to_string(),
                 selector: None,
                 confidence: Some("high".to_string()),
+                ..token_rule_issue(None)
             });
         }
         issues
@@ -143,18 +149,30 @@ impl TokenCheck {
                         section: rule.selector.clone(),
                         viewport: rule.viewport.clone(),
                         source: "tokens".to_string(),
-                        expected: format!("an element matching {} (a token rule binds it)", rule.selector),
+                        expected: format!(
+                            "an element matching {} (a token rule binds it)",
+                            rule.selector
+                        ),
                         actual: format!("{} matches nothing on the page", rule.selector),
                         evidence: vec![format!("round-{}/{TOKEN_CHECK_FILE}", self.round)],
                         severity: Severity::Major,
                         status: IssueStatus::Open,
-                        fix_direction: format!("render the element {} the design's token rules name", rule.selector),
+                        fix_direction: format!(
+                            "render the element {} the design's token rules name",
+                            rule.selector
+                        ),
                         selector: Some(rule.selector.clone()),
                         confidence: Some("high".to_string()),
+                        ..token_rule_issue(Some(&token))
                     };
                 }
                 ReviewIssue {
-                    id: format!("tokens-{}-{}-{}", rule.viewport, slug(&rule.selector), property),
+                    id: format!(
+                        "tokens-{}-{}-{}",
+                        rule.viewport,
+                        slug(&rule.selector),
+                        property
+                    ),
                     section: rule.selector.clone(),
                     viewport: rule.viewport.clone(),
                     source: "tokens".to_string(),
@@ -173,9 +191,34 @@ impl TokenCheck {
                     fix_direction: format!("set {property} of {} to var({token})", rule.selector),
                     selector: Some(rule.selector.clone()),
                     confidence: Some("high".to_string()),
+                    ..token_rule_issue(Some(&token))
                 }
             })
             .collect()
+    }
+}
+
+/// The part every token check issue shares: a `rule` issue, about styling, naming its token.
+fn token_rule_issue(token: Option<&str>) -> ReviewIssue {
+    ReviewIssue {
+        id: String::new(),
+        section: String::new(),
+        viewport: String::new(),
+        source: "tokens".to_string(),
+        expected: String::new(),
+        actual: String::new(),
+        evidence: Vec::new(),
+        severity: Severity::Major,
+        status: IssueStatus::Open,
+        fix_direction: String::new(),
+        selector: None,
+        confidence: Some("high".to_string()),
+        basis: Some(IssueBasis::Rule),
+        copy: Some(false),
+        quote: None,
+        token: token.filter(|token| !token.is_empty()).map(str::to_string),
+        reference: None,
+        downgraded_from: None,
     }
 }
 
@@ -183,7 +226,9 @@ impl TokenCheck {
 /// issue of the same id (dismissed, resolved or downgraded) is replaced, and a review that passed
 /// with a violated rule requires changes. A blocked review stays blocked.
 pub fn apply_token_issues(review: &mut DesignReview, issues: &[ReviewIssue]) {
-    review.issues.retain(|issue| !issues.iter().any(|token| token.id == issue.id));
+    review
+        .issues
+        .retain(|issue| !issues.iter().any(|token| token.id == issue.id));
     review.issues.extend(issues.iter().cloned());
     if !issues.is_empty() && review.verdict == DesignVerdict::Pass {
         review.verdict = DesignVerdict::ChangesRequired;
@@ -255,7 +300,10 @@ fn package_tokens(design_dir: &Path) -> Result<Option<DesignTokens>, String> {
 /// A tokens file's text: `None` when nothing is at `path`, an error naming the file when something
 /// is there that can't be read as a regular UTF-8 file (a symlink is not followed).
 fn read_tokens_file(path: &Path) -> Result<Option<String>, String> {
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("the tokens file");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("the tokens file");
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -264,14 +312,19 @@ fn read_tokens_file(path: &Path) -> Result<Option<String>, String> {
     if !meta.is_file() {
         return Err(format!("{name} is not a regular file"));
     }
-    std::fs::read_to_string(path).map(Some).map_err(|e| format!("{name} could not be read ({e})"))
+    std::fs::read_to_string(path)
+        .map(Some)
+        .map_err(|e| format!("{name} could not be read ({e})"))
 }
 
 /// The token rules of the frozen package's DESIGN.md and, in infer mode, of the prepared DESIGN.md
 /// and token mapping (`tokens*.md`), each rule once.
 fn design_rules(design_dir: &Path) -> Vec<TokenRule> {
     let prepared = design_dir.join(PREPARED_DIR);
-    let mut documents = vec![design_dir.join(PACKAGE_DIR).join(DESIGN_DOC), prepared.join(DESIGN_DOC)];
+    let mut documents = vec![
+        design_dir.join(PACKAGE_DIR).join(DESIGN_DOC),
+        prepared.join(DESIGN_DOC),
+    ];
     let mut mappings: Vec<_> = std::fs::read_dir(&prepared)
         .into_iter()
         .flatten()
@@ -317,7 +370,8 @@ fn unmeasured_pages(round_dir: &Path, viewports: &[(String, Vec<(String, Value)>
         .unwrap_or(Value::Null);
     let mut gaps = Vec::new();
     for page in capture["pages"].as_array().into_iter().flatten() {
-        let (Some(viewport), Some(route)) = (page["viewport"].as_str(), page["route"].as_str()) else {
+        let (Some(viewport), Some(route)) = (page["viewport"].as_str(), page["route"].as_str())
+        else {
             continue;
         };
         if page["image"].is_null() || !page["failure"].is_null() {
@@ -331,7 +385,9 @@ fn unmeasured_pages(round_dir: &Path, viewports: &[(String, Vec<(String, Value)>
         }
     }
     if viewports.is_empty() && gaps.is_empty() {
-        gaps.push(format!("the round (no {MEASUREMENTS_FILE} at any viewport)"));
+        gaps.push(format!(
+            "the round (no {MEASUREMENTS_FILE} at any viewport)"
+        ));
     }
     gaps
 }
@@ -349,7 +405,9 @@ fn compare_round(
             let matched: Vec<(&str, &Value, f64)> = routes
                 .iter()
                 .flat_map(|(route, page)| {
-                    let root = page["document"]["root_font_size"].as_f64().unwrap_or(DEFAULT_ROOT_PX);
+                    let root = page["document"]["root_font_size"]
+                        .as_f64()
+                        .unwrap_or(DEFAULT_ROOT_PX);
                     matched_styles(page, &rule.selector)
                         .into_iter()
                         .map(move |styles| (route.as_str(), styles, root))
@@ -391,7 +449,9 @@ fn compare_round(
                     .map(|(route, styles, root)| {
                         let expected = tokens
                             .resolve(&binding.token, *root)
-                            .map_or(expected.clone(), |value| for_property(&binding.property, value));
+                            .map_or(expected.clone(), |value| {
+                                for_property(&binding.property, value)
+                            });
                         let (measured, ok) = compare(&binding.property, &expected, styles);
                         (*route, measured, ok)
                     })
@@ -406,13 +466,20 @@ fn compare_round(
                     measured: shown.map(|c| c.1.clone()),
                     route: shown.map(|c| c.0.to_string()),
                     matched: matched.len(),
-                    status: if compared.iter().all(|c| c.2) { RuleStatus::Pass } else { RuleStatus::Fail },
+                    status: if compared.iter().all(|c| c.2) {
+                        RuleStatus::Pass
+                    } else {
+                        RuleStatus::Fail
+                    },
                 });
             }
         }
     }
     let mut unknown: Vec<&str> = Vec::new();
-    for result in results.iter().filter(|r| r.status == RuleStatus::UnknownToken) {
+    for result in results
+        .iter()
+        .filter(|r| r.status == RuleStatus::UnknownToken)
+    {
         let token = result.token.as_deref().unwrap_or_default();
         if !unknown.contains(&token) {
             unknown.push(token);
@@ -420,10 +487,16 @@ fn compare_round(
     }
     let mut unassessed = Vec::new();
     if !unknown.is_empty() {
-        unassessed.push(format!("the token rules name tokens that do not resolve: {}", unknown.join(", ")));
+        unassessed.push(format!(
+            "the token rules name tokens that do not resolve: {}",
+            unknown.join(", ")
+        ));
     }
     if !gaps.is_empty() {
-        unassessed.push(format!("these pages have no readable measurements: {}", gaps.join(", ")));
+        unassessed.push(format!(
+            "these pages have no readable measurements: {}",
+            gaps.join(", ")
+        ));
     }
     let partial = partly_measured(rules, viewports);
     if !partial.is_empty() {
@@ -434,7 +507,10 @@ fn compare_round(
     }
     let reason = (!unassessed.is_empty()).then(|| unassessed.join("; "));
     // A violation found stays a failure; short of one, a check with gaps is never a pass.
-    let status = if results.iter().any(|r| matches!(r.status, RuleStatus::Fail | RuleStatus::NoMatch)) {
+    let status = if results
+        .iter()
+        .any(|r| matches!(r.status, RuleStatus::Fail | RuleStatus::NoMatch))
+    {
         TokenCheckStatus::Fail
     } else if reason.is_some() {
         TokenCheckStatus::NotAssessed
@@ -453,7 +529,10 @@ fn compare_round(
 
 /// Each rule selector the capture measured only some of the matches of, per page
 /// (`li on / at desktop (50 of 51 measured)`): the elements beyond its cap were never checked.
-fn partly_measured(rules: &[TokenRule], viewports: &[(String, Vec<(String, Value)>)]) -> Vec<String> {
+fn partly_measured(
+    rules: &[TokenRule],
+    viewports: &[(String, Vec<(String, Value)>)],
+) -> Vec<String> {
     let mut partial = Vec::new();
     for (viewport, routes) in viewports {
         for (route, page) in routes {
@@ -469,7 +548,9 @@ fn partly_measured(rules: &[TokenRule], viewports: &[(String, Vec<(String, Value
                 };
                 let measured = page["selectors"][selector].as_array().map_or(0, Vec::len) as u64;
                 if count > measured {
-                    partial.push(format!("{selector} on {route} at {viewport} ({measured} of {count} measured)"));
+                    partial.push(format!(
+                        "{selector} on {route} at {viewport} ({measured} of {count} measured)"
+                    ));
                 }
             }
         }
@@ -479,7 +560,10 @@ fn partly_measured(rules: &[TokenRule], viewports: &[(String, Vec<(String, Value
 
 /// The colours and font sizes measured on landmarks that equal no token, once per landmark tag,
 /// property and value at each viewport. A transparent background is no colour.
-fn off_token_values(tokens: &DesignTokens, viewports: &[(String, Vec<(String, Value)>)]) -> Vec<TokenWarning> {
+fn off_token_values(
+    tokens: &DesignTokens,
+    viewports: &[(String, Vec<(String, Value)>)],
+) -> Vec<TokenWarning> {
     let mut warnings: Vec<TokenWarning> = Vec::new();
     // The tokens' values for each root size met, and whether each measured value seen is a token's.
     let mut indexes: Vec<(u64, TokenIndex)> = Vec::new();
@@ -487,12 +571,18 @@ fn off_token_values(tokens: &DesignTokens, viewports: &[(String, Vec<(String, Va
     let mut warned: HashSet<(&str, &str, &str, &str)> = HashSet::new();
     for (viewport, routes) in viewports {
         for (route, page) in routes {
-            let root = page["document"]["root_font_size"].as_f64().unwrap_or(DEFAULT_ROOT_PX);
+            let root = page["document"]["root_font_size"]
+                .as_f64()
+                .unwrap_or(DEFAULT_ROOT_PX);
             let root_key = root.to_bits();
             if !indexes.iter().any(|(key, _)| *key == root_key) {
                 indexes.push((root_key, TokenIndex::new(&tokens.all(root))));
             }
-            let index = &indexes.iter().find(|(key, _)| *key == root_key).expect("indexed above").1;
+            let index = &indexes
+                .iter()
+                .find(|(key, _)| *key == root_key)
+                .expect("indexed above")
+                .1;
             for element in page["elements"].as_array().into_iter().flatten() {
                 let tag = element["tag"].as_str().unwrap_or("");
                 for property in ["color", "background-color", "font-size"] {
@@ -531,7 +621,10 @@ struct TokenIndex {
 
 impl TokenIndex {
     fn new(values: &[TokenValue]) -> Self {
-        let mut index = TokenIndex { colors: Vec::new(), sizes: Vec::new() };
+        let mut index = TokenIndex {
+            colors: Vec::new(),
+            sizes: Vec::new(),
+        };
         for value in values {
             match value {
                 TokenValue::Color(color) => index.colors.push((lab(color), color.a)),
@@ -553,9 +646,10 @@ impl TokenIndex {
                             && lab_distance(token, &measured) <= COLOR_TOLERANCE_DELTA_E
                     })
             }
-            TokenValue::Px(px) if property == "font-size" => {
-                self.sizes.iter().any(|size| (size - px).abs() <= OFF_TOKEN_SIZE_TOLERANCE_PX)
-            }
+            TokenValue::Px(px) if property == "font-size" => self
+                .sizes
+                .iter()
+                .any(|size| (size - px).abs() <= OFF_TOKEN_SIZE_TOLERANCE_PX),
             _ => true,
         }
     }
@@ -580,7 +674,8 @@ fn read_measurements(round_dir: &Path) -> Vec<(String, Vec<(String, Value)>)> {
             continue;
         }
         let file = entry.path().join(MEASUREMENTS_FILE);
-        let readable = std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file() && m.len() <= MAX_MEASUREMENTS);
+        let readable = std::fs::symlink_metadata(&file)
+            .is_ok_and(|m| m.is_file() && m.len() <= MAX_MEASUREMENTS);
         let Some(measured) = readable
             .then(|| std::fs::read(&file).ok())
             .flatten()
@@ -591,7 +686,12 @@ fn read_measurements(round_dir: &Path) -> Vec<(String, Vec<(String, Value)>)> {
         let name = entry.file_name().to_string_lossy().into_owned();
         let routes = measured["routes"]
             .as_object()
-            .map(|routes| routes.iter().map(|(route, page)| (route.clone(), page.clone())).collect())
+            .map(|routes| {
+                routes
+                    .iter()
+                    .map(|(route, page)| (route.clone(), page.clone()))
+                    .collect()
+            })
             .unwrap_or_default();
         viewports.push((name, routes));
     }
@@ -622,16 +722,28 @@ fn matched_styles<'a>(page: &'a Value, selector: &str) -> Vec<&'a Value> {
 fn compare(property: &str, expected: &TokenValue, styles: &Value) -> (String, bool) {
     let style = |name: &str| styles[name].as_str().unwrap_or("").trim().to_string();
     let parts: Vec<String> = match property {
-        "padding" => ["padding-top", "padding-right", "padding-bottom", "padding-left"]
-            .iter()
-            .map(|side| style(side))
+        "padding" => [
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+        ]
+        .iter()
+        .map(|side| style(side))
+        .collect(),
+        "border-radius" | "gap" => style(property)
+            .split_whitespace()
+            .map(str::to_string)
             .collect(),
-        "border-radius" | "gap" => style(property).split_whitespace().map(str::to_string).collect(),
         "background" | "background-color" => vec![style("background-color")],
         "border-color" => vec![style("border-top-color")],
         _ => vec![style(property)],
     };
-    let shown = if property == "padding" { parts.join(" ") } else { style(css_name(property)) };
+    let shown = if property == "padding" {
+        parts.join(" ")
+    } else {
+        style(css_name(property))
+    };
     if parts.is_empty() || parts.iter().any(String::is_empty) {
         return (shown, false);
     }
@@ -666,15 +778,24 @@ fn css_name(property: &str) -> &str {
     }
 }
 
-fn equal(property: &str, expected: &TokenValue, measured: &TokenValue, font_px: impl Fn() -> Option<f64>) -> bool {
+fn equal(
+    property: &str,
+    expected: &TokenValue,
+    measured: &TokenValue,
+    font_px: impl Fn() -> Option<f64>,
+) -> bool {
     match (expected, measured) {
         (TokenValue::Color(a), TokenValue::Color(b)) => color_close(a, b),
-        (TokenValue::Number(weight), TokenValue::Number(m)) if property == "font-weight" => weight == m,
+        (TokenValue::Number(weight), TokenValue::Number(m)) if property == "font-weight" => {
+            weight == m
+        }
         // A unitless line height is a multiple of the font size.
         (TokenValue::Number(factor), TokenValue::Px(m)) if property == "line-height" => {
             font_px().is_some_and(|font| (factor * font - m).abs() <= SIZE_TOLERANCE_PX)
         }
-        (TokenValue::Px(e) | TokenValue::Number(e), TokenValue::Px(m)) if property != "font-weight" => {
+        (TokenValue::Px(e) | TokenValue::Number(e), TokenValue::Px(m))
+            if property != "font-weight" =>
+        {
             (e - m).abs() <= SIZE_TOLERANCE_PX
         }
         (TokenValue::Other(e), TokenValue::Other(m)) => e.eq_ignore_ascii_case(m),
@@ -730,8 +851,16 @@ fn show(value: &TokenValue) -> String {
         }
     };
     match value {
-        TokenValue::Color(c) if c.a >= 1.0 => format!("rgb({}, {}, {})", number(c.r), number(c.g), number(c.b)),
-        TokenValue::Color(c) => format!("rgba({}, {}, {}, {})", number(c.r), number(c.g), number(c.b), number(c.a)),
+        TokenValue::Color(c) if c.a >= 1.0 => {
+            format!("rgb({}, {}, {})", number(c.r), number(c.g), number(c.b))
+        }
+        TokenValue::Color(c) => format!(
+            "rgba({}, {}, {}, {})",
+            number(c.r),
+            number(c.g),
+            number(c.b),
+            number(c.a)
+        ),
         TokenValue::Px(px) => format!("{}px", number(*px)),
         TokenValue::Number(n) => number(*n),
         TokenValue::Other(text) => text.clone(),
@@ -777,7 +906,10 @@ impl DesignTokens {
 
     /// Every token's value, normalised with `root_px`.
     fn all(&self, root_px: f64) -> Vec<TokenValue> {
-        self.values.keys().filter_map(|name| self.resolve(name, root_px)).collect()
+        self.values
+            .keys()
+            .filter_map(|name| self.resolve(name, root_px))
+            .collect()
     }
 
     fn resolve_at(&self, name: &str, root_px: f64, depth: usize) -> Option<TokenValue> {
@@ -856,7 +988,9 @@ pub fn parse_token_rules(doc: &str) -> Vec<TokenRule> {
         let line = line.trim();
         // A Markdown heading is `#`s then a space (or nothing); `#hero: color --ink` is a rule.
         let after_marks = line.trim_start_matches('#');
-        if line.starts_with('#') && (after_marks.is_empty() || after_marks.starts_with(char::is_whitespace)) {
+        if line.starts_with('#')
+            && (after_marks.is_empty() || after_marks.starts_with(char::is_whitespace))
+        {
             in_rules = after_marks.trim().eq_ignore_ascii_case("token rules");
             continue;
         }
@@ -886,7 +1020,10 @@ fn parse_rule(line: &str) -> Option<TokenRule> {
         .find(|&(i, c)| c == ':' && line[i + 1..].starts_with(char::is_whitespace))?
         .0;
     let selector = line[..split].trim();
-    if selector.is_empty() || selector.len() > MAX_SELECTOR_LEN || selector.chars().any(char::is_control) {
+    if selector.is_empty()
+        || selector.len() > MAX_SELECTOR_LEN
+        || selector.chars().any(char::is_control)
+    {
         return None;
     }
     let bindings: Vec<TokenBinding> = line[split + 1..]
@@ -897,14 +1034,19 @@ fn parse_rule(line: &str) -> Option<TokenRule> {
             let known = RULE_PROPERTIES.contains(&property.to_ascii_lowercase().as_str());
             let token_name = token.len() > 2
                 && token.starts_with("--")
-                && token[2..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+                && token[2..]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
             (known && token_name && words.next().is_none()).then(|| TokenBinding {
                 property: property.to_ascii_lowercase(),
                 token: token.to_string(),
             })
         })
         .collect();
-    (!bindings.is_empty()).then(|| TokenRule { selector: selector.to_string(), bindings })
+    (!bindings.is_empty()).then(|| TokenRule {
+        selector: selector.to_string(),
+        bindings,
+    })
 }
 
 /// The most entries a `tokens.json` is read for, and how deep its groups may nest.
@@ -942,15 +1084,21 @@ fn collect_json(
             continue;
         }
         let key = key.trim_start_matches('-');
-        let name = if prefix.is_empty() { key.to_string() } else { format!("{prefix}-{key}") };
+        let name = if prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{prefix}-{key}")
+        };
         let leaf = match value {
-            serde_json::Value::Object(inner) => match inner.get("$value").or_else(|| inner.get("value")) {
-                Some(leaf) if !leaf.is_object() => leaf,
-                _ => {
-                    collect_json(inner, &name, depth + 1, tokens);
-                    continue;
+            serde_json::Value::Object(inner) => {
+                match inner.get("$value").or_else(|| inner.get("value")) {
+                    Some(leaf) if !leaf.is_object() => leaf,
+                    _ => {
+                        collect_json(inner, &name, depth + 1, tokens);
+                        continue;
+                    }
                 }
-            },
+            }
             leaf => leaf,
         };
         let text = match leaf {
@@ -1004,8 +1152,16 @@ pub fn normalize_token_value(value: &str, root_px: f64) -> TokenValue {
     if let Ok(number) = lower.parse::<f64>() {
         return TokenValue::Number(number);
     }
-    for (unit, scale) in [("px", 1.0), ("rem", root_px), ("em", root_px), ("pt", 4.0 / 3.0)] {
-        if let Some(number) = lower.strip_suffix(unit).and_then(|n| n.trim().parse::<f64>().ok()) {
+    for (unit, scale) in [
+        ("px", 1.0),
+        ("rem", root_px),
+        ("em", root_px),
+        ("pt", 4.0 / 3.0),
+    ] {
+        if let Some(number) = lower
+            .strip_suffix(unit)
+            .and_then(|n| n.trim().parse::<f64>().ok())
+        {
             return TokenValue::Px(number * scale);
         }
     }
@@ -1015,7 +1171,14 @@ pub fn normalize_token_value(value: &str, root_px: f64) -> TokenValue {
 fn parse_color(value: &str) -> Option<Rgba> {
     let opaque = |r: f64, g: f64, b: f64| Rgba { r, g, b, a: 1.0 };
     match value {
-        "transparent" => return Some(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+        "transparent" => {
+            return Some(Rgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            })
+        }
         "black" => return Some(opaque(0.0, 0.0, 0.0)),
         "white" => return Some(opaque(255.0, 255.0, 255.0)),
         "red" => return Some(opaque(255.0, 0.0, 0.0)),
@@ -1060,9 +1223,17 @@ fn parse_color(value: &str) -> Option<Rgba> {
             })
         }
         "hsl" | "hsla" => {
-            let hue = parts[0].strip_suffix("deg").unwrap_or(parts[0]).parse::<f64>().ok()?;
+            let hue = parts[0]
+                .strip_suffix("deg")
+                .unwrap_or(parts[0])
+                .parse::<f64>()
+                .ok()?;
             let percent = |p: &str| -> Option<f64> {
-                p.strip_suffix('%').unwrap_or(p).parse::<f64>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0))
+                p.strip_suffix('%')
+                    .unwrap_or(p)
+                    .parse::<f64>()
+                    .ok()
+                    .map(|v| (v / 100.0).clamp(0.0, 1.0))
             };
             let (r, g, b) = hsl_to_rgb(hue, percent(parts[1])?, percent(parts[2])?);
             Some(Rgba { r, g, b, a: alpha })
@@ -1083,7 +1254,11 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
     if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    let digit = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(|d| f64::from(d * 17));
+    let digit = |i: usize| {
+        u8::from_str_radix(&hex[i..i + 1], 16)
+            .ok()
+            .map(|d| f64::from(d * 17))
+    };
     let pair = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok().map(f64::from);
     let (r, g, b, a) = match hex.len() {
         3 => (digit(0)?, digit(1)?, digit(2)?, 255.0),
@@ -1092,7 +1267,12 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
         8 => (pair(0)?, pair(2)?, pair(4)?, pair(6)?),
         _ => return None,
     };
-    Some(Rgba { r, g, b, a: a / 255.0 })
+    Some(Rgba {
+        r,
+        g,
+        b,
+        a: a / 255.0,
+    })
 }
 
 fn hsl_to_rgb(hue: f64, saturation: f64, lightness: f64) -> (f64, f64, f64) {

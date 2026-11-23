@@ -160,7 +160,10 @@ fn valid_review() -> serde_json::Value {
             "severity": "major",
             "status": "open",
             "fix_direction": "let the title wrap",
-            "selector": "h1.hero-title"
+            "selector": "h1.hero-title",
+            "basis": "rule",
+            "copy": false,
+            "quote": "The hero title wraps on mobile."
         }],
         "suggestions": ["tighten the footer spacing"],
         "blockers": []
@@ -221,6 +224,24 @@ fn the_review_schema_ships_next_to_the_review_skill_and_accepts_a_valid_review_o
         check_against_schema(&schema, &extra).is_err(),
         "an unknown field is refused"
     );
+    let mut structure = valid_review();
+    let issue = structure["issues"][0].as_object_mut().unwrap();
+    issue.remove("quote");
+    issue.insert("basis".into(), "structure".into());
+    issue.insert("reference".into(), "references/mobile.png".into());
+    check_against_schema(&schema, &structure).expect("a structure issue names its reference");
+    let mut token = valid_review();
+    token["issues"][0]["token"] = "--color-primary".into();
+    check_against_schema(&schema, &token).expect("a rule issue may name a token");
+    for field in ["basis", "copy"] {
+        let mut missing = valid_review();
+        missing["issues"][0].as_object_mut().unwrap().remove(field);
+        assert!(check_against_schema(&schema, &missing).is_err(), "an issue without {field} is refused");
+    }
+    let mut basis = valid_review();
+    basis["issues"][0]["basis"] = "taste".into();
+    assert!(check_against_schema(&schema, &basis).is_err(), "an unknown basis is refused");
+
     let mut wrong_type = valid_review();
     wrong_type["checks"][0]["required"] = "yes".into();
     assert!(

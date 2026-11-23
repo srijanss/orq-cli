@@ -17,8 +17,7 @@ use crate::design_capture::{
     capture_viewports, design_routes, CaptureOutcome, CaptureRecord, CaptureRun,
 };
 use crate::design_package::{
-    resume_design_package, DesignManifest, DesignPackageOutcome,
-    DesignPackageRun, PackageLimits,
+    resume_design_package, DesignManifest, DesignPackageOutcome, DesignPackageRun, PackageLimits,
 };
 use crate::design_tokens::{apply_token_issues, check_design_tokens};
 use crate::run_settings::DesignSettings;
@@ -159,6 +158,48 @@ pub struct ReviewIssue {
     /// `high` on an issue orq measured itself (the token check); a reviewer's issues carry none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<String>,
+    /// What binds the issue: a rule, the reference's structure, or a mockup detail only. Every
+    /// reviewer issue names one; an issue recorded before bases existed has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<IssueBasis>,
+    /// Whether the issue is about the page's text or sample data rather than its layout or styling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<bool>,
+    /// A `rule` issue's line of DESIGN.md, UX.md or RESPONSIVE.md, quoted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// A `rule` issue's token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// A `structure` issue's reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// The severity the reviewer gave, when orq lowered it: a `visual` issue is at most minor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downgraded_from: Option<Severity>,
+}
+
+/// What an issue is held against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueBasis {
+    /// A line of DESIGN.md, UX.md or RESPONSIVE.md, or a token: exact.
+    Rule,
+    /// A missing, extra or reordered element, or wrong layout or breakpoint behaviour, against a
+    /// named reference.
+    Structure,
+    /// A mockup detail only: guidance, at most minor.
+    Visual,
+}
+
+impl IssueBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IssueBasis::Rule => "rule",
+            IssueBasis::Structure => "structure",
+            IssueBasis::Visual => "visual",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +244,21 @@ impl RoundResult {
     }
 }
 
+/// What in the design package binds, and the severity rules orq holds every issue to; the reviewer
+/// is told this in every round, whatever its skill says.
+const BINDING_RULES: &str = "What binds, in this order: DESIGN.md, UX.md, RESPONSIVE.md and the tokens bind exactly; \
+the mockups bind for layout, which elements appear, their order and grouping, and how the page changes per viewport; \
+the mockups' finer detail (exact spacing, shades, sizes no token covers) is guidance only. Sample data and text in the \
+mockups never bind unless DESIGN.md says the copy is exact.\n\
+Every issue names its \"basis\": \"rule\" with \"quote\" (the DESIGN.md, UX.md or RESPONSIVE.md line, quoted as written) \
+or \"token\" (the token's name); \"structure\" (a missing, extra or reordered element, a wrong layout or breakpoint \
+behaviour) with \"reference\" (the reference it is held against, as listed below); or \"visual\" (a mockup detail only). \
+Every issue says whether it is about copy (\"copy\": true for the page's text or data), and a copy issue stands only \
+as a rule issue quoting the DESIGN.md line that makes the copy exact.\n\
+Orq fixes severities: rule and structure issues may be critical or major; a visual issue is at most minor, and orq \
+lowers a higher one. An issue without its basis is invalid. The verdict passes when no critical or major issue is \
+open; minor issues and suggestions never require changes on their own.\n";
+
 /// The check id a reviewer flags low confidence with.
 const CONFIDENCE_CHECK: &str = "confidence";
 
@@ -219,6 +275,70 @@ struct ReviewContext {
     captures: Vec<(String, String, String)>,
     /// The earlier rounds' reviews, by round.
     previous: Vec<(u32, DesignReview)>,
+    /// What a `rule` issue may cite: the package's documents and tokens.
+    rules: PackageRules,
+    /// The ids of the token check's open issues: no review passes while one is open.
+    token_issues: Vec<String>,
+}
+
+/// The binding documents (DESIGN.md, UX.md, RESPONSIVE.md) and token files of the frozen package
+/// (and, in infer mode, of the prepared folder), read as data, their whitespace collapsed.
+struct PackageRules {
+    /// Each document's name and text.
+    documents: Vec<(&'static str, String)>,
+    tokens: Vec<String>,
+}
+
+const RULE_DOCUMENTS: [&str; 3] = ["DESIGN.md", "UX.md", "RESPONSIVE.md"];
+const TOKEN_FILES: [&str; 2] = ["tokens.css", "tokens.json"];
+/// Infer mode's prepared documents, frozen by the design preparer step.
+const PREPARED_DIR: &str = "prepared";
+
+impl PackageRules {
+    fn read(design_dir: &Path) -> PackageRules {
+        let mut rules = PackageRules {
+            documents: Vec::new(),
+            tokens: Vec::new(),
+        };
+        for folder in [PACKAGE_DIR, PREPARED_DIR].map(|folder| design_dir.join(folder)) {
+            for name in RULE_DOCUMENTS {
+                if let Ok(text) = std::fs::read_to_string(folder.join(name)) {
+                    rules.documents.push((name, collapsed(&text)));
+                }
+            }
+            for name in TOKEN_FILES {
+                if let Ok(text) = std::fs::read_to_string(folder.join(name)) {
+                    rules.tokens.push(text);
+                }
+            }
+        }
+        rules
+    }
+
+    /// Whether `quote` is a passage of one of the documents (`only`, when given).
+    fn quotes(&self, quote: &str, only: Option<&str>) -> bool {
+        let quote = collapsed(quote);
+        !quote.is_empty()
+            && self
+                .documents
+                .iter()
+                .filter(|(name, _)| only.is_none_or(|only| *name == only))
+                .any(|(_, text)| text.contains(&quote))
+    }
+
+    /// Whether `token` is a token a token file defines, written with or without its `--`.
+    fn defines(&self, token: &str) -> bool {
+        let name = token.trim().trim_start_matches("--");
+        !name.is_empty()
+            && self.tokens.iter().any(|text| {
+                text.contains(&format!("--{name}")) || text.contains(&format!("\"{name}\""))
+            })
+    }
+}
+
+/// `text` with every run of whitespace one space, trimmed.
+fn collapsed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Reviews the page as it is: freezes the package, captures the page with `capture`, has the
@@ -326,6 +446,8 @@ fn reviewed_round(
             })
             .collect(),
         previous: previous_reviews(design_dir, run.round),
+        rules: PackageRules::read(design_dir),
+        token_issues: token_issues.iter().map(|issue| issue.id.clone()).collect(),
     };
     let review = match valid_review(run, run.reviewer, "design reviewer", &context) {
         Ok(review) => checked(review),
@@ -521,7 +643,7 @@ fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> 
          Answer with these three values exactly as written above. Every evidence path is relative \
          to the run's design folder, {}, and names a file in it: the references are under \
          {PACKAGE_DIR}/, this round's captures under round-{}/. If you are not confident in this \
-         review, add a check with id \"confidence\", required false, status \"fail\".\n\nReferences:\n",
+         review, add a check with id \"confidence\", required false, status \"fail\".\n\n{BINDING_RULES}\nReferences:\n",
         context.run_id,
         context.reference_hash,
         context.capture_revision,
@@ -544,6 +666,12 @@ fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> 
         prompt.push_str(&format!(
             "The token check orq ran on the measured styles: {token_check} (its violated rules are \
              issues with source \"tokens\" that orq adds itself; don't repeat them)\n"
+        ));
+    }
+    if !context.token_issues.is_empty() {
+        prompt.push_str(&format!(
+            "The token check's open issues, so the verdict cannot be pass: {}\n",
+            context.token_issues.join(", ")
         ));
     }
     if !context.previous.is_empty() {
@@ -667,9 +795,7 @@ pub(crate) fn run_agent_logged(
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Ok(None) => {
-                break Err(format!("the {role} did not answer within {timeout:?}"))
-            }
+            Ok(None) => break Err(format!("the {role} did not answer within {timeout:?}")),
             Err(e) => {
                 break Err(format!(
                     "the {role} could not be waited for ({:?})",
@@ -701,7 +827,7 @@ pub(crate) fn run_agent_logged(
 /// this capture, every evidence path a file in the run's design folder, and a verdict its checks
 /// and issues allow.
 fn check_review(answer: &str, context: &ReviewContext) -> Result<DesignReview, String> {
-    let review: DesignReview = serde_json::from_str(answer.trim())
+    let mut review: DesignReview = serde_json::from_str(answer.trim())
         .map_err(|e| format!("the answer is not JSON matching the review schema ({e})"))?;
     for (field, given, expected) in [
         ("run_id", &review.run_id, &context.run_id),
@@ -753,6 +879,15 @@ fn check_review(answer: &str, context: &ReviewContext) -> Result<DesignReview, S
             "it names the blocker {blocker:?}, so the verdict is blocked"
         ));
     }
+    for issue in &review.issues {
+        check_basis(issue, context)?;
+    }
+    fix_severities(&mut review, !context.token_issues.is_empty());
+    if let (Some(token), DesignVerdict::Pass) = (context.token_issues.first(), review.verdict) {
+        return Err(format!(
+            "it passes with the token check's issue {token:?} open"
+        ));
+    }
     if review.verdict == DesignVerdict::Pass {
         if let Some(check) = review
             .checks
@@ -773,6 +908,96 @@ fn check_review(answer: &str, context: &ReviewContext) -> Result<DesignReview, S
         }
     }
     Ok(review)
+}
+
+/// Whether the issue's basis holds: it names one, and a `rule` issue quotes a line of the package's
+/// DESIGN.md, UX.md or RESPONSIVE.md or names a token it defines.
+fn check_basis(issue: &ReviewIssue, context: &ReviewContext) -> Result<(), String> {
+    let id = &issue.id;
+    let Some(basis) = issue.basis else {
+        return Err(format!(
+            "the issue {id:?} names no basis (rule, structure or visual)"
+        ));
+    };
+    // Sample data and text in mockups never bind: a copy difference stands only on a DESIGN.md line.
+    match issue.copy {
+        None => {
+            return Err(format!(
+                "the issue {id:?} does not say whether it is about copy (the page's text or data)"
+            ))
+        }
+        Some(true) => {
+            let copy_rule = basis == IssueBasis::Rule
+                && issue
+                    .quote
+                    .as_deref()
+                    .is_some_and(|quote| context.rules.quotes(quote, Some("DESIGN.md")));
+            if !copy_rule {
+                return Err(format!(
+                    "the issue {id:?} is about copy, which binds only where a quoted DESIGN.md line says \
+                     the copy is exact"
+                ));
+            }
+        }
+        Some(false) => {}
+    }
+    if basis == IssueBasis::Rule {
+        let quoted = issue
+            .quote
+            .as_deref()
+            .is_some_and(|quote| context.rules.quotes(quote, None));
+        let token = issue
+            .token
+            .as_deref()
+            .is_some_and(|token| context.rules.defines(token));
+        if !quoted && !token {
+            return Err(format!(
+                "the rule issue {id:?} quotes no line of DESIGN.md, UX.md or RESPONSIVE.md and names no \
+                 token of the design package"
+            ));
+        }
+    }
+    if basis == IssueBasis::Structure {
+        let reference = issue
+            .reference
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        let named = !reference.is_empty()
+            && context.references.iter().any(|(path, _)| {
+                path == reference
+                    || path.strip_prefix(&format!("{PACKAGE_DIR}/")) == Some(reference)
+            });
+        if !named {
+            return Err(format!(
+                "the structure issue {id:?} names no reference of the design package it is held against"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The severities orq fixes, not the model: a `visual` issue is at most minor (the severity it was
+/// given is kept in `downgraded_from`), and a round with no open critical or major issue, every
+/// required check passed and no token issue open is a pass, whatever the reviewer called it.
+fn fix_severities(review: &mut DesignReview, token_issues_open: bool) {
+    for issue in &mut review.issues {
+        // Only orq records a downgrade.
+        issue.downgraded_from = None;
+        if issue.basis == Some(IssueBasis::Visual) && issue.severity != Severity::Minor {
+            issue.downgraded_from = Some(issue.severity);
+            issue.severity = Severity::Minor;
+        }
+    }
+    let changes_left = token_issues_open
+        || review.issues.iter().any(blocking)
+        || review
+            .checks
+            .iter()
+            .any(|check| check.required && check.status != CheckStatus::Pass);
+    if review.verdict == DesignVerdict::ChangesRequired && !changes_left {
+        review.verdict = DesignVerdict::Pass;
+    }
 }
 
 /// A critical or major issue that is open or came back.
@@ -859,8 +1084,26 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
             .iter()
             .filter(|issue| issue.section == section)
         {
+            let basis = match issue.basis {
+                Some(IssueBasis::Rule) => {
+                    let cited = issue
+                        .quote
+                        .as_deref()
+                        .or(issue.token.as_deref())
+                        .unwrap_or_default();
+                    format!(", rule: {}", line(cited))
+                }
+                Some(IssueBasis::Structure) => {
+                    format!(
+                        ", structure: {}",
+                        line(issue.reference.as_deref().unwrap_or_default())
+                    )
+                }
+                Some(IssueBasis::Visual) => ", visual".to_string(),
+                None => String::new(),
+            };
             text.push_str(&format!(
-                "- {} [{}, {}] {}: expected {}; actual {}. Fix: {}\n",
+                "- {} [{}, {}{basis}] {}: expected {}; actual {}. Fix: {}\n",
                 line(&issue.id),
                 json!(issue.severity).as_str().unwrap_or_default(),
                 json!(issue.status).as_str().unwrap_or_default(),
@@ -869,6 +1112,30 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
                 line(&issue.actual),
                 line(&issue.fix_direction),
             ));
+        }
+    }
+    let downgraded: Vec<&ReviewIssue> = review
+        .issues
+        .iter()
+        .filter(|issue| issue.downgraded_from.is_some())
+        .collect();
+    if !downgraded.is_empty() {
+        text.push_str(
+            "\n## Downgraded\n\nA visual issue (a mockup detail only) is at most minor.\n\n",
+        );
+        for issue in downgraded {
+            text.push_str(&format!(
+                "- {}: {} to {}\n",
+                line(&issue.id),
+                json!(issue.downgraded_from).as_str().unwrap_or_default(),
+                json!(issue.severity).as_str().unwrap_or_default(),
+            ));
+        }
+    }
+    if !review.suggestions.is_empty() {
+        text.push_str("\n## Suggestions\n\n");
+        for suggestion in &review.suggestions {
+            text.push_str(&format!("- {}\n", line(suggestion)));
         }
     }
     text.push_str("\n## Not assessed\n\n");

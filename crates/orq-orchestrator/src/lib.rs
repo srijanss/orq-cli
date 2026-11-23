@@ -81,12 +81,14 @@ pub use design_capture::{
 };
 pub use design_infer::{
     prepare_design, AgentPreparer, DesignPrepareOutcome, DesignPreparer, InferenceLabel,
-    InferredValue, PrepareAnswer, PrepareConflict, PrepareRequest, PreparedDesign, PreparedFile, PreparerNeed,
+    InferredValue, PrepareAnswer, PrepareConflict, PrepareRequest, PreparedDesign, PreparedFile,
+    PreparerNeed,
 };
 pub use design_loop::{
-    carry_design, design_code_review_task, design_fix_task, design_round_label, record_design_package, run_design_code_review,
-    run_design_correction, run_design_loop, CorrectionOutcome, DesignLoopOutcome, DesignLoopSteps,
-    DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE,
+    carry_design, design_code_review_task, design_fix_task, design_round_label,
+    record_design_package, run_design_code_review, run_design_correction, run_design_loop,
+    CorrectionOutcome, DesignLoopOutcome, DesignLoopSteps, DESIGN_CODE_REVIEW_STAGE,
+    DESIGN_FIX_STAGE, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE,
 };
 pub use design_package::{
     resume_design_package, start_design_package, AssignedViewport, DesignFilesNeeded,
@@ -95,13 +97,12 @@ pub use design_package::{
 };
 pub use design_review::{
     review_design, CheckStatus, DesignAgent, DesignReview, DesignReviewOutcome, DesignReviewRun,
-    DesignVerdict, IssueStatus, ReviewCheck, ReviewIssue, Severity,
+    DesignVerdict, IssueBasis, IssueStatus, ReviewCheck, ReviewIssue, Severity,
 };
 pub use design_tokens::{
-    apply_token_issues, check_design_tokens, normalize_token_value, parse_token_rules, parse_tokens_css, parse_tokens_json,
-    token_rule_selectors,
-    DesignTokens, Rgba, RuleResult, RuleStatus, TokenBinding, TokenCheck, TokenCheckStatus, TokenRule, TokenValue,
-    TokenWarning,
+    apply_token_issues, check_design_tokens, normalize_token_value, parse_token_rules,
+    parse_tokens_css, parse_tokens_json, token_rule_selectors, DesignTokens, Rgba, RuleResult,
+    RuleStatus, TokenBinding, TokenCheck, TokenCheckStatus, TokenRule, TokenValue, TokenWarning,
 };
 pub use discard::{
     discard_preview, discard_run, discard_run_before_remove, discard_run_then,
@@ -209,9 +210,9 @@ pub use session_references::{
     carry_session_references, resumable_session, session_references, SessionReference,
 };
 pub use session_settings::{
-    allows_command, exclude_worktrees_dir, prepare_mcp_servers, prepare_project_mcp, refresh_run_permissions,
-    remove_needs_input_hook, setup_mcp_servers, write_needs_input_hook, write_run_permissions,
-    write_session_settings, RunPermissions,
+    allows_command, exclude_worktrees_dir, prepare_mcp_servers, prepare_project_mcp,
+    refresh_run_permissions, remove_needs_input_hook, setup_mcp_servers, write_needs_input_hook,
+    write_run_permissions, write_session_settings, RunPermissions,
 };
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use start_limits::{

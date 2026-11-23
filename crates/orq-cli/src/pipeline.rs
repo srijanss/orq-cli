@@ -2488,8 +2488,8 @@ fn stages(
             };
             orq_orchestrator::review_design(&run, &orq_orchestrator::capture_design)
         };
-        let correct = |batch: u32, issues: &[orq_orchestrator::ReviewIssue]| {
-            let task = orq_orchestrator::design_fix_task(batch, max, issues);
+        let correct = |batch: u32, issues: &[orq_orchestrator::ReviewIssue], suggestions: &[String]| {
+            let task = orq_orchestrator::design_fix_task(batch, max, issues, suggestions);
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
             let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-fix.done"));
             let args = adapter_for(&options.implementer.harness)
@@ -2933,7 +2933,7 @@ fn design_agents(
 struct PipelineDesignSteps<'a> {
     worktree: &'a Path,
     review: &'a dyn Fn(u32) -> orq_orchestrator::DesignReviewOutcome,
-    correct: &'a dyn Fn(u32, &[orq_orchestrator::ReviewIssue]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
+    correct: &'a dyn Fn(u32, &[orq_orchestrator::ReviewIssue], &[String]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
     review_code: &'a dyn Fn(u32, &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
 }
 
@@ -2955,8 +2955,8 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
         Ok((self.review)(round))
     }
 
-    fn correct(&mut self, batch: u32, issues: &[orq_orchestrator::ReviewIssue]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
-        (self.correct)(batch, issues)
+    fn correct(&mut self, batch: u32, issues: &[orq_orchestrator::ReviewIssue], suggestions: &[String]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
+        (self.correct)(batch, issues, suggestions)
     }
 
     fn review_code(&mut self, batch: u32, from: &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {

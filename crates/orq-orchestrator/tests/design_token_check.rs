@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use orq_orchestrator::{
-    check_design_tokens, review_design, CaptureOutcome, CaptureRecord, CaptureRun, DesignAgent, DesignMode,
-    DesignReviewRun, DesignSettings, DesignVerdict, IssueStatus, PageCapture, Severity, TokenCheckStatus, Viewport,
-    token_rule_selectors,
+    check_design_tokens, review_design, token_rule_selectors, CaptureOutcome, CaptureRecord,
+    CaptureRun, DesignAgent, DesignMode, DesignReviewRun, DesignSettings, DesignVerdict,
+    IssueStatus, PageCapture, Severity, TokenCheckStatus, Viewport,
 };
 use orq_test_support::{GitFixture, TempDir};
 use serde_json::{json, Value};
@@ -38,8 +38,13 @@ impl Fixture {
     fn measured(&self, viewport: &str, page: Value) -> &Fixture {
         let folder = self.design.join("round-1").join(viewport);
         std::fs::create_dir_all(&folder).unwrap();
-        let file = json!({"viewport": viewport, "width": 1280, "height": 800, "routes": {"/": page}});
-        std::fs::write(folder.join("measurements.json"), serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        let file =
+            json!({"viewport": viewport, "width": 1280, "height": 800, "routes": {"/": page}});
+        std::fs::write(
+            folder.join("measurements.json"),
+            serde_json::to_vec_pretty(&file).unwrap(),
+        )
+        .unwrap();
         self
     }
 
@@ -73,13 +78,18 @@ const DESIGN: &str = "# Checkout\n\n## Token rules\n\nh1: font-size --font-title
 #[test]
 fn a_heading_at_weight_600_against_weight_bold_700_fails_and_becomes_a_major_tokens_issue() {
     let f = Fixture::new();
-    f.package("tokens.css", TOKENS).package("DESIGN.md", DESIGN).measured(
-        "desktop",
-        page(
-            vec![element("h1", json!({"font-size": "32px", "font-weight": "600", "color": "rgb(17, 17, 17)"}))],
-            json!({}),
-        ),
-    );
+    f.package("tokens.css", TOKENS)
+        .package("DESIGN.md", DESIGN)
+        .measured(
+            "desktop",
+            page(
+                vec![element(
+                    "h1",
+                    json!({"font-size": "32px", "font-weight": "600", "color": "rgb(17, 17, 17)"}),
+                )],
+                json!({}),
+            ),
+        );
 
     let check = check_design_tokens(f.dir(), 1);
 
@@ -93,12 +103,21 @@ fn a_heading_at_weight_600_against_weight_bold_700_fails_and_becomes_a_major_tok
     assert_eq!(issue.confidence.as_deref(), Some("high"));
     assert_eq!(issue.viewport, "desktop");
     assert_eq!(issue.selector.as_deref(), Some("h1"));
-    assert!(issue.expected.contains("--weight-bold") && issue.expected.contains("700"), "{}", issue.expected);
+    assert!(
+        issue.expected.contains("--weight-bold") && issue.expected.contains("700"),
+        "{}",
+        issue.expected
+    );
     assert!(issue.actual.contains("600"), "{}", issue.actual);
 
     let written = f.written();
     assert_eq!(written["status"], "fail");
-    let failed: Vec<&Value> = written["rules"].as_array().unwrap().iter().filter(|r| r["status"] == "fail").collect();
+    let failed: Vec<&Value> = written["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["status"] == "fail")
+        .collect();
     assert_eq!(failed.len(), 1, "{written:#}");
     assert_eq!(failed[0]["selector"], "h1");
     assert_eq!(failed[0]["viewport"], "desktop");
@@ -116,7 +135,10 @@ fn the_selectors_the_token_rules_name_are_the_ones_the_capture_measures_each_onc
         "# Checkout\n\n## Token rules\n\n- `h1: font-size --font-title`\n- .feature-state.state-pending: color --pending-fg; background --pending-bg\n- h1: font-weight --weight-bold\n\n## Layout\n\nmain: color --ink\n",
     );
 
-    assert_eq!(token_rule_selectors(f.dir()), vec!["h1".to_string(), ".feature-state.state-pending".to_string()]);
+    assert_eq!(
+        token_rule_selectors(f.dir()),
+        vec!["h1".to_string(), ".feature-state.state-pending".to_string()]
+    );
 }
 
 // ---------------------------------------------------------------- in the design review round
@@ -128,7 +150,11 @@ fn png(width: u32, height: u32) -> Vec<u8> {
         for &byte in bytes {
             crc ^= byte as u32;
             for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
             }
         }
         !crc
@@ -190,14 +216,21 @@ fn fake_pi(dir: &Path, answer: &Value) -> PathBuf {
 
 /// Writes the desktop screenshot, `measurements.json` with an `h1` at weight 600, and `capture.json`.
 fn capture_with_a_600_heading(run: &CaptureRun) -> CaptureOutcome {
-    let round = run.run_logs.join("design").join(format!("round-{}", run.round));
+    let round = run
+        .run_logs
+        .join("design")
+        .join(format!("round-{}", run.round));
     std::fs::create_dir_all(round.join("desktop")).unwrap();
     std::fs::write(round.join("desktop/index.png"), png(400, 300)).unwrap();
     let measurements = json!({"viewport": "desktop", "width": 400, "height": 300, "routes": {"/": page(
         vec![element("h1", json!({"font-size": "32px", "font-weight": "600", "color": "rgb(17, 17, 17)"}))],
         json!({}),
     )}});
-    std::fs::write(round.join("desktop/measurements.json"), measurements.to_string()).unwrap();
+    std::fs::write(
+        round.join("desktop/measurements.json"),
+        measurements.to_string(),
+    )
+    .unwrap();
     let record = CaptureRecord {
         round: run.round,
         commit: None,
@@ -215,12 +248,16 @@ fn capture_with_a_600_heading(run: &CaptureRun) -> CaptureOutcome {
         }],
         failures: vec![],
     };
-    std::fs::write(round.join("capture.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+    std::fs::write(
+        round.join("capture.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
     CaptureOutcome::Captured(record)
 }
 
 #[test]
-fn a_reviewer_pass_with_a_violated_token_rule_becomes_changes_required_with_the_tokens_issue() {
+fn a_violated_token_rule_joins_the_review_as_its_tokens_issue() {
     let repo = GitFixture::new();
     let package = repo.root().join("designs").join("home");
     std::fs::create_dir_all(package.join("references")).unwrap();
@@ -229,9 +266,10 @@ fn a_reviewer_pass_with_a_violated_token_rule_becomes_changes_required_with_the_
     std::fs::write(package.join("tokens.css"), TOKENS).unwrap();
     let logs = TempDir::new("design-token-review-logs");
     let agents = TempDir::new("design-token-review-agents");
+    // A pass over an open token issue is invalid; the reviewer leaves the verdict to it.
     let pass = json!({
         "run_id": "@RUN@", "reference_hash": "@REF@", "capture_revision": "@CAP@",
-        "evaluation": "the capture matches the reference", "verdict": "pass",
+        "evaluation": "the capture matches the reference", "verdict": "changes_required",
         "checks": [{"id": "layout", "required": true, "status": "pass", "evidence": ["round-1/desktop/index.png"]}],
         "issues": [], "suggestions": [], "blockers": [],
     });
@@ -249,7 +287,15 @@ fn a_reviewer_pass_with_a_violated_token_rule_becomes_changes_required_with_the_
         max_correction_rounds: 3,
         verify_after_rounds: 2,
         mode: DesignMode::Infer,
-        viewports: [("desktop".to_string(), Viewport { width: 400, height: 300 })].into_iter().collect(),
+        viewports: [(
+            "desktop".to_string(),
+            Viewport {
+                width: 400,
+                height: 300,
+            },
+        )]
+        .into_iter()
+        .collect(),
     };
     let run = DesignReviewRun {
         run_id: "design-token-review",
@@ -268,16 +314,28 @@ fn a_reviewer_pass_with_a_violated_token_rule_becomes_changes_required_with_the_
 
     let outcome = review_design(&run, &capture_with_a_600_heading);
 
-    assert_eq!(outcome.verdict, DesignVerdict::ChangesRequired, "{:?}", outcome.reason);
+    assert_eq!(
+        outcome.verdict,
+        DesignVerdict::ChangesRequired,
+        "{:?}",
+        outcome.reason
+    );
     let design = logs.path().join("design");
-    let written: Value = serde_json::from_slice(&std::fs::read(design.join("round-1/review.json")).unwrap()).unwrap();
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(design.join("round-1/review.json")).unwrap())
+            .unwrap();
     let issues = written["review"]["issues"].as_array().unwrap();
-    let tokens: Vec<&Value> = issues.iter().filter(|issue| issue["source"] == "tokens").collect();
+    let tokens: Vec<&Value> = issues
+        .iter()
+        .filter(|issue| issue["source"] == "tokens")
+        .collect();
     assert_eq!(tokens.len(), 1, "{written:#}");
     assert_eq!(tokens[0]["severity"], "major");
     assert_eq!(tokens[0]["confidence"], "high");
     assert_eq!(tokens[0]["selector"], "h1");
-    let check: Value = serde_json::from_slice(&std::fs::read(design.join("round-1/token-check.json")).unwrap()).unwrap();
+    let check: Value =
+        serde_json::from_slice(&std::fs::read(design.join("round-1/token-check.json")).unwrap())
+            .unwrap();
     assert_eq!(check["status"], "fail");
 }
 
@@ -285,16 +343,36 @@ fn a_reviewer_pass_with_a_violated_token_rule_becomes_changes_required_with_the_
 #[test]
 fn a_symlinked_tokens_file_is_not_loaded_and_leaves_the_configured_rules_a_tokens_issue() {
     let f = Fixture::new();
-    f.package("DESIGN.md", "# Page\n\n## Token rules\n\nh1: font-weight --weight-bold\n")
-        .measured("desktop", page(vec![element("h1", json!({"font-weight": "700"}))], json!({})));
+    f.package(
+        "DESIGN.md",
+        "# Page\n\n## Token rules\n\nh1: font-weight --weight-bold\n",
+    )
+    .measured(
+        "desktop",
+        page(
+            vec![element("h1", json!({"font-weight": "700"}))],
+            json!({}),
+        ),
+    );
     let outside = f.dir().join("outside.css");
     std::fs::write(&outside, TOKENS).unwrap();
     std::os::unix::fs::symlink(&outside, f.dir().join("package/tokens.css")).unwrap();
 
     let check = check_design_tokens(f.dir(), 1);
 
-    assert_eq!((check.status, check.rules_configured), (TokenCheckStatus::NotAssessed, 1), "{check:#?}");
-    assert!(check.reason.as_deref().is_some_and(|r| r.contains("tokens.css")), "{:?}", check.reason);
+    assert_eq!(
+        (check.status, check.rules_configured),
+        (TokenCheckStatus::NotAssessed, 1),
+        "{check:#?}"
+    );
+    assert!(
+        check
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("tokens.css")),
+        "{:?}",
+        check.reason
+    );
     assert_eq!(f.written()["status"], "not_assessed");
     let ids: Vec<String> = check.issues().into_iter().map(|issue| issue.id).collect();
     assert_eq!(ids, vec!["tokens-not-assessed"]);

@@ -30,7 +30,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "section", "viewport", "source", "expected", "actual", "evidence", "severity", "status", "fix_direction"],
+        "required": ["id", "section", "viewport", "source", "expected", "actual", "evidence", "severity", "status", "fix_direction", "basis", "copy"],
         "properties": {
           "id": { "type": "string" },
           "section": { "type": "string" },
@@ -42,7 +42,12 @@
           "severity": { "type": "string", "enum": ["critical", "major", "minor"] },
           "status": { "type": "string", "enum": ["open", "resolved", "regressed"] },
           "fix_direction": { "type": "string" },
-          "selector": { "type": "string" }
+          "selector": { "type": "string" },
+          "basis": { "type": "string", "enum": ["rule", "structure", "visual"] },
+          "copy": { "type": "boolean" },
+          "quote": { "type": "string" },
+          "token": { "type": "string" },
+          "reference": { "type": "string" }
         }
       }
     },

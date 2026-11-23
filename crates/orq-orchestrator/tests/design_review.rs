@@ -273,6 +273,7 @@ fn issue(id: &str, severity: &str, status: &str) -> Value {
         "expected": "a 64px header", "actual": "a 48px header",
         "evidence": ["round-1/desktop/index.png"], "severity": severity, "status": status,
         "fix_direction": "make the header taller",
+        "basis": "structure", "reference": "references/desktop.png", "copy": false,
     })
 }
 
@@ -306,11 +307,19 @@ fn a_pass_answer_is_reported_as_pass() {
 }
 
 #[test]
-fn a_reviewer_cannot_downgrade_a_violated_token_rule_or_pass_over_it() {
+fn a_reviewer_cannot_downgrade_a_violated_token_rule() {
     let f = Fixture::new();
     let package = f.repo.root().join("designs").join(FEATURE);
-    fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
-    fs::write(package.join("DESIGN.md"), "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n").unwrap();
+    fs::write(
+        package.join("tokens.css"),
+        ":root { --weight-bold: 700; }\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("DESIGN.md"),
+        "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n",
+    )
+    .unwrap();
     let h1 = json!({"tag": "h1", "index": 0, "box": {"x": 0, "y": 0, "width": 100, "height": 40},
                     "styles": {"font-weight": "600"}});
     let measured = json!({"viewport": "desktop", "width": 400, "height": 300, "routes": {"/": {
@@ -318,12 +327,20 @@ fn a_reviewer_cannot_downgrade_a_violated_token_rule_or_pass_over_it() {
     fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
     let mut downgraded = issue("tokens-desktop-h1-font-weight", "minor", "open");
     downgraded["expected"] = json!("weight 700, near enough");
-    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![downgraded]));
+    f.answer(
+        "reviewer",
+        &answer(
+            "changes_required",
+            vec![check("layout", "pass")],
+            vec![downgraded],
+        ),
+    );
 
     assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
 
     let written: Value =
-        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap())
+            .unwrap();
     let issues = written["review"]["issues"].as_array().unwrap();
     assert_eq!(issues.len(), 1, "{written:#}");
     assert_eq!(issues[0]["id"], "tokens-desktop-h1-font-weight");
@@ -331,7 +348,8 @@ fn a_reviewer_cannot_downgrade_a_violated_token_rule_or_pass_over_it() {
     assert_eq!(issues[0]["severity"], "major");
     assert_eq!(issues[0]["confidence"], "high");
     let check: Value =
-        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap())
+            .unwrap();
     assert_eq!(check["status"], "fail");
     let prompt = f.argv("reviewer", 1).join("\n");
     assert!(prompt.contains("round-1/token-check.json"), "{prompt}");
@@ -350,41 +368,85 @@ fn a_reviewer_pass_cannot_pass_token_rules_the_check_could_not_assess() {
     };
     let truncated = json!({"selectors": {"h1": [bold_h1]}, "selector_counts": {"h1": 2}});
     let cases = [
-        ("an unresolved token", "h1: font-weight --weight-bodl", Some(page(json!({})))),
+        (
+            "an unresolved token",
+            "h1: font-weight --weight-bodl",
+            Some(page(json!({}))),
+        ),
         ("no measurements", "h1: font-weight --weight-bold", None),
-        ("a selector matched beyond the capture", "h1: font-weight --weight-bold", Some(page(truncated))),
+        (
+            "a selector matched beyond the capture",
+            "h1: font-weight --weight-bold",
+            Some(page(truncated)),
+        ),
     ];
     for (case, rule, measured) in cases {
         let f = Fixture::new();
         let package = f.repo.root().join("designs").join(FEATURE);
-        fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
-        fs::write(package.join("DESIGN.md"), format!("# Home\n\n## Token rules\n\n{rule}\n")).unwrap();
+        fs::write(
+            package.join("tokens.css"),
+            ":root { --weight-bold: 700; }\n",
+        )
+        .unwrap();
+        fs::write(
+            package.join("DESIGN.md"),
+            format!("# Home\n\n## Token rules\n\n{rule}\n"),
+        )
+        .unwrap();
         if let Some(measured) = measured {
             fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
         }
-        f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
+        // A pass over the open tokens issue is invalid: retried, the reviewer requires changes.
+        f.answer_text(
+            "reviewer",
+            1,
+            &answer("pass", vec![check("layout", "pass")], vec![]).to_string(),
+        );
+        f.answer_text(
+            "reviewer",
+            2,
+            &answer("changes_required", vec![check("layout", "pass")], vec![]).to_string(),
+        );
 
         assert_eq!(f.review(1), DesignVerdict::ChangesRequired, "{case}");
+        assert_eq!(f.calls("reviewer"), 2, "{case}: the pass was not accepted");
 
         let written: Value =
-            serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap())
+                .unwrap();
         let issues = written["review"]["issues"].as_array().unwrap();
-        let incomplete = issues.iter().find(|i| i["id"] == "tokens-not-assessed").unwrap_or_else(|| {
-            panic!("{case}: {written:#}")
-        });
+        let incomplete = issues
+            .iter()
+            .find(|i| i["id"] == "tokens-not-assessed")
+            .unwrap_or_else(|| panic!("{case}: {written:#}"));
         assert_eq!(incomplete["source"], "tokens", "{case}");
         assert_eq!(incomplete["severity"], "major", "{case}");
-        let check: Value =
-            serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap()).unwrap();
+        let check: Value = serde_json::from_slice(
+            &fs::read(f.design_dir().join("round-1/token-check.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(check["status"], "not_assessed", "{case}");
-        assert!(incomplete["actual"].as_str().unwrap().contains(check["reason"].as_str().unwrap()), "{case}");
+        assert!(
+            incomplete["actual"]
+                .as_str()
+                .unwrap()
+                .contains(check["reason"].as_str().unwrap()),
+            "{case}"
+        );
     }
 
     // Tokens without any rule, measured or not: nothing configured is left unchecked.
     let f = Fixture::new();
     let package = f.repo.root().join("designs").join(FEATURE);
-    fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
-    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
+    fs::write(
+        package.join("tokens.css"),
+        ":root { --weight-bold: 700; }\n",
+    )
+    .unwrap();
+    f.answer(
+        "reviewer",
+        &answer("pass", vec![check("layout", "pass")], vec![]),
+    );
     assert_eq!(f.review(1), DesignVerdict::Pass);
 }
 
@@ -393,45 +455,94 @@ fn a_reviewer_pass_cannot_pass_token_rules_whose_tokens_file_does_not_parse() {
     let f = Fixture::new();
     let package = f.repo.root().join("designs").join(FEATURE);
     fs::write(package.join("tokens.json"), "{ \"weight-bold\": 700,\n").unwrap();
-    fs::write(package.join("DESIGN.md"), "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n").unwrap();
-    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
+    fs::write(
+        package.join("DESIGN.md"),
+        "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n",
+    )
+    .unwrap();
+    f.answer_text(
+        "reviewer",
+        1,
+        &answer("pass", vec![check("layout", "pass")], vec![]).to_string(),
+    );
+    f.answer_text(
+        "reviewer",
+        2,
+        &answer("changes_required", vec![check("layout", "pass")], vec![]).to_string(),
+    );
 
     assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
+    assert_eq!(f.calls("reviewer"), 2, "the pass was not accepted");
 
     let check: Value =
-        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/token-check.json")).unwrap())
+            .unwrap();
     assert_eq!(check["status"], "not_assessed", "{check:#}");
     assert_eq!(check["rules_configured"], 1, "{check:#}");
     let written: Value =
-        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-1/review.json")).unwrap())
+            .unwrap();
     let issues = written["review"]["issues"].as_array().unwrap();
-    let incomplete = issues.iter().find(|i| i["id"] == "tokens-not-assessed").unwrap_or_else(|| panic!("{written:#}"));
-    assert!(incomplete["actual"].as_str().unwrap().contains("tokens.json"), "{incomplete:#}");
+    let incomplete = issues
+        .iter()
+        .find(|i| i["id"] == "tokens-not-assessed")
+        .unwrap_or_else(|| panic!("{written:#}"));
+    assert!(
+        incomplete["actual"]
+            .as_str()
+            .unwrap()
+            .contains("tokens.json"),
+        "{incomplete:#}"
+    );
 }
 
 #[test]
 fn a_token_violation_open_for_verify_after_rounds_rounds_goes_to_the_verifier() {
     let f = Fixture::new();
     let package = f.repo.root().join("designs").join(FEATURE);
-    fs::write(package.join("tokens.css"), ":root { --weight-bold: 700; }\n").unwrap();
-    fs::write(package.join("DESIGN.md"), "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n").unwrap();
+    fs::write(
+        package.join("tokens.css"),
+        ":root { --weight-bold: 700; }\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("DESIGN.md"),
+        "# Home\n\n## Token rules\n\nh1: font-weight --weight-bold\n",
+    )
+    .unwrap();
     let h1 = json!({"tag": "h1", "index": 0, "box": {"x": 0, "y": 0, "width": 100, "height": 40},
                     "styles": {"font-weight": "600"}});
     let measured = json!({"viewport": "desktop", "width": 400, "height": 300, "routes": {"/": {
         "document": {"width": 400, "height": 300, "root_font_size": 16}, "elements": [h1]}}});
     fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
-    f.answer("reviewer", &answer("pass", vec![check("layout", "pass")], vec![]));
-    f.answer("verifier", &answer("pass", vec![check("layout", "pass")], vec![]));
+    f.answer(
+        "reviewer",
+        &answer("changes_required", vec![check("layout", "pass")], vec![]),
+    );
+    f.answer(
+        "verifier",
+        &answer("changes_required", vec![check("layout", "pass")], vec![]),
+    );
 
     assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
     assert_eq!(f.calls("verifier"), 0);
     assert_eq!(f.review(2), DesignVerdict::ChangesRequired);
 
-    assert_eq!(f.calls("verifier"), 1, "the token issue has been open for two rounds");
+    assert_eq!(
+        f.calls("verifier"),
+        1,
+        "the token issue has been open for two rounds"
+    );
     let written: Value =
-        serde_json::from_slice(&fs::read(f.design_dir().join("round-2/review.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(f.design_dir().join("round-2/review.json")).unwrap())
+            .unwrap();
     let issues = written["review"]["issues"].as_array().unwrap();
-    assert!(issues.iter().any(|i| i["id"] == "tokens-desktop-h1-font-weight" && i["severity"] == "major"), "{written:#}");
+    assert!(
+        issues
+            .iter()
+            .any(|i| i["id"] == "tokens-desktop-h1-font-weight" && i["severity"] == "major"),
+        "{written:#}"
+    );
 }
 
 #[test]
@@ -624,7 +735,8 @@ fn reason(f: &Fixture) -> String {
 }
 
 #[test]
-fn the_first_review_checks_the_package_frozen_before_the_implementer_instead_of_freezing_it_again() {
+fn the_first_review_checks_the_package_frozen_before_the_implementer_instead_of_freezing_it_again()
+{
     let f = Fixture::new();
     f.answer(
         "reviewer",
@@ -644,7 +756,11 @@ fn the_first_review_checks_the_package_frozen_before_the_implementer_instead_of_
     ));
     // The reference changes while the implementer works.
     fs::write(
-        f.repo.root().join("designs").join(FEATURE).join("references/desktop.png"),
+        f.repo
+            .root()
+            .join("designs")
+            .join(FEATURE)
+            .join("references/desktop.png"),
         png(400, 301),
     )
     .unwrap();
@@ -655,7 +771,11 @@ fn the_first_review_checks_the_package_frozen_before_the_implementer_instead_of_
         "{}",
         reason(&f)
     );
-    assert_eq!(f.calls("reviewer"), 0, "the page is never reviewed against the new references");
+    assert_eq!(
+        f.calls("reviewer"),
+        0,
+        "the page is never reviewed against the new references"
+    );
 }
 
 #[test]
