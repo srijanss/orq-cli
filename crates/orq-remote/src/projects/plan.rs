@@ -20,6 +20,18 @@ const DRAFT_PROMPT_FILE: &str = ".orq/draft_prompt.md";
 const MAX_DRAFT_PROMPT_BYTES: u64 = 64 * 1024;
 /// Variables the agent needs to reach its account, passed through when serve has them.
 const AGENT_ENV: [&str; 2] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
+/// pi reaches each of its providers with a `<PROVIDER>_API_KEY` variable, so a pi session also gets
+/// every such variable serve has; nothing else of serve's environment is passed.
+const PROVIDER_KEY_SUFFIX: &str = "_API_KEY";
+
+/// The planning session's environment for `harness`.
+fn agent_env(harness: &str) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = AGENT_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect();
+    if harness == "pi" {
+        env.extend(std::env::vars().filter(|(key, _)| key.ends_with(PROVIDER_KEY_SUFFIX) && !AGENT_ENV.contains(&key.as_str())));
+    }
+    env
+}
 
 static PLAN_RUNS: AtomicU64 = AtomicU64::new(0);
 
@@ -122,7 +134,7 @@ impl StoreProjects {
         let session = orq_orchestrator::DraftSession {
             program: program.map_or_else(|| request.harness.clone(), |program| program.to_string_lossy().into_owned()),
             args,
-            env: AGENT_ENV.iter().filter_map(|key| std::env::var(key).ok().map(|value| (key.to_string(), value))).collect(),
+            env: agent_env(&request.harness),
             cwd: root.clone(),
         };
 

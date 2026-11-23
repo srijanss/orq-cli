@@ -260,6 +260,24 @@ fn a_pi_plan_runs_pi_read_only() {
 }
 
 #[test]
+fn a_pi_plan_gets_the_provider_keys_and_nothing_else_of_the_servers_environment() {
+    // Names no other test sets, so changing this process's environment touches no other test.
+    std::env::set_var("ORQ_PLAN_TEST_API_KEY", "sk-provider");
+    std::env::set_var("ORQ_PLAN_TEST_SECRET", "not-for-pi");
+    let s = setup("plan-pi-env");
+    git_repo(&s.scan, "alpha");
+    let pi = s.base.join("fake-pi");
+    let script = format!("#!/bin/sh\nenv > '{env}'\ncat '{answer}'\n", env = s.base.join("pi-env").display(), answer = s.base.join("answer").display());
+    std::fs::write(&pi, script).unwrap();
+    std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plan = draft_with(&s, json!({"harness": "pi", "model": "openai/gpt-6.1-sol"}));
+    assert_eq!(plan["state"], "completed", "{plan}");
+    let env = std::fs::read_to_string(s.base.join("pi-env")).unwrap();
+    assert!(env.lines().any(|line| line == "ORQ_PLAN_TEST_API_KEY=sk-provider"), "a provider key reaches pi: {env}");
+    assert!(!env.contains("not-for-pi"), "the rest of the server's environment does not: {env}");
+}
+
+#[test]
 fn a_harness_or_model_not_offered_is_refused() {
     let s = setup("plan-not-offered");
     git_repo(&s.scan, "alpha");
