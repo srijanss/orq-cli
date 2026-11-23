@@ -639,7 +639,9 @@ fn execute_run(options: &Options<'_>) -> Result<Report, StartError> {
             Some(onto) => orq_orchestrator::record_rebase_finished_by_hand(&store, &record, onto),
             None if resumed.mid_rebase => orq_orchestrator::carry_conflict(&store, &record, from),
             None => Ok(()),
-        });
+        })
+        // A frontend run's design rounds, budget and frozen package go on in the run that resumes it.
+        .and_then(|()| orq_orchestrator::carry_design(&store, &record, from, &root.join("logs").join(from), &root.join("logs").join(&run_id)));
         if let Err(err) = carried {
             let mut message = format!("cannot carry the rebase of {from} into the resumed run: {err:?}; {from} was left as it was, resume it again");
             if let Err(lock) = finish(&store) {
@@ -2866,7 +2868,8 @@ fn design_package(
         worktree,
         limits: Default::default(),
     };
-    match orq_orchestrator::start_design_package(&run) {
+    // A package already frozen for the run (carried from the run it resumes) is checked unchanged, never frozen again.
+    match orq_orchestrator::resume_design_package(&run) {
         orq_orchestrator::DesignPackageOutcome::Frozen(_) => {
             orq_orchestrator::record_design_package(store, run_id, "stage.completed", serde_json::json!({}))?;
             Ok(None)

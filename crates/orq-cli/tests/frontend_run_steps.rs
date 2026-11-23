@@ -163,6 +163,14 @@ impl Frontend {
     }
 
     fn run(&self, agent: &orq_test_support::FakeAgent, provider: &orq_test_support::FakeProvider) -> Output {
+        self.orq_run(agent, provider, &["run", "--repo", self.repo.root().to_str().unwrap(), "--feature", "home", "--remote", "origin", "--target", "main", "--no-ci-check"])
+    }
+
+    fn resume(&self, run_id: &str, agent: &orq_test_support::FakeAgent, provider: &orq_test_support::FakeProvider) -> Output {
+        self.orq_run(agent, provider, &["run", "resume", run_id, "--yes", "--no-ci-check", "--repo", self.repo.root().to_str().unwrap()])
+    }
+
+    fn orq_run(&self, agent: &orq_test_support::FakeAgent, provider: &orq_test_support::FakeProvider, args: &[&str]) -> Output {
         let bin = self.home.join("bin");
         std::fs::write(bin.join("claude"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", agent.path().display())).unwrap();
         std::fs::set_permissions(bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
@@ -172,9 +180,7 @@ impl Frontend {
         let mut dirs = vec![bin, provider.bin_dir()];
         dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         self.command()
-            .args(["run", "--repo"])
-            .arg(self.repo.root())
-            .args(["--feature", "home", "--remote", "origin", "--target", "main", "--no-ci-check"])
+            .args(args)
             .env("PATH", std::env::join_paths(dirs).unwrap())
             .output()
             .unwrap()
@@ -213,6 +219,37 @@ fn a_frontend_run_whose_design_review_is_blocked_pauses_for_a_person_and_deliver
         .unwrap_or_else(|| panic!("no design_review step in {events:?}"));
     assert_eq!(started["payload"], serde_json::json!({"round": 1, "of": 4}), "{started}");
     assert!(!events.iter().any(|e| e["stage"] == "push"), "a failed design review never delivers: {events:?}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
+#[test]
+fn a_resumed_frontend_run_keeps_its_design_rounds_and_its_frozen_package() {
+    let w = frontend("resume-rounds");
+    w.design_reviewer();
+    w.mark_frontend();
+    let agent = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n").commit("feat: the home page").build();
+    let provider = orq_test_support::FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+    let first = w.run(&agent, &provider);
+    assert!(!first.status.success());
+    let first_run = w.events().iter().find_map(|e| e["run_id"].as_str().map(str::to_string)).unwrap();
+    // orq dies during the design step after round 1 is recorded: the run has no ending, its owner is gone.
+    let log = w.home.join("state/orq/runs").join(&first_run).join("events.jsonl");
+    let kept: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().filter(|l| !l.contains("\"run.completed\"")).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&log, kept.concat()).unwrap();
+
+    let resumed = w.resume(&first_run, &agent, &provider);
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    let events = w.events();
+    let rounds: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["run_id"] != first_run.as_str() && e["type"] == "stage.started" && e["stage"] == "design_review")
+        .map(|e| &e["payload"])
+        .collect();
+    assert_eq!(rounds, [&serde_json::json!({"round": 2, "of": 4})], "the resumed run goes on from round 2, not round 1: {all}");
+    let resumed_run = events.iter().filter_map(|e| e["run_id"].as_str()).find(|r| *r != first_run).unwrap().to_string();
+    let manifest = w.home.join("state/orq/logs").join(&resumed_run).join("design/manifest.json");
+    assert!(manifest.is_file(), "the frozen package's manifest is carried to the resumed run: {all}");
     let _ = std::fs::remove_dir_all(&w.home);
 }
 

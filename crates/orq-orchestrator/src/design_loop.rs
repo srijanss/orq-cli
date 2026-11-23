@@ -282,6 +282,59 @@ fn read_state(store: &RunStore, run_id: &str) -> Result<State, StoreError> {
     Ok(state)
 }
 
+/// The events that make up the design review step's state: its reviews, batches and their code reviews.
+const CARRIED_KINDS: [&str; 3] = ["design_review", "design_correction", "design_code_review"];
+
+/// Carries a frontend run's design review step into `record`'s run, which resumes `from_run_id`: the
+/// reviews, batches and code reviews its events record (so the round counter and budget go on), and the
+/// run's design folder in `from_logs` (the frozen package's manifest and each round's review) into
+/// `to_logs`. Nothing is carried twice, and a run with no design review step carries nothing.
+pub fn carry_design(
+    store: &RunStore,
+    record: &crate::store::RunRecord,
+    from_run_id: &str,
+    from_logs: &std::path::Path,
+    to_logs: &std::path::Path,
+) -> Result<(), StoreError> {
+    let carried = |event: &Event| event.stage.as_deref() == Some(DESIGN_REVIEW_STAGE) && CARRIED_KINDS.contains(&event.kind.as_str());
+    if !store.events(&record.run_id)?.iter().any(|e| carried(e)) {
+        for event in store.events(from_run_id)?.into_iter().filter(|e| carried(e)) {
+            store.append_event(&Event {
+                event_id: next_event_id(&record.run_id),
+                run_id: record.run_id.clone(),
+                project_id: record.project_id.clone(),
+                feature_id: record.feature_id.clone(),
+                ..event
+            })?;
+        }
+    }
+    let from = from_logs.join(DESIGN_DIR);
+    let to = to_logs.join(DESIGN_DIR);
+    if std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_dir()) && std::fs::symlink_metadata(&to).is_err() {
+        copy_tree(&from, &to).map_err(|e| StoreError::Corrupt(format!("cannot carry the design folder of {from_run_id}: {e}")))?;
+    }
+    Ok(())
+}
+
+/// The run's design folder in its logs.
+const DESIGN_DIR: &str = "design";
+
+/// Copies the folders and regular files under `from` to `to`; a symlink is never followed or copied.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// The issues still to fix: open or regressed, never those the review found resolved.
 fn verified_issues(review: &DesignReviewOutcome) -> Vec<ReviewIssue> {
     let issues = review.review.as_ref().map(|r| r.issues.as_slice()).unwrap_or_default();
