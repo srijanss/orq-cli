@@ -711,6 +711,36 @@ fn svgs_loading_external_resources_through_css_or_attributes_are_refused() {
 }
 
 #[test]
+fn character_references_in_an_svg_attribute_cannot_hide_the_attributes_after_it() {
+    let f = Fixture::new("svg-references");
+    f.full_package();
+    f.put(
+        "assets/hidden-onload.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg" data-x="&quot;&gt;&lt;!--" onload="alert(1)"/>"#,
+    );
+    f.put(
+        "assets/hidden-href.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg"><g data-x="&quot;&gt;&lt;!--"/><image href="https://example.com/x.png"/></svg>"#,
+    );
+    f.put(
+        "assets/quoted.svg",
+        r##"<svg xmlns="http://www.w3.org/2000/svg"><title>a &lt;b&gt; &amp; c</title><g data-x="&quot;&gt;"/><use href="#g"/></svg>"##,
+    );
+
+    let problems = refused(f.start());
+
+    assert!(
+        mentions(&problems, &["assets/hidden-onload.svg", "onload"]),
+        "{problems:?}"
+    );
+    assert!(
+        mentions(&problems, &["assets/hidden-href.svg", "href"]),
+        "{problems:?}"
+    );
+    assert!(!mentions(&problems, &["assets/quoted.svg"]), "{problems:?}");
+}
+
+#[test]
 fn svg_comments_hide_no_attributes_however_many_there_are() {
     let f = Fixture::new("svg-comments");
     f.full_package();

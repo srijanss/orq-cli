@@ -661,38 +661,33 @@ fn be16(bytes: &[u8], at: usize) -> Option<u16> {
 
 /// Why an SVG is unsafe: a `<script>`, a `<foreignObject>`, an `on*` attribute, an entity
 /// declaration or stylesheet link, or anything that loads a resource (`href`, `src`, CSS `url()`,
-/// `@import`) that isn't a local fragment or a data image. Read as text, case-insensitively, with
-/// XML character references decoded first.
+/// `@import`) that isn't a local fragment or a data image. Read as text, case-insensitively. The
+/// markup is read as written, as an XML parser does; XML character references are decoded only
+/// inside attribute values and `<style>` contents, where they stand for text.
 fn svg_problem(bytes: &[u8]) -> Option<String> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Some("is not a UTF-8 SVG".to_string());
     };
-    let raw = text.to_ascii_lowercase();
-    if raw.contains("<!entity") {
+    let text = text.to_ascii_lowercase();
+    if text.contains("<!entity") {
         return Some("is refused: it declares an <!ENTITY>".to_string());
     }
-    if raw.contains("<?xml-stylesheet") {
+    if text.contains("<?xml-stylesheet") {
         return Some("is refused: it links a stylesheet".to_string());
     }
-    let text = decode_references(&raw).to_ascii_lowercase();
     if text.contains("<script") {
         return Some("is refused: it has a <script>".to_string());
     }
     if text.contains("<foreignobject") {
         return Some("is refused: it has a <foreignObject>".to_string());
     }
-    if text.contains("@import") {
-        return Some("is refused: its CSS has an @import".to_string());
-    }
-    for target in css_urls(&text) {
-        if !local_resource(&target) {
-            return Some(format!(
-                "is refused: url({target}) is neither a local #fragment nor a data image"
-            ));
-        }
-    }
-    let mut styles = style_elements(&text);
+    let decoded = |raw: &str| decode_references(raw).to_ascii_lowercase();
+    // Where CSS may be: `<style>` contents and every attribute value (`style` and presentation
+    // attributes such as `fill` alike).
+    let mut css: Vec<String> = style_elements(&text).iter().map(|s| decoded(s)).collect();
+    let mut styles = css.clone();
     for (name, value) in svg_attributes(&text) {
+        let value = decoded(&value);
         if name.starts_with("on") {
             return Some(format!("is refused: it has the event attribute {name}"));
         }
@@ -703,7 +698,18 @@ fn svg_problem(bytes: &[u8]) -> Option<String> {
             ));
         }
         if name == "style" {
-            styles.push(value);
+            styles.push(value.clone());
+        }
+        css.push(value);
+    }
+    if css.iter().any(|css| css.contains("@import")) {
+        return Some("is refused: its CSS has an @import".to_string());
+    }
+    for target in css.iter().flat_map(|css| css_urls(css)) {
+        if !local_resource(&target) {
+            return Some(format!(
+                "is refused: url({target}) is neither a local #fragment nor a data image"
+            ));
         }
     }
     if styles.iter().any(|style| style.contains('\\')) {
