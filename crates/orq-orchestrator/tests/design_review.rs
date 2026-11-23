@@ -738,12 +738,16 @@ fn agent_script(f: &Fixture, role: &str, body: &str) {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Whether `pid` is a running process: a zombie, killed but not yet reaped by whoever adopted
+/// it, is not running. Its state is the field after the `(comm)` of `/proc/<pid>/stat`.
 fn process_is_alive(pid: &str) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", pid])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next());
+    !matches!(state, None | Some("Z") | Some("X"))
 }
 
 #[test]
