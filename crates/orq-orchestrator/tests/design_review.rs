@@ -329,6 +329,21 @@ fn the_reviewer_runs_read_only_with_the_references_and_captures_attached() {
 }
 
 #[test]
+fn the_reviewer_loads_no_extensions_mcp_servers_or_project_context() {
+    let f = Fixture::new();
+    f.answer(
+        "reviewer",
+        &answer("pass", vec![check("layout", "pass")], vec![]),
+    );
+    f.review(1);
+
+    let argv = f.argv("reviewer", 1);
+    for flag in ["--no-extensions", "--no-mcp", "--no-context-files", "--no-session"] {
+        assert!(argv.iter().any(|a| a == flag), "{flag} missing: {argv:?}");
+    }
+}
+
+#[test]
 fn a_changes_required_answer_is_reported_as_changes_required() {
     let f = Fixture::new();
     f.answer(

@@ -540,7 +540,19 @@ fn agent_argv(
     let mut argv = vec!["-p".to_string()];
     match agent.harness.as_str() {
         "pi" => {
-            argv.extend(["--no-session", "--model", &agent.model].map(str::to_string));
+            // The checkout is the page under review, not a config: none of its extensions, MCP
+            // servers or context files load, so nothing of it runs or joins the session.
+            argv.extend(
+                [
+                    "--no-session",
+                    "--no-extensions",
+                    "--no-mcp",
+                    "--no-context-files",
+                    "--model",
+                    &agent.model,
+                ]
+                .map(str::to_string),
+            );
             if let Some(thinking) = &agent.thinking {
                 argv.extend(["--thinking".to_string(), thinking.clone()]);
             }
