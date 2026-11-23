@@ -19,6 +19,8 @@ const TOKENS_CSS: &str = "tokens.css";
 const TOKENS_JSON: &str = "tokens.json";
 const MEASUREMENTS_FILE: &str = "measurements.json";
 const TOKEN_CHECK_FILE: &str = "token-check.json";
+/// The round's capture record: which pages were captured, so a page measured is never missed.
+const CAPTURE_FILE: &str = "capture.json";
 /// The root font size a page that did not record its own is measured with.
 const DEFAULT_ROOT_PX: f64 = 16.0;
 /// How far a measured size may be from its token, in px.
@@ -178,7 +180,11 @@ fn slug(text: &str) -> String {
 pub fn check_design_tokens(design_dir: &Path, round: u32) -> TokenCheck {
     let round_dir = design_dir.join(format!("round-{round}"));
     let check = match package_tokens(design_dir) {
-        Ok(tokens) => compare_round(round, &tokens, &design_rules(design_dir), &read_measurements(&round_dir)),
+        Ok(tokens) => {
+            let viewports = read_measurements(&round_dir);
+            let gaps = unmeasured_pages(&round_dir, &viewports);
+            compare_round(round, &tokens, &design_rules(design_dir), &viewports, &gaps)
+        }
         Err(reason) => TokenCheck {
             round,
             status: TokenCheckStatus::NotAssessed,
@@ -250,11 +256,40 @@ pub fn token_rule_selectors(design_dir: &Path) -> Vec<String> {
     selectors
 }
 
+/// What of the round could not be checked: each page `capture.json` records as captured whose
+/// measurements are missing or unreadable (`/about at desktop`), or, with nothing measured at all,
+/// the round itself.
+fn unmeasured_pages(round_dir: &Path, viewports: &[(String, Vec<(String, Value)>)]) -> Vec<String> {
+    let capture: Value = read_text(&round_dir.join(CAPTURE_FILE))
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Value::Null);
+    let mut gaps = Vec::new();
+    for page in capture["pages"].as_array().into_iter().flatten() {
+        let (Some(viewport), Some(route)) = (page["viewport"].as_str(), page["route"].as_str()) else {
+            continue;
+        };
+        if page["image"].is_null() || !page["failure"].is_null() {
+            continue;
+        }
+        let measured = viewports
+            .iter()
+            .any(|(name, routes)| name == viewport && routes.iter().any(|(r, _)| r == route));
+        if !measured {
+            gaps.push(format!("{route} at {viewport}"));
+        }
+    }
+    if viewports.is_empty() && gaps.is_empty() {
+        gaps.push(format!("the round (no {MEASUREMENTS_FILE} at any viewport)"));
+    }
+    gaps
+}
+
 fn compare_round(
     round: u32,
     tokens: &DesignTokens,
     rules: &[TokenRule],
     viewports: &[(String, Vec<(String, Value)>)],
+    gaps: &[String],
 ) -> TokenCheck {
     let mut results = Vec::new();
     for (viewport, routes) in viewports {
@@ -331,13 +366,21 @@ fn compare_round(
             unknown.push(token);
         }
     }
-    let (status, reason) = if results.iter().any(|r| matches!(r.status, RuleStatus::Fail | RuleStatus::NoMatch)) {
-        (TokenCheckStatus::Fail, None)
-    } else if !unknown.is_empty() {
-        let reason = format!("the token rules name tokens that do not resolve: {}", unknown.join(", "));
-        (TokenCheckStatus::NotAssessed, Some(reason))
+    let mut unassessed = Vec::new();
+    if !unknown.is_empty() {
+        unassessed.push(format!("the token rules name tokens that do not resolve: {}", unknown.join(", ")));
+    }
+    if !gaps.is_empty() {
+        unassessed.push(format!("these pages have no readable measurements: {}", gaps.join(", ")));
+    }
+    let reason = (!unassessed.is_empty()).then(|| unassessed.join("; "));
+    // A violation found stays a failure; short of one, a check with gaps is never a pass.
+    let status = if results.iter().any(|r| matches!(r.status, RuleStatus::Fail | RuleStatus::NoMatch)) {
+        TokenCheckStatus::Fail
+    } else if reason.is_some() {
+        TokenCheckStatus::NotAssessed
     } else {
-        (TokenCheckStatus::Pass, None)
+        TokenCheckStatus::Pass
     };
     TokenCheck { round, status, reason, rules: results, warnings: off_token_values(tokens, viewports) }
 }

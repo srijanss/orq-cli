@@ -272,6 +272,44 @@ fn a_rule_naming_a_token_that_does_not_resolve_is_reported_and_the_check_is_not_
 }
 
 #[test]
+fn a_captured_page_without_readable_measurements_leaves_the_check_not_assessed() {
+    let dir = design_folder(
+        ":root { --weight-bold: 700; }",
+        "h1: font-weight --weight-bold",
+        vec![json!({"tag": "h1", "index": 0, "styles": {"font-weight": "700"}})],
+        json!({}),
+    );
+    let round = dir.path().join("round-1");
+    let page = |viewport: &str, route: &str, image: Option<&str>| {
+        json!({"route": route, "viewport": viewport, "viewport_width": 400, "viewport_height": 300,
+               "image": image, "image_width": 400, "image_height": 300, "failure": null})
+    };
+    let capture = json!({"round": 1, "pages": [
+        page("desktop", "/", Some("desktop/index.png")),
+        page("desktop", "/about", Some("desktop/about.png")),
+        page("mobile", "/", Some("mobile/index.png")),
+        page("tablet", "/", None),
+    ]});
+    std::fs::write(round.join("capture.json"), capture.to_string()).unwrap();
+    std::fs::create_dir_all(round.join("mobile")).unwrap();
+    std::fs::write(round.join("mobile").join("measurements.json"), "{not json").unwrap();
+
+    let check = check_design_tokens(dir.path(), 1);
+
+    assert_eq!(check.status, TokenCheckStatus::NotAssessed, "{check:#?}");
+    let reason = check.reason.clone().unwrap_or_default();
+    assert!(reason.contains("/about at desktop") && reason.contains("/ at mobile"), "{reason}");
+    assert!(!reason.contains("tablet"), "a page that failed to capture is the capture's failure: {reason}");
+
+    // With no measurements at all, the rules are not assessed either.
+    std::fs::remove_file(round.join("capture.json")).unwrap();
+    std::fs::remove_file(round.join("desktop").join("measurements.json")).unwrap();
+    let check = check_design_tokens(dir.path(), 1);
+    assert_eq!(check.status, TokenCheckStatus::NotAssessed, "{check:#?}");
+    assert!(check.reason.as_deref().is_some_and(|r| r.contains("measurements")), "{:?}", check.reason);
+}
+
+#[test]
 fn a_bare_id_selector_is_a_rule_not_a_heading_and_the_rules_after_it_are_read() {
     let rules = parse_token_rules(
         "## Token rules\n\n#hero: color --ink\n#hero .title: font-size --font-title\nh1: font-weight --weight-bold\n\n#\n\nh2: color --ink\n",
