@@ -861,6 +861,26 @@ fn a_design_review_round_that_ends_while_the_page_is_open_shows_without_a_reload
 }
 
 #[test]
+fn a_live_refresh_that_fails_is_tried_again_without_another_design_event() {
+    let s = setup("design-panel-live-retry");
+    one_round_run(&s, "r-1", "changes_required", json!([issue("gap", "Footer", "critical", "open")]));
+    let after = page(&s, "/api/projects/alpha/runs/r-1");
+    let mut before = after.clone();
+    before["run"]["design"] = Value::Null;
+
+    let failed = json!({"status": 500, "json": {"error": "busy"}});
+    let responses = vec![json!({"status": 200, "json": before}), projects(), live_design_event(&after, "r-1-9"), failed, json!({"status": 200, "json": after})];
+    let Some(out) = harness(json!({"url": "/projects/alpha/orchestrations/r-1", "responses": responses, "steps": [{"submit": TOKEN}, {"fire": 3000}], "selectors": SELECTORS})) else {
+        return;
+    };
+
+    assert_eq!(count(&out["frames"][1], "[data-design-review]"), 0, "{out}");
+    let end = last(&out);
+    assert_eq!(count(end, "[data-design-review]"), 1, "{out}");
+    position(&texts(end), "gap expected");
+}
+
+#[test]
 fn a_new_round_that_arrives_live_is_the_one_shown() {
     let s = setup("design-panel-live-round");
     two_round_run(&s, "r-1");

@@ -5401,22 +5401,28 @@ function designOf(run) {
 }
 
 // The run's design review, read again from the run page each time a design review event arrives live, so a
-// round that ends while the page is open shows without a reload. `onFresh` takes each batch of live events.
+// round that ends while the page is open shows without a reload. `onFresh` takes each batch of live events. A
+// read that fails is tried again every few seconds, a few times, so the last design event of a run still shows.
+const DESIGN_REFRESH_TRIES = 5;
 function useLiveDesign(run, follow) {
   const [read, setRead] = useState(null);
-  const asking = useRef(null);
+  const asking = useRef({ controller: null, timer: null });
+  const stop = () => {
+    if (asking.current.controller !== null) asking.current.controller.abort();
+    if (asking.current.timer !== null) clearTimeout(asking.current.timer);
+    asking.current = { controller: null, timer: null };
+  };
   useEffect(() => {
     setRead(null);
-    return () => {
-      if (asking.current !== null) asking.current.abort();
-      asking.current = null;
-    };
+    return stop;
   }, [run]);
-  const onFresh = (fresh) => {
-    if (follow === null || !fresh.some((event) => event.stage === "design_review")) return;
-    if (asking.current !== null) asking.current.abort();
+  const ask = (tries) => {
     const controller = new AbortController();
-    asking.current = controller;
+    asking.current = { controller, timer: null };
+    const again = () => {
+      if (controller.signal.aborted || tries <= 1) return;
+      asking.current.timer = setTimeout(() => ask(tries - 1), RECONNECT_MS);
+    };
     (async () => {
       try {
         const response = await get(follow.base, follow.token, controller.signal);
@@ -5426,13 +5432,22 @@ function useLiveDesign(run, follow) {
           return;
         }
         const body = response.ok ? await response.json() : null;
-        if (controller.signal.aborted || body === null || typeof body !== "object" || body.run === null || typeof body.run !== "object") return;
+        if (controller.signal.aborted) return;
+        if (body === null || typeof body !== "object" || body.run === null || typeof body.run !== "object") {
+          again();
+          return;
+        }
         const design = designOf(body.run);
         if (design !== null) setRead(design);
       } catch (failure) {
-        // Offline or aborted: the panel keeps what it shows and the next design event asks again.
+        again();
       }
     })();
+  };
+  const onFresh = (fresh) => {
+    if (follow === null || !fresh.some((event) => event.stage === "design_review")) return;
+    stop();
+    ask(DESIGN_REFRESH_TRIES);
   };
   return { design: read ?? designOf(run), onFresh };
 }
