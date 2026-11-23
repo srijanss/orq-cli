@@ -200,6 +200,18 @@ fn read_cases(dir: &Path) -> Result<Vec<Case>, String> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
+        // The name reaches the reviewer's prompt (its run id and folder), outside the data
+        // delimiters: only a plain name does.
+        let plain_name = !name.starts_with('.')
+            && name.len() <= 100
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !plain_name {
+            return Err(format!(
+                "the case folder name {name:?} must be letters, digits, '-', '_' or '.', not starting with '.'"
+            ));
+        }
         let case_dir = entry.path();
         for file in [REFERENCE_FILE, ACTUAL_FILE] {
             if !case_dir.join(file).is_file() {
