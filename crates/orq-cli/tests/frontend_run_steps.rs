@@ -174,16 +174,13 @@ impl Frontend {
         let bin = self.home.join("bin");
         std::fs::write(bin.join("claude"), format!("#!/bin/sh\nexec '{}' \"$@\"\n", agent.path().display())).unwrap();
         std::fs::set_permissions(bin.join("claude"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        // As the design preparer it writes DESIGN.md into the prepared folder its prompt names and
-        // answers `$HOME/preparer.json` (no conflicts, nothing needed when there is none); as
-        // anything else it fails.
+        // As the design preparer it answers `$HOME/preparer.json`, or a DESIGN.md with no
+        // conflicts and nothing needed; as anything else it fails.
         let pi = "#!/bin/sh\nif [ \"$1\" = --list-models ]; then printf 'provider  model  context  max-out  thinking  images\\nopenai  gpt-6.1-sol  400K  128K  yes  yes\\n'; exit 0; fi\n\
                   for a; do last=$a; done\n\
                   case \"$last\" in *'You are the design preparer'*) ;; *) exit 1 ;; esac\n\
                   printf '%s\\n' \"$last\" > \"$HOME/preparer-prompt\"\n\
-                  dir=$(printf '%s\\n' \"$last\" | sed -n 's/^The prepared folder, the only place you may write: //p')\n\
-                  printf '# Home, prepared\\n' > \"$dir/DESIGN.md\"\n\
-                  if [ -f \"$HOME/preparer.json\" ]; then cat \"$HOME/preparer.json\"; else printf '{\"conflicts\":[],\"inferred\":[],\"needed_files\":[]}'; fi\n";
+                  if [ -f \"$HOME/preparer.json\" ]; then cat \"$HOME/preparer.json\"; else printf '{\"files\":[{\"path\":\"DESIGN.md\",\"content\":\"# Home, prepared\"}],\"conflicts\":[],\"inferred\":[],\"needed_files\":[]}'; fi\n";
         std::fs::write(bin.join("pi"), pi).unwrap();
         std::fs::set_permissions(bin.join("pi"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let mut dirs = vec![bin, provider.bin_dir()];

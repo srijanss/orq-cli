@@ -382,16 +382,28 @@ fn prepare_retrying(preparer: &mut AgentPreparer, request: &PrepareRequest) -> R
 }
 
 #[test]
-fn the_agent_preparer_runs_the_harness_with_the_skill_and_a_write_tool_and_returns_its_answer() {
+fn the_agent_preparer_runs_a_read_only_harness_and_orq_writes_the_files_it_answers_into_the_prepared_folder() {
     let f = Fixture::new("agent");
     let manifest = f.freeze();
     let bin = TempDir::new("orq-design-infer-agent");
     let prepared = f.logs.path().join("design/prepared");
+    fs::create_dir_all(&prepared).unwrap();
     let package = f.logs.path().join("design/package");
     let request = PrepareRequest { feature: "checkout", package: &package, prepared: &prepared, manifest: &manifest };
+    let full = r##"{"files":[{"path":"DESIGN.md","content":"# Checkout\n"},{"path":"notes/tokens-mapping.md","content":"#123456 -> --brand\n"}],"conflicts":[],"inferred":[],"needed_files":[]}"##;
     let answer = r#"{"conflicts":[],"inferred":[],"needed_files":[]}"#;
     let log = f.logs.path().join("design/preparer.log");
-    let answering = fake_program(bin.path(), "answering", &format!("printf '%s' '{answer}'"));
+    let answering = fake_program(bin.path(), "answering", &format!("printf '%s' '{full}'"));
+    let escaping = fake_program(
+        bin.path(),
+        "escaping",
+        r#"printf '%s' '{"files":[{"path":"../escape.md","content":"x"}],"conflicts":[],"inferred":[],"needed_files":[]}'"#,
+    );
+    let imaging = fake_program(
+        bin.path(),
+        "imaging",
+        r#"printf '%s' '{"files":[{"path":"hero.png","content":"x"}],"conflicts":[],"inferred":[],"needed_files":[]}'"#,
+    );
     let failing = fake_program(bin.path(), "failing", "exit 3");
     let slow = fake_program(bin.path(), "slow", "sleep 30");
 
@@ -409,23 +421,38 @@ fn the_agent_preparer_runs_the_harness_with_the_skill_and_a_write_tool_and_retur
             log: log.clone(),
             timeout: Duration::from_secs(20),
         };
-        assert_eq!(prepare_retrying(&mut preparer, &request), Ok(answer.to_string()), "{harness}");
+        let given = prepare_retrying(&mut preparer, &request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&given).unwrap(),
+            serde_json::from_str::<serde_json::Value>(answer).unwrap(),
+            "{harness}: the answer without its files"
+        );
+        assert_eq!(read(&prepared.join("DESIGN.md")), b"# Checkout\n", "{harness}");
+        assert_eq!(read(&prepared.join("notes/tokens-mapping.md")), b"#123456 -> --brand\n", "{harness}");
         let args = String::from_utf8(read(&bin.path().join("args"))).unwrap();
         let args: Vec<&str> = args.split("\n--\n").collect();
         let prompt = args[args.len() - 2];
         assert!(prompt.contains("SKILL TEXT of design-prepare"), "{harness}: {prompt}");
-        assert!(prompt.contains(&prepared.display().to_string()), "{harness}: {prompt}");
         assert!(prompt.contains(&package.display().to_string()), "{harness}: {prompt}");
-        assert!(prompt.contains("needed_files"), "{harness}: the answer's shape is given: {prompt}");
+        assert!(prompt.contains("needed_files") && prompt.contains("\"files\""), "{harness}: the answer's shape is given: {prompt}");
         assert!(args.contains(&"openai/gpt-6.1-sol"), "{harness}: {args:?}");
-        if harness == "pi" {
-            assert!(args.windows(2).any(|w| w == ["--tools", "read,write"]), "{args:?}");
-        } else {
-            assert!(args.windows(2).any(|w| w == ["--tools", "Read,Write"]), "{args:?}");
-            assert!(args.windows(2).any(|w| w[0] == "--add-dir" && w[1] == prepared.display().to_string()), "{args:?}");
-        }
+        // The session gets a read tool only: it can write nowhere, orq writes its files.
+        let tools = if harness == "pi" { "read" } else { "Read" };
+        assert!(args.windows(2).any(|w| w == ["--tools", tools]), "{args:?}");
+        let flags = &args[..args.len() - 2];
+        assert!(!flags.iter().any(|a| a.contains("write") || a.contains("Write") || *a == "--add-dir"), "{flags:?}");
         assert!(String::from_utf8(read(&log)).unwrap().contains("from the agent"), "{harness}");
     }
+
+    for (tag, program, expected) in [("escaping", &escaping, "not a plain"), ("image", &imaging, "never an image")] {
+        let agent = DesignAgent { program: program.clone(), harness: "pi".to_string(), model: "m".to_string(), thinking: None };
+        let mut preparer =
+            AgentPreparer { agent: &agent, worktree: &f.worktree, skill: "s", log: log.clone(), timeout: Duration::from_secs(20) };
+        let why = prepare_retrying(&mut preparer, &request).unwrap_err();
+        assert!(why.contains(expected), "{tag}: {why}");
+    }
+    assert!(!f.logs.path().join("design/escape.md").exists(), "nothing is written outside the prepared folder");
+    assert!(!prepared.join("hero.png").exists());
 
     let agent = |program: &PathBuf| DesignAgent {
         program: program.clone(),

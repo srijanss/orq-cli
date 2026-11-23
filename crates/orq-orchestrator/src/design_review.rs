@@ -477,16 +477,8 @@ fn ask(
         .chain(context.captures.iter().map(|(path, _, _)| path))
         .map(|path| context.design_dir.join(path))
         .collect();
-    let argv = agent_argv(agent, &images, prompt, AgentAccess::ReadOnly)?;
+    let argv = agent_argv(agent, &images, prompt)?;
     run_agent(run, agent, role, &argv)
-}
-
-/// What a one-shot design session may touch: only read (the reviewers), or also write into one
-/// folder (the preparer).
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum AgentAccess<'a> {
-    ReadOnly,
-    WritesInto(&'a Path),
 }
 
 fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> String {
@@ -534,15 +526,13 @@ fn review_prompt(run: &DesignReviewRun, role: &str, context: &ReviewContext) -> 
     prompt
 }
 
-/// A one-shot session of the agent's harness, read-only unless `access` lets it write into one
-/// folder, the images attached (pi) or named for its read tool (claude), the prompt last.
+/// A one-shot, read-only session of the agent's harness, the images attached (pi) or named for
+/// its read tool (claude), the prompt last. No design role ever gets a write tool.
 pub(crate) fn agent_argv(
     agent: &DesignAgent,
     images: &[PathBuf],
     prompt: String,
-    access: AgentAccess,
 ) -> Result<Vec<String>, String> {
-    let writes = matches!(access, AgentAccess::WritesInto(_));
     let mut argv = vec!["-p".to_string()];
     match agent.harness.as_str() {
         "pi" => {
@@ -562,8 +552,7 @@ pub(crate) fn agent_argv(
             if let Some(thinking) = &agent.thinking {
                 argv.extend(["--thinking".to_string(), thinking.clone()]);
             }
-            let tools = if writes { "read,write" } else { "read" };
-            argv.extend(["--tools", tools].map(str::to_string));
+            argv.extend(["--tools", "read"].map(str::to_string));
             argv.extend(images.iter().map(|image| format!("@{}", image.display())));
         }
         "claude" => {
@@ -571,13 +560,12 @@ pub(crate) fn agent_argv(
             if let Some(thinking) = &agent.thinking {
                 argv.extend(["--effort".to_string(), thinking.clone()]);
             }
-            let tools = if writes { "Read,Write" } else { "Read" };
-            argv.extend(["--tools", tools, "--allowedTools", tools].map(str::to_string));
-            if let AgentAccess::WritesInto(folder) = access {
-                argv.extend(["--add-dir".to_string(), folder.display().to_string()]);
-            }
             argv.extend(
                 [
+                    "--tools",
+                    "Read",
+                    "--allowedTools",
+                    "Read",
                     "--disable-slash-commands",
                     "--strict-mcp-config",
                     "--setting-sources",
