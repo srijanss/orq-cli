@@ -5461,10 +5461,11 @@ function useDesignImages(source) {
   return images;
 }
 
-// The blob URL of the design image at `path`, or null when it cannot be shown; asked for once per page.
+// The blob URL of the design image at `path`, or null when it cannot be shown; asked for once per page while
+// it is on the way or once it came. One that failed is forgotten, so the next time it shows asks again.
 function designImageUrl(images, source, path) {
   if (!images.asked.has(path)) {
-    images.asked.set(path, (async () => {
+    const asking = (async () => {
       try {
         const response = await get(source.base + "/design/image?path=" + encodeURIComponent(path), source.token, images.controller.signal);
         if (response.status === 401) {
@@ -5482,7 +5483,11 @@ function designImageUrl(images, source, path) {
       } catch (error) {
         return null;
       }
-    })());
+    })();
+    images.asked.set(path, asking);
+    asking.then((url) => {
+      if (url === null && images.asked.get(path) === asking) images.asked.delete(path);
+    });
   }
   return images.asked.get(path);
 }

@@ -819,6 +819,21 @@ fn a_reference_shown_beside_two_captures_is_asked_for_once() {
     assert_eq!(asked, 1, "{out}");
 }
 
+#[test]
+fn an_image_that_failed_is_asked_for_again_when_its_round_shows_again() {
+    let s = setup("design-panel-image-retry");
+    two_round_run(&s, "r-1");
+    let body = page(&s, "/api/projects/alpha/runs/r-1");
+    let missing = json!({"status": 404, "json": {"error": "not found"}});
+
+    let Some(out) = open("r-1", body, vec![missing; 4], vec![], vec![json!({"click": "[data-design-pick='1']"}), json!({"click": "[data-design-pick='2']"})]) else {
+        return;
+    };
+
+    let asked = out["requests"].as_array().unwrap().iter().filter(|r| r["url"].as_str().unwrap().ends_with("path=round-2%2Fdesktop%2Findex.png")).count();
+    assert_eq!(asked, 2, "{out}");
+}
+
 /// A live design review event, as the run's event stream sends it.
 fn live_design_event(body: &Value, id: &str) -> Value {
     let mut event = body["events"][0].clone();
