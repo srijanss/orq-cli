@@ -6,6 +6,7 @@
 //! names a gate, the `GATE_CMD` of the old script's settings file is run with `bash -c`, as the
 //! script ran it. That file is only ever parsed here, never evaluated.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -77,6 +78,114 @@ pub struct RunSettings {
     pub rebase_generated: Option<Vec<String>>,
     /// `[rebase] rebuild`: the command that rebuilds the generated files.
     pub rebase_rebuild: Option<Vec<String>>,
+    /// `[design]`: the frontend run's browser and loop settings; `None` when no file has the table.
+    pub design: Option<DesignSettings>,
+}
+
+/// The `[design]` table, with the defaults filled in for every key no source set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignSettings {
+    /// The argv that starts the project's dev server; `{port}` stands for the run's port. Required
+    /// for a frontend run, so `None` is only refused when one starts (see [`DesignSettings::start_argv`]).
+    pub start_command: Option<Vec<String>>,
+    /// The path polled until it answers 2xx.
+    pub ready_path: String,
+    pub ready_timeout: Duration,
+    /// 0..=3; 3 is also the hard cap.
+    pub max_correction_rounds: u8,
+    /// An issue still open after this many rounds goes to the verifier.
+    pub verify_after_rounds: u8,
+    pub mode: DesignMode,
+    /// Reference name to viewport: the built-in `desktop`, `tablet` and `mobile`, plus any added.
+    pub viewports: BTreeMap<String, Viewport>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesignMode {
+    Prepared,
+    Infer,
+}
+
+/// A viewport size in CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Viewport {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DesignSettings {
+    /// The start command for a run on `port`, every `{port}` replaced; an error naming the key when
+    /// the project set none, so a frontend run stops before any agent starts.
+    pub fn start_argv(&self, port: u16) -> Result<Vec<String>, String> {
+        let command = self.start_command.as_ref().ok_or_else(|| {
+            format!("design.start_command is required for a frontend run: set it in the [design] table of {SHARED_FILE}")
+        })?;
+        let port = port.to_string();
+        Ok(command
+            .iter()
+            .map(|word| word.replace(PORT_PLACEHOLDER, &port))
+            .collect())
+    }
+}
+
+const PORT_PLACEHOLDER: &str = "{port}";
+const MAX_DESIGN_ROUNDS: i64 = 3;
+const MAX_READY_TIMEOUT_SECS: i64 = 3_600;
+const VIEWPORT_SIDES: std::ops::RangeInclusive<u32> = 200..=4000;
+
+/// One source's `[design]` values.
+#[derive(Default)]
+struct DesignLayer {
+    /// A file of this layer has the table; the environment alone never makes one.
+    present: bool,
+    start_command: Option<Vec<String>>,
+    ready_path: Option<String>,
+    ready_timeout: Option<Duration>,
+    max_correction_rounds: Option<u8>,
+    verify_after_rounds: Option<u8>,
+    mode: Option<DesignMode>,
+    viewports: BTreeMap<String, Viewport>,
+}
+
+impl DesignLayer {
+    fn over(self, lower: DesignLayer) -> DesignLayer {
+        let mut viewports = lower.viewports;
+        viewports.extend(self.viewports);
+        DesignLayer {
+            present: self.present || lower.present,
+            start_command: self.start_command.or(lower.start_command),
+            ready_path: self.ready_path.or(lower.ready_path),
+            ready_timeout: self.ready_timeout.or(lower.ready_timeout),
+            max_correction_rounds: self.max_correction_rounds.or(lower.max_correction_rounds),
+            verify_after_rounds: self.verify_after_rounds.or(lower.verify_after_rounds),
+            mode: self.mode.or(lower.mode),
+            viewports,
+        }
+    }
+
+    fn settings(self) -> Option<DesignSettings> {
+        if !self.present {
+            return None;
+        }
+        let mut viewports: BTreeMap<String, Viewport> = [
+            ("desktop", 1440, 900),
+            ("tablet", 768, 1024),
+            ("mobile", 390, 844),
+        ]
+        .into_iter()
+        .map(|(name, width, height)| (name.to_string(), Viewport { width, height }))
+        .collect();
+        viewports.extend(self.viewports);
+        Some(DesignSettings {
+            start_command: self.start_command,
+            ready_path: self.ready_path.unwrap_or_else(|| "/".to_string()),
+            ready_timeout: self.ready_timeout.unwrap_or(Duration::from_secs(60)),
+            max_correction_rounds: self.max_correction_rounds.unwrap_or(3),
+            verify_after_rounds: self.verify_after_rounds.unwrap_or(2),
+            mode: self.mode.unwrap_or(DesignMode::Prepared),
+            viewports,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +237,7 @@ struct Layer {
     full_suite_in_session: Option<bool>,
     rebase_generated: Option<Vec<String>>,
     rebase_rebuild: Option<Vec<String>>,
+    design: DesignLayer,
 }
 
 impl Layer {
@@ -161,6 +271,7 @@ impl Layer {
             full_suite_in_session: self.full_suite_in_session.or(lower.full_suite_in_session),
             rebase_generated: self.rebase_generated.or(lower.rebase_generated),
             rebase_rebuild: self.rebase_rebuild.or(lower.rebase_rebuild),
+            design: self.design.over(lower.design),
         }
     }
 }
@@ -210,6 +321,7 @@ pub fn load_run_settings(
         full_suite_in_session: merged.full_suite_in_session,
         rebase_generated: merged.rebase_generated,
         rebase_rebuild: merged.rebase_rebuild,
+        design: merged.design.settings(),
     })
 }
 
@@ -368,6 +480,10 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
     for (key, item) in doc.iter() {
         if key == "rebase" {
             read_rebase_table(item, label, &mut layer)?;
+            continue;
+        }
+        if key == "design" {
+            read_design_table(item, label, &mut layer.design)?;
             continue;
         }
         if key == "release" || key == "after_merge" {
@@ -556,6 +672,218 @@ fn read_rebase_table(
     Ok(())
 }
 
+/// The `[design]` table and its `[design.viewports]` subtable. Every key is checked by the same
+/// validator the environment's variable goes through.
+fn read_design_table(
+    item: &toml_edit::Item,
+    label: &str,
+    design: &mut DesignLayer,
+) -> Result<(), SettingsError> {
+    let table = item
+        .as_table_like()
+        .ok_or_else(|| invalid(label, "design must be a table".to_string()))?;
+    design.present = true;
+    for (key, item) in table.iter() {
+        let bad = |reason: &str| invalid(label, format!("design.{key} {reason}"));
+        if key == "viewports" {
+            let viewports = item
+                .as_table_like()
+                .ok_or_else(|| bad("must be a table of name = \"<width>x<height>\""))?;
+            for (name, size) in viewports.iter() {
+                viewport_name(name).map_err(|r| bad(&r))?;
+                let bad =
+                    |reason: &str| invalid(label, format!("design.viewports.{name} {reason}"));
+                let size = size
+                    .as_value()
+                    .and_then(toml_edit::Value::as_str)
+                    .ok_or_else(|| bad("must be a string such as \"1440x900\""))?;
+                design
+                    .viewports
+                    .insert(name.to_string(), viewport(size).map_err(|r| bad(&r))?);
+            }
+            continue;
+        }
+        let value = item
+            .as_value()
+            .ok_or_else(|| bad("must be a plain value"))?;
+        let string = || value.as_str().ok_or_else(|| bad("must be a string"));
+        let number = || {
+            value
+                .as_integer()
+                .ok_or_else(|| bad("must be a whole number"))
+        };
+        match key {
+            "start_command" => {
+                design.start_command = Some(start_command(&json_of(value)).map_err(|r| bad(&r))?)
+            }
+            "ready_path" => design.ready_path = Some(ready_path(string()?).map_err(|r| bad(&r))?),
+            "ready_timeout_secs" => {
+                design.ready_timeout = Some(ready_timeout(number()?).map_err(|r| bad(&r))?)
+            }
+            "max_correction_rounds" => {
+                design.max_correction_rounds = Some(rounds(number()?).map_err(|r| bad(&r))?)
+            }
+            "verify_after_rounds" => {
+                design.verify_after_rounds = Some(rounds(number()?).map_err(|r| bad(&r))?)
+            }
+            "mode" => design.mode = Some(design_mode(string()?).map_err(|r| bad(&r))?),
+            _ => return Err(bad("is not a setting")),
+        }
+    }
+    Ok(())
+}
+
+/// The `ORQ_DESIGN_*` variables. They only override: a project whose files have no `[design]`
+/// table gets no design settings from them.
+fn design_env_layer(get: &dyn Fn(&str) -> Option<String>) -> Result<DesignLayer, SettingsError> {
+    let mut design = DesignLayer::default();
+    let number = |name: &str, text: &str| -> Result<i64, SettingsError> {
+        text.trim()
+            .parse()
+            .map_err(|_| invalid(name, "must be a whole number"))
+    };
+    if let Some(v) = get("ORQ_DESIGN_START_COMMAND") {
+        let name = "ORQ_DESIGN_START_COMMAND";
+        let value = serde_json::from_str(&v).map_err(|_| invalid(name, "must be a JSON value"))?;
+        design.start_command = Some(start_command(&value).map_err(|r| invalid(name, r))?);
+    }
+    if let Some(v) = get("ORQ_DESIGN_READY_PATH") {
+        design.ready_path =
+            Some(ready_path(v.trim()).map_err(|r| invalid("ORQ_DESIGN_READY_PATH", r))?);
+    }
+    if let Some(v) = get("ORQ_DESIGN_READY_TIMEOUT_SECS") {
+        let name = "ORQ_DESIGN_READY_TIMEOUT_SECS";
+        design.ready_timeout =
+            Some(ready_timeout(number(name, &v)?).map_err(|r| invalid(name, r))?);
+    }
+    if let Some(v) = get("ORQ_DESIGN_MAX_CORRECTION_ROUNDS") {
+        let name = "ORQ_DESIGN_MAX_CORRECTION_ROUNDS";
+        design.max_correction_rounds =
+            Some(rounds(number(name, &v)?).map_err(|r| invalid(name, r))?);
+    }
+    if let Some(v) = get("ORQ_DESIGN_VERIFY_AFTER_ROUNDS") {
+        let name = "ORQ_DESIGN_VERIFY_AFTER_ROUNDS";
+        design.verify_after_rounds = Some(rounds(number(name, &v)?).map_err(|r| invalid(name, r))?);
+    }
+    if let Some(v) = get("ORQ_DESIGN_MODE") {
+        design.mode = Some(design_mode(v.trim()).map_err(|r| invalid("ORQ_DESIGN_MODE", r))?);
+    }
+    if let Some(v) = get("ORQ_DESIGN_VIEWPORTS") {
+        let name = "ORQ_DESIGN_VIEWPORTS";
+        let value: serde_json::Value =
+            serde_json::from_str(&v).map_err(|_| invalid(name, "must be a JSON value"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid(name, "must be a JSON object of name: \"<width>x<height>\""))?;
+        for (viewport_key, size) in object {
+            viewport_name(viewport_key).map_err(|r| invalid(name, r))?;
+            let size = size.as_str().ok_or_else(|| {
+                invalid(
+                    name,
+                    format!("{viewport_key} must be a string such as \"1440x900\""),
+                )
+            })?;
+            let size = viewport(size).map_err(|r| invalid(name, format!("{viewport_key} {r}")))?;
+            design.viewports.insert(viewport_key.clone(), size);
+        }
+    }
+    Ok(design)
+}
+
+/// An argv like the gate's, whose only placeholder is `{port}`.
+fn start_command(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    let words = argv(value)?;
+    for word in &words {
+        let mut rest = word.as_str();
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open..].find('}') else {
+                break;
+            };
+            let token = &rest[open..=open + close];
+            if token != PORT_PLACEHOLDER {
+                return Err(format!(
+                    "uses the placeholder {token}: {PORT_PLACEHOLDER} is the only one"
+                ));
+            }
+            rest = &rest[open + close + 1..];
+        }
+    }
+    Ok(words)
+}
+
+/// A path on the dev server, such as `/` or `/health?ready=1`: never a full or scheme-relative
+/// address, never blank, no spaces or control characters.
+fn ready_path(value: &str) -> Result<String, String> {
+    let plain = value.starts_with('/')
+        && !value.starts_with("//")
+        && value.chars().all(|c| c.is_ascii_graphic() && c != '\\');
+    if plain {
+        Ok(value.to_string())
+    } else {
+        Err("must be a path starting with /, such as /health".to_string())
+    }
+}
+
+fn ready_timeout(secs: i64) -> Result<Duration, String> {
+    if (1..=MAX_READY_TIMEOUT_SECS).contains(&secs) {
+        Ok(Duration::from_secs(secs as u64))
+    } else {
+        Err(format!("must be between 1 and {MAX_READY_TIMEOUT_SECS}"))
+    }
+}
+
+fn rounds(count: i64) -> Result<u8, String> {
+    if (0..=MAX_DESIGN_ROUNDS).contains(&count) {
+        Ok(count as u8)
+    } else {
+        Err(format!("must be between 0 and {MAX_DESIGN_ROUNDS}"))
+    }
+}
+
+fn design_mode(value: &str) -> Result<DesignMode, String> {
+    match value {
+        "prepared" => Ok(DesignMode::Prepared),
+        "infer" => Ok(DesignMode::Infer),
+        _ => Err("must be prepared or infer".to_string()),
+    }
+}
+
+/// A reference name: letters, digits, `-` and `_`.
+fn viewport_name(name: &str) -> Result<(), String> {
+    let plain = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if plain {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name:?} is not a usable viewport name (letters, digits, - and _)"
+        ))
+    }
+}
+
+/// `<width>x<height>` in CSS pixels, each side within the bounds.
+fn viewport(size: &str) -> Result<Viewport, String> {
+    let shape = || {
+        format!(
+            "must be <width>x<height> in CSS pixels, each between {} and {}",
+            VIEWPORT_SIDES.start(),
+            VIEWPORT_SIDES.end()
+        )
+    };
+    let (width, height) = size.split_once('x').ok_or_else(shape)?;
+    let side = |text: &str| {
+        text.parse::<u32>()
+            .ok()
+            .filter(|n| text.chars().all(|c| c.is_ascii_digit()) && VIEWPORT_SIDES.contains(n))
+    };
+    match (side(width), side(height)) {
+        (Some(width), Some(height)) => Ok(Viewport { width, height }),
+        _ => Err(shape()),
+    }
+}
+
 /// A list, possibly empty, of non-empty one-line paths.
 fn paths(value: &serde_json::Value) -> Result<Vec<String>, String> {
     value
@@ -578,7 +906,10 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     let json = |name: &str, text: &str| -> Result<serde_json::Value, SettingsError> {
         serde_json::from_str(text).map_err(|_| invalid(name, "must be a JSON value"))
     };
-    let mut layer = Layer::default();
+    let mut layer = Layer {
+        design: design_env_layer(&get)?,
+        ..Layer::default()
+    };
     if let Some(v) = get("ORQ_FORGE") {
         layer.forge = Some(forge(v.trim()).map_err(|r| invalid("ORQ_FORGE", r))?);
     }

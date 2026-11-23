@@ -160,7 +160,8 @@ pub use run_list::{
     RunListing, UNATTENDED_EVENT,
 };
 pub use run_settings::{
-    load_run_settings, model as checked_model, save_mcp_servers_setting, RunSettings, SettingsError,
+    load_run_settings, model as checked_model, save_mcp_servers_setting, DesignMode,
+    DesignSettings, RunSettings, SettingsError, Viewport,
 };
 pub use run_status::{
     record_capability_skipped, record_mcp_setup, record_model_switched, record_run_completed,
