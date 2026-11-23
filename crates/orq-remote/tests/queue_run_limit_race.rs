@@ -218,6 +218,37 @@ fn a_start_its_runner_refuses_on_the_machine_limit_waits_for_a_slot() {
     assert_eq!((&started_again["run"], &started_again["state"]), (&json!(run_of(&s, "A-01")), &json!("running")));
 }
 
+/// The queue may read a refusal while the runner writes it: once the refusal's file is there, it
+/// reads whole, never as a half-written file that would count as no refusal and fail the entry.
+#[test]
+fn a_refusal_being_recorded_never_reads_as_half_written() {
+    let s = setup("qrlr-refusal-atomic", "");
+    let runs = RunStore::new(&s.roots.state);
+    let file = s.roots.state.join("logs").join("run-refused").join(orq_orchestrator::LIMIT_REFUSAL_FILE);
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let (done, runs, file) = (done.clone(), RunStore::new(&s.roots.state), file.clone());
+        std::thread::spawn(move || {
+            let mut torn = 0;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                if file.exists() && orq_orchestrator::recorded_limit_refusal(&runs, "run-refused").is_none() {
+                    torn += 1;
+                }
+            }
+            torn
+        })
+    };
+    let long_reason = "alpha already has 1 active run ".repeat(4000);
+    for _ in 0..300 {
+        let refusal = orq_orchestrator::LimitRefusal { reason: long_reason.clone(), limit: orq_orchestrator::RunLimit::Project };
+        orq_orchestrator::record_limit_refusal(&runs, "run-refused", &refusal).unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(reader.join().unwrap(), 0, "a refusal read while it was written must read whole");
+    let left: Vec<_> = std::fs::read_dir(file.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(left, [std::ffi::OsString::from(orq_orchestrator::LIMIT_REFUSAL_FILE)], "nothing but the refusal is left behind");
+}
+
 #[test]
 fn a_launched_run_with_no_record_and_no_refusal_still_fails_its_entry() {
     let s = setup("qrlr-missing", "");

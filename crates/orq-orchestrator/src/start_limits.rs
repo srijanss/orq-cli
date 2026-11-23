@@ -202,7 +202,13 @@ pub fn record_limit_refusal(
     let dir = store.log_dir(run_id)?;
     std::fs::create_dir_all(&dir)?;
     let body = serde_json::json!({"reason": refusal.reason, "limit": refusal.limit.as_str()});
-    std::fs::write(dir.join(LIMIT_REFUSAL_FILE), body.to_string())?;
+    // Written aside and renamed into place, so a reader sees the whole refusal or none.
+    let aside = dir.join(format!(".{LIMIT_REFUSAL_FILE}.{}", std::process::id()));
+    std::fs::write(&aside, body.to_string())?;
+    if let Err(err) = std::fs::rename(&aside, dir.join(LIMIT_REFUSAL_FILE)) {
+        let _ = std::fs::remove_file(&aside);
+        return Err(err.into());
+    }
     Ok(())
 }
 
