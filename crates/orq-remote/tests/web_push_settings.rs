@@ -176,7 +176,29 @@ const BETA_MUTE: &str = "[data-push-mute=\"beta\"]";
 const BETA_MUTED: &str = "[data-push-muted=\"beta\"]";
 const ENABLE_OFF: &str = "[data-push-enable]:disabled";
 const MORE_FOR: &str = "button[aria-label^=\"More for \"]";
-const SELECTORS: [&str; 11] = ["[data-push-device]", "[data-push-enable]", "input[data-push-kind]", "input[data-push-kind]:checked", "[data-push-mute]", "[data-push-muted]", FAILED_ON, BETA_MUTE, BETA_MUTED, ENABLE_OFF, MORE_FOR];
+const AFTER_REMOTE_ACTIONS: &str = ".settings-card:has([data-remote-actions]) + [data-push-settings]";
+const BEFORE_DEFAULTS: &str = "[data-push-settings] ~ [data-machine-defaults]";
+const SWITCH_ON: &str = "[data-push-enable][role=\"switch\"][aria-checked=\"true\"]";
+const SWITCH_OFF: &str = "[data-push-enable][role=\"switch\"][aria-checked=\"false\"]";
+const KINDS_IN_BLOCK: &str = ".push-kinds-block input[data-push-kind]";
+const SELECTORS: [&str; 16] = [
+    "[data-push-device]",
+    "[data-push-enable]",
+    "input[data-push-kind]",
+    "input[data-push-kind]:checked",
+    "[data-push-mute]",
+    "[data-push-muted]",
+    FAILED_ON,
+    BETA_MUTE,
+    BETA_MUTED,
+    ENABLE_OFF,
+    MORE_FOR,
+    AFTER_REMOTE_ACTIONS,
+    BEFORE_DEFAULTS,
+    SWITCH_ON,
+    SWITCH_OFF,
+    KINDS_IN_BLOCK,
+];
 const FIREFOX: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
 
 fn page(scenario: Value) -> Option<Value> {
@@ -223,6 +245,44 @@ fn sent(out: &Value, method: &str) -> Vec<Value> {
 }
 
 #[test]
+fn notifications_card_comes_right_after_remote_actions() {
+    let Some(out) = settings_page(json!({"permission": "granted", "subscription": {}}), json!({}), json!([])) else { return };
+    let last = out["frames"].as_array().unwrap().last().unwrap();
+    assert_eq!(count(last, "[data-push-enable]"), 1, "the card is drawn: {out}");
+    assert_eq!(count(last, AFTER_REMOTE_ACTIONS), 1, "straight after Run settings: {out}");
+    assert_eq!(count(last, BEFORE_DEFAULTS), 1, "before Machine defaults: {out}");
+}
+
+#[test]
+fn kind_checkboxes_show_only_while_the_switch_is_on() {
+    let subscription = json!({"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "au"}});
+    let replies = json!({"POST /api/push/subscriptions": {"status": 201, "json": {"id": 2}}});
+    let Some(out) = settings_page(json!({"permission": "granted", "subscription": subscription}), replies, json!([{"click": "[data-push-enable]"}])) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!((count(&frames[0], SWITCH_OFF), count(&frames[0], SWITCH_ON)), (1, 0), "off without a subscription: {out}");
+    assert_eq!(count(&frames[0], "input[data-push-kind]"), 0, "no kinds while off: {out}");
+    assert_eq!((count(&frames[1], SWITCH_ON), count(&frames[1], SWITCH_OFF)), (1, 0), "on once subscribed: {out}");
+    assert_eq!(count(&frames[1], KINDS_IN_BLOCK), orq_remote::web_push::KINDS.len() as u64, "a switch per kind in its own block: {out}");
+    assert_eq!(count(&frames[1], "input[data-push-kind]"), orq_remote::web_push::KINDS.len() as u64, "{out}");
+}
+
+#[test]
+fn an_existing_subscription_starts_on_and_switching_off_unsubscribes() {
+    let subscription = json!({"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "au"}});
+    let replies = json!({"GET /api/push/subscriptions": {"subscriptions": [device(1, "Firefox on Linux")]}});
+    let Some(out) = settings_page(json!({"permission": "granted", "subscription": subscription, "subscribed": true}), replies, json!([{"click": "[data-push-enable]"}])) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[0], SWITCH_ON), 1, "on with a subscription: {out}");
+    assert_eq!(count(&frames[0], KINDS_IN_BLOCK), orq_remote::web_push::KINDS.len() as u64, "{out}");
+    assert_eq!(out["pushed"]["unsubscribed"], 1, "{out}");
+    assert_eq!((count(&frames[1], SWITCH_OFF), count(&frames[1], SWITCH_ON)), (1, 0), "{out}");
+    assert_eq!(count(&frames[1], "input[data-push-kind]"), 0, "the kinds are hidden: {out}");
+    assert_eq!(count(&frames[1], "[data-push-device]"), 1, "the device stays listed: {out}");
+    assert_eq!(out["pushed"]["asked"], 0, "{out}");
+    assert!(sent(&out, "DELETE").is_empty(), "no DELETE: {out}");
+}
+
+#[test]
 fn settings_enables_this_device_lists_devices_removes_one_and_sends_a_test() {
     let subscription = json!({"endpoint": "https://push.example/abc", "keys": {"p256dh": "BPk", "auth": "au"}});
     let replies = json!({
@@ -236,8 +296,8 @@ fn settings_enables_this_device_lists_devices_removes_one_and_sends_a_test() {
     let Some(out) = settings_page(json!({"permission": "granted", "subscription": subscription}), replies, steps) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[0], "[data-push-device]"), 1, "{out}");
-    assert_eq!(count(&frames[0], "input[data-push-kind]"), orq_remote::web_push::KINDS.len() as u64, "a switch per kind: {out}");
-    assert_eq!(count(&frames[0], "input[data-push-kind]:checked"), orq_remote::web_push::KINDS.len() as u64 - 1, "{out}");
+    assert_eq!(count(&frames[1], "input[data-push-kind]"), orq_remote::web_push::KINDS.len() as u64, "a switch per kind once on: {out}");
+    assert_eq!(count(&frames[1], "input[data-push-kind]:checked"), orq_remote::web_push::KINDS.len() as u64 - 1, "{out}");
 
     // Enable: asks the browser, subscribes with the server's key, and sends the subscription with a label.
     assert_eq!(out["pushed"]["asked"], 1, "{out}");
@@ -317,7 +377,7 @@ fn buttons(frame: &Value) -> Vec<String> {
 fn a_kind_switched_off_and_a_muted_project_show_as_such_after_reload() {
     // Settings: switching "Failed" off sends it, and the page read afresh shows it off.
     let replies = json!({"GET /api/push/kinds": [kinds(&["started"]), kinds(&["started", "failed"])], "PUT /api/push/kinds": kinds(&["started", "failed"])});
-    let Some(out) = settings_page(json!({"permission": "granted", "subscription": {}}), replies, json!([{"click": "[data-push-kind=\"failed\"]"}, {"nav": "[data-refresh]"}])) else { return };
+    let Some(out) = settings_page(json!({"permission": "granted", "subscription": {}, "subscribed": true}), replies, json!([{"click": "[data-push-kind=\"failed\"]"}, {"nav": "[data-refresh]"}])) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[0], FAILED_ON), 1, "{out}");
     let puts = sent(&out, "PUT");
@@ -357,7 +417,7 @@ fn a_kind_switch_or_mute_that_fails_keeps_what_was_shown_says_why_and_can_be_tri
     let refused = json!({"status": 500, "json": {"error": "the notification kinds could not be saved"}});
     let replies = json!({"PUT /api/push/kinds": [refused, "reject", kinds(&["started", "failed"])]});
     let click = json!({"click": "[data-push-kind=\"failed\"]"});
-    let Some(out) = settings_page(json!({"permission": "granted", "subscription": {}}), replies, json!([click, click, click])) else { return };
+    let Some(out) = settings_page(json!({"permission": "granted", "subscription": {}, "subscribed": true}), replies, json!([click, click, click])) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert_eq!(count(&frames[1], FAILED_ON), 1, "still on: {out}");
     assert!(shown(&frames[1]).iter().any(|t| t == "the notification kinds could not be saved"), "{out}");

@@ -170,26 +170,34 @@ if (scenario.service_worker) {
 }
 // A scenario may give `user_agent`, what navigator.userAgent says.
 if (typeof scenario.user_agent === "string") Object.defineProperty(window.navigator, "userAgent", { value: scenario.user_agent, configurable: true });
-// A scenario may give `push`: {permission, subscription, supported, ready}. A browser with web push (unless `supported`
-// is false): Notification.requestPermission() answers `permission`, and the service worker's pushManager
-// subscribes with `subscription` (what its toJSON() gives). `pushed` in the output lists the permission asks
-// and the subscribe options, the key as an array of bytes.
-const pushed = { asked: 0, subscribed: [] };
+// A scenario may give `push`: {permission, subscription, subscribed, supported, ready}. A browser with web push (unless
+// `supported` is false): Notification.requestPermission() answers `permission`, and the service worker's pushManager
+// subscribes with `subscription` (what its toJSON() gives). With `subscribed` true, getSubscription() gives that
+// subscription from the start. `pushed` in the output lists the permission asks, the subscribe options (the key
+// as an array of bytes), and how many times a subscription was unsubscribed.
+const pushed = { asked: 0, subscribed: [], unsubscribed: 0 };
 if (scenario.push) {
   const spec = scenario.push;
   Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
   if (spec.supported !== false) {
     window.Notification = { permission: "default", requestPermission: () => { pushed.asked += 1; window.Notification.permission = spec.permission; return Promise.resolve(spec.permission); } };
     window.PushManager = function PushManager() {};
+    let current = null;
+    const subscription = () => {
+      const made = { endpoint: (spec.subscription || {}).endpoint, toJSON: () => spec.subscription, unsubscribe: () => { pushed.unsubscribed += 1; if (current === made) current = null; return Promise.resolve(true); } };
+      return made;
+    };
+    if (spec.subscribed === true) current = subscription();
     const registration = {
       waiting: null,
       installing: null,
       addEventListener: () => {},
       pushManager: {
-        getSubscription: () => Promise.resolve(null),
+        getSubscription: () => Promise.resolve(current),
         subscribe: (options) => {
           pushed.subscribed.push({ userVisibleOnly: options.userVisibleOnly, applicationServerKey: [...new Uint8Array(options.applicationServerKey)] });
-          return Promise.resolve({ endpoint: spec.subscription.endpoint, toJSON: () => spec.subscription });
+          current = subscription();
+          return Promise.resolve(current);
         },
       },
     };

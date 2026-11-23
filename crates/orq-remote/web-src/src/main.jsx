@@ -2001,6 +2001,7 @@ function pushRefusal(reply, fallback) {
 const PUSH_UNSUPPORTED = "This browser cannot show notifications from this page.";
 const PUSH_DENIED = "Notifications are blocked for this site. Allow them in the browser's site settings, then try again.";
 const PUSH_FAILED = "Notifications could not be turned on for this device.";
+const PUSH_OFF_FAILED = "Notifications could not be turned off for this device.";
 const PUSH_KIND_LABELS = { needs_input: "Needs your input", failed: "Failed", stalled: "Stalled", review: "Review ready or out of date", merged: "MR merged", finished: "Finished", started: "Started", queue_paused: "Queue paused", queue_finished: "Queue finished", restarted: "Orq restarted" };
 
 function pushSupported() {
@@ -2098,6 +2099,19 @@ function usePushMutes(token) {
   return { muted, change };
 }
 
+// This browser's push subscription, or null when it has none or cannot tell. Waits for the service worker
+// no longer than workerReady does.
+async function currentSubscription() {
+  if (!pushSupported()) return null;
+  try {
+    const registration = await workerReady();
+    if (registration === null) return null;
+    return (await registration.pushManager.getSubscription()) || null;
+  } catch (unreadable) {
+    return null;
+  }
+}
+
 // A project's push mute on its settings page: changed at once, apart from Edit/Save. Not shown when this
 // page may not see the push settings.
 function ProjectNotificationsCard({ token, projectId }) {
@@ -2173,13 +2187,15 @@ function PushDevice({ device, token, onRemoved }) {
   );
 }
 
-// Settings, "Notifications on this device": Enable, the subscribed devices, and a switch per kind. Not shown
+// Settings, "Notifications on this device": an On/Off switch for this browser's subscription, the subscribed
+// devices, and, while On, a switch per kind in a block of its own. Not shown
 // when the server does not let this page see the push settings (no passkey session).
 function PushCard({ token }) {
   const [devices, setDevices] = useState(null);
   const [kinds, setKinds] = useState(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [subscribed, setSubscribed] = useState(false);
   const load = async () => {
     try {
       const reply = await pushRequest(token, "GET", "subscriptions");
@@ -2198,8 +2214,15 @@ function PushCard({ token }) {
     }
   };
   useEffect(() => {
+    let live = true;
     load();
     loadKinds();
+    currentSubscription().then((subscription) => {
+      if (live) setSubscribed(subscription !== null);
+    });
+    return () => {
+      live = false;
+    };
   }, []);
   if (devices === null || devices === "off") return null;
   const enable = async () => {
@@ -2212,7 +2235,25 @@ function PushCard({ token }) {
       setBusy(false);
     }
     setNote(refused === null ? "Notifications are on for this device." : refused);
-    if (refused === null) load();
+    if (refused === null) {
+      setSubscribed(true);
+      load();
+    }
+  };
+  // Off ends this browser's subscription only; its device row stays until Remove.
+  const disable = async () => {
+    setBusy(true);
+    setNote("");
+    let ended = false;
+    try {
+      const subscription = await currentSubscription();
+      ended = subscription === null || (await subscription.unsubscribe()) === true;
+    } catch (refused) {
+      ended = false;
+    }
+    setBusy(false);
+    if (ended) setSubscribed(false);
+    else setNote(PUSH_OFF_FAILED);
   };
   const switchKind = async (kind, on) => {
     setBusy(true);
@@ -2229,12 +2270,17 @@ function PushCard({ token }) {
   return (
     <section className="card settings-card push-settings" data-push-settings>
       <SettingsHead icon="alert">Notifications on this device</SettingsHead>
-      <div className="settings-row">
-        <span>Notify this device of runs that need you</span>
-        <button type="button" className="primary-button" data-push-enable disabled={busy} onClick={enable}>
-          Enable
-        </button>
-      </div>
+      <dl className="settings-fields">
+        <div className="settings-row">
+          <dt>Notify this device of runs that need you</dt>
+          <dd className="settings-value">
+            <button type="button" role="switch" className="follow-switch" aria-label="Notify this device of runs that need you" aria-checked={subscribed ? "true" : "false"} data-push-enable disabled={busy} onClick={subscribed ? disable : enable}>
+              <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+              <span>{subscribed ? "On" : "Off"}</span>
+            </button>
+          </dd>
+        </div>
+      </dl>
       {note !== "" && <p role="status" data-push-note>{note}</p>}
       {devices === "failed" ? (
         <>
@@ -2251,18 +2297,23 @@ function PushCard({ token }) {
           ))}
         </ul>
       )}
-      {kinds === "failed" ? <p role="alert">The notification kinds could not be read.</p> : null}
-      {Array.isArray(kinds) ? (
-        <ul className="settings-fields push-kinds">
-          {kinds.map((kind) => (
-            <li key={kind.kind} className="settings-row">
-              <label>
-                <input type="checkbox" role="switch" data-push-kind={kind.kind} checked={kind.enabled} disabled={busy} onChange={() => switchKind(kind.kind, !kind.enabled)} />{" "}
-                {PUSH_KIND_LABELS[kind.kind] || kind.kind}
-              </label>
-            </li>
-          ))}
-        </ul>
+      {subscribed ? (
+        <div className="settings-block push-kinds-block">
+          <h3 className="settings-subhead">Notify me about</h3>
+          {kinds === "failed" ? <p role="alert">The notification kinds could not be read.</p> : null}
+          {Array.isArray(kinds) ? (
+            <ul className="settings-fields push-kinds">
+              {kinds.map((kind) => (
+                <li key={kind.kind} className="settings-row">
+                  <label>
+                    <input type="checkbox" role="switch" data-push-kind={kind.kind} checked={kind.enabled} disabled={busy} onChange={() => switchKind(kind.kind, !kind.enabled)} />{" "}
+                    {PUSH_KIND_LABELS[kind.kind] || kind.kind}
+                  </label>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
     </section>
   );
@@ -2949,7 +3000,7 @@ function KeptWorktrees({ token, onSignedOut }) {
   );
 }
 
-function SettingsView({ settings, token, onSignedOut, onChanged }) {
+function SettingsView({ settings, reloads, token, onSignedOut, onChanged }) {
   const on = settings.remote_actions === true;
   return (
     <>
@@ -2957,6 +3008,7 @@ function SettingsView({ settings, token, onSignedOut, onChanged }) {
         <SettingsHead icon="sliders">Run settings</SettingsHead>
         <RemoteActionsSwitch key={String(on) + " " + settings.version} on={on} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
       </section>
+      <PushCard key={"push " + reloads} token={token} />
       {settings.server !== null ? <ServerCard server={settings.server} on={on} token={token} onSignedOut={onSignedOut} onChanged={onChanged} /> : null}
       <div className="settings-group-head" data-machine-defaults>
         <h2>Machine defaults</h2>
@@ -7582,8 +7634,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
         <div className="settings-page">
           {/* The passkeys are read before the settings; their card is placed lower by the stylesheet. */}
           <PasskeysCard onSignOut={onSignOut} />
-          <PushCard key={"push " + reloads} token={token} />
-          <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} token={token} onSignedOut={onSignedOut} onChanged={() => setReloads(reloads + 1)} />} onSignedOut={onSignedOut} />
+          <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} reloads={reloads} token={token} onSignedOut={onSignedOut} onChanged={() => setReloads(reloads + 1)} />} onSignedOut={onSignedOut} />
           <section className="card settings-card settings-audit">
             <SettingsHead icon="doc">Activity</SettingsHead>
             <a className="settings-link" href="/settings/audit" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate("/settings/audit"); } }}>
