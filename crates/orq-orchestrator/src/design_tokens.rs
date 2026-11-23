@@ -51,6 +51,9 @@ pub enum RuleStatus {
     Fail,
     /// The selector matched no element on any route at the viewport: one result for the rule.
     NoMatch,
+    /// The binding's token is not in the tokens file, or its aliases never end: nothing was
+    /// compared, so the check is not assessed. The design's mistake, not the page's issue.
+    UnknownToken,
 }
 
 /// One rule's binding at one viewport: `token-check.json`'s `rules`.
@@ -100,7 +103,7 @@ impl TokenCheck {
     pub fn issues(&self) -> Vec<ReviewIssue> {
         self.rules
             .iter()
-            .filter(|rule| rule.status != RuleStatus::Pass)
+            .filter(|rule| matches!(rule.status, RuleStatus::Fail | RuleStatus::NoMatch))
             .map(|rule| {
                 let property = rule.property.clone().unwrap_or_default();
                 let token = rule.token.clone().unwrap_or_default();
@@ -282,6 +285,17 @@ fn compare_round(
             for binding in &rule.bindings {
                 let root = matched.first().map_or(DEFAULT_ROOT_PX, |m| m.2);
                 let Some(expected) = tokens.resolve(&binding.token, root) else {
+                    results.push(RuleResult {
+                        selector: rule.selector.clone(),
+                        viewport: viewport.clone(),
+                        property: Some(binding.property.clone()),
+                        token: Some(binding.token.clone()),
+                        expected: None,
+                        measured: None,
+                        route: None,
+                        matched: matched.len(),
+                        status: RuleStatus::UnknownToken,
+                    });
                     continue;
                 };
                 let expected = for_property(&binding.property, expected);
@@ -310,12 +324,22 @@ fn compare_round(
             }
         }
     }
-    let status = if results.iter().any(|r| r.status != RuleStatus::Pass) {
-        TokenCheckStatus::Fail
+    let mut unknown: Vec<&str> = Vec::new();
+    for result in results.iter().filter(|r| r.status == RuleStatus::UnknownToken) {
+        let token = result.token.as_deref().unwrap_or_default();
+        if !unknown.contains(&token) {
+            unknown.push(token);
+        }
+    }
+    let (status, reason) = if results.iter().any(|r| matches!(r.status, RuleStatus::Fail | RuleStatus::NoMatch)) {
+        (TokenCheckStatus::Fail, None)
+    } else if !unknown.is_empty() {
+        let reason = format!("the token rules name tokens that do not resolve: {}", unknown.join(", "));
+        (TokenCheckStatus::NotAssessed, Some(reason))
     } else {
-        TokenCheckStatus::Pass
+        (TokenCheckStatus::Pass, None)
     };
-    TokenCheck { round, status, reason: None, rules: results, warnings: off_token_values(tokens, viewports) }
+    TokenCheck { round, status, reason, rules: results, warnings: off_token_values(tokens, viewports) }
 }
 
 /// The colours and font sizes measured on landmarks that equal no token, once per landmark tag,

@@ -248,6 +248,30 @@ fn the_token_rules_section_binds_selectors_to_tokens_one_rule_per_line() {
 }
 
 #[test]
+fn a_rule_naming_a_token_that_does_not_resolve_is_reported_and_the_check_is_not_assessed() {
+    let dir = design_folder(
+        ":root { --weight-bold: 700; --loop-a: var(--loop-b); --loop-b: var(--loop-a); }",
+        "h1: font-weight --weight-bodl; color --loop-a",
+        vec![json!({"tag": "h1", "index": 0, "styles": {"font-weight": "700", "color": "rgb(0, 0, 0)"}})],
+        json!({}),
+    );
+
+    let check = check_design_tokens(dir.path(), 1);
+
+    assert_eq!(check.status, TokenCheckStatus::NotAssessed, "{check:#?}");
+    let reason = check.reason.clone().unwrap_or_default();
+    assert!(reason.contains("--weight-bodl") && reason.contains("--loop-a"), "{reason}");
+    let unresolved: Vec<(&str, &str)> = check
+        .rules
+        .iter()
+        .filter(|r| r.status == RuleStatus::UnknownToken)
+        .map(|r| (r.selector.as_str(), r.token.as_deref().unwrap_or("")))
+        .collect();
+    assert_eq!(unresolved, vec![("h1", "--weight-bodl"), ("h1", "--loop-a")]);
+    assert!(check.issues().is_empty(), "a design's own mistake is not the page's issue");
+}
+
+#[test]
 fn a_bare_id_selector_is_a_rule_not_a_heading_and_the_rules_after_it_are_read() {
     let rules = parse_token_rules(
         "## Token rules\n\n#hero: color --ink\n#hero .title: font-size --font-title\nh1: font-weight --weight-bold\n\n#\n\nh2: color --ink\n",
