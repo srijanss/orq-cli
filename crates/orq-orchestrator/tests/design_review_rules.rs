@@ -479,6 +479,24 @@ fn a_copy_issue_quoting_a_design_md_line_that_does_not_make_the_copy_exact_is_in
     assert_invalid("an unrelated DESIGN.md line", unrelated, "copy");
 }
 
+#[test]
+fn a_copy_issue_quoting_a_design_md_line_that_says_the_copy_need_not_be_exact_is_invalid() {
+    for line in [
+        "The copy need not be exact.",
+        "Copy does not need to be exact.",
+        "The sample text is inexact.",
+        "The text is never exact.",
+    ] {
+        let f = Fixture::with_design(&format!("# Home\n\n{line}\n"));
+        let mut copy = issue("hero-title", "rule", "major");
+        copy["copy"] = json!(true);
+        copy["quote"] = json!(line);
+        f.answer("reviewer", &answer("changes_required", vec![copy]));
+        assert_eq!(f.review(1), DesignVerdict::Blocked, "{line}");
+        assert_eq!(f.calls("reviewer"), 2, "{line}: one retry");
+    }
+}
+
 /// A fixture whose h1 is measured at weight 600 where a token rule binds it to `--weight-bold`.
 fn violated_token_rule() -> Fixture {
     let f = Fixture::with_design(&format!(

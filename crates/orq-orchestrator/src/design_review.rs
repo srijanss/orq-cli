@@ -336,16 +336,26 @@ impl PackageRules {
     }
 }
 
-/// Whether a quoted DESIGN.md passage says copy is exact: it says so (`exact`, `exactly`, `verbatim`,
-/// `word for word`) and names the copy, quoted or as copy, text or wording. Any other line of DESIGN.md
-/// (a header's height, say) leaves the mockup's text guidance only.
+/// Whether a quoted DESIGN.md passage affirms that copy is exact: it says so in whole words (`exact`,
+/// `exactly`, `verbatim`, `word for word`), names the copy (quoted, or as copy, text or wording) and
+/// negates nothing (`not`, `never`, `don't`…). The copy it quotes is left out of that reading. Any other
+/// line of DESIGN.md (a header's height, or that the copy need not be exact) leaves the mockup's text
+/// guidance only.
 fn makes_copy_exact(quote: &str) -> bool {
-    let quote = quote.to_lowercase();
-    let exact = ["exact", "verbatim", "word for word"].iter().any(|w| quote.contains(w));
-    let names_copy = quote.matches('"').count() >= 2
-        || (quote.contains('“') && quote.contains('”'))
-        || ["copy", "text", "wording"].iter().any(|w| quote.contains(w));
-    exact && names_copy
+    let quote = quote.to_lowercase().replace(['“', '”'], "\"");
+    let quoted_copy = quote.matches('"').count() >= 2;
+    // The passage's own words, outside the copy it quotes.
+    let prose: String = quote.split('"').step_by(2).collect::<Vec<_>>().join(" ");
+    let words: Vec<&str> = prose
+        .split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '’'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let exact = has(&["exact", "exactly", "verbatim"]) || words.windows(3).any(|w| w == ["word", "for", "word"]);
+    let names_copy = quoted_copy || has(&["copy", "text", "wording"]);
+    let negated = has(&["not", "no", "never", "nor", "without"])
+        || words.iter().any(|w| w.ends_with("n't") || w.ends_with("n’t"));
+    exact && names_copy && !negated
 }
 
 /// `text` with every run of whitespace one space, trimmed.
