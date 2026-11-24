@@ -195,9 +195,17 @@ pub fn run_design_loop(
             .reviews
             .iter()
             .any(|r| r.verdict == DesignVerdict::Pass);
+        // A verification review already answered by a new freeze is not held against the page: it is verified again.
         if let Some(last) = state.reviews.last().filter(|r| {
-            r.verification && r.verdict == DesignVerdict::ChangesRequired && r.head == head
+            r.verification
+                && r.verdict == DesignVerdict::ChangesRequired
+                && r.head == head
+                && !state.refrozen.contains(&r.round)
         }) {
+            // A file it needs is asked for, with still no correction round spent.
+            if last.issues.iter().any(|i| i.needs.is_some()) {
+                return ask_for_files(store, run_id, steps, last, max_correction_rounds);
+            }
             return Ok(DesignLoopOutcome::NeedsReview {
                 reason: "the design verification review after a later change requires changes"
                     .to_string(),

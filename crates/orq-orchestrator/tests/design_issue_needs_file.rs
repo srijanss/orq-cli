@@ -381,6 +381,78 @@ fn resuming_while_the_package_still_lacks_files_pauses_again_and_a_refused_packa
     let _ = fs::remove_dir_all(&w.root);
 }
 
+#[test]
+fn a_verification_review_that_needs_a_file_pauses_for_it_and_on_resume_the_page_is_verified_again()
+{
+    let w = world("verification");
+    let mut fake = Fake::new(vec![
+        reviewed(DesignVerdict::Pass, Vec::new()),
+        changes(vec![issue(
+            "testimonials-signatures",
+            Some("assets/signatures.svg"),
+        )]),
+    ]);
+    let got = run_design_loop(&w.store, "run-1", 3, &mut fake).unwrap();
+    assert!(matches!(got, DesignLoopOutcome::Passed { .. }), "{got:?}");
+    // A later change gets a verification review, which asks for the signature artwork.
+    fake.head = "later".to_string();
+    let got = run_design_loop(&w.store, "run-1", 3, &mut fake).unwrap();
+    let DesignLoopOutcome::FilesNeeded {
+        reason,
+        request,
+        open,
+        ..
+    } = got
+    else {
+        panic!("expected a files needed pause, got {got:?}");
+    };
+    assert_eq!(request.files, [signature_file()]);
+    assert!(open.is_empty(), "{open:?}");
+    assert!(
+        reason.starts_with("the design needs files the package does not have: "),
+        "{reason}"
+    );
+    assert!(fake.batches.is_empty(), "a verification review spends no round");
+    assert!(w
+        .store
+        .events("run-1")
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "design.files_needed"));
+
+    // Resumed with the file added, the package is frozen anew and the page verified again.
+    w.store.create(&record("run-2", &w.root)).unwrap();
+    let (from_logs, to_logs) = (w.root.join("logs-1"), w.root.join("logs-2"));
+    fs::create_dir_all(&from_logs).unwrap();
+    fs::create_dir_all(&to_logs).unwrap();
+    orq_orchestrator::carry_design(
+        &w.store,
+        &record("run-2", &w.root),
+        "run-1",
+        &from_logs,
+        &to_logs,
+    )
+    .unwrap();
+    let mut resumed = Fake::new(vec![reviewed(DesignVerdict::Pass, Vec::new())]);
+    resumed.head = "later".to_string();
+    let got = run_design_loop(&w.store, "run-2", 3, &mut resumed).unwrap();
+    assert_eq!(
+        got,
+        DesignLoopOutcome::Passed {
+            head: "later".to_string()
+        }
+    );
+    assert_eq!(
+        resumed.log,
+        [
+            "refreeze landing-page designs/landing-page/assets/signatures.svg",
+            "review 3"
+        ]
+    );
+    assert!(resumed.batches.is_empty());
+    let _ = fs::remove_dir_all(&w.root);
+}
+
 /// A fake whose design package is the folder of feature `package`.
 struct Packaged {
     fake: Fake,
