@@ -90,6 +90,20 @@ fn an_existing_self_dependency_or_cycle_does_not_refuse_the_append() {
     assert!(loaded.append(&into_cycle).is_ok(), "leading into an existing cycle is not a new cycle");
 }
 
+#[test]
+fn a_new_entry_closing_a_cycle_through_existing_entries_is_refused_beside_an_existing_cycle() {
+    // An existing cycle x <-> y comes first, then `old` waiting for a `new` that is not there yet.
+    let text = "[\n  {\"featureName\": \"x\", \"status\": \"draft\", \"dependsOn\": [\"y\"]},\n  {\"featureName\": \"y\", \"status\": \"draft\", \"dependsOn\": [\"x\"]},\n  {\"featureName\": \"old\", \"status\": \"draft\", \"dependsOn\": [\"new\"]}\n]\n";
+    let path = ledger("closing-cycle", text);
+    let mut closing = FeatureDraft::new("new");
+    closing.depends_on = Some(vec!["old".into()]);
+
+    let refused = LoadedLedger::load(&path).unwrap().append(&closing).unwrap_err();
+
+    assert_eq!(refused.to_string(), "dependency cycle among: new, old");
+    assert_eq!(fs::read_to_string(&path).unwrap(), text, "nothing was written");
+}
+
 /// Entries as given, each parsed alone, so a repeated name (which a whole ledger never loads with) can be built.
 fn entries(items: &[&str]) -> Vec<FeatureEntry> {
     items.iter().flat_map(|item| parse_ledger(&format!("[{item}]")).unwrap()).collect()
