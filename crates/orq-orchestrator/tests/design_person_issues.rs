@@ -482,9 +482,13 @@ impl Reviewing {
     }
 
     fn answer(&self, issues: Vec<Value>) {
+        self.answer_with("changes_required", issues);
+    }
+
+    fn answer_with(&self, verdict: &str, issues: Vec<Value>) {
         let answer = json!({
             "run_id": "@RUN@", "reference_hash": "@REF@", "capture_revision": "@CAP@",
-            "evaluation": "compared the desktop capture", "verdict": "changes_required",
+            "evaluation": "compared the desktop capture", "verdict": verdict,
             "checks": [], "issues": issues, "suggestions": [], "blockers": [],
         });
         fs::write(self.agents.path().join("answer.json"), answer.to_string()).unwrap();
@@ -535,6 +539,30 @@ fn grant() -> PersonGrant {
         extra: 1,
         batch: 2,
         issues,
+    }
+}
+
+#[test]
+fn a_minor_person_issue_left_open_or_regressed_keeps_the_page_from_passing() {
+    let minor = r#"[{"section": "Footer", "viewport": "all", "expected": "a transparent logo",
+      "actual": "the logo sits on a white box", "severity": "minor"}]"#;
+    let given = PersonGrant {
+        extra: 1,
+        batch: 2,
+        issues: orq_orchestrator::person_issues(minor, &viewports(), 1).unwrap(),
+    };
+    let r = Reviewing::new();
+    for status in ["open", "regressed"] {
+        // The reviewer asks for changes: orq does not turn it into a pass.
+        r.answer(vec![reported("person-1", status)]);
+        let got = r.review(std::slice::from_ref(&given));
+        assert_eq!(got.verdict, DesignVerdict::ChangesRequired, "{status}: {got:?}");
+        // The reviewer calls it a pass: orq refuses it.
+        r.answer_with("pass", vec![reported("person-1", status)]);
+        let got = r.review(std::slice::from_ref(&given));
+        assert_ne!(got.verdict, DesignVerdict::Pass, "{status}: {got:?}");
+        let reason = got.reason.unwrap_or_default();
+        assert!(reason.contains("person-1"), "{status}: {reason}");
     }
 }
 

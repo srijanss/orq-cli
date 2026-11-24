@@ -1324,9 +1324,10 @@ pub fn drop_refused_needs(review: &mut DesignReview) -> Vec<String> {
     notes
 }
 
-/// A critical or major issue that is open or came back.
+/// A critical or major issue, or any of the person's, that is open or came back.
 fn blocking(issue: &ReviewIssue) -> bool {
-    issue.severity != Severity::Minor && issue.status != IssueStatus::Resolved
+    (issue.severity != Severity::Minor || issue.basis == Some(IssueBasis::Person))
+        && issue.status != IssueStatus::Resolved
 }
 
 /// Whether `path`, relative to `design_dir` or absolute, names a plain file inside it, symlinks
