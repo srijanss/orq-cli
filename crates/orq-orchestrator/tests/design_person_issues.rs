@@ -273,6 +273,55 @@ fn a_needs_review_design_run_given_two_issues_runs_one_extra_batch_with_them_fir
     let _ = fs::remove_dir_all(&w.root);
 }
 
+/// A run resuming `from` as `run_id`, with the design review step carried into it.
+fn resumed(w: &World, from: &str, run_id: &str) -> RunRecord {
+    let record = RunRecord {
+        run_id: run_id.to_string(),
+        ..w.record.clone()
+    };
+    w.store.create(&record).unwrap();
+    let logs = w.root.join("logs");
+    fs::create_dir_all(logs.join(from)).unwrap();
+    orq_orchestrator::carry_design(&w.store, &record, from, &logs.join(from), &logs.join(run_id))
+        .unwrap();
+    record
+}
+
+#[test]
+fn issues_recorded_on_the_stopped_run_reach_the_resumed_run_which_runs_one_extra_batch_and_a_later_resume_none(
+) {
+    let w = world("carried");
+    ended_needing_review(&w);
+    record_design_person_issues(&w.store, "run-1", TWO_ISSUES, &viewports()).unwrap();
+
+    // The resume is a run of its own; the issues and their extra round come with the design review step.
+    let second = resumed(&w, "run-1", "run-2");
+    let mut steps = Fake::new("fix-1", vec![changes()]);
+    let got = run_design_loop(&w.store, "run-2", 1, &mut steps).unwrap();
+    assert!(matches!(got, DesignLoopOutcome::NeedsReview { .. }), "{got:?}");
+    assert_eq!(steps.parts.len(), 1, "one extra batch");
+    let (batch, part) = &steps.parts[0];
+    assert_eq!(*batch, 2);
+    assert_eq!(
+        part.issues.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        ["person-1", "person-2", "hero-size"]
+    );
+    assert_eq!(
+        steps.reviewed.last().unwrap().1,
+        ["person-1", "person-2"],
+        "the review after it is given the person's issues"
+    );
+    record_run_completed(&w.store, &second, "needs_review", Some("still requires changes")).unwrap();
+
+    // A plain resume of that run gets no extra round again, but its reviews still keep the issues.
+    resumed(&w, "run-2", "run-3");
+    let mut plain = Fake::new("fix-2", vec![changes()]);
+    let got = run_design_loop(&w.store, "run-3", 1, &mut plain).unwrap();
+    assert!(matches!(got, DesignLoopOutcome::NeedsReview { .. }), "{got:?}");
+    assert!(plain.parts.is_empty(), "{:?}", plain.parts);
+    let _ = fs::remove_dir_all(&w.root);
+}
+
 #[test]
 fn a_run_that_is_not_a_design_run_or_did_not_end_in_its_design_review_or_an_invalid_file_is_refused(
 ) {
