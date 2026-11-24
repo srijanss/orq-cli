@@ -378,7 +378,7 @@ fn design_fix_part_task(
     );
     if let Some(report) = report {
         task.push_str(&format!(
-            "\nSome long fields above were shortened; the full issues are in the round's report, {}.\n",
+            "\nSome long fields were shortened; the full issues and suggestions are in the round's report, {}.\n",
             report.display()
         ));
     }
@@ -402,7 +402,10 @@ fn quoted_section(section: &str) -> String {
         .collect();
     let line = words.join(" ");
     let shown = if line.chars().count() > SECTION_NAME_SHOWN {
-        format!("{}…", line.chars().take(SECTION_NAME_SHOWN).collect::<String>())
+        format!(
+            "{}…",
+            line.chars().take(SECTION_NAME_SHOWN).collect::<String>()
+        )
     } else {
         line
     };
@@ -470,12 +473,14 @@ pub fn plan_correction_parts(
     }
     // Measured with the most parts there can be (one per issue), so the real numbers are never longer.
     let most = (issues.len() as u32).max(1);
-    let fits = |unit: &[Unit], suggestions: &[String]| {
+    // Whether a part of `unit` with `suggestions` fits; `noted` when its task names the report anyway.
+    let fits_noted = |unit: &[Unit], suggestions: &[String], noted: bool| {
         let issues: Vec<ReviewIssue> = unit.iter().flat_map(|u| u.issues.clone()).collect();
-        let shortened = unit.iter().any(|u| u.shortened).then_some(report);
+        let shortened = (noted || unit.iter().any(|u| u.shortened)).then_some(report);
         let task = design_fix_part_task(batch, of, (most, most), &issues, suggestions, shortened);
         task.chars().count() <= DESIGN_FIX_TASK_LIMIT
     };
+    let fits = |unit: &[Unit], suggestions: &[String]| fits_noted(unit, suggestions, false);
     // Each part as the units (a whole section, or one issue of a section too large) it holds.
     let mut parts: Vec<Vec<Unit>> = Vec::new();
     let place = |unit: Unit, parts: &mut Vec<Vec<Unit>>| {
@@ -520,16 +525,35 @@ pub fn plan_correction_parts(
             place(short, &mut parts);
         }
     }
-    // The last part carries the suggestions: while they do not fit, its last unit becomes a part of its own.
+    // The last part carries the suggestions. While they do not fit, its last unit becomes a part of its
+    // own, a last section is split by issue, and then the suggestions themselves are shortened.
+    let mut suggestions = suggestions.to_vec();
+    let mut suggestions_cut = false;
     while let Some(last) = parts.last_mut() {
-        if fits(last, suggestions) {
+        if fits_noted(last, &suggestions, false) {
             break;
         }
-        if last.len() == 1 {
-            return Err(too_long(batch, parts.len()));
+        if last.len() > 1 {
+            let unit = last.pop().expect("more than one unit");
+            parts.push(vec![unit]);
+            continue;
         }
-        let unit = last.pop().expect("more than one unit");
-        parts.push(vec![unit]);
+        if last[0].issues.len() > 1 {
+            let unit = last.pop().expect("one unit");
+            *last = unit
+                .issues
+                .into_iter()
+                .map(|issue| Unit {
+                    issues: vec![issue],
+                    shortened: unit.shortened,
+                })
+                .collect();
+            continue;
+        }
+        suggestions = shorten_suggestions(&suggestions, report, &|cut| fits_noted(last, cut, true))
+            .ok_or_else(|| too_long(batch, parts.len()))?;
+        suggestions_cut = true;
+        break;
     }
     let count = parts.len();
     Ok(parts
@@ -538,9 +562,10 @@ pub fn plan_correction_parts(
         .map(|(at, units)| {
             let last = at + 1 == count;
             let issues: Vec<ReviewIssue> = units.iter().flat_map(|u| u.issues.clone()).collect();
-            let shortened = units.iter().any(|u| u.shortened).then_some(report);
+            let shortened =
+                (units.iter().any(|u| u.shortened) || (last && suggestions_cut)).then_some(report);
             let suggestions = if last {
-                suggestions.to_vec()
+                suggestions.clone()
             } else {
                 Vec::new()
             };
@@ -562,6 +587,45 @@ struct Unit {
     issues: Vec<ReviewIssue>,
     /// An issue whose long fields were shortened.
     shortened: bool,
+}
+
+/// The review's `suggestions` cut short enough that `fits`, each cut one ending with a marker naming
+/// `report`, and at the shortest only the first few kept; `None` when even none fit.
+fn shorten_suggestions(
+    suggestions: &[String],
+    report: &Path,
+    fits: &dyn Fn(&[String]) -> bool,
+) -> Option<Vec<String>> {
+    let marker = format!(
+        " … [shortened: the full suggestions are in {}]",
+        report.display()
+    );
+    for (cap, kept) in [
+        (800, usize::MAX),
+        (400, usize::MAX),
+        (200, 5),
+        (80, 3),
+        (0, 0),
+    ] {
+        let mut cut: Vec<String> = suggestions
+            .iter()
+            .take(kept)
+            .map(|text| {
+                if text.chars().count() <= cap {
+                    text.clone()
+                } else {
+                    format!("{}{marker}", text.chars().take(cap).collect::<String>())
+                }
+            })
+            .collect();
+        if suggestions.len() > cut.len() {
+            cut.push(format!("{} more{marker}", suggestions.len() - cut.len()));
+        }
+        if fits(&cut) {
+            return Some(cut);
+        }
+    }
+    None
 }
 
 /// `issue` with its long fields (expected, actual, fix_direction, evidence) cut short enough that `fits`,

@@ -302,6 +302,43 @@ fn a_section_name_in_a_parts_instructions_is_quoted_on_one_line_and_kept_short()
 }
 
 #[test]
+fn long_suggestions_split_the_last_section_by_issue_or_are_shortened_rather_than_failing() {
+    let issues = vec![
+        issue("a-1", "Alpha", 550),
+        issue("b-1", "Beta", 250),
+        issue("b-2", "Beta", 250),
+    ];
+    let within = |parts: &[CorrectionPart]| {
+        for part in parts {
+            assert!(
+                part.task.chars().count() <= DESIGN_FIX_TASK_LIMIT,
+                "part {} is {} characters",
+                part.part,
+                part.task.chars().count()
+            );
+        }
+    };
+    // The last section and the suggestions do not fit one part, its issues one by one do.
+    let long = vec![format!("a long suggestion {}", "s".repeat(1900))];
+    let parts = plan_correction_parts(1, 3, &issues, &long, &report()).unwrap();
+    within(&parts);
+    let last = parts.last().unwrap();
+    assert_eq!(last.suggestions, long);
+    assert!(last.task.contains(&long[0]));
+    assert!(parts[..parts.len() - 1]
+        .iter()
+        .all(|p| p.suggestions.is_empty()));
+
+    // Suggestions too long for any part are shortened, and the task names the round's report.
+    let huge = vec![format!("a huge suggestion {}", "s".repeat(6000))];
+    let parts = plan_correction_parts(1, 3, &issues, &huge, &report()).unwrap();
+    within(&parts);
+    let last = parts.last().unwrap();
+    assert!(last.task.contains("a huge suggestion"));
+    assert!(last.task.contains("/logs/run-1/design/round-1/report.md"));
+}
+
+#[test]
 fn a_small_review_plans_one_part_whose_task_is_the_whole_round_task() {
     let issues = vec![issue("hero-size", "Hero", 20), issue("cta", "Hero", 20)];
     let suggestions = vec!["consider a softer shadow".to_string()];
