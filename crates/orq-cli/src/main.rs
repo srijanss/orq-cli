@@ -5779,12 +5779,6 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     if let Err(reason) = checked {
         return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
     }
-    // Recorded on the stopped run: the resumed run carries it with the rest of the design review step.
-    if let Some((text, viewports)) = &design_issues {
-        if let Err(reason) = orq_orchestrator::record_design_person_issues(&store, &run_id, text, viewports) {
-            return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
-        }
-    }
     // A run waiting for a review decision kept its features; reviewing again starts them anew.
     let waiting = store.events(&run_id).is_ok_and(|events| orq_orchestrator::summarize_run(&events).phase == orq_orchestrator::RunPhase::NeedsReview);
     if waiting {
@@ -5845,6 +5839,13 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     }
     if let Some(answer) = answer {
         forwarded.extend(["--answer".into(), answer]);
+    }
+    // Recorded on the stopped run once every check passed: the resumed run carries it with the rest of the
+    // design review step. Should the run still not start, issues given again replace these.
+    if let Some((text, viewports)) = &design_issues {
+        if let Err(reason) = orq_orchestrator::record_design_person_issues(&store, &run_id, text, viewports) {
+            return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
+        }
     }
     run_as(&forwarded, Some(&run_id))
 }

@@ -239,6 +239,43 @@ fn a_design_run_that_did_not_end_in_its_design_review_step_is_refused_and_nothin
 }
 
 #[test]
+fn issues_recorded_by_a_resume_that_then_did_not_start_do_not_block_a_retry_with_a_corrected_file() {
+    let w = world("retry");
+    ended_needing_review(&w);
+    // A resume recorded the person's issues, then its run did not start.
+    orq_orchestrator::record_design_person_issues(&w.store, "run-1", ISSUES, &[]).unwrap();
+    let corrected = r#"[{"section": "Footer", "viewport": "all", "expected": "a transparent logo",
+      "actual": "the logo sits on a white box", "fix_direction": "drop the white box"}]"#;
+    let again = resume_with(&w, corrected);
+    let stderr = String::from_utf8_lossy(&again.stderr);
+    assert!(!stderr.contains("already has issues from you"), "{stderr}");
+    assert!(!stderr.contains("issues file"), "{stderr}");
+    cleanup(&w);
+}
+
+#[test]
+fn issues_given_again_before_their_round_ran_replace_the_first_and_grant_one_extra_round() {
+    let w = world("given-again");
+    ended_needing_review(&w);
+    orq_orchestrator::record_design_person_issues(&w.store, "run-1", ISSUES, &[]).unwrap();
+    let corrected = r#"[{"section": "Footer", "viewport": "all", "expected": "a transparent logo",
+      "actual": "the logo sits on a white box", "fix_direction": "drop the white box"}]"#;
+    let issues = orq_orchestrator::record_design_person_issues(&w.store, "run-1", corrected, &[]).unwrap();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].id, "person-1");
+    let mut steps = Fake(vec![changes(), changes()].into());
+    run_design_loop(&w.store, "run-1", 1, &mut steps).unwrap();
+    let events = w.store.events("run-1").unwrap();
+    let extra: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.kind == "design_correction" && e.payload.get("extra").is_some())
+        .collect();
+    assert_eq!(extra.len(), 1, "{events:?}");
+    assert_eq!(extra[0].payload["extra"], 1);
+    cleanup(&w);
+}
+
+#[test]
 fn an_empty_or_invalid_file_is_refused_and_nothing_starts() {
     let w = world("invalid");
     ended_needing_review(&w);

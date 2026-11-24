@@ -1137,9 +1137,11 @@ fn read_state(store: &RunStore, run_id: &str) -> Result<State, StoreError> {
             "design.files_needed" => state.asked.extend(number(&event, "round")),
             "design_package_refrozen" => state.refrozen.extend(number(&event, "round")),
             "design_person_issues" => {
-                let grant = serde_json::from_value(event.payload).map_err(|e| {
+                let grant = serde_json::from_value::<Grant>(event.payload).map_err(|e| {
                     StoreError::Corrupt(format!("a design_person_issues event of {run_id}: {e}"))
                 })?;
+                // Issues given again before their round ran replace those given first.
+                state.grants.retain(|g| g.batch != grant.batch);
                 state.grants.push(grant);
             }
             _ => {}
@@ -1236,16 +1238,17 @@ pub fn check_design_person_issues(
         ));
     }
     let state = read_state(store, run_id).map_err(|e| e.to_string())?;
-    if state.grants.iter().any(|g| g.batch > state.batches) {
-        return Err(format!(
-            "{run_id} already has issues from you waiting for their extra round; resume it to run that round"
-        ));
-    }
-    let given: usize = state.grants.iter().map(|g| g.issues.len()).sum();
+    // Issues given for a round that has not run yet (their resume did not start) are replaced, not added to.
+    let ran: Vec<&Grant> = state
+        .grants
+        .iter()
+        .filter(|g| g.batch <= state.batches)
+        .collect();
+    let given: usize = ran.iter().map(|g| g.issues.len()).sum();
     let first = u32::try_from(given + 1).unwrap_or(u32::MAX);
     let issues = crate::design_review::person_issues(text, viewports, first)?;
     Ok(Grant {
-        extra: state.grants.len() as u32 + 1,
+        extra: ran.len() as u32 + 1,
         batch: state.batches + 1,
         issues,
     })
