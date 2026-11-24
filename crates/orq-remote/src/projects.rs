@@ -442,7 +442,12 @@ fn design_round_shown(dir: &Path, round: u64, references: &[(String, u64, u64, S
                 .iter()
                 .map(|issue| {
                     let field = |name: &str| shown_text(&issue[name]);
-                    json!({"id": field("id"), "section": field("section"), "viewport": field("viewport"), "severity": field("severity"), "status": field("status"), "expected": field("expected"), "actual": field("actual"), "fix_direction": field("fix_direction")})
+                    let mut shown = json!({"id": field("id"), "section": field("section"), "viewport": field("viewport"), "severity": field("severity"), "status": field("status"), "expected": field("expected"), "actual": field("actual"), "fix_direction": field("fix_direction")});
+                    // An issue that needs a file the package does not have names that file instead of a fix.
+                    if issue["needs"]["path"].is_string() {
+                        shown["needs_file"] = shown_text(&issue["needs"]["path"]);
+                    }
+                    shown
                 })
                 .collect()
         })

@@ -61,9 +61,13 @@ fn check(store: &RunStore, run_id: &str) -> Result<crate::store::RunRecord, Stri
             "{run_id}: an accept is running; wait for its tests to finish"
         ));
     }
-    if !matches!(phase, RunPhase::Failed | RunPhase::NeedsReview) {
+    // A run waiting for design files may be accepted as it stands, as one waiting on a review decision.
+    if !matches!(
+        phase,
+        RunPhase::Failed | RunPhase::NeedsReview | RunPhase::DesignFilesNeeded
+    ) {
         return Err(format!(
-            "{run_id} is {}; only a failed run can be accepted, or one waiting on a review decision",
+            "{run_id} is {}; only a failed run can be accepted, or one waiting on a review decision or design files",
             phase.as_str()
         ));
     }

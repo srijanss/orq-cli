@@ -5396,7 +5396,8 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
 const CONTROLLED = ["running", "pause_requested", "paused", "failed", "blocked", "needs_review", "merged"];
 const RESUMABLE = ["paused", "failed", "blocked", "needs_review"];
 const DISCARDABLE = [...RESUMABLE, "merged"];
-const ACCEPTABLE = ["failed", "needs_review"];
+// A run waiting for design files may be accepted as it stands, as one waiting on a review decision.
+const ACCEPTABLE = ["failed", "needs_review", "design_files_needed"];
 
 const SET_ASIDE_QUESTION = "Your changes to these files are stashed, the run is merged, and your changes are put back. If they conflict, they stay in the stash and orq tells you where.";
 const DIRTY_SHOWN = 10;
@@ -5760,8 +5761,17 @@ function DesignIssue({ issue }) {
         <dd>{textOr(issue.expected)}</dd>
         <dt>Actual</dt>
         <dd>{textOr(issue.actual)}</dd>
-        <dt>Fix direction</dt>
-        <dd>{textOr(issue.fix_direction)}</dd>
+        {typeof issue.needs_file === "string" ? (
+          <>
+            <dt>Needs</dt>
+            <dd>{"needs a file: " + issue.needs_file}</dd>
+          </>
+        ) : (
+          <>
+            <dt>Fix direction</dt>
+            <dd>{textOr(issue.fix_direction)}</dd>
+          </>
+        )}
       </dl>
     </li>
   );

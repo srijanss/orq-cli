@@ -65,6 +65,7 @@ fn issue(id: &str, section: &str, long: usize) -> ReviewIssue {
         token: None,
         reference: None,
         downgraded_from: None,
+        needs: None,
     }
 }
 

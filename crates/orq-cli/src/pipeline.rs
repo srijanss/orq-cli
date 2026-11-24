@@ -2620,14 +2620,22 @@ fn stages(
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "design_code_review");
             outcome
         };
-        let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, review: &review, correct: &correct, review_code: &review_code };
-        match orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)? {
-            orq_orchestrator::DesignLoopOutcome::Passed { .. } => Ok(None),
-            orq_orchestrator::DesignLoopOutcome::NeedsReview { reason, report } => needs_review(match report {
-                Some(report) => format!("{reason}; the report is at {}", report.display()),
-                None => reason,
-            }),
-            orq_orchestrator::DesignLoopOutcome::Stopped { reason } => stopped(Ending::Failed, reason).map(Some),
+        // A run that paused for design files checks the feature's package again and freezes it anew on resume.
+        let refreeze = || {
+            let run = orq_orchestrator::DesignPackageRun {
+                main_checkout: &main_checkout,
+                feature: &options.features[0],
+                settings: design_settings,
+                run_logs: logs,
+                worktree,
+                limits: Default::default(),
+            };
+            refreeze_of(orq_orchestrator::start_design_package(&run))
+        };
+        let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, feature: &options.features[0], review: &review, correct: &correct, review_code: &review_code, refreeze: &refreeze };
+        match design_loop_ending(orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)?) {
+            None => Ok(None),
+            Some((ending, text)) => stopped(ending, text).map(Some),
         }
     };
     if !done("gate") {
@@ -2991,13 +2999,45 @@ fn design_agents(
 // A correction part's task must pass the implementer's context check.
 const _: () = assert!(orq_orchestrator::DESIGN_FIX_TASK_LIMIT <= orq_agents::MAX_CONTEXT_CHARS);
 
+/// How the run stops when its design review step ends: `None` when the page passed. A review that asks for files
+/// pauses as `design_files_needed`, with the files listed and the report named.
+fn design_loop_ending(outcome: orq_orchestrator::DesignLoopOutcome) -> Option<(Ending, String)> {
+    let with_report = |reason: String, report: Option<PathBuf>| match report {
+        Some(report) => format!("{reason}; the report is at {}", report.display()),
+        None => reason,
+    };
+    match outcome {
+        orq_orchestrator::DesignLoopOutcome::Passed { .. } => None,
+        orq_orchestrator::DesignLoopOutcome::NeedsReview { reason, report } => Some((Ending::NeedsReview, with_report(reason, report))),
+        orq_orchestrator::DesignLoopOutcome::Stopped { reason } => Some((Ending::Failed, reason)),
+        orq_orchestrator::DesignLoopOutcome::FilesNeeded { reason, request, report, .. } => {
+            Some((Ending::DesignFilesNeeded, format!("{}\n{}", with_report(reason, report), request.message())))
+        }
+    }
+}
+
+/// What the package checked anew on resume means for the design loop.
+fn refreeze_of(outcome: orq_orchestrator::DesignPackageOutcome) -> orq_orchestrator::Refreeze {
+    match outcome {
+        orq_orchestrator::DesignPackageOutcome::Frozen(_) => orq_orchestrator::Refreeze::Frozen,
+        orq_orchestrator::DesignPackageOutcome::FilesNeeded(needed) => orq_orchestrator::Refreeze::FilesNeeded(needed),
+        orq_orchestrator::DesignPackageOutcome::Refused(problems) => {
+            orq_orchestrator::Refreeze::Stopped(format!("the design package cannot be used: {}", problems.join("; ")))
+        }
+        orq_orchestrator::DesignPackageOutcome::Changed(reason) => orq_orchestrator::Refreeze::Stopped(reason),
+    }
+}
+
 /// The design loop's steps on the run's worktree: the real capture and review, and the implementer's fix session.
 struct PipelineDesignSteps<'a> {
     worktree: &'a Path,
     max_correction_rounds: u32,
+    /// The feature whose package folder the design comes from.
+    feature: &'a str,
     review: &'a dyn Fn(u32) -> orq_orchestrator::DesignReviewOutcome,
     correct: &'a dyn Fn(u32, &orq_orchestrator::CorrectionPart) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
     review_code: &'a dyn Fn(u32, &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
+    refreeze: &'a dyn Fn() -> orq_orchestrator::Refreeze,
 }
 
 impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
@@ -3037,6 +3077,14 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
 
     fn review_code(&mut self, batch: u32, from: &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
         (self.review_code)(batch, from)
+    }
+
+    fn package_feature(&mut self) -> Option<String> {
+        Some(self.feature.to_string())
+    }
+
+    fn refreeze(&mut self) -> Result<orq_orchestrator::Refreeze, StoreError> {
+        Ok((self.refreeze)())
     }
 }
 
@@ -3294,6 +3342,41 @@ mod tests {
 
     fn output(code: i32, stdout: &str) -> Output {
         Output { status: ExitStatus::from_raw(code << 8), stdout: stdout.as_bytes().to_vec(), stderr: b"fatal: bad object\n".to_vec() }
+    }
+
+    /// A design review that asks for files pauses the run as `design_files_needed`, with the reason, the
+    /// list of files and the report; on resume the package checked anew is frozen, still lacks files, or is refused.
+    #[test]
+    fn a_design_review_asking_for_files_pauses_for_them_and_the_resumed_package_is_checked_anew() {
+        use orq_orchestrator::{DesignFilesNeeded, DesignLoopOutcome, DesignPackageOutcome, NeededFile, Refreeze};
+        let request = DesignFilesNeeded {
+            feature: "landing-page".to_string(),
+            files: vec![NeededFile { what: "the approved signature artwork".to_string(), path: "designs/landing-page/assets/signatures.svg".to_string() }],
+        };
+        let paused = DesignLoopOutcome::FilesNeeded {
+            reason: "the design needs files the package does not have: designs/landing-page/assets/signatures.svg (the approved signature artwork)".to_string(),
+            request: request.clone(),
+            open: Vec::new(),
+            report: Some(std::path::PathBuf::from("/logs/run-1/design/report.md")),
+        };
+        let (ending, text) = super::design_loop_ending(paused).expect("the run stops");
+        assert!(matches!(ending, super::Ending::DesignFilesNeeded));
+        assert!(text.starts_with("the design needs files the package does not have: "), "{text}");
+        assert!(text.contains("- the approved signature artwork: designs/landing-page/assets/signatures.svg"), "{text}");
+        assert!(text.contains("/logs/run-1/design/report.md"), "{text}");
+        assert!(super::design_loop_ending(DesignLoopOutcome::Passed { head: "h".to_string() }).is_none());
+        let (ending, _) = super::design_loop_ending(DesignLoopOutcome::NeedsReview { reason: "r".to_string(), report: None }).unwrap();
+        assert!(matches!(ending, super::Ending::NeedsReview));
+        let (ending, text) = super::design_loop_ending(DesignLoopOutcome::Stopped { reason: "s".to_string() }).unwrap();
+        assert!(matches!(ending, super::Ending::Failed));
+        assert_eq!(text, "s");
+
+        assert_eq!(super::refreeze_of(DesignPackageOutcome::FilesNeeded(request.clone())), Refreeze::FilesNeeded(request));
+        assert_eq!(
+            super::refreeze_of(DesignPackageOutcome::Refused(vec!["DESIGN.md is not UTF-8".to_string()])),
+            Refreeze::Stopped("the design package cannot be used: DESIGN.md is not UTF-8".to_string())
+        );
+        assert_eq!(super::refreeze_of(DesignPackageOutcome::Changed("moved".to_string())), Refreeze::Stopped("moved".to_string()));
     }
 
     #[test]

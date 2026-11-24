@@ -42,6 +42,18 @@ a `structure` issue without a reference, or a copy issue that does not quote a D
 the copy is exact is invalid. The token check's issues are `rule` issues: while one is open the
 verdict cannot be `pass`.
 
+## An issue that needs a file
+
+Set `needs` on an issue (`{ "what": "...", "path": "assets/..." }`, or a document: `DESIGN.md`,
+`UX.md`, `RESPONSIVE.md`, `tokens.css`) only when its fix needs artwork, copy or another file
+the package does not have, and the package itself says that file is to be supplied or
+must not be invented (for example: "signatures should be supplied separately; do not fabricate
+endorsements").
+`what` says what the file is in a few words; `path` is where it goes in the package. Such an issue
+goes to no fix session: orq asks the person for the file. Use it only for such a file, and
+never for something code can build (layout, styling, an icon or shape drawn in CSS or SVG, markup,
+behaviour).
+
 ## Check the captures
 
 For each capture, check its viewport, its route and that the page was ready (no spinner, no missing

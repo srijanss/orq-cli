@@ -47,7 +47,16 @@
           "copy": { "type": "boolean" },
           "quote": { "type": "string" },
           "token": { "type": "string" },
-          "reference": { "type": "string" }
+          "reference": { "type": "string" },
+          "needs": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["what", "path"],
+            "properties": {
+              "what": { "type": "string" },
+              "path": { "type": "string" }
+            }
+          }
         }
       }
     },

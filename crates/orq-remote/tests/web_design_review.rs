@@ -513,7 +513,8 @@ fn the_run_page_carries_each_design_round_with_its_viewports_issues_suggestions_
 // The page itself, in jsdom, fed the run page the server above answers.
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 15] = [
+const SELECTORS: [&str; 16] = [
+    "[data-accept]",
     "[data-design-review]",
     "[data-design-viewport]",
     "[data-design-reference]",
@@ -686,6 +687,34 @@ fn a_changes_required_round_shows_its_verdict_viewports_issues_by_section_then_s
     assert_eq!(count(end, "[data-design-not-assessed]"), 1, "{out}");
     assert_eq!(count(end, "[data-design-blockers]"), 0, "{out}");
     assert_eq!(count(end, "[data-design-files-needed]"), 0, "{out}");
+}
+
+#[test]
+fn an_issue_that_needs_a_file_shows_the_file_instead_of_a_fix_direction() {
+    let s = setup("design-panel-needs-file");
+    let mut needing = issue("signatures", "Testimonials", "major", "open");
+    needing["needs"] = json!({"what": "the approved signature artwork", "path": "assets/signatures.svg"});
+    one_round_run(
+        &s,
+        "r-1",
+        "changes_required",
+        json!([issue("button-colour", "Header", "major", "open"), needing]),
+    );
+    let body = page(&s, "/api/projects/alpha/runs/r-1");
+    let issues = &body["run"]["design"]["rounds"][0]["issues"];
+    assert_eq!(issues[1]["needs_file"], json!("assets/signatures.svg"), "{issues}");
+    assert_eq!(issues[0].get("needs_file"), None, "{issues}");
+
+    let Some(out) = open("r-1", body, vec![], vec![], vec![]) else {
+        return;
+    };
+    let shown = texts(last(&out));
+    position(&shown, "needs a file: assets/signatures.svg");
+    position(&shown, "button-colour fix");
+    assert!(
+        !shown.iter().any(|t| t == "signatures fix"),
+        "no fix direction for it: {shown:?}"
+    );
 }
 
 #[test]
@@ -959,6 +988,22 @@ fn a_run_waiting_for_design_files_shows_what_is_needed_where_and_why_with_resume
         [json!("/api/projects/alpha/runs/r-1/resume")],
         "{out}"
     );
+}
+
+#[test]
+fn a_run_waiting_for_design_files_may_be_accepted_as_it_stands_from_its_page() {
+    let s = setup("design-panel-files-needed-accept");
+    files_needed_run(&s, "r-1");
+    let mut body = page(&s, "/api/projects/alpha/runs/r-1");
+    body["remote_actions"] = json!(true);
+    assert_eq!(body["run"]["state"], json!("design_files_needed"), "{body}");
+
+    let Some(out) = open("r-1", body, vec![], vec![], vec![]) else {
+        return;
+    };
+    let end = last(&out);
+    assert_eq!(count(end, "[data-design-files-needed]"), 1, "{out}");
+    assert_eq!(count(end, "[data-accept]"), 1, "{out}");
 }
 
 #[test]

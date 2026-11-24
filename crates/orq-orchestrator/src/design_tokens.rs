@@ -219,6 +219,7 @@ fn token_rule_issue(token: Option<&str>) -> ReviewIssue {
         token: token.filter(|token| !token.is_empty()).map(str::to_string),
         reference: None,
         downgraded_from: None,
+        needs: None,
     }
 }
 

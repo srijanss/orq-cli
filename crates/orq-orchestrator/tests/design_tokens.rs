@@ -53,6 +53,7 @@ fn review_issue(id: &str, source: &str, severity: Severity, status: IssueStatus)
         token: None,
         reference: None,
         downgraded_from: None,
+        needs: None,
     }
 }
 

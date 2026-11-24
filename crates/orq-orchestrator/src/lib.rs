@@ -93,7 +93,7 @@ pub use design_loop::{
     carry_design, design_code_review_task, design_fix_task, design_round_label,
     plan_correction_parts, record_design_package, run_design_code_review, run_design_correction,
     run_design_correction_part, run_design_loop, CorrectionOutcome, CorrectionPart,
-    DesignLoopOutcome, DesignLoopSteps, DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE,
+    DesignLoopOutcome, DesignLoopSteps, Refreeze, DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE,
     DESIGN_FIX_TASK_LIMIT, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE,
 };
 pub use design_package::{
@@ -102,8 +102,8 @@ pub use design_package::{
     NeededFile, PackageLimits,
 };
 pub use design_review::{
-    review_design, CheckStatus, DesignAgent, DesignReview, DesignReviewOutcome, DesignReviewRun,
-    DesignVerdict, IssueBasis, IssueStatus, ReviewCheck, ReviewIssue, Severity,
+    drop_refused_needs, review_design, CheckStatus, DesignAgent, DesignReview, DesignReviewOutcome, DesignReviewRun,
+    DesignVerdict, IssueBasis, IssueNeeds, IssueStatus, ReviewCheck, ReviewIssue, Severity,
 };
 pub use design_tokens::{
     apply_token_issues, check_design_tokens, normalize_token_value, parse_token_rules,

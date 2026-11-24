@@ -177,6 +177,20 @@ pub struct ReviewIssue {
     /// The severity the reviewer gave, when orq lowered it: a `visual` issue is at most minor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub downgraded_from: Option<Severity>,
+    /// The file the fix needs that the package does not have and says is supplied separately: such an
+    /// issue goes to no fix session, the run asks the person for the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<IssueNeeds>,
+}
+
+/// A file an issue's fix needs, as the reviewer names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssueNeeds {
+    /// What the file is, in a few words.
+    pub what: String,
+    /// Where it goes in the package: `assets/…`, or one of its documents.
+    pub path: String,
 }
 
 /// What an issue is held against.
@@ -229,6 +243,8 @@ struct RoundResult {
     escalation: Option<String>,
     /// The reviewer's own review, when the verifier's replaced it.
     reviewer_review: Option<DesignReview>,
+    /// Each issue whose `needs` orq dropped, and why.
+    needs_refused: Vec<String>,
 }
 
 impl RoundResult {
@@ -240,6 +256,7 @@ impl RoundResult {
             decided_by: "orq",
             escalation: None,
             reviewer_review: None,
+            needs_refused: Vec::new(),
         }
     }
 }
@@ -435,8 +452,10 @@ fn reviewed_round(
     record: &CaptureRecord,
     token_issues: &[ReviewIssue],
 ) -> Result<RoundResult, String> {
+    let refused = std::cell::RefCell::new(Vec::new());
     let checked = |mut review: DesignReview| {
         apply_token_issues(&mut review, token_issues);
+        *refused.borrow_mut() = drop_refused_needs(&mut review);
         review
     };
     let round_name = format!("round-{}", run.round);
@@ -499,6 +518,7 @@ fn reviewed_round(
             decided_by: "design reviewer",
             escalation: None,
             reviewer_review: None,
+            needs_refused: refused.take(),
         });
     };
     // The verifier reviews once more; its verdict replaces the reviewer's for the round.
@@ -512,6 +532,7 @@ fn reviewed_round(
                 decided_by: "design verifier",
                 escalation: None,
                 reviewer_review: None,
+                needs_refused: refused.take(),
             }
         }
         Err(why) => RoundResult::blocked(why),
@@ -1090,6 +1111,47 @@ fn fix_severities(review: &mut DesignReview, token_issues_open: bool) {
     }
 }
 
+/// The documents an issue's `needs` may name besides a file under `assets/`.
+const NEEDED_DOCUMENTS: [&str; 4] = ["DESIGN.md", "UX.md", "RESPONSIVE.md", "tokens.css"];
+
+/// Whether `path` is a place in the package an issue may ask for: `assets/<file>`, relative, every segment
+/// a plain name (no `.`, `..` or empty one, no backslash), or one of the documents.
+fn needed_path_allowed(path: &str) -> bool {
+    if NEEDED_DOCUMENTS.contains(&path) {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("assets/") else {
+        return false;
+    };
+    !path.contains('\\')
+        && !path.chars().any(char::is_control)
+        && rest
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+/// Drops each issue's `needs` whose path orq refuses (absolute, with `.` or `..` segments, or outside
+/// `assets/` and the documents); the issue itself is kept. One note per dropped `needs`, for the report.
+pub fn drop_refused_needs(review: &mut DesignReview) -> Vec<String> {
+    let mut notes = Vec::new();
+    for issue in &mut review.issues {
+        let refused = issue
+            .needs
+            .as_ref()
+            .filter(|needs| !needed_path_allowed(&needs.path))
+            .map(|needs| needs.path.clone());
+        if let Some(path) = refused {
+            issue.needs = None;
+            notes.push(format!(
+                "the issue {:?} asked for the file {path:?}, which is not under assets/ or one of the documents \
+                 (DESIGN.md, UX.md, RESPONSIVE.md, tokens.css): its needs was dropped",
+                issue.id
+            ));
+        }
+    }
+    notes
+}
+
 /// A critical or major issue that is open or came back.
 fn blocking(issue: &ReviewIssue) -> bool {
     issue.severity != Severity::Minor && issue.status != IssueStatus::Resolved
@@ -1123,6 +1185,7 @@ fn write_round(
         "escalation": result.escalation,
         "review": result.review,
         "reviewer_review": result.reviewer_review,
+        "needs_refused": result.needs_refused,
     });
     let written = std::fs::create_dir_all(&round_dir)
         .and_then(|()| {
@@ -1198,15 +1261,23 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
                 Some(IssueBasis::Visual) => ", visual".to_string(),
                 None => String::new(),
             };
+            // An issue no code can fix asks for its file instead of giving a fix direction.
+            let fix = match &issue.needs {
+                Some(needs) => format!(
+                    "Needs a file: {} ({})",
+                    line(&needs.path),
+                    line(&needs.what)
+                ),
+                None => format!("Fix: {}", line(&issue.fix_direction)),
+            };
             text.push_str(&format!(
-                "- {} [{}, {}{basis}] {}: expected {}; actual {}. Fix: {}\n",
+                "- {} [{}, {}{basis}] {}: expected {}; actual {}. {fix}\n",
                 line(&issue.id),
                 json!(issue.severity).as_str().unwrap_or_default(),
                 json!(issue.status).as_str().unwrap_or_default(),
                 line(&issue.viewport),
                 line(&issue.expected),
                 line(&issue.actual),
-                line(&issue.fix_direction),
             ));
         }
     }
@@ -1226,6 +1297,12 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
                 json!(issue.downgraded_from).as_str().unwrap_or_default(),
                 json!(issue.severity).as_str().unwrap_or_default(),
             ));
+        }
+    }
+    if !result.needs_refused.is_empty() {
+        text.push_str("\n## Files asked for that orq refused\n\n");
+        for note in &result.needs_refused {
+            text.push_str(&format!("- {}\n", line(note)));
         }
     }
     if !review.suggestions.is_empty() {
