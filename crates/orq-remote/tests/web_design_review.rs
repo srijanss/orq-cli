@@ -489,7 +489,7 @@ fn the_run_page_carries_each_design_round_with_its_viewports_issues_suggestions_
     );
     assert_eq!(
         first["issues"][0],
-        json!({"id": "button-colour", "section": "Header", "viewport": "desktop", "severity": "major", "status": "open", "expected": "button-colour expected", "actual": "button-colour actual", "fix_direction": "button-colour fix"}),
+        json!({"id": "button-colour", "section": "Header", "viewport": "desktop", "severity": "major", "status": "open", "expected": "button-colour expected", "actual": "button-colour actual", "fix_direction": "button-colour fix", "from_person": false}),
         "{design}"
     );
     assert_eq!(first["issues"].as_array().unwrap().len(), 2, "{design}");

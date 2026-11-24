@@ -9,11 +9,12 @@ use std::path::{Path, PathBuf};
 const SHARED: &str = "std::env::temp_dir().join(";
 
 /// Files that may still name a path straight under the shared temp dir, and how many times.
-const ALLOWED: [(&str, usize, &str); 5] = [
+const ALLOWED: [(&str, usize, &str); 6] = [
     ("crates/orq-test-support/src/lib.rs", 2, "it makes the process temp dir itself"),
     ("crates/orq-orchestrator/src/push_stage.rs", 1, "production scratch space, not a test"),
     ("crates/orq-orchestrator/src/design_capture.rs", 1, "production scratch space: the browser profile, removed when the browser stops"),
     ("crates/orq-cli/src/pipeline.rs", 1, "production scratch space, not a test; its tests use the process temp dir"),
+    ("crates/orq-cli/src/remote_launch.rs", 1, "production scratch file: a person's design issues, private to the user and removed once the resume has read them"),
     ("crates/orq-remote/tests/web_deps_policy.rs", 1, "only compared against, never made"),
 ];
 
