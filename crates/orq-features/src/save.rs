@@ -234,8 +234,9 @@ impl LoadedLedger {
             return Ok(Appended { entries: new_entries, existing_problems: Vec::new() });
         }
         let existing = self.entries.len();
+        // A dependency on a live name is checked against the ledger first, so the whole archive can be passed.
         let existing_problems =
-            validate_changed_entries(&candidate, &self.live_archived(), &|index| index >= existing).map_err(AppendError::Invalid)?;
+            validate_changed_entries(&candidate, &self.archived, &|index| index >= existing).map_err(AppendError::Invalid)?;
 
         let text = std::str::from_utf8(&self.bytes).expect("a parsed ledger is UTF-8");
         let contents = if self.is_new {
@@ -252,11 +253,6 @@ impl LoadedLedger {
         };
         self.save(&contents).map_err(AppendError::Save)?;
         Ok(Appended { entries: new_entries, existing_problems })
-    }
-
-    /// The archived names that are not features of the ledger: a dependency on one is not missing.
-    fn live_archived(&self) -> std::collections::HashSet<String> {
-        self.archived.iter().filter(|name| self.is_archived_dependency(name)).cloned().collect()
     }
 
     /// Changes the given fields of the feature named `feature_name`, keeping
@@ -315,7 +311,7 @@ impl LoadedLedger {
         })?;
         let entries = parse_ledger_bytes(&self.path, edited.as_bytes()).map_err(|_| EditFieldsError::Malformed)?;
         // Only a problem in the edited entry refuses the edit; one only in another entry was already there.
-        validate_changed_entries(&entries, &self.live_archived(), &|index| entries[index].feature_name == feature_name)
+        validate_changed_entries(&entries, &self.archived,&|index| entries[index].feature_name == feature_name)
             .map_err(EditFieldsError::Invalid)?;
         Ok(edited)
     }

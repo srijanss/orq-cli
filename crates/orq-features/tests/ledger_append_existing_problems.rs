@@ -104,6 +104,21 @@ fn a_new_entry_closing_a_cycle_through_existing_entries_is_refused_beside_an_exi
     assert_eq!(fs::read_to_string(&path).unwrap(), text, "nothing was written");
 }
 
+#[test]
+fn an_existing_dependency_on_an_archived_feature_is_not_a_problem_and_a_live_name_wins_over_the_archive() {
+    let text = "[\n  {\"featureName\": \"old\", \"status\": \"completed\", \"dependsOn\": [\"archived-one\"]},\n  {\"featureName\": \"both\", \"status\": \"completed\"}\n]\n";
+    let path = ledger("archived", text);
+    let archive: HashSet<String> = ["archived-one".to_string(), "both".to_string()].into();
+    let loaded = LoadedLedger::load(&path).unwrap().with_archive(archive);
+    let mut draft = FeatureDraft::new("new-one");
+    draft.depends_on = Some(vec!["both".into()]);
+
+    let appended = loaded.append_many_noting(&[draft]).unwrap();
+
+    assert_eq!(appended.warning(), None);
+    assert_eq!(appended.entries[0].depends_on, ["both"], "a name both live and archived is kept");
+}
+
 /// Entries as given, each parsed alone, so a repeated name (which a whole ledger never loads with) can be built.
 fn entries(items: &[&str]) -> Vec<FeatureEntry> {
     items.iter().flat_map(|item| parse_ledger(&format!("[{item}]")).unwrap()).collect()
