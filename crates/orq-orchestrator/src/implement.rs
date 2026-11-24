@@ -56,6 +56,25 @@ pub(crate) fn run_session_stage(
     stage: &str,
     attempt: u32,
 ) -> Result<ImplementOutcome, StoreError> {
+    run_session_stage_with(
+        store,
+        run_id,
+        session,
+        stage,
+        attempt,
+        serde_json::json!({}),
+    )
+}
+
+/// [`run_session_stage`], with the fields of `fields` (an object) on every event it records.
+pub(crate) fn run_session_stage_with(
+    store: &RunStore,
+    run_id: &str,
+    session: &ImplementSession<'_>,
+    stage: &str,
+    attempt: u32,
+    fields: serde_json::Value,
+) -> Result<ImplementOutcome, StoreError> {
     let record = store.load(run_id)?;
     let log = open_log(session.log)?;
     let event = |kind: &str, extra: serde_json::Value| {
@@ -63,6 +82,9 @@ pub(crate) fn run_session_stage(
             "session_id": session.session_id,
             "log": session.log.to_string_lossy(),
         });
+        if let (Some(map), Some(more)) = (payload.as_object_mut(), fields.as_object()) {
+            map.extend(more.clone());
+        }
         if let (Some(map), Some(more)) = (payload.as_object_mut(), extra.as_object()) {
             map.extend(more.clone());
         }

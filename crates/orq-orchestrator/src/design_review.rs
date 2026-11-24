@@ -1107,7 +1107,7 @@ fn inside(design_dir: &Path, path: &str) -> bool {
     file.starts_with(&root) && file.is_file()
 }
 
-/// Writes the round's `review.json` and the run's `report.md`.
+/// Writes the round's `review.json` and `report.md`, and the run's `report.md` (the latest round's).
 fn write_round(
     run: &DesignReviewRun,
     design_dir: &Path,
@@ -1131,7 +1131,13 @@ fn write_round(
                 serde_json::to_vec_pretty(&record).unwrap_or_default(),
             )
         })
-        .and_then(|()| std::fs::write(design_dir.join(REPORT_FILE), report(run, result)));
+        .and_then(|()| {
+            // The round keeps its own copy: a split correction round's tasks point at it, and the
+            // run's report.md is replaced by the next round.
+            let report = report(run, result);
+            std::fs::write(round_dir.join(REPORT_FILE), &report)?;
+            std::fs::write(design_dir.join(REPORT_FILE), report)
+        });
     written.map_err(|e| format!("the review could not be written ({:?})", e.kind()))
 }
 

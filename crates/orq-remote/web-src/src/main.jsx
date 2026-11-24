@@ -6584,6 +6584,11 @@ function StepFailedTests({ place, tests, more }) {
   );
 }
 
+// The design review step's note for each correction round split into parts, as the server words it.
+function designSplits(events) {
+  return events.filter((event) => event.kind === "design_correction_split" && typeof event.design_round === "string").map((event) => event.design_round);
+}
+
 function RunSteps({ runId, events, rounds, running, ended = false, failedRun = false, onLogs }) {
   const steps = groupEvents(events, rounds).filter((item) => item.events !== undefined);
   // The step a failed run ended on: the last failed one. Its excerpt starts open; every other starts closed.
@@ -6611,6 +6616,9 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
             <span className="sr-only">{STEP_STATES[kind]}</span>
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
             {note === null ? null : <p className="run-cleanup-note field-hint muted">{note}</p>}
+            {designSplits(step.events).map((split, n) => (
+              <p key={"split" + n} className="run-step-note field-hint muted" data-step-design-split>{split}</p>
+            ))}
             {flaky === null ? null : (
               <StepDetail place={place} kind="rerun" label={"Re-run: " + flaky.label}>
                 <p className="run-flaky-note field-hint muted">{flaky.text}</p>

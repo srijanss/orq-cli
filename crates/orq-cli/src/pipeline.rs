@@ -2545,15 +2545,17 @@ fn stages(
             };
             orq_orchestrator::review_design(&run, &orq_orchestrator::capture_design)
         };
-        let correct = |batch: u32, issues: &[orq_orchestrator::ReviewIssue], suggestions: &[String]| {
-            let task = orq_orchestrator::design_fix_task(batch, max, issues, suggestions);
+        // Each part of a correction round is a fix session of its own, with the part's task (the whole
+        // round's task when the round is one part).
+        let correct = |batch: u32, part: &orq_orchestrator::CorrectionPart| {
+            let task = &part.task;
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
             let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-fix.done"));
             let args = adapter_for(&options.implementer.harness)
                 .and_then(|adapter| {
                     adapter.fix_argv(&FixRequest {
                         implementer: spec(&implementer),
-                        task: &task,
+                        task,
                         exit_marker: marker.as_deref().and_then(Path::to_str),
                         attended: options.interactive,
                         allowed_commands: &allowed_commands,
@@ -2571,7 +2573,7 @@ fn stages(
                 exit_marker: marker.as_deref(),
             };
             fix_features.before("design_fix");
-            let outcome = orq_orchestrator::run_design_correction(store, run_id, &session, batch);
+            let outcome = orq_orchestrator::run_design_correction_part(store, run_id, &session, batch, part);
             fix_features.settle();
             record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "design fix");
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "design_fix");
@@ -2618,7 +2620,7 @@ fn stages(
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "design_code_review");
             outcome
         };
-        let mut steps = PipelineDesignSteps { worktree, review: &review, correct: &correct, review_code: &review_code };
+        let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, review: &review, correct: &correct, review_code: &review_code };
         match orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)? {
             orq_orchestrator::DesignLoopOutcome::Passed { .. } => Ok(None),
             orq_orchestrator::DesignLoopOutcome::NeedsReview { reason, report } => needs_review(match report {
@@ -2986,11 +2988,15 @@ fn design_agents(
     Ok((agent(&agents.reviewer), agent(&agents.verifier), agent(&agents.preparer)))
 }
 
+// A correction part's task must pass the implementer's context check.
+const _: () = assert!(orq_orchestrator::DESIGN_FIX_TASK_LIMIT <= orq_agents::MAX_CONTEXT_CHARS);
+
 /// The design loop's steps on the run's worktree: the real capture and review, and the implementer's fix session.
 struct PipelineDesignSteps<'a> {
     worktree: &'a Path,
+    max_correction_rounds: u32,
     review: &'a dyn Fn(u32) -> orq_orchestrator::DesignReviewOutcome,
-    correct: &'a dyn Fn(u32, &[orq_orchestrator::ReviewIssue], &[String]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
+    correct: &'a dyn Fn(u32, &orq_orchestrator::CorrectionPart) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
     review_code: &'a dyn Fn(u32, &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
 }
 
@@ -3012,8 +3018,21 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
         Ok((self.review)(round))
     }
 
+    /// A whole round as one part; the loop gives the implementer parts through `correct_part`.
     fn correct(&mut self, batch: u32, issues: &[orq_orchestrator::ReviewIssue], suggestions: &[String]) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
-        (self.correct)(batch, issues, suggestions)
+        let part = orq_orchestrator::CorrectionPart {
+            part: 1,
+            of: 1,
+            sections: Vec::new(),
+            issues: issues.to_vec(),
+            suggestions: suggestions.to_vec(),
+            task: orq_orchestrator::design_fix_task(batch, self.max_correction_rounds, issues, suggestions),
+        };
+        (self.correct)(batch, &part)
+    }
+
+    fn correct_part(&mut self, batch: u32, part: &orq_orchestrator::CorrectionPart) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {
+        (self.correct)(batch, part)
     }
 
     fn review_code(&mut self, batch: u32, from: &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError> {

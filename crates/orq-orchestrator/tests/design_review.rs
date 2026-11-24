@@ -307,6 +307,21 @@ fn a_pass_answer_is_reported_as_pass() {
 }
 
 #[test]
+fn each_round_keeps_its_own_copy_of_the_report() {
+    let f = Fixture::new();
+    f.answer(
+        "reviewer",
+        &answer("pass", vec![check("layout", "pass")], vec![]),
+    );
+
+    assert_eq!(f.review(1), DesignVerdict::Pass);
+
+    let latest = fs::read_to_string(f.design_dir().join("report.md")).unwrap();
+    let round = fs::read_to_string(f.design_dir().join("round-1/report.md")).unwrap();
+    assert_eq!(round, latest);
+}
+
+#[test]
 fn a_reviewer_cannot_downgrade_a_violated_token_rule() {
     let f = Fixture::new();
     let package = f.repo.root().join("designs").join(FEATURE);
