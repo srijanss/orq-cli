@@ -529,7 +529,9 @@ pub fn plan_correction_parts(
     // own, a last section is split by issue, and then the suggestions themselves are shortened.
     let mut suggestions = suggestions.to_vec();
     let mut suggestions_cut = false;
-    while let Some(last) = parts.last_mut() {
+    loop {
+        let number = parts.len();
+        let Some(last) = parts.last_mut() else { break };
         if fits_noted(last, &suggestions, false) {
             break;
         }
@@ -550,8 +552,20 @@ pub fn plan_correction_parts(
                 .collect();
             continue;
         }
-        suggestions = shorten_suggestions(&suggestions, report, &|cut| fits_noted(last, cut, true))
-            .ok_or_else(|| too_long(batch, parts.len()))?;
+        let cut = shorten_suggestions(&suggestions, report, &|cut| fits_noted(last, cut, true));
+        suggestions = match cut {
+            Some(cut) => cut,
+            // Not even the shortest summary fits beside the last issue: shorten that issue as well.
+            None => {
+                let shortest = cut_suggestions(&suggestions, report, 0, 0);
+                let issue = last[0].issues[0].clone();
+                last[0] = shorten(&issue, report, &|unit| {
+                    fits_noted(std::slice::from_ref(unit), &shortest, true)
+                })
+                .ok_or_else(|| too_long(batch, number))?;
+                shortest
+            }
+        };
         suggestions_cut = true;
         break;
     }
@@ -596,36 +610,40 @@ fn shorten_suggestions(
     report: &Path,
     fits: &dyn Fn(&[String]) -> bool,
 ) -> Option<Vec<String>> {
-    let marker = format!(
-        " … [shortened: the full suggestions are in {}]",
-        report.display()
-    );
-    for (cap, kept) in [
+    [
         (800, usize::MAX),
         (400, usize::MAX),
         (200, 5),
         (80, 3),
         (0, 0),
-    ] {
-        let mut cut: Vec<String> = suggestions
-            .iter()
-            .take(kept)
-            .map(|text| {
-                if text.chars().count() <= cap {
-                    text.clone()
-                } else {
-                    format!("{}{marker}", text.chars().take(cap).collect::<String>())
-                }
-            })
-            .collect();
-        if suggestions.len() > cut.len() {
-            cut.push(format!("{} more{marker}", suggestions.len() - cut.len()));
-        }
-        if fits(&cut) {
-            return Some(cut);
-        }
+    ]
+    .into_iter()
+    .map(|(cap, kept)| cut_suggestions(suggestions, report, cap, kept))
+    .find(|cut| fits(cut))
+}
+
+/// The first `kept` of `suggestions`, each longer than `cap` cut there, and a count of the rest, every
+/// cut ending with a marker naming `report`.
+fn cut_suggestions(suggestions: &[String], report: &Path, cap: usize, kept: usize) -> Vec<String> {
+    let marker = format!(
+        " … [shortened: the full suggestions are in {}]",
+        report.display()
+    );
+    let mut cut: Vec<String> = suggestions
+        .iter()
+        .take(kept)
+        .map(|text| {
+            if text.chars().count() <= cap {
+                text.clone()
+            } else {
+                format!("{}{marker}", text.chars().take(cap).collect::<String>())
+            }
+        })
+        .collect();
+    if suggestions.len() > cut.len() {
+        cut.push(format!("{} more{marker}", suggestions.len() - cut.len()));
     }
-    None
+    cut
 }
 
 /// `issue` with its long fields (expected, actual, fix_direction, evidence) cut short enough that `fits`,

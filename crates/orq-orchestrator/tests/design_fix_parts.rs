@@ -339,6 +339,29 @@ fn long_suggestions_split_the_last_section_by_issue_or_are_shortened_rather_than
 }
 
 #[test]
+fn suggestions_beside_a_last_issue_that_nearly_fills_its_part_shorten_that_issue_too() {
+    let huge = vec![format!("a huge suggestion {}", "s".repeat(6000))];
+    // Some length in this range leaves the last issue fitting alone, but without room for the
+    // report's notice and the shortest summary of the suggestions.
+    for long in (900..1400).step_by(3) {
+        let issues = vec![issue("a-1", "Alpha", 550), issue("b-1", "Beta", long)];
+        let parts = plan_correction_parts(1, 3, &issues, &huge, &report())
+            .unwrap_or_else(|reason| panic!("issue of {long}: {reason}"));
+        for part in &parts {
+            assert!(
+                part.task.chars().count() <= DESIGN_FIX_TASK_LIMIT,
+                "issue of {long}"
+            );
+        }
+        let last = parts.last().unwrap();
+        assert_eq!(last.issues.len(), 1, "issue of {long}");
+        assert_eq!(last.issues[0].id, "b-1");
+        assert!(!last.suggestions.is_empty(), "issue of {long}");
+        assert!(last.task.contains("/logs/run-1/design/round-1/report.md"));
+    }
+}
+
+#[test]
 fn a_small_review_plans_one_part_whose_task_is_the_whole_round_task() {
     let issues = vec![issue("hero-size", "Hero", 20), issue("cta", "Hero", 20)];
     let suggestions = vec!["consider a softer shadow".to_string()];
