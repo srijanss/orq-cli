@@ -1225,3 +1225,46 @@ fn a_package_refrozen_for_files_a_review_asked_for_waits_until_each_is_in_the_pa
         SAFE_SVG.as_bytes()
     );
 }
+
+#[test]
+fn a_file_asked_for_that_is_a_symlink_or_unsafe_is_not_taken_and_nothing_is_frozen_anew() {
+    let f = Fixture::new("asked-for-unsafe");
+    f.full_package();
+    frozen(f.start());
+    let saved = f.logs.path().join("design/manifest.json");
+    let started = read(&saved);
+    let requested = asked_for(&["assets/signatures.svg"]);
+
+    // A symlink is not the file: the run stays paused for it.
+    let outside = f.logs.path().join("outside.svg");
+    fs::write(&outside, SAFE_SVG).unwrap();
+    std::os::unix::fs::symlink(&outside, f.package().join("assets/signatures.svg")).unwrap();
+    assert_eq!(
+        refreeze_design_package(&f.run(), &requested),
+        DesignPackageOutcome::FilesNeeded(requested.clone())
+    );
+    assert_eq!(read(&saved), started, "nothing is frozen anew");
+
+    // An unsafe file in its place is refused by the package's checks, which stops the run.
+    fs::remove_file(f.package().join("assets/signatures.svg")).unwrap();
+    f.put(
+        "assets/signatures.svg",
+        r#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#,
+    );
+    let problems = refused(refreeze_design_package(&f.run(), &requested));
+    assert!(
+        mentions(&problems, &["assets/signatures.svg"]),
+        "{problems:?}"
+    );
+    assert!(
+        !f.logs
+            .path()
+            .join("design/package/assets/signatures.svg")
+            .exists(),
+        "the unsafe file is not frozen"
+    );
+    assert!(!f
+        .worktree
+        .join(".orq-design/assets/signatures.svg")
+        .exists());
+}
