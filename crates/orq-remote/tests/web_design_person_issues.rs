@@ -316,6 +316,36 @@ fn the_form_posts_each_issue_and_says_which_run_corrects_them() {
     assert_eq!(count(end, "[data-design-issues-form]"), 0, "{out}");
 }
 
+/// The most an issue's expected, what's wrong or how to fix may hold, as `orq run resume --design-issues` checks it.
+const ISSUE_TEXT_MAX: usize = 2000;
+
+#[test]
+fn the_form_lets_each_issue_text_hold_what_the_server_takes_and_no_more() {
+    let s = setup("person-issues-text-limit");
+    design_run(&s, "r-1", "needs_review");
+    for field in ["expected", "actual", "fix_direction"] {
+        let mut longest = footer_issue();
+        longest[field] = json!("x".repeat(ISSUE_TEXT_MAX));
+        let mut over = footer_issue();
+        over[field] = json!("x".repeat(ISSUE_TEXT_MAX + 1));
+        let (status, body) = post_issues(&s, "r-1", json!([over]));
+        assert_eq!(status, 409, "{field} one over the limit: {body}");
+        assert!(body["error"].as_str().unwrap().contains(field), "{field}: {body}");
+        assert!(resumed(&s).is_empty(), "{field}");
+        let (status, body) = post_issues(&s, "r-1", json!([longest]));
+        assert_eq!(status, 202, "{field} at the limit: {body}");
+        s.launcher.resumed.lock().unwrap().clear();
+    }
+
+    let code = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap();
+    let form = code.split("function DesignIssuesAction(").nth(1).expect("DesignIssuesAction").split("\nfunction ").next().unwrap();
+    let textareas: Vec<&str> = form.split("<textarea ").skip(1).map(|tag| tag.split("/>").next().unwrap()).collect();
+    assert!(!textareas.is_empty(), "the form's textareas");
+    for textarea in textareas {
+        assert!(textarea.contains(&format!("maxLength={{{ISSUE_TEXT_MAX}}}")), "{textarea}");
+    }
+}
+
 #[test]
 fn a_refused_post_shows_its_reason_in_the_form_which_stays_open() {
     let s = setup("person-issues-refused");

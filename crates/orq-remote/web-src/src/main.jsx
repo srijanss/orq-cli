@@ -3451,7 +3451,7 @@ function DesignIssuesAction({ run, control }) {
   const area = (issue, field, data, label) => (
     <label className="field">
       <span className="field-label">{label}</span>
-      <textarea {...{ [data]: "" }} rows={2} maxLength={4000} value={issue[field]} onChange={(event) => change(issue.key, field, event.target.value)} />
+      <textarea {...{ [data]: "" }} rows={2} maxLength={2000} value={issue[field]} onChange={(event) => change(issue.key, field, event.target.value)} />
     </label>
   );
   return (
