@@ -1,4 +1,4 @@
-//! The page offers exactly sixteen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume (also on a run waiting for design files), review again, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, clean up a merged run, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
+//! The page offers exactly seventeen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume (also on a run waiting for design files), review again, add design issues, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, clean up a merged run, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and a GitHub project's Push <target> of the sha it showed, never forced,
 //! and the Settings server card's restart when idle and its cancel, the Todo list's add, edit, delete and move,
 //! and a draft's queue wish, and the Archive completed action (a dry run, then the archive), and no other merge, nor any approve,
@@ -78,6 +78,9 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let model = paths("ModelAction");
     assert_eq!(model.len(), 1, "{model:?}");
     assert!(model[0].starts_with("\"runs/\"") && model[0].ends_with("+ \"/model\")"), "{}", model[0]);
+    // Add design issues posts the person's issues to the run's design-issues route; nothing else.
+    let design_issues = paths("DesignIssuesAction");
+    assert_eq!(design_issues, ["\"runs/\" + encodeURIComponent(run.run_id) + \"/design-issues\")"], "{design_issues:?}");
     // Start with… posts the chosen profiles to the feature's start route; nothing else.
     let launch = paths("LaunchAction");
     assert_eq!(launch.len(), 1, "{launch:?}");
@@ -154,7 +157,7 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     let queue_body = code.split("function QueueView(").nth(1).unwrap().split("\nfunction ").next().unwrap();
     let tails: Vec<&str> = queue_body.split("change(\"").skip(1).map(|tail| tail.split('"').next().unwrap()).collect();
     assert_eq!(tails, ["reorder", "resume", "pause", "remove"]);
-    assert_eq!(code.matches("controlPath(control, ").count(), 26, "the definition, archive completed, the design files' Resume, the seven run actions with their own path, a merged run's clean up, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
+    assert_eq!(code.matches("controlPath(control, ").count(), 27, "the definition, archive completed, the design files' Resume, the seven run actions with their own path, a merged run's clean up, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, add design issues, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
     }

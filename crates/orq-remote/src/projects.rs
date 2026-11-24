@@ -442,7 +442,7 @@ fn design_round_shown(dir: &Path, round: u64, references: &[(String, u64, u64, S
                 .iter()
                 .map(|issue| {
                     let field = |name: &str| shown_text(&issue[name]);
-                    let mut shown = json!({"id": field("id"), "section": field("section"), "viewport": field("viewport"), "severity": field("severity"), "status": field("status"), "expected": field("expected"), "actual": field("actual"), "fix_direction": field("fix_direction")});
+                    let mut shown = json!({"id": field("id"), "section": field("section"), "viewport": field("viewport"), "severity": field("severity"), "status": field("status"), "expected": field("expected"), "actual": field("actual"), "fix_direction": field("fix_direction"), "from_person": issue["basis"] == "person"});
                     // An issue that needs a file the package does not have names that file instead of a fix.
                     if issue["needs"]["path"].is_string() {
                         shown["needs_file"] = shown_text(&issue["needs"]["path"]);
@@ -1592,6 +1592,13 @@ pub trait RunLauncher {
         Err(LaunchError::Refused("this server cannot resume a run with an answer or a review again".to_string()))
     }
 
+    /// Continues run `run` of the project at `repo` with a person's design issues, `issues` being the JSON
+    /// array `orq run resume --design-issues` reads, for one more correction round, and returns the id of the
+    /// run that carries on.
+    fn resume_with_design_issues(&self, _repo: &Path, _run: &str, _issues: &str) -> Result<String, LaunchError> {
+        Err(LaunchError::Refused("this server cannot resume a run with design issues".to_string()))
+    }
+
     /// Merges run `run` of the project at `repo`, blocked by uncommitted changes in the checkout to files it
     /// changes, with those changes set aside meanwhile, and returns the id of the run that carries on.
     fn merge_set_aside(&self, _repo: &Path, _run: &str) -> Result<String, LaunchError> {
@@ -1871,6 +1878,26 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             return Ok(RunControlOutcome::Refused(busy));
         }
         self.resume_now(&project, &store, run, &ResumeRequest { answer: Some(answer), review_again: false })
+    }
+
+    /// Checks a person's design issues as `orq run resume --design-issues` does, against the run's viewports,
+    /// and resumes the run with them; the launch checks and records them again before the run carries on.
+    fn resume_with_design_issues(&self, id: &str, run: &str, issues: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {
+        use orq_core::remote_inbox::RunControlOutcome;
+        let Some((project, store)) = self.own_run(id, run)? else { return Ok(RunControlOutcome::Unknown) };
+        if let Some(busy) = self.being_accepted(run) {
+            return Ok(RunControlOutcome::Refused(busy));
+        }
+        let design = orq_orchestrator::load_run_settings(&project.path, &|name| std::env::var(name).ok()).ok().and_then(|settings| settings.design);
+        let viewports = orq_orchestrator::design_run_viewports(&self.roots.state.join("logs").join(run), design.as_ref());
+        if let Err(why) = orq_orchestrator::check_design_person_issues(&store, run, issues, &viewports) {
+            return Ok(RunControlOutcome::Refused(orq_core::redact::redact(&crate::discard::paths_within_project(&why, &project.path))));
+        }
+        let Some(launcher) = &self.launcher else { return Ok(RunControlOutcome::Refused("this server cannot resume runs".to_string())) };
+        if let Some(why) = self.resume_over_limit(&project, &store, run)? {
+            return Ok(RunControlOutcome::Refused(why));
+        }
+        carried_on(launcher.resume_with_design_issues(&project.path, run, issues), &project.path)
     }
 
     fn resume_check(&self, id: &str, run: &str) -> Result<orq_core::remote_inbox::RunControlOutcome, String> {

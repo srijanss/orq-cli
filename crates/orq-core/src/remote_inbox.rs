@@ -295,6 +295,13 @@ pub trait ProjectsProvider {
         Ok(RunControlOutcome::Refused("this server cannot resume a run with an answer".to_string()))
     }
 
+    /// Resumes run `run` of project `id`, a frontend run that ended needing review or failed in its
+    /// design review step, with a person's design `issues` (the JSON array `orq run resume
+    /// --design-issues` reads) for one extra correction round. A provider that cannot says so.
+    fn resume_with_design_issues(&self, _id: &str, _run: &str, _issues: &str) -> Result<RunControlOutcome, String> {
+        Ok(RunControlOutcome::Refused("this server cannot take design issues".to_string()))
+    }
+
     /// Where run `run` of project `id` would continue if resumed now (`Done(next)`), or why it
     /// cannot be; nothing is resumed. A provider that cannot tell does not know the run.
     fn resume_check(&self, _id: &str, _run: &str) -> Result<RunControlOutcome, String> {
@@ -738,6 +745,8 @@ pub fn action_body_cap(path: &str) -> usize {
         MAX_MERGED_BODY
     } else if path == "/api/todo" || path.starts_with("/api/todo/") {
         MAX_TODO_BODY
+    } else if run_target(path, "design-issues").is_some() {
+        MAX_DESIGN_ISSUES_BODY
     } else {
         MAX_ACTION_BODY
     }
@@ -2341,6 +2350,60 @@ fn switch_model(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, i
     }
 }
 
+/// The most a design issues post may hold: the issues file `orq run resume --design-issues` reads, and its wrapping.
+const MAX_DESIGN_ISSUES_BODY: usize = 256 * 1024 + 1024;
+
+/// Resumes a frontend run with a person's design issues for the web, if actions are on, and leaves an audit
+/// line for the attempt as run.design_issues. The body is `{"issues": [...]}`; the issues themselves are
+/// the provider's to check, and are never written to the audit.
+fn resume_with_design_issues(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id: &str, run: &str, body: &[u8]) -> Response {
+    use crate::remote_audit::{record, Attempt, Outcome};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    let failed = "the run could not be resumed";
+    let audit = |outcome, run: Option<&str>, reason: Option<&str>| {
+        let _ = record(roots, &Attempt { identity: "web", action: "run.design_issues", project: id, run, outcome, reason }, now);
+    };
+    if !remote_actions_on(roots) {
+        audit(Outcome::Refused, None, Some("remote actions are off"));
+        return error(404, "not found");
+    }
+    if !plain_run_id(run) {
+        audit(Outcome::Refused, None, Some("not a run id"));
+        return error(404, "not found");
+    }
+    let issues = match body_object(body, MAX_DESIGN_ISSUES_BODY) {
+        Ok(fields) if fields.len() == 1 && fields.get("issues").is_some_and(Value::is_array) => fields["issues"].to_string(),
+        Ok(_) => {
+            audit(Outcome::Refused, Some(run), Some("bad request body"));
+            return error(400, "the request body is not one this action takes");
+        }
+        Err(refused) => {
+            audit(Outcome::Refused, Some(run), Some("bad request body"));
+            return refused;
+        }
+    };
+    match provider.map(|provider| provider.resume_with_design_issues(id, run, &issues)) {
+        Some(Ok(RunControlOutcome::Done(now_run))) => {
+            audit(Outcome::Allowed, Some(run), None);
+            reply(202, json!({ "run": now_run }))
+        }
+        Some(Ok(RunControlOutcome::Refused(why))) => {
+            audit(Outcome::Refused, Some(run), Some(&why));
+            reply(409, json!({ "error": why }))
+        }
+        // The reason can name a path on this machine, so the caller is only told it failed.
+        Some(Err(why)) => {
+            log_line(&launch_failure_line("run.design_issues", id, run, &why));
+            audit(Outcome::Refused, Some(run), Some(failed));
+            error(500, failed)
+        }
+        _ => {
+            audit(Outcome::Refused, None, Some("no such project or run"));
+            error(404, "not found")
+        }
+    }
+}
+
 /// The project of `/api/projects/{id}/{leaf}`, when the path has that shape.
 fn project_target<'a>(path: &'a str, leaf: &str) -> Option<&'a str> {
     let id = path.strip_prefix("/api/projects/")?.strip_suffix(leaf)?.strip_suffix('/')?;
@@ -3001,6 +3064,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "model")).flatten() {
         return switch_model(roots, provider, id, run, body);
+    }
+    if let Some((id, run)) = (request.method == "POST").then(|| run_target(path, "design-issues")).flatten() {
+        return resume_with_design_issues(roots, provider, id, run, body);
     }
     if let Some((id, feature)) = feature_target(path, "queue-wish").filter(|_| matches!(request.method, "GET" | "HEAD" | "POST")) {
         return queue_wish(roots, provider, id, feature, request.method, body);

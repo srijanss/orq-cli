@@ -445,6 +445,47 @@ fn a_resume_with_an_answer_or_a_review_again_passes_them_to_orq_run_resume() {
     ]);
 }
 
+#[test]
+fn a_resume_with_design_issues_hands_them_to_orq_run_resume_in_a_private_file_removed_after() {
+    let dir = scratch("resume-design-issues");
+    let repo = repo(&dir);
+    let exe = dir.join("orq");
+    let log = dir.join("calls.log");
+    let script = format!(
+        "#!/bin/sh\nprev=''\nfor a in \"$@\"; do printf '[%s]' \"$a\" >> {log}; if [ \"$prev\" = --design-issues ]; then cat \"$a\" > {given}; printf '%s' \"$a\" > {path}; stat -c %a \"$a\" > {mode}; fi; prev=\"$a\"; done\necho >> {log}\nif [ -e {refuse} ]; then echo 'orq: cannot resume r-1: r-1 did not end needing review or failed in its design review step' >&2; exit 1; fi\necho 'run: run-80'\n",
+        log = log.display(),
+        given = dir.join("given").display(),
+        path = dir.join("path").display(),
+        mode = dir.join("mode").display(),
+        refuse = dir.join("refuse").display()
+    );
+    std::fs::write(&exe, script).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launcher = CliLauncher::new(exe, None);
+    let issues = r#"[{"section":"Footer","viewport":"all","expected":"no box","actual":"a white box"}]"#;
+
+    assert_eq!(launcher.resume_with_design_issues(&repo, "r-1", issues).unwrap(), "run-80");
+
+    let file = std::fs::read_to_string(dir.join("path")).unwrap();
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.trim_end(), format!("[run][resume][r-1][--yes][--design-issues][{file}][--detach][--in-herdr][--repo][{}]", repo.display()));
+    assert_eq!(std::fs::read_to_string(dir.join("given")).unwrap(), issues);
+    assert_eq!(std::fs::read_to_string(dir.join("mode")).unwrap().trim(), "600");
+    assert!(!Path::new(&file).exists(), "the issues file is removed once the command returned");
+
+    // The command's refusal is the reason, and the file is removed all the same.
+    std::fs::write(dir.join("refuse"), "").unwrap();
+    match launcher.resume_with_design_issues(&repo, "r-1", issues) {
+        Err(LaunchError::Refused(reason)) => assert_eq!(reason, "cannot resume r-1: r-1 did not end needing review or failed in its design review step"),
+        other => panic!("{other:?}"),
+    }
+    let file = std::fs::read_to_string(dir.join("path")).unwrap();
+    assert!(!Path::new(&file).exists());
+    // A run id that could be read as an option never reaches the command.
+    assert!(matches!(launcher.resume_with_design_issues(&repo, "--yes", issues), Err(LaunchError::Refused(_))));
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
+}
+
 /// Nobody watches a run the queue starts: it starts detached and unattended, never in a Herdr pane,
 /// with the queued profiles when the entry chose them.
 #[test]

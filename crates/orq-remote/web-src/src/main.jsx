@@ -3390,6 +3390,116 @@ function ModelAction({ run, control }) {
   );
 }
 
+// The steps a frontend run's design review is made of: a run that ended needing review or failed in one of
+// them takes a person's own design issues for one more correction round.
+const DESIGN_STEPS = ["design_review", "design_fix", "design_code_review"];
+const PERSON_SEVERITIES = [["major", "Major"], ["minor", "Minor"], ["critical", "Critical"]];
+let personIssueKey = 0;
+const blankPersonIssue = () => ({ key: ++personIssueKey, section: "", viewport: "all", expected: "", actual: "", fix: "", severity: "major" });
+
+function takesDesignIssues(run) {
+  return (run.state === "needs_review" || run.state === "failed") && DESIGN_STEPS.includes(run.stage) && designOf(run) !== null;
+}
+
+// Add design issues on the run page: a form of one or more issues, each a section (the report's section names
+// suggested), a viewport (the run's or All), what was expected, what is wrong, how to fix it (optional) and a
+// severity. Run another round posts them; the server checks them as `orq run resume --design-issues` does and
+// resumes the run with them. A refusal shows its reason in the form, which stays open to be corrected.
+function DesignIssuesAction({ run, control }) {
+  const [phase, setPhase] = useState("idle");
+  const [note, setNote] = useState("");
+  const [issues, setIssues] = useState(() => [blankPersonIssue()]);
+  const design = designOf(run);
+  const named = (list, of) => [...new Set(list.filter((item) => item !== null && typeof item === "object" && typeof item[of] === "string" && item[of] !== "").map((item) => item[of]))];
+  const viewports = named(design.rounds.flatMap((round) => listOf(round.viewports)), "name").filter((name) => name !== "all");
+  const sections = named(design.rounds.flatMap((round) => listOf(round.issues)), "section");
+  const listId = "design-issue-sections-" + run.run_id;
+  const path = controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/design-issues");
+  const change = (key, field, value) => setIssues(issues.map((issue) => (issue.key === key ? { ...issue, [field]: value } : issue)));
+  const open = () => {
+    setNote("");
+    setIssues([blankPersonIssue()]);
+    setPhase("asking");
+  };
+  const send = async () => {
+    setPhase("sending");
+    setNote("");
+    let text = "The issues could not be sent.";
+    const sent = issues.map((issue) => ({ section: issue.section.trim(), viewport: issue.viewport, expected: issue.expected.trim(), actual: issue.actual.trim(), ...(issue.fix.trim() === "" ? {} : { fix_direction: issue.fix.trim() }), severity: issue.severity }));
+    try {
+      const response = await actionRequest(path, control.token, { issues: sent });
+      if (response.status === 401) {
+        control.onSignedOut();
+        return;
+      }
+      const body = await jsonOrNull(response);
+      if (response.ok) {
+        const next = body !== null && typeof body.run === "string" && body.run !== "" ? body.run : run.run_id;
+        setNote("Correcting your issues as run " + next + ".");
+        setPhase("done");
+        control.onDone();
+        return;
+      } else if (response.status === 403) text = "Not allowed.";
+      else if (body !== null && typeof body.error === "string") text = body.error;
+    } catch (unreachable) {
+      text = "The server could not be reached.";
+    }
+    setNote(text);
+    setPhase("asking");
+  };
+  const sending = phase === "sending";
+  const area = (issue, field, data, label) => (
+    <label className="field">
+      <span className="field-label">{label}</span>
+      <textarea {...{ [data]: "" }} rows={2} maxLength={4000} value={issue[field]} onChange={(event) => change(issue.key, field, event.target.value)} />
+    </label>
+  );
+  return (
+    <div className="run-action">
+      {phase === "idle" ? <button type="button" data-design-issues="" onClick={open}><Icon name="plus" size={16} />Add design issues</button> : null}
+      {phase === "asking" || sending ? (
+        <div className="confirm design-issues-form" role="group" aria-label="Your design issues" data-design-issues-form="">
+          <datalist id={listId} data-issue-sections="">{sections.map((section) => <option key={section} value={section} />)}</datalist>
+          {issues.map((issue, at) => (
+            <fieldset key={issue.key} className="confirm-fields person-issue" data-person-issue={at}>
+              <legend>{"Issue " + (at + 1)}</legend>
+              <label className="field">
+                <span className="field-label">Section</span>
+                <input type="text" data-issue-section="" list={listId} maxLength={200} value={issue.section} onChange={(event) => change(issue.key, "section", event.target.value)} />
+              </label>
+              <label className="field">
+                <span className="field-label">Viewport</span>
+                <select data-issue-viewport="" value={issue.viewport} onChange={(event) => change(issue.key, "viewport", event.target.value)}>
+                  <option value="all">All</option>
+                  {viewports.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </label>
+              {area(issue, "expected", "data-issue-expected", "Expected")}
+              {area(issue, "actual", "data-issue-actual", "What's wrong")}
+              {area(issue, "fix", "data-issue-fix", "How to fix (optional)")}
+              <label className="field">
+                <span className="field-label">Severity</span>
+                <select data-issue-severity="" value={issue.severity} onChange={(event) => change(issue.key, "severity", event.target.value)}>
+                  {PERSON_SEVERITIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+              {issues.length > 1 ? <button type="button" data-design-issue-remove="" disabled={sending} onClick={() => setIssues(issues.filter((other) => other.key !== issue.key))}>Remove</button> : null}
+            </fieldset>
+          ))}
+          <div className="confirm-actions">
+            <button type="button" data-design-issue-add="" disabled={sending} onClick={() => setIssues([...issues, blankPersonIssue()])}>Add another</button>
+            <button type="button" className="primary-button" data-design-issues-send="" disabled={sending} onClick={send}>Run another round</button>
+            <button type="button" data-cancel="" disabled={sending} onClick={() => setPhase("idle")}>Cancel</button>
+          </div>
+          {sending ? <span role="status">Sending…</span> : null}
+          {note !== "" ? <span role="status" className="run-action-note error-text" data-design-issues-refused="">{note}</span> : null}
+        </div>
+      ) : null}
+      {phase === "done" ? <span role="status" className="run-action-note">{note}</span> : null}
+    </div>
+  );
+}
+
 // Project default: a start that names no profiles, so the run uses the project's own agents.
 const PROJECT_DEFAULT = "";
 
@@ -5752,6 +5862,11 @@ function DesignIssue({ issue }) {
   return (
     <li className="design-issue" data-design-issue={textOr(issue.id)}>
       <div className="design-issue-head">
+        {issue.from_person === true ? (
+          <span className="pill design-from-person" data-from-person="">
+            From you
+          </span>
+        ) : null}
         <span className={"pill design-severity design-severity-" + (DESIGN_SEVERITIES[severity] ? severity : "unknown")}>{DESIGN_SEVERITIES[severity] ?? "Unknown"}</span>
         <span className={"pill design-status design-status-" + (DESIGN_STATUSES[status] ? status : "unknown")}>{DESIGN_STATUSES[status] ?? "Unknown"}</span>
         {typeof issue.viewport === "string" && issue.viewport !== "" ? <span className="muted">{issue.viewport}</span> : null}
@@ -5939,9 +6054,11 @@ function RowActions({ run, control, menu = false }) {
   const queueResume = !RESUMABLE.includes(run.state) ? null : run.state === "needs_review" ? queued("queue-run-review-again", "review_again", "Queue review again", "Review again") : queued("queue-run-resume", "resume", "Queue resume", "Resume", true);
   const queueAccept = ACCEPTABLE.includes(run.state) ? queued("queue-run-accept", "accept", "Queue accept", "Accept") : null;
   const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
+  // Only the run page carries the design review, so only there does a design run take a person's issues.
+  const designIssues = takesDesignIssues(run) ? <DesignIssuesAction run={run} control={control} /> : null;
   const setAside = dirtyFiles(run) === null ? null : <RunAction kind="merge-set-aside" label="Set aside my changes and merge" icon="check" question={SET_ASIDE_QUESTION} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/merge-set-aside")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Merging." : "Merging as run " + next + ".")} />;
   if (pause === null && resume === null && stop === null && discard === null && accept === null && mergeAccepted === null && model === null && setAside === null) return null;
-  const all = [pause, resume, reviewAgain, setAside, mergeAccepted, model, stop, accept, queueResume, queueAccept, discard].filter((action) => action !== null);
+  const all = [pause, resume, reviewAgain, designIssues, setAside, mergeAccepted, model, stop, accept, queueResume, queueAccept, discard].filter((action) => action !== null);
   if (menu && all[0].type === RunAction) all[0] = cloneElement(all[0], { float: true });
   if (!menu || all.length === 1) return <span className="run-actions">{all}</span>;
   return <span className="run-actions">{all[0]}<MoreMenu label={"More actions for " + run.run_id}>{all.slice(1)}</MoreMenu></span>;

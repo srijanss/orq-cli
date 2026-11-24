@@ -225,6 +225,18 @@ impl RunLauncher for CliLauncher {
         self.carry_on(run, &command, repo)
     }
 
+    fn resume_with_design_issues(&self, repo: &Path, run: &str, issues: &str) -> Result<String, LaunchError> {
+        if run.is_empty() || run.starts_with('-') {
+            return Err(LaunchError::Refused("not a run id".to_string()));
+        }
+        // `orq run resume` reads the file before it returns, so it is only needed while the command runs.
+        let file = private_issues_file(issues).map_err(|error| LaunchError::Failed(format!("cannot write the design issues file: {error}")))?;
+        let path = file.to_string_lossy().into_owned();
+        let carried = self.carry_on(run, &["resume", run, "--yes", "--design-issues", &path], repo);
+        let _ = std::fs::remove_file(&file);
+        carried
+    }
+
     fn merge_set_aside(&self, repo: &Path, run: &str) -> Result<String, LaunchError> {
         // `orq run merge --set-aside` resumes the run, so it carries on as a resumed run does.
         self.carry_on(run, &["merge", run, "--set-aside"], repo)
@@ -251,6 +263,22 @@ impl CliLauncher {
         }
         crate::launch_outcome(true, &out, &err).map_err(LaunchError::Failed)
     }
+}
+
+/// Writes a person's design issues to a new file only this user may read, in the temp folder, and returns it.
+fn private_issues_file(issues: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.subsec_nanos());
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("orq-design-issues-{}-{nanos}-{n}.json", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+    if let Err(error) = file.write_all(issues.as_bytes()) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
