@@ -242,6 +242,7 @@ pub fn plan_group_resume_fixing(
         &crate::interrupted::process_is_alive,
         fix_conflicts,
         false,
+        false,
     )
 }
 
@@ -262,6 +263,7 @@ pub fn plan_group_resume_reviewing_again(
         &crate::interrupted::process_is_alive,
         false,
         true,
+        false,
     )
 }
 
@@ -409,7 +411,7 @@ pub fn plan_group_resume_with(
     members: &[String],
     alive: &dyn Fn(u32, Option<u64>) -> bool,
 ) -> Result<ResumePlan, String> {
-    plan(store, repo, project_id, members, alive, false, false)
+    plan(store, repo, project_id, members, alive, false, false, false)
 }
 
 fn plan(
@@ -420,6 +422,7 @@ fn plan(
     alive: &dyn Fn(u32, Option<u64>) -> bool,
     fix_conflicts: bool,
     review_again: bool,
+    design_issues: bool,
 ) -> Result<ResumePlan, String> {
     let feature_id = members
         .first()
@@ -567,7 +570,10 @@ fn plan(
     }
     // A run waiting on a review decision continues only as another review of the one that
     // escalated; without it, nothing says what to review, so it is not resumed as new work.
+    // A design run given a person's issues goes on with its design review step instead.
+    let design_round = design_issues || crate::design_loop::design_grant_waiting(&events);
     let review_again = match summarize_run(&events).phase {
+        RunPhase::NeedsReview if design_round => None,
         RunPhase::NeedsReview => Some(
             crate::review_escalation::escalated_review(&from.worktree, &from.base_sha)
                 .map_err(|e| format!("{}: cannot read the review ledger: {e}", from.run_id))?
@@ -900,6 +906,27 @@ pub fn check_group_resume_fixing(
 ) -> Result<(), String> {
     check_group_resume_as(store, run_id, &|record, members| {
         plan_group_resume_fixing(store, repo, &record.project_id, members, fix_conflicts)
+    })
+}
+
+/// [`check_group_resume`] for a resume that gives the person's issues to a design run, whose design
+/// review step then goes on with an extra correction round (checked by `check_design_person_issues`).
+pub fn check_group_resume_with_design_issues(
+    store: &RunStore,
+    repo: &Path,
+    run_id: &str,
+) -> Result<(), String> {
+    check_group_resume_as(store, run_id, &|record, members| {
+        plan(
+            store,
+            repo,
+            &record.project_id,
+            members,
+            &crate::interrupted::process_is_alive,
+            false,
+            false,
+            true,
+        )
     })
 }
 

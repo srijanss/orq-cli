@@ -5773,6 +5773,8 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     };
     let checked = if review_again {
         orq_orchestrator::check_group_resume_reviewing_again(&store, &repo, &run_id)
+    } else if design_issues.is_some() {
+        orq_orchestrator::check_group_resume_with_design_issues(&store, &repo, &run_id)
     } else {
         orq_orchestrator::check_group_resume_fixing(&store, &repo, &run_id, fix_conflicts)
     };

@@ -172,7 +172,8 @@ pub use rebase::{private_ref_name, rebase_onto_commit, rebase_onto_target, Rebas
 pub use report_evidence::{recorded_evidence, RecordedEvidence};
 pub use resume::{
     active_runs, carry_rebase, check_answer_reaches_session, check_group_resume,
-    check_group_resume_fixing, check_group_resume_reviewing_again, holds_run_slot, later_run_of,
+    check_group_resume_fixing, check_group_resume_reviewing_again,
+    check_group_resume_with_design_issues, holds_run_slot, later_run_of,
     newest_run_of, newest_runs_of, plan_group_resume, plan_group_resume_fixing,
     plan_group_resume_reviewing_again, plan_group_resume_with, plan_resume, rebased_onto,
     record_group, record_inherited_implement, resumable_members, resume_check, resume_takes_a_slot,

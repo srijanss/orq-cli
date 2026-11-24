@@ -1180,6 +1180,21 @@ pub fn record_design_person_issues(
     Ok(grant.issues)
 }
 
+/// Whether a run's `events` hold a person's issues whose extra correction round has not run yet:
+/// the run's resume goes on with its design review step.
+pub fn design_grant_waiting(events: &[Event]) -> bool {
+    let design = events
+        .iter()
+        .filter(|e| e.stage.as_deref() == Some(DESIGN_REVIEW_STAGE));
+    let batches = design
+        .clone()
+        .filter(|e| e.kind == "design_correction")
+        .count() as u64;
+    design
+        .filter(|e| e.kind == "design_person_issues")
+        .any(|e| e.payload["batch"].as_u64().is_some_and(|b| b > batches))
+}
+
 /// The names of the viewports a frontend run's page is captured at: the project's design settings'
 /// (`settings`) and its frozen package's reference viewports (`run_logs`' `design/manifest.json`).
 pub fn design_run_viewports(

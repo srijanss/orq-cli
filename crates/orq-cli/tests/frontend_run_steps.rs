@@ -260,6 +260,91 @@ fn a_resumed_frontend_run_keeps_its_design_rounds_and_its_frozen_package() {
 }
 
 #[test]
+fn a_frontend_run_resumed_with_a_persons_issues_runs_one_extra_round_for_them_in_a_run_of_its_own() {
+    let w = frontend("person-issues");
+    w.design_reviewer();
+    w.mark_frontend();
+    let agent = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n").commit("feat: the home page").build();
+    let provider = orq_test_support::FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+    let first = w.run(&agent, &provider);
+    assert!(!first.status.success());
+    let first_run = w.events().iter().find_map(|e| e["run_id"].as_str().map(str::to_string)).unwrap();
+    // A resume recorded the person's issues and then its run did not start.
+    let store = orq_orchestrator::RunStore::new(&w.home.join("state/orq"));
+    let viewports: Vec<String> = ["desktop", "tablet", "mobile"].map(String::from).to_vec();
+    let original = r#"[{"section": "Footer", "viewport": "all", "expected": "a transparent logo", "actual": "a white box"}]"#;
+    orq_orchestrator::record_design_person_issues(&store, &first_run, original, &viewports).unwrap();
+    let file = w.home.join("issues.json");
+    std::fs::write(
+        &file,
+        r#"[{"section": "Footer", "viewport": "mobile", "expected": "a transparent logo", "actual": "a white box", "fix_direction": "drop the white box"}]"#,
+    )
+    .unwrap();
+    // The fix session of the extra round drops the white box.
+    let fixer = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n<footer>logo</footer>\n").commit("fix: the footer logo").build();
+
+    let resumed = w.orq_run(
+        &fixer,
+        &provider,
+        &["run", "resume", &first_run, "--yes", "--no-ci-check", "--design-issues", file.to_str().unwrap(), "--repo", w.repo.root().to_str().unwrap()],
+    );
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    let events = w.events();
+    let resumed_run = events
+        .iter()
+        .filter_map(|e| e["run_id"].as_str())
+        .find(|r| *r != first_run)
+        .unwrap_or_else(|| panic!("no resumed run: {all}"))
+        .to_string();
+    let of_resumed = |kind: &str| -> Vec<&serde_json::Value> {
+        events.iter().filter(|e| e["run_id"] == resumed_run.as_str() && e["type"] == kind).collect()
+    };
+    // The resumed run holds the corrected issues, not the first ones.
+    let given = of_resumed("design_person_issues");
+    let issues = &given.last().unwrap_or_else(|| panic!("no issues carried: {all}"))["payload"]["issues"];
+    assert_eq!(issues.as_array().map(Vec::len), Some(1), "{issues}");
+    assert_eq!(issues[0]["id"], "person-1", "{issues}");
+    assert_eq!(issues[0]["viewport"], "mobile", "{issues}");
+    assert_eq!(issues[0]["fix_direction"], "drop the white box", "{issues}");
+    // Exactly one extra round runs for them, and the page is reviewed again after it.
+    let extra: Vec<&serde_json::Value> = of_resumed("design_correction").into_iter().filter(|e| e["payload"]["extra"] == 1).collect();
+    assert_eq!(extra.len(), 1, "{all}\n{events:?}");
+    assert!(!resumed.status.success(), "the page still does not pass: {all}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
+#[test]
+fn a_frontend_run_that_ended_needing_review_in_its_design_step_resumes_with_a_persons_issues() {
+    let w = frontend("person-issues-needs-review");
+    w.design_reviewer();
+    w.mark_frontend();
+    let agent = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n").commit("feat: the home page").build();
+    let provider = orq_test_support::FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+    let first = w.run(&agent, &provider);
+    let all = format!("{}{}", text(&first.stdout), text(&first.stderr));
+    assert!(all.contains("needs_review") || all.contains("needs review"), "{all}");
+    let first_run = w.events().iter().find_map(|e| e["run_id"].as_str().map(str::to_string)).unwrap();
+    let file = w.home.join("issues.json");
+    std::fs::write(&file, r#"[{"section": "Footer", "viewport": "all", "expected": "a transparent logo", "actual": "a white box"}]"#).unwrap();
+
+    let resumed = w.orq_run(
+        &agent,
+        &provider,
+        &["run", "resume", &first_run, "--yes", "--no-ci-check", "--design-issues", file.to_str().unwrap(), "--repo", w.repo.root().to_str().unwrap()],
+    );
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    assert!(!all.contains("no escalated review"), "a design run's person's issues are not a code review to review again: {all}");
+    let events = w.events();
+    assert!(
+        events.iter().any(|e| e["run_id"] != first_run.as_str() && e["type"] == "design_person_issues"),
+        "the resumed run has the person's issues: {all}"
+    );
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
+#[test]
 fn a_resume_whose_frozen_package_is_gone_is_refused_instead_of_freezing_the_changed_references() {
     let w = frontend("resume-package-gone");
     w.design_reviewer();
