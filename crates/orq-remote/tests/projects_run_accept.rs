@@ -111,7 +111,7 @@ fn a_failed_run_with_clean_committed_work_is_tested_after_the_reply_and_refusals
     assert_eq!(post(&s, &provider, "r-fail"), (202, json!({"run": "r-fail"})));
     assert_eq!(kinds_once(&s, "r-fail", 4), ["run.started", "run.failed", "run.accept_started", "run.completed"], "its tests passed, so it is review ready");
     assert_eq!(post(&s, &provider, "r-dirty"), (409, json!({"error": "r-dirty has uncommitted changes in its worktree; commit or discard them first"})));
-    assert_eq!(post(&s, &provider, "r-run"), (409, json!({"error": "r-run is running; only a failed run can be accepted, or one waiting on a review decision"})));
+    assert_eq!(post(&s, &provider, "r-run"), (409, json!({"error": "r-run is running; only a failed run can be accepted, or one waiting on a review decision or design files"})));
     assert_eq!(post(&s, &provider, "r-beta").0, 404, "a run of another project is not this project's");
     assert_eq!(*tested.lock().unwrap(), ["r-fail"], "only an acceptable run is tested");
 }
