@@ -2528,7 +2528,7 @@ fn stages(
         let main_checkout = crate::kind_root(options.project);
         let skill = orq_agents::design_skill("design-review").unwrap_or_default();
         let max = u32::from(design_settings.max_correction_rounds);
-        let review = |round: u32| {
+        let review = |round: u32, person: &[orq_orchestrator::PersonGrant]| {
             let run = orq_orchestrator::DesignReviewRun {
                 run_id,
                 main_checkout: &main_checkout,
@@ -2543,7 +2543,7 @@ fn stages(
                 schema: orq_agents::DESIGN_REVIEW_SCHEMA,
                 agent_timeout: DESIGN_AGENT_TIMEOUT,
             };
-            orq_orchestrator::review_design(&run, &orq_orchestrator::capture_design)
+            orq_orchestrator::review_design_with_person(&run, &orq_orchestrator::capture_design, person)
         };
         // Each part of a correction round is a fix session of its own, with the part's task (the whole
         // round's task when the round is one part).
@@ -3040,7 +3040,8 @@ struct PipelineDesignSteps<'a> {
     max_correction_rounds: u32,
     /// The feature whose package folder the design comes from.
     feature: &'a str,
-    review: &'a dyn Fn(u32) -> orq_orchestrator::DesignReviewOutcome,
+    /// A review of round `n`, given the person's issues the run holds so far.
+    review: &'a dyn Fn(u32, &[orq_orchestrator::PersonGrant]) -> orq_orchestrator::DesignReviewOutcome,
     correct: &'a dyn Fn(u32, &orq_orchestrator::CorrectionPart) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
     review_code: &'a dyn Fn(u32, &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
     refreeze: &'a dyn Fn(&orq_orchestrator::DesignFilesNeeded) -> orq_orchestrator::Refreeze,
@@ -3061,7 +3062,11 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
     }
 
     fn review(&mut self, round: u32) -> Result<orq_orchestrator::DesignReviewOutcome, StoreError> {
-        Ok((self.review)(round))
+        Ok((self.review)(round, &[]))
+    }
+
+    fn review_with_person(&mut self, round: u32, person: &[orq_orchestrator::PersonGrant]) -> Result<orq_orchestrator::DesignReviewOutcome, StoreError> {
+        Ok((self.review)(round, person))
     }
 
     /// A whole round as one part; the loop gives the implementer parts through `correct_part`.

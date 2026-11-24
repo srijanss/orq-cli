@@ -43,7 +43,7 @@
           "status": { "type": "string", "enum": ["open", "resolved", "regressed"] },
           "fix_direction": { "type": "string" },
           "selector": { "type": "string" },
-          "basis": { "type": "string", "enum": ["rule", "structure", "visual"] },
+          "basis": { "type": "string", "enum": ["rule", "structure", "visual", "person"] },
           "copy": { "type": "boolean" },
           "quote": { "type": "string" },
           "token": { "type": "string" },

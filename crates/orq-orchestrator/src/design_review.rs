@@ -204,6 +204,9 @@ pub enum IssueBasis {
     Structure,
     /// A mockup detail only: guidance, at most minor.
     Visual,
+    /// Raised by the person reviewing the run (`person-<n>`): binds like a rule, and where it
+    /// contradicts a line of the package, the person's word wins for the run.
+    Person,
 }
 
 impl IssueBasis {
@@ -212,8 +215,108 @@ impl IssueBasis {
             IssueBasis::Rule => "rule",
             IssueBasis::Structure => "structure",
             IssueBasis::Visual => "visual",
+            IssueBasis::Person => "person",
         }
     }
+}
+
+/// The longest an issue's `section` or `viewport` may be, in characters.
+pub const ISSUE_NAME_MAX: usize = 200;
+/// The longest an issue's `expected`, `actual` or `fix_direction` may be, in characters.
+pub const ISSUE_TEXT_MAX: usize = 2000;
+
+/// One issue as the person gives it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersonIssueInput {
+    section: String,
+    viewport: String,
+    expected: String,
+    actual: String,
+    #[serde(default)]
+    fix_direction: Option<String>,
+    #[serde(default)]
+    severity: Option<Severity>,
+}
+
+/// The person's issues in `text` (a JSON array of objects with `section`, `viewport`, `expected`,
+/// `actual`, an optional `fix_direction` and an optional `severity`, major unless given), numbered
+/// `person-<first>` on. A viewport is one of `viewports` or `all`; every text field is plain text
+/// within the lengths a reviewer issue allows. Anything else is refused with the field named.
+pub fn person_issues(
+    text: &str,
+    viewports: &[String],
+    first: u32,
+) -> Result<Vec<ReviewIssue>, String> {
+    let given: Vec<PersonIssueInput> = serde_json::from_str(text.trim()).map_err(|e| {
+        format!(
+            "the issues are not a JSON array of issues with section, viewport, expected, actual and \
+             optionally fix_direction and severity ({e})"
+        )
+    })?;
+    if given.is_empty() {
+        return Err("the file lists no issue".to_string());
+    }
+    let mut issues = Vec::with_capacity(given.len());
+    for (at, input) in given.into_iter().enumerate() {
+        let n = at + 1;
+        let field = |name: &str, value: &str, max: usize, lines: bool| -> Result<String, String> {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(format!("issue {n}: its {name} is empty"));
+            }
+            if value.chars().count() > max {
+                return Err(format!(
+                    "issue {n}: its {name} is longer than {max} characters"
+                ));
+            }
+            let plain = value
+                .chars()
+                .all(|c| !c.is_control() || (lines && matches!(c, '\n' | '\t')));
+            if !plain {
+                return Err(format!(
+                    "issue {n}: its {name} is not plain text (it holds a control character)"
+                ));
+            }
+            Ok(value.to_string())
+        };
+        let section = field("section", &input.section, ISSUE_NAME_MAX, false)?;
+        let viewport = field("viewport", &input.viewport, ISSUE_NAME_MAX, false)?;
+        if viewport != "all" && !viewports.contains(&viewport) {
+            return Err(format!(
+                "issue {n}: its viewport {viewport:?} is not one of the run's viewports ({}) or all",
+                viewports.join(", ")
+            ));
+        }
+        let expected = field("expected", &input.expected, ISSUE_TEXT_MAX, true)?;
+        let actual = field("actual", &input.actual, ISSUE_TEXT_MAX, true)?;
+        let fix_direction = match input.fix_direction.as_deref() {
+            Some(text) => field("fix_direction", text, ISSUE_TEXT_MAX, true)?,
+            None => String::new(),
+        };
+        issues.push(ReviewIssue {
+            id: format!("person-{}", first as usize + at),
+            section,
+            viewport,
+            source: "person".to_string(),
+            expected,
+            actual,
+            evidence: Vec::new(),
+            severity: input.severity.unwrap_or(Severity::Major),
+            status: IssueStatus::Open,
+            fix_direction,
+            selector: None,
+            confidence: None,
+            basis: Some(IssueBasis::Person),
+            copy: None,
+            quote: None,
+            token: None,
+            reference: None,
+            downgraded_from: None,
+            needs: None,
+        });
+    }
+    Ok(issues)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +348,8 @@ struct RoundResult {
     reviewer_review: Option<DesignReview>,
     /// Each issue whose `needs` orq dropped, and why.
     needs_refused: Vec<String>,
+    /// The person's issues the round was given, by the extra round they granted.
+    person: Vec<PersonGrant>,
 }
 
 impl RoundResult {
@@ -257,6 +362,7 @@ impl RoundResult {
             escalation: None,
             reviewer_review: None,
             needs_refused: Vec::new(),
+            person: Vec::new(),
         }
     }
 }
@@ -296,6 +402,8 @@ struct ReviewContext {
     rules: PackageRules,
     /// The ids of the token check's open issues: no review passes while one is open.
     token_issues: Vec<String>,
+    /// The person's issues: the review reports each under its id, and each keeps its basis and severity.
+    person: Vec<ReviewIssue>,
 }
 
 /// The binding documents (DESIGN.md, UX.md, RESPONSIVE.md) and token files of the frozen package
@@ -398,8 +506,31 @@ pub fn review_design(
     run: &DesignReviewRun,
     capture: &dyn Fn(&CaptureRun) -> CaptureOutcome,
 ) -> DesignReviewOutcome {
+    review_design_with_person(run, capture, &[])
+}
+
+/// The person's issues one `design_person_issues` event records, with the extra correction round they
+/// granted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonGrant {
+    /// Which extra round, from 1.
+    pub extra: u32,
+    /// The correction batch the extra round is.
+    pub batch: u32,
+    pub issues: Vec<ReviewIssue>,
+}
+
+/// [`review_design`], the reviewer given the person's issues (`person`): it must report each one under
+/// its id, and each keeps its basis and severity.
+pub fn review_design_with_person(
+    run: &DesignReviewRun,
+    capture: &dyn Fn(&CaptureRun) -> CaptureOutcome,
+    person: &[PersonGrant],
+) -> DesignReviewOutcome {
     let design_dir = run.run_logs.join(RUN_DESIGN_DIR);
-    let result = review_round(run, &design_dir, capture).unwrap_or_else(RoundResult::blocked);
+    let mut result =
+        review_round(run, &design_dir, capture, person).unwrap_or_else(RoundResult::blocked);
+    result.person = person.to_vec();
     let result = match write_round(run, &design_dir, &result) {
         Ok(()) => result,
         Err(why) => RoundResult::blocked(why),
@@ -416,6 +547,7 @@ fn review_round(
     run: &DesignReviewRun,
     design_dir: &Path,
     capture: &dyn Fn(&CaptureRun) -> CaptureOutcome,
+    person: &[PersonGrant],
 ) -> Result<RoundResult, String> {
     let manifest = freeze_package(run)?;
     let design_doc = std::fs::read_to_string(design_dir.join(PACKAGE_DIR).join("DESIGN.md")).ok();
@@ -439,7 +571,8 @@ fn review_round(
     // Measured values are checked by code, not by the model: a violated token rule is an issue the
     // reviewer's answer can neither drop nor downgrade.
     let token_issues = check_design_tokens(design_dir, run.round).issues();
-    reviewed_round(run, design_dir, &manifest, &record, &token_issues)
+    let person: Vec<ReviewIssue> = person.iter().flat_map(|g| g.issues.clone()).collect();
+    reviewed_round(run, design_dir, &manifest, &record, &token_issues, person)
 }
 
 /// The round reviewed by the design reviewer, and by the verifier when it escalates. Each review
@@ -451,6 +584,7 @@ fn reviewed_round(
     manifest: &DesignManifest,
     record: &CaptureRecord,
     token_issues: &[ReviewIssue],
+    person: Vec<ReviewIssue>,
 ) -> Result<RoundResult, String> {
     let refused = std::cell::RefCell::new(Vec::new());
     let checked = |mut review: DesignReview| {
@@ -500,6 +634,7 @@ fn reviewed_round(
         previous: previous_reviews(design_dir, run.round),
         rules: PackageRules::read(design_dir),
         token_issues: token_issues.iter().map(|issue| issue.id.clone()).collect(),
+        person,
     };
     let review = match valid_review(run, run.reviewer, "design reviewer", &context) {
         Ok(review) => checked(review),
@@ -519,6 +654,7 @@ fn reviewed_round(
             escalation: None,
             reviewer_review: None,
             needs_refused: refused.take(),
+            person: Vec::new(),
         });
     };
     // The verifier reviews once more; its verdict replaces the reviewer's for the round.
@@ -533,6 +669,7 @@ fn reviewed_round(
                 escalation: None,
                 reviewer_review: None,
                 needs_refused: refused.take(),
+                person: Vec::new(),
             }
         }
         Err(why) => RoundResult::blocked(why),
@@ -724,6 +861,7 @@ impl PairReview {
                 previous: Vec::new(),
                 rules: PackageRules::read(design_dir),
                 token_issues: Vec::new(),
+                person: Vec::new(),
             },
         })
     }
@@ -795,6 +933,17 @@ fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext)
         prompt.push_str(&format!(
             "\nThe previous rounds' issues (keep each one's id: resolved when fixed, regressed when it came back):\n<<<\n{}\n>>>\n",
             serde_json::Value::Array(issues)
+        ));
+    }
+    if !context.person.is_empty() {
+        let ids: Vec<&str> = context.person.iter().map(|i| i.id.as_str()).collect();
+        prompt.push_str(&format!(
+            "\nThe person who looked at the page gave these issues ({}). Report each one under its own id, \
+             with basis \"person\", status resolved, open or regressed; a review that leaves one out is \
+             refused. They bind like rules, and where one contradicts a line of the design package, the \
+             person's issue wins for this run:\n<<<\n{}\n>>>\n",
+            ids.join(", "),
+            serde_json::to_string(&context.person).unwrap_or_else(|_| "[]".to_string())
         ));
     }
     prompt.push_str(&format!(
@@ -991,6 +1140,20 @@ fn check_review(answer: &str, context: &ReviewContext) -> Result<DesignReview, S
             "it names the blocker {blocker:?}, so the verdict is blocked"
         ));
     }
+    // The person's issues are the person's: each is reported under its id, keeps its basis and severity,
+    // and counts toward the verdict like a rule issue.
+    for given in &context.person {
+        let Some(issue) = review.issues.iter_mut().find(|i| i.id == given.id) else {
+            return Err(format!(
+                "it drops the person's issue {:?}: report each of the person's issues under its id, \
+                 resolved, open or regressed",
+                given.id
+            ));
+        };
+        issue.basis = Some(IssueBasis::Person);
+        issue.severity = given.severity;
+        issue.copy.get_or_insert(false);
+    }
     for issue in &review.issues {
         check_basis(issue, context)?;
     }
@@ -1031,6 +1194,15 @@ fn check_basis(issue: &ReviewIssue, context: &ReviewContext) -> Result<(), Strin
             "the issue {id:?} names no basis (rule, structure or visual)"
         ));
     };
+    // Only the person gives a person issue; orq has set the basis of each of theirs.
+    if basis == IssueBasis::Person {
+        if context.person.iter().any(|given| &given.id == id) {
+            return Ok(());
+        }
+        return Err(format!(
+            "the issue {id:?} has the basis person, but it is not one of the person's issues"
+        ));
+    }
     // Sample data and text in mockups never bind: a copy difference stands only on a DESIGN.md line.
     match issue.copy {
         None => {
@@ -1259,6 +1431,7 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
                     )
                 }
                 Some(IssueBasis::Visual) => ", visual".to_string(),
+                Some(IssueBasis::Person) => ", from you".to_string(),
                 None => String::new(),
             };
             // An issue no code can fix asks for its file instead of giving a fix direction.
@@ -1279,6 +1452,33 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
                 line(&issue.expected),
                 line(&issue.actual),
             ));
+        }
+    }
+    if !result.person.is_empty() {
+        text.push_str("\n## Your issues\n");
+        for grant in &result.person {
+            text.push_str(&format!(
+                "\nGiven for extra round {}, from your issues:\n\n",
+                grant.extra
+            ));
+            for given in &grant.issues {
+                // As this round reported it; the person's own when it was not reviewed.
+                let status = review
+                    .issues
+                    .iter()
+                    .find(|i| i.id == given.id)
+                    .map_or(given.status, |i| i.status);
+                text.push_str(&format!(
+                    "- {} [{}, {}] {} ({}): expected {}; actual {}\n",
+                    line(&given.id),
+                    json!(given.severity).as_str().unwrap_or_default(),
+                    json!(status).as_str().unwrap_or_default(),
+                    line(&given.section),
+                    line(&given.viewport),
+                    line(&given.expected),
+                    line(&given.actual),
+                ));
+            }
         }
     }
     let downgraded: Vec<&ReviewIssue> = review

@@ -5590,7 +5590,9 @@ fn list_runs_reconciled(store: &orq_orchestrator::RunStore, project_id: &str, re
 /// new run on the same branch and worktree. Nothing changes without confirmation, for a run that is
 /// not paused, or when the checkpoint no longer matches the checkout. A run blocked on a rebase
 /// conflict resumes from the gate once a person finished the rebase; with `--fix-conflicts`, while
-/// the rebase is still stopped, a session of its implementer resolves it first.
+/// the rebase is still stopped, a session of its implementer resolves it first. With
+/// `--design-issues <file.json>`, a frontend run that ended needing review or failed in its design review
+/// step is given a person's issues and one extra correction round for them.
 /// `orq run merge <run-id> --set-aside`: resumes a merge-local run blocked by uncommitted changes in
 /// the checkout, setting aside the changes that overlap the run's files while it is merged.
 fn run_merge(args: &[OsString]) -> ExitCode {
@@ -5635,6 +5637,36 @@ fn run_merge(args: &[OsString]) -> ExitCode {
     run_resume(&resume, true)
 }
 
+/// The longest `--design-issues` file read, in bytes.
+const DESIGN_ISSUES_MAX: u64 = 256 * 1024;
+
+/// `--design-issues <file>` of `orq run resume`, checked against run `run_id` without recording
+/// anything: the file's text and the run's viewports, or the readable reason it is refused.
+fn person_design_issues(
+    root: &Path,
+    repo: &Path,
+    store: &orq_orchestrator::RunStore,
+    run_id: &str,
+    file: &Path,
+) -> Result<(String, Vec<String>), String> {
+    use std::io::Read;
+    let name = file.display();
+    let mut text = String::new();
+    std::fs::File::open(file)
+        .and_then(|f| f.take(DESIGN_ISSUES_MAX + 1).read_to_string(&mut text))
+        .map_err(|e| format!("cannot read the design issues file {name}: {e}"))?;
+    if text.len() as u64 > DESIGN_ISSUES_MAX {
+        return Err(format!("the design issues file {name} is over {DESIGN_ISSUES_MAX} bytes"));
+    }
+    let settings = orq_orchestrator::load_run_settings(repo, &|name| std::env::var(name).ok())
+        .ok()
+        .and_then(|settings| settings.design);
+    let viewports = orq_orchestrator::design_run_viewports(&root.join("logs").join(run_id), settings.as_ref());
+    orq_orchestrator::check_design_person_issues(store, run_id, &text, &viewports)
+        .map_err(|reason| format!("the design issues file {name} is refused: {reason}"))?;
+    Ok((text, viewports))
+}
+
 fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     let mut run_id = None;
     let mut yes = false;
@@ -5644,11 +5676,16 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     let mut fix_conflicts = false;
     let mut review_again = false;
     let mut answer: Option<OsString> = None;
+    let mut design_issues: Option<PathBuf> = None;
     let mut repo = PathBuf::from(".");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.to_str() {
             Some("--yes") => yes = true,
+            Some("--design-issues") => match iter.next() {
+                Some(value) => design_issues = Some(PathBuf::from(value)),
+                None => return usage_error(),
+            },
             Some("--fix-conflicts") => fix_conflicts = true,
             Some("--review-again") => review_again = true,
             Some("--answer") => match iter.next() {
@@ -5686,6 +5723,14 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
             other => format!("cannot read run {}: {other:?}", printable(&run_id)),
         });
     }
+    // The person's issues are checked before anything starts, and recorded only once every other check passed.
+    let design_issues = match &design_issues {
+        None => None,
+        Some(file) => match person_design_issues(&root, &repo, &store, &run_id, file) {
+            Ok(issues) => Some(issues),
+            Err(reason) => return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason))),
+        },
+    };
     let stopped = store
         .events(&run_id)
         .map(|events| {
@@ -5733,6 +5778,12 @@ fn run_resume(args: &[OsString], set_aside: bool) -> ExitCode {
     };
     if let Err(reason) = checked {
         return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
+    }
+    // Recorded on the stopped run: the resumed run carries it with the rest of the design review step.
+    if let Some((text, viewports)) = &design_issues {
+        if let Err(reason) = orq_orchestrator::record_design_person_issues(&store, &run_id, text, viewports) {
+            return fail(format!("cannot resume {}: {}", printable(&run_id), printable(&reason)));
+        }
     }
     // A run waiting for a review decision kept its features; reviewing again starts them anew.
     let waiting = store.events(&run_id).is_ok_and(|events| orq_orchestrator::summarize_run(&events).phase == orq_orchestrator::RunPhase::NeedsReview);

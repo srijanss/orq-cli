@@ -694,6 +694,9 @@ fn the_shipped_skill_says_what_binds_and_its_schema_asks_each_issue_for_its_basi
         "`structure`",
         "`visual`",
         "at most minor",
+        "## The person's issues",
+        "under\nits own id, with `basis` `person` and `status` `resolved`, `open` or `regressed`",
+        "Orq refuses a review that leaves one out",
     ] {
         assert!(
             skill.contains(needle),
@@ -714,7 +717,7 @@ fn the_shipped_skill_says_what_binds_and_its_schema_asks_each_issue_for_its_basi
     );
     assert_eq!(
         issue["properties"]["basis"]["enum"],
-        json!(["rule", "structure", "visual"])
+        json!(["rule", "structure", "visual", "person"])
     );
     for optional in ["quote", "token", "reference"] {
         assert_eq!(

@@ -42,6 +42,15 @@ a `structure` issue without a reference, or a copy issue that does not quote a D
 the copy is exact is invalid. The token check's issues are `rule` issues: while one is open the
 verdict cannot be `pass`.
 
+## The person's issues
+
+A person who looked at the page may have given issues of their own, with ids `person-1`,
+`person-2` and so on; the task lists them when there are any. Report each of them in `issues` under
+its own id, with `basis` `person` and `status` `resolved`, `open` or `regressed`, as the page now
+shows it. Orq refuses a review that leaves one out, and keeps the severity the person gave. They bind
+like rule issues: while one is open the verdict cannot be `pass`. Where one contradicts a line of
+the package, the person's issue wins. Use the basis `person` for no other issue.
+
 ## An issue that needs a file
 
 Set `needs` on an issue (`{ "what": "...", "path": "assets/..." }`, or a document: `DESIGN.md`,
