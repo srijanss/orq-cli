@@ -17,9 +17,11 @@ use orq_remote::projects::{LaunchError, RunLauncher, StoreProjects};
 use serde_json::{json, Value};
 
 /// Resumes runs given a person's design issues, recording what it was given: the run and the issues' text.
+/// With `fails` set it fails instead, with that operator-only reason, and resumes nothing.
 #[derive(Default)]
 struct Launcher {
     resumed: Mutex<Vec<(String, String)>>,
+    fails: Mutex<Option<String>>,
 }
 
 impl RunLauncher for Launcher {
@@ -28,6 +30,9 @@ impl RunLauncher for Launcher {
     }
 
     fn resume_with_design_issues(&self, _repo: &Path, run: &str, issues: &str) -> Result<String, LaunchError> {
+        if let Some(why) = self.fails.lock().unwrap().clone() {
+            return Err(LaunchError::Failed(why));
+        }
         let mut resumed = self.resumed.lock().unwrap();
         resumed.push((run.to_string(), issues.to_string()));
         Ok(format!("{run}-r{}", resumed.len()))
@@ -474,6 +479,26 @@ fn a_refused_issue_is_named_to_the_person_but_none_of_its_text_reaches_the_audit
     let refused: Vec<&Value> = audit.iter().filter(|line| line["action"] == "run.design_issues" && line["outcome"] == "refused").collect();
     assert_eq!(refused.len(), 3, "{audit:?}");
     assert!(!audit.iter().any(|line| line.to_string().contains("private-marker")), "nothing the person typed reaches the audit: {audit:?}");
+}
+
+#[test]
+fn a_launch_that_fails_is_told_only_that_it_failed_and_audited_without_its_diagnostic() {
+    let s = setup("person-issues-launch-fails");
+    design_run(&s, "r-1", "needs_review");
+    *s.launcher.fails.lock().unwrap() = Some("orq exited 1: cannot write /home/operator/secret-place/run.lock".to_string());
+
+    let (status, body) = post_issues(&s, "r-1", json!([footer_issue()]));
+
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(body["error"], "the run could not be resumed", "{body}");
+    assert!(!body.to_string().contains("secret-place") && !body.to_string().contains("orq exited"), "{body}");
+    assert!(resumed(&s).is_empty(), "{:?}", resumed(&s));
+    let audit = orq_core::remote_audit::read(&s.roots, 10).unwrap();
+    let lines: Vec<&Value> = audit.iter().filter(|line| line["action"] == "run.design_issues").collect();
+    assert_eq!(lines.len(), 1, "{audit:?}");
+    assert_eq!(lines[0]["outcome"], "refused", "{audit:?}");
+    assert_eq!(lines[0]["reason"], "the run could not be resumed", "{audit:?}");
+    assert!(!audit.iter().any(|line| line.to_string().contains("secret-place") || line.to_string().contains("the logo")), "{audit:?}");
 }
 
 #[test]
