@@ -83,6 +83,10 @@ impl Server {
     /// Serves on `listener` with what `options` adds; passkey routes are served only with projects.
     pub fn start_with(listener: TcpListener, state: Arc<ServerState>, options: ServerOptions) -> std::io::Result<Server> {
         let auth = options.auth.filter(|_| options.projects.is_some());
+        if let Some(auth) = &auth {
+            // Pushes name this server's https origin as their contact; Apple refuses a localhost one.
+            web_push::set_contact(auth.host().origin());
+        }
         Server::serve(listener, Shared { state, projects: options.projects, auth, reviews: options.reviews })
     }
 

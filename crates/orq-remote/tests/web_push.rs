@@ -15,12 +15,12 @@ fn roots(label: &str) -> StorageRoots {
     roots
 }
 
-/// A push service on loopback: records each request and answers with the next status in `answers`
-/// (200-class `201` when none is left).
+/// A push service on loopback: records each request and answers with the next status and body in
+/// `answers` (200-class `201` with no body when none is left).
 struct FakePush {
     port: u16,
     seen: std::sync::Arc<std::sync::Mutex<Vec<Seen>>>,
-    answers: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u16>>>,
+    answers: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(u16, String)>>>,
 }
 
 #[derive(Clone)]
@@ -42,7 +42,7 @@ impl FakePush {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let seen: std::sync::Arc<std::sync::Mutex<Vec<Seen>>> = Default::default();
-        let answers: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u16>>> = Default::default();
+        let answers: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(u16, String)>>> = Default::default();
         let (record, script) = (seen.clone(), answers.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -67,8 +67,8 @@ impl FakePush {
                 let mut body = vec![0u8; length];
                 reader.read_exact(&mut body).unwrap();
                 record.lock().unwrap().push(Seen { path, headers, body });
-                let status = script.lock().unwrap().pop_front().unwrap_or(201);
-                let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let (status, answer) = script.lock().unwrap().pop_front().unwrap_or((201, String::new()));
+                let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len());
             }
         });
         FakePush { port, seen, answers }
@@ -76,6 +76,11 @@ impl FakePush {
 
     fn endpoint(&self, name: &str) -> String {
         format!("http://127.0.0.1:{}/push/{name}", self.port)
+    }
+
+    /// The next request is answered with `status` and `body`.
+    fn answer(&self, status: u16, body: &str) {
+        self.answers.lock().unwrap().push_back((status, body.to_string()));
     }
 
     fn requests(&self) -> Vec<Seen> {
@@ -325,19 +330,72 @@ fn send_test_pushes_one_test_message_to_that_device_and_a_410_deletes_it() {
     assert_eq!(one.decrypt(&requests[0].body), br#"{"kind":"test"}"#);
 
     // The push service's own error comes back next to the device, and a gone subscription is deleted.
-    service.answers.lock().unwrap().push_back(500);
+    service.answer(500, "");
     let (_, result) = call(&server, "POST", &format!("/api/push/subscriptions/{id_two}/test"), session, &none);
     assert_eq!(result["sent"], false);
     assert!(result["error"].as_str().unwrap().contains("500"), "{result}");
     assert_eq!(call(&server, "GET", "/api/push/subscriptions", session, &none).1["subscriptions"].as_array().unwrap().len(), 2);
 
-    service.answers.lock().unwrap().push_back(410);
+    service.answer(410, "");
     let (_, result) = call(&server, "POST", &format!("/api/push/subscriptions/{id_two}/test"), session, &none);
     assert_eq!(result["sent"], false);
     let listed = call(&server, "GET", "/api/push/subscriptions", session, &none).1;
     let ids: Vec<i64> = listed["subscriptions"].as_array().unwrap().iter().map(|d| d["id"].as_i64().unwrap()).collect();
     assert_eq!(ids, vec![id_one]);
     assert_eq!(call(&server, "POST", "/api/push/subscriptions/999/test", session, &none).0, 404);
+}
+
+#[test]
+fn a_refused_test_push_shows_the_push_service_reason() {
+    let roots = roots("push-test-reason");
+    let (service, device) = (FakePush::start(), Device::new());
+    let server = serve(&roots, false);
+    let session = web_push_session::sign_in(server.addr(), TOKEN);
+    let session = Some(&session);
+    let none = serde_json::Value::Null;
+    let id = call(&server, "POST", "/api/push/subscriptions", session, &subscribe_body(&device, service.endpoint("one"))).1["id"].as_i64().unwrap();
+
+    service.answer(403, r#"{"reason":"BadJwtToken"}"#);
+    let (status, result) = call(&server, "POST", &format!("/api/push/subscriptions/{id}/test"), session, &none);
+    assert_eq!((status, &result["sent"]), (200, &serde_json::json!(false)), "{result}");
+    let error = result["error"].as_str().unwrap();
+    assert!(error.contains("403") && error.contains("BadJwtToken"), "{result}");
+    assert_eq!(call(&server, "GET", "/api/push/subscriptions", session, &none).1["subscriptions"].as_array().unwrap().len(), 1, "a refusal keeps the device");
+}
+
+#[test]
+fn a_long_or_secret_reason_is_cut_and_redacted() {
+    let roots = roots("push-reason-cut");
+    let (service, device) = (FakePush::start(), Device::new());
+    let secret = "ghp_0123456789abcdefghijABCDEFGHIJ0123456789";
+    let body = format!("bad request, sent with {secret}: {}", "x".repeat(2048));
+    service.answer(400, &body);
+    let error = match orq_remote::web_push::send(&roots, &device.subscription(service.endpoint("one")), b"{}") {
+        Err(orq_remote::web_push::SendError::Failed(error)) => error,
+        other => panic!("a 400 is a failure: {other:?}"),
+    };
+    let reason = error.strip_prefix("the push service answered 400: ").unwrap_or_else(|| panic!("{error}"));
+    assert!(reason.starts_with("bad request, sent with "), "{error}");
+    assert!(reason.chars().count() <= 200, "{} characters: {error}", reason.chars().count());
+    assert!(!error.contains(secret) && !error.contains("ghp_"), "{error}");
+}
+
+#[test]
+fn the_vapid_subject_is_the_passkey_origin() {
+    let roots = roots("push-test-subject");
+    let (service, device) = (FakePush::start(), Device::new());
+    let server = serve(&roots, false);
+    let session = web_push_session::sign_in(server.addr(), TOKEN);
+    let session = Some(&session);
+    let id = call(&server, "POST", "/api/push/subscriptions", session, &subscribe_body(&device, service.endpoint("one"))).1["id"].as_i64().unwrap();
+    let (_, result) = call(&server, "POST", &format!("/api/push/subscriptions/{id}/test"), session, &serde_json::Value::Null);
+    assert_eq!(result["sent"], true, "{result}");
+
+    let authorization = service.requests()[0].header("authorization").unwrap().to_string();
+    let token = authorization.strip_prefix("vapid t=").and_then(|rest| rest.split(", k=").next()).unwrap();
+    let claims: serde_json::Value = serde_json::from_slice(&b64(token.split('.').nth(1).unwrap())).unwrap();
+    assert_eq!(claims["sub"].as_str(), Some("https://box.tail1234.ts.net"), "{claims}");
+    assert!(!claims.to_string().contains("localhost"), "{claims}");
 }
 
 /// A store, a push service and one subscribed device.

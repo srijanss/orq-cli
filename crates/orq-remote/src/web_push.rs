@@ -186,12 +186,28 @@ pub(crate) fn encrypt(subscription: &Subscription, payload: &[u8]) -> std::resul
     Ok(body)
 }
 
+/// Who to contact about this server's pushes: its own https origin, once known.
+static CONTACT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// The contact when the server has no https origin.
+const FALLBACK_CONTACT: &str = "mailto:orq@localhost";
+
+/// Makes `origin` the VAPID contact (`sub`) of every push this process sends. Only an `https://`
+/// origin is taken, and only the first; some push services (Apple's) refuse a `localhost` contact.
+pub fn set_contact(origin: &str) {
+    let Some(host) = origin.strip_prefix("https://") else { return };
+    if host.is_empty() || host.contains(['/', '?', '#', '@']) || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return;
+    }
+    let _ = CONTACT.set(origin.to_string());
+}
+
 /// The `Authorization` value that proves the push comes from this server (RFC 8292).
 fn vapid_authorization(roots: &StorageRoots, origin: &str) -> Result<String> {
     use p256::ecdsa::signature::Signer;
     let key = vapid_key(roots)?;
     let expires = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) + 12 * 3600;
-    let claims = serde_json::json!({"aud": origin, "exp": expires, "sub": "mailto:orq@localhost"});
+    let contact = CONTACT.get().map_or(FALLBACK_CONTACT, String::as_str);
+    let claims = serde_json::json!({"aud": origin, "exp": expires, "sub": contact});
     let signing_input = format!("{}.{}", base64url_encode(br#"{"typ":"JWT","alg":"ES256"}"#), base64url_encode(claims.to_string().as_bytes()));
     let signature: p256::ecdsa::Signature = key.sign(signing_input.as_bytes());
     let public = base64url_encode(key.verifying_key().to_encoded_point(false).as_bytes());
@@ -206,7 +222,8 @@ pub fn send(roots: &StorageRoots, subscription: &Subscription, payload: &[u8]) -
     let authorization = vapid_authorization(roots, &origin).map_err(|error| SendError::Failed(format!("the server's push key could not be read: {error}")))?;
     let mut curl = Command::new("curl")
         // --globoff: an endpoint is one literal URL, never a curl pattern that fans out into many requests.
-        .args(["--silent", "--show-error", "--globoff", "--max-time", &SEND_TIMEOUT_SECS.to_string(), "--proto", "=http,https", "--request", "POST", "--output", "/dev/null", "--write-out", "%{http_code}"])
+        // The reply body comes first on stdout, then the status on a line of its own.
+        .args(["--silent", "--show-error", "--globoff", "--max-time", &SEND_TIMEOUT_SECS.to_string(), "--proto", "=http,https", "--request", "POST", "--write-out", "\\n%{http_code}"])
         .args(["--header", "Content-Encoding: aes128gcm", "--header", "Content-Type: application/octet-stream", "--header", "TTL: 3600", "--header", "Urgency: high"])
         .args(["--header", &format!("Authorization: {authorization}"), "--data-binary", "@-", "--url", &subscription.endpoint])
         .stdin(Stdio::piped())
@@ -217,14 +234,71 @@ pub fn send(roots: &StorageRoots, subscription: &Subscription, payload: &[u8]) -
     if let Some(mut stdin) = curl.stdin.take() {
         let _ = stdin.write_all(&body);
     }
-    let output = curl.wait_with_output().map_err(|_| SendError::Failed("curl did not finish".to_string()))?;
-    let status: u16 = String::from_utf8_lossy(&output.stdout).trim().parse().unwrap_or(0);
+    let reply = curl.stdout.take().map(read_reply).unwrap_or_default();
+    curl.wait().map_err(|_| SendError::Failed("curl did not finish".to_string()))?;
+    let (status, head) = split_reply(&reply);
     match status {
         200..=299 => Ok(()),
         404 | 410 => Err(SendError::Gone),
         0 => Err(SendError::Failed("the push service could not be reached".to_string())),
-        other => Err(SendError::Failed(format!("the push service answered {other}"))),
+        other => Err(SendError::Failed(match refusal_reason(head) {
+            Some(reason) => format!("the push service answered {other}: {reason}"),
+            None => format!("the push service answered {other}"),
+        })),
     }
+}
+
+/// How much of a refusal's body is read for its reason.
+const REASON_BYTES: usize = 512;
+/// How long a reason may be, in characters.
+const REASON_CHARS: usize = 200;
+/// The status line's longest form: a newline and three digits, with room to spare.
+const STATUS_TAIL: usize = 16;
+
+/// What curl wrote: at most the body's first `REASON_BYTES` and the last bytes, where the status is,
+/// however long the reply. A push service cannot make the server hold its whole reply.
+#[derive(Default)]
+struct Reply {
+    head: Vec<u8>,
+    tail: Vec<u8>,
+    total: usize,
+}
+
+fn read_reply(mut out: impl std::io::Read) -> Reply {
+    let mut reply = Reply::default();
+    let mut chunk = [0u8; 4096];
+    while let Ok(n) = out.read(&mut chunk) {
+        if n == 0 {
+            break;
+        }
+        let read = &chunk[..n];
+        let room = (REASON_BYTES + STATUS_TAIL).saturating_sub(reply.head.len());
+        reply.head.extend_from_slice(&read[..room.min(n)]);
+        reply.tail.extend_from_slice(read);
+        let excess = reply.tail.len().saturating_sub(STATUS_TAIL);
+        reply.tail.drain(..excess);
+        reply.total += n;
+    }
+    reply
+}
+
+/// The status from the last line (`0` when there is none), and the start of the body before it.
+fn split_reply(reply: &Reply) -> (u16, &[u8]) {
+    let Some(newline) = reply.tail.iter().rposition(|b| *b == b'\n') else { return (0, &[]) };
+    let status = std::str::from_utf8(&reply.tail[newline + 1..]).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let body_len = reply.total - (reply.tail.len() - newline);
+    (status, &reply.head[..body_len.min(REASON_BYTES).min(reply.head.len())])
+}
+
+/// Why a push service refused: the JSON `reason` or `message`, otherwise the text; redacted, on one line
+/// and cut to `REASON_CHARS`. `None` when the body says nothing.
+fn refusal_reason(head: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(head);
+    let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
+    let field = parsed.as_ref().and_then(|v| ["reason", "message"].iter().find_map(|k| v.get(k).and_then(|f| f.as_str()).map(str::to_string)));
+    let reason = orq_core::redact::redact(field.as_deref().unwrap_or(&text));
+    let reason: String = reason.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(REASON_CHARS).collect();
+    (!reason.is_empty()).then_some(reason)
 }
 
 /// Pushes `payload` to one stored device; a device the push service no longer knows is deleted.
