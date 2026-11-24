@@ -7,10 +7,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use orq_orchestrator::{
-    design_fix_task, design_round_label, plan_correction_parts, run_design_loop, CorrectionOutcome,
-    CorrectionPart, DesignLoopOutcome, DesignLoopSteps, DesignReview, DesignReviewOutcome,
-    DesignVerdict, Event, IssueStatus, ReviewIssue, RunRecord, RunStore, Severity, StoreError,
-    DESIGN_FIX_TASK_LIMIT,
+    design_fix_task, design_round_label, plan_correction_parts, run_design_correction_part,
+    run_design_loop, CorrectionOutcome, CorrectionPart, DesignLoopOutcome, DesignLoopSteps,
+    DesignReview, DesignReviewOutcome, DesignVerdict, Event, ImplementSession, IssueStatus,
+    ReviewIssue, RunRecord, RunStore, Severity, StoreError, DESIGN_FIX_TASK_LIMIT,
 };
 
 struct World {
@@ -518,4 +518,108 @@ fn the_run_page_label_for_a_part_reads_design_fix_round_part_of() {
     // A whole round's session keeps no part label.
     let whole = event("design_fix", "stage.started", 1, serde_json::json!({}));
     assert_eq!(design_round_label(&whole), None);
+}
+
+/// Part 2 of 3 of round 1, as the planner would give it.
+fn second_part() -> CorrectionPart {
+    CorrectionPart {
+        part: 2,
+        of: 3,
+        sections: vec!["Beta".to_string()],
+        issues: Vec::new(),
+        suggestions: Vec::new(),
+        task: "fix the Beta issues".to_string(),
+    }
+}
+
+/// Runs part 2 of 3 of round 1 as a real `program -c script` terminal session in a fresh world;
+/// `{marker}` in `script` is its exit marker's path.
+fn run_real_part(tag: &str, script: &str, program: &str) -> (World, CorrectionOutcome) {
+    let w = world(tag);
+    let cwd = w.root.join("worktree");
+    fs::create_dir_all(&cwd).unwrap();
+    let log = w.root.join("design_fix.log");
+    let marker = cwd.join("done");
+    let script = script.replace("{marker}", &marker.display().to_string());
+    let args = vec!["-c".to_string(), script];
+    let session = ImplementSession {
+        program,
+        args: &args,
+        env: &[],
+        cwd: &cwd,
+        session_id: Some("sess-7"),
+        log: &log,
+        terminal: true,
+        exit_marker: Some(&marker),
+    };
+    let outcome =
+        run_design_correction_part(&w.store, "run-1", &session, 1, &second_part()).unwrap();
+    (w, outcome)
+}
+
+/// The kinds of the design_fix session's events, each checked to carry the part it ran; running the
+/// session records no finished part itself.
+fn part_session_events(w: &World) -> Vec<String> {
+    let events = w.store.events("run-1").unwrap();
+    let session: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.stage.as_deref() == Some("design_fix"))
+        .collect();
+    for event in &session {
+        assert_eq!(event.attempt, 1, "{event:?}");
+        assert_eq!(event.payload["part"], 2, "{event:?}");
+        assert_eq!(event.payload["parts"], 3, "{event:?}");
+        assert_eq!(
+            design_round_label(event).as_deref(),
+            Some("design_fix round 1 part 2 of 3")
+        );
+    }
+    assert!(events.iter().all(|e| e.kind != "design_correction_part"));
+    session.iter().map(|e| e.kind.clone()).collect()
+}
+
+#[test]
+fn a_real_part_session_runs_as_its_part_and_stops_naming_it_when_it_fails() {
+    let (w, outcome) = run_real_part("real-ok", "touch {marker}; sleep 30", "sh");
+    assert_eq!(outcome, CorrectionOutcome::Done);
+    assert_eq!(
+        part_session_events(&w),
+        ["stage.started", "stage.completed"]
+    );
+
+    let (w, outcome) = run_real_part("real-fail", "exit 3", "sh");
+    assert_eq!(
+        outcome,
+        CorrectionOutcome::Stopped(
+            "the design correction session of round 1 part 2 of 3 failed".to_string()
+        )
+    );
+    assert_eq!(part_session_events(&w), ["stage.started", "stage.failed"]);
+
+    let (w, outcome) = run_real_part("real-no-start", "", "/nonexistent/orq-no-such-program");
+    assert_eq!(
+        outcome,
+        CorrectionOutcome::Stopped(
+            "the design correction session of round 1 part 2 of 3 failed".to_string()
+        )
+    );
+    assert_eq!(
+        part_session_events(&w).last().map(String::as_str),
+        Some("stage.failed")
+    );
+
+    let (w, outcome) = run_real_part(
+        "real-problem",
+        "printf 'PROBLEM\\nthe header will not build\\n' > {marker}; sleep 30",
+        "sh",
+    );
+    assert_eq!(
+        outcome,
+        CorrectionOutcome::Stopped(
+            "the design correction session of round 1 part 2 of 3 reported a problem: \
+             the header will not build"
+                .to_string()
+        )
+    );
+    assert_eq!(part_session_events(&w), ["stage.started", "stage.failed"]);
 }
