@@ -110,6 +110,76 @@ pub fn validate_entries_with_archive(entries: &[FeatureEntry], archived: &HashSe
     find_cycle(entries).map_or(Ok(()), |features| Err(ValidationError::Cycle { features }))
 }
 
+/// A problem in an entry that was already in the project's ledger, which a save of other entries goes past.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingProblem(pub ValidationError);
+
+impl std::fmt::Display for ExistingProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the project's ledger has a problem in an existing entry: {}", self.0)
+    }
+}
+
+/// As [`validate_entries_with_archive`], but only a problem that involves a changed entry (`changed(index)`)
+/// refuses: a repeated name with a changed entry among its holders, a changed entry's blank name, missing
+/// dependency or self-dependency, or a cycle through a changed entry. Every other problem, in an entry that
+/// was already there, is returned as an [`ExistingProblem`], in the order [`validate_entries`] would meet it.
+pub fn validate_changed_entries(
+    entries: &[FeatureEntry],
+    archived: &HashSet<String>,
+    changed: &dyn Fn(usize) -> bool,
+) -> Result<Vec<ExistingProblem>, ValidationError> {
+    let mut existing = Vec::new();
+    let mut first_at: HashMap<&str, usize> = HashMap::new();
+    let mut repeated: HashMap<&str, bool> = HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.feature_name.trim().is_empty() {
+            if changed(index) {
+                return Err(ValidationError::BlankName);
+            }
+            existing.push(ExistingProblem(ValidationError::BlankName));
+            continue;
+        }
+        match first_at.get(entry.feature_name.as_str()) {
+            None => {
+                first_at.insert(entry.feature_name.as_str(), index);
+            }
+            Some(&first) => {
+                let duplicate = ValidationError::DuplicateName { name: entry.feature_name.clone() };
+                if changed(index) || changed(first) {
+                    return Err(duplicate);
+                }
+                if repeated.insert(entry.feature_name.as_str(), true).is_none() {
+                    existing.push(ExistingProblem(duplicate));
+                }
+            }
+        }
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        for dep in &entry.depends_on {
+            let problem = if dep == &entry.feature_name {
+                ValidationError::SelfDependency { feature: dep.clone() }
+            } else if !first_at.contains_key(dep.as_str()) && !archived.contains(dep.as_str()) {
+                ValidationError::MissingDependency { feature: entry.feature_name.clone(), missing: dep.clone() }
+            } else {
+                continue;
+            };
+            if changed(index) {
+                return Err(problem);
+            }
+            existing.push(ExistingProblem(problem));
+        }
+    }
+    for members in find_cycles(entries) {
+        let cycle = ValidationError::Cycle { features: cycle_names(entries, &members) };
+        if members.iter().any(|&member| changed(member)) {
+            return Err(cycle);
+        }
+        existing.push(ExistingProblem(cycle));
+    }
+    Ok(existing)
+}
+
 /// For each entry, a note per dependency that names an archived feature (and no live one):
 /// "<name> is archived and completed: not needed".
 pub fn archived_dependency_notes(entries: &[FeatureEntry], archived: &HashSet<String>) -> Vec<(String, String)> {
@@ -134,11 +204,21 @@ pub fn drop_archived_dependencies(entries: &mut [FeatureEntry], archived: &HashS
     }
 }
 
-/// The features of the first dependency cycle in file order: the smallest
-/// strongly connected component with more than one member, found by an
-/// iterative Tarjan pass (linear, no recursion depth to blow). Features that
-/// merely lead into or out of a cycle are not members of it.
+/// The features of the first dependency cycle in file order, sorted by name.
 fn find_cycle(entries: &[FeatureEntry]) -> Option<Vec<String>> {
+    find_cycles(entries).first().map(|members| cycle_names(entries, members))
+}
+
+fn cycle_names(entries: &[FeatureEntry], members: &[usize]) -> Vec<String> {
+    let mut names: Vec<String> = members.iter().map(|&i| entries[i].feature_name.clone()).collect();
+    names.sort();
+    names
+}
+
+/// The indices of every dependency cycle's members, cycles in file order of their earliest member: each
+/// strongly connected component with more than one member, found by an iterative Tarjan pass (linear, no
+/// recursion depth to blow). Features that merely lead into or out of a cycle are not members of it.
+fn find_cycles(entries: &[FeatureEntry]) -> Vec<Vec<usize>> {
     let index_of: HashMap<&str, usize> =
         entries.iter().enumerate().map(|(i, e)| (e.feature_name.as_str(), i)).collect();
     let edges: Vec<Vec<usize>> = entries
@@ -152,7 +232,7 @@ fn find_cycle(entries: &[FeatureEntry]) -> Option<Vec<String>> {
     let mut on_stack = vec![false; n];
     let mut stack: Vec<usize> = Vec::new();
     let mut next_order = 0;
-    let mut first: Option<(usize, Vec<usize>)> = None;
+    let mut cycles: Vec<(usize, Vec<usize>)> = Vec::new();
     for root in 0..n {
         if order[root] != unvisited {
             continue;
@@ -194,17 +274,11 @@ fn find_cycle(entries: &[FeatureEntry]) -> Option<Vec<String>> {
                     }
                 }
                 if component.len() > 1 {
-                    let earliest = *component.iter().min().unwrap();
-                    if first.as_ref().is_none_or(|(best, _)| earliest < *best) {
-                        first = Some((earliest, component));
-                    }
+                    cycles.push((*component.iter().min().unwrap(), component));
                 }
             }
         }
     }
-    first.map(|(_, component)| {
-        let mut names: Vec<String> = component.into_iter().map(|i| entries[i].feature_name.clone()).collect();
-        names.sort();
-        names
-    })
+    cycles.sort_by_key(|(earliest, _)| *earliest);
+    cycles.into_iter().map(|(_, component)| component).collect()
 }

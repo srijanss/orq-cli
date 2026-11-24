@@ -3,9 +3,29 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::{
-    parse_ledger, parse_ledger_bytes, validate_entries, write_ledger_atomic, FeatureDraft, FeatureEntry,
-    LedgerError, ValidationError,
+    parse_ledger, parse_ledger_bytes, validate_changed_entries, write_ledger_atomic, ExistingProblem, FeatureDraft,
+    FeatureEntry, LedgerError, ValidationError,
 };
+
+/// What [`LoadedLedger::append_many_noting`] saved, and the problems of existing entries it went past.
+#[derive(Debug)]
+pub struct Appended {
+    /// The entries as saved, in order.
+    pub entries: Vec<FeatureEntry>,
+    /// Problems in entries that were already in the ledger; none of them refused the append.
+    pub existing_problems: Vec<ExistingProblem>,
+}
+
+impl Appended {
+    /// "existing ledger problems: <each problem>; ...", or `None` when the append went past none.
+    pub fn warning(&self) -> Option<String> {
+        if self.existing_problems.is_empty() {
+            return None;
+        }
+        let problems: Vec<String> = self.existing_problems.iter().map(ToString::to_string).collect();
+        Some(format!("existing ledger problems: {}", problems.join("; ")))
+    }
+}
 
 /// A ledger together with the exact bytes it was read from, so a later save can
 /// tell whether anyone else changed the file in between.
@@ -178,11 +198,18 @@ impl LoadedLedger {
         Ok(saved.pop().expect("one draft appended"))
     }
 
-    /// Appends every draft, in order, in a single atomic save. The whole
-    /// resulting array is validated first; one invalid draft (or a name
-    /// repeated within the batch) rejects the batch and writes nothing, as
-    /// does a ledger changed since it was loaded. Returns the entries as saved.
+    /// Appends every draft, in order, in a single atomic save. The resulting
+    /// array is validated first; one invalid draft (or a name repeated within
+    /// the batch) rejects the batch and writes nothing, as does a ledger changed
+    /// since it was loaded. A problem only in an existing entry does not refuse
+    /// it. Returns the entries as saved.
     pub fn append_many(&self, drafts: &[FeatureDraft]) -> Result<Vec<FeatureEntry>, AppendError> {
+        self.append_many_noting(drafts).map(|appended| appended.entries)
+    }
+
+    /// As [`append_many`](Self::append_many), also returning the problems of existing entries the save went
+    /// past (see [`validate_changed_entries`]).
+    pub fn append_many_noting(&self, drafts: &[FeatureDraft]) -> Result<Appended, AppendError> {
         let mut candidate = self.entries.clone();
         let mut new_entries = Vec::with_capacity(drafts.len());
         let mut entry_jsons = Vec::with_capacity(drafts.len());
@@ -204,9 +231,11 @@ impl LoadedLedger {
             entry_jsons.push(entry_json);
         }
         if new_entries.is_empty() {
-            return Ok(new_entries);
+            return Ok(Appended { entries: new_entries, existing_problems: Vec::new() });
         }
-        validate_entries(&candidate).map_err(AppendError::Invalid)?;
+        let existing = self.entries.len();
+        let existing_problems =
+            validate_changed_entries(&candidate, &self.live_archived(), &|index| index >= existing).map_err(AppendError::Invalid)?;
 
         let text = std::str::from_utf8(&self.bytes).expect("a parsed ledger is UTF-8");
         let contents = if self.is_new {
@@ -222,7 +251,12 @@ impl LoadedLedger {
             format!("{}{separator}{added}{tail}", &text[..last])
         };
         self.save(&contents).map_err(AppendError::Save)?;
-        Ok(new_entries)
+        Ok(Appended { entries: new_entries, existing_problems })
+    }
+
+    /// The archived names that are not features of the ledger: a dependency on one is not missing.
+    fn live_archived(&self) -> std::collections::HashSet<String> {
+        self.archived.iter().filter(|name| self.is_archived_dependency(name)).cloned().collect()
     }
 
     /// Changes the given fields of the feature named `feature_name`, keeping
@@ -280,7 +314,9 @@ impl LoadedLedger {
             crate::EditError::Malformed => EditFieldsError::Malformed,
         })?;
         let entries = parse_ledger_bytes(&self.path, edited.as_bytes()).map_err(|_| EditFieldsError::Malformed)?;
-        validate_entries(&entries).map_err(EditFieldsError::Invalid)?;
+        // Only a problem in the edited entry refuses the edit; one only in another entry was already there.
+        validate_changed_entries(&entries, &self.live_archived(), &|index| entries[index].feature_name == feature_name)
+            .map_err(EditFieldsError::Invalid)?;
         Ok(edited)
     }
 

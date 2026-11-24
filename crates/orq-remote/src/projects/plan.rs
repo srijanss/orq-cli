@@ -247,6 +247,7 @@ impl StoreProjects {
             "proposal": proposal,
             "current": requested["current"],
             "decision": decision,
+            "warning": completed.as_ref().and_then(|payload| payload.get("warning").cloned()).unwrap_or(Value::Null),
         }))))
     }
 
@@ -361,10 +362,15 @@ fn apply_marker(roots: &orq_core::storage::StorageRoots, ledger: &Path, idea: &P
                 test_file: marker.test_file.clone().filter(|path| !path.is_empty()),
                 target_files: Some(marker.target_files.clone()).filter(|paths| !paths.is_empty()),
             };
-            loaded.append(&draft).map_err(|error| format!("the draft could not be saved: {error}"))?;
+            // A problem only in an existing entry does not refuse the draft; it is kept as the run's warning.
+            let appended = loaded.append_many_noting(std::slice::from_ref(&draft)).map_err(|error| format!("the draft could not be saved: {error}"))?;
             // Only once the draft is saved does the item leave the list; one edited meanwhile stays.
             let removed = orq_core::store::Store::open(&roots.database()).and_then(|store| store.todo_delete_at(*id, *version)).unwrap_or(false);
-            Ok(json!({ "feature": marker.name, "source": "todo", "todo_removed": removed }))
+            let mut payload = json!({ "feature": marker.name, "source": "todo", "todo_removed": removed });
+            if let Some(warning) = appended.warning() {
+                payload["warning"] = warning.into();
+            }
+            Ok(payload)
         }
     }
 }

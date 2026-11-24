@@ -199,6 +199,29 @@ fn a_todo_idea_becomes_a_draft_feature_with_the_markers_fields_and_leaves_the_to
     assert!(prompt.contains("Make it dark") && prompt.contains("keep it small"), "the idea and the notes reach the agent: {prompt}");
 }
 
+#[test]
+fn a_todo_draft_is_saved_past_an_existing_entrys_missing_dependency_and_the_run_keeps_the_warning() {
+    let s = setup("plan-todo-existing-problem");
+    let alpha = git_repo(&s.scan, "alpha");
+    let existing = "[\n  {\"featureName\": \"weehook-verifies-purchase-with-gateway\", \"status\": \"completed\", \"dependsOn\": [\"webhook-records-only\"]}\n]\n";
+    std::fs::write(alpha.join(".tdd-features.json"), existing).unwrap();
+    let item = add_todo(&s, "dark mode", "Make it dark");
+
+    let (_, plan) = draft_todo(&s, &item, "");
+
+    assert_eq!(plan["state"], "completed", "{plan}");
+    assert_eq!(plan["feature"], "dark-mode", "{plan}");
+    let saved = std::fs::read_to_string(alpha.join(".tdd-features.json")).unwrap();
+    assert!(saved.starts_with(existing.trim_end().strip_suffix(']').unwrap().trim_end()), "existing bytes kept: {saved}");
+    assert_eq!(ledger(&alpha)[1]["featureName"], "dark-mode");
+    assert_eq!(todos(&s), Vec::<Value>::new(), "the item went once the draft was saved");
+    assert_eq!(
+        plan["warning"],
+        "existing ledger problems: the project's ledger has a problem in an existing entry: feature \"weehook-verifies-purchase-with-gateway\" depends on \"webhook-records-only\", which does not exist",
+        "{plan}"
+    );
+}
+
 /// The value after `flag` in the fake agent's last arguments.
 fn arg_after(s: &Setup, flag: &str) -> Option<String> {
     let args = agent_args(s);

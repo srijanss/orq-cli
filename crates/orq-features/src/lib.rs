@@ -245,7 +245,7 @@ pub use write::write_ledger_atomic;
 pub mod archive;
 
 mod save;
-pub use save::{AppendError, EditFieldsError, FieldEdits, LoadedLedger, SaveError};
+pub use save::{AppendError, Appended, EditFieldsError, FieldEdits, LoadedLedger, SaveError};
 
 /// Copies the ledger at `path`, whose current `bytes` are about to be replaced, into Orq's snapshot
 /// folder for its project. A failure is logged and never stops the write it precedes.
@@ -288,7 +288,7 @@ mod reopen;
 pub use reopen::{close_features, complete_run_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features, restore_completed_features};
 
 mod validate;
-pub use validate::{archived_dependency_notes, drop_archived_dependencies, feature_name_problem, validate_entries, validate_entries_with_archive, ValidationError};
+pub use validate::{archived_dependency_notes, drop_archived_dependencies, feature_name_problem, validate_changed_entries, validate_entries, validate_entries_with_archive, ExistingProblem, ValidationError};
 
 mod spec_file;
 pub use spec_file::{resolve_spec_file, spec_file_candidates, spec_file_choices, SpecFileError};
