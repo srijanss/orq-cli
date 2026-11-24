@@ -453,6 +453,30 @@ fn a_run_not_ended_in_its_design_review_step_is_refused_and_each_attempt_audited
 }
 
 #[test]
+fn a_refused_issue_is_named_to_the_person_but_none_of_its_text_reaches_the_audit() {
+    let s = setup("person-issues-audit-private");
+    design_run(&s, "r-1", "needs_review");
+    let mut viewport = footer_issue();
+    viewport["viewport"] = json!("private-marker-viewport");
+    let mut severity = footer_issue();
+    severity["severity"] = json!("private-marker-severity");
+    let mut field = footer_issue();
+    field["private-marker-field"] = json!("private-marker-value");
+
+    for issue in [viewport, severity, field] {
+        let (status, body) = post_issues(&s, "r-1", json!([issue]));
+        assert_eq!(status, 409, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("private-marker"), "the person is told what was wrong: {body}");
+    }
+
+    assert!(resumed(&s).is_empty(), "{:?}", resumed(&s));
+    let audit = orq_core::remote_audit::read(&s.roots, 10).unwrap();
+    let refused: Vec<&Value> = audit.iter().filter(|line| line["action"] == "run.design_issues" && line["outcome"] == "refused").collect();
+    assert_eq!(refused.len(), 3, "{audit:?}");
+    assert!(!audit.iter().any(|line| line.to_string().contains("private-marker")), "nothing the person typed reaches the audit: {audit:?}");
+}
+
+#[test]
 fn the_report_marks_a_persons_issue_as_from_the_person() {
     let s = setup("person-issues-report");
 

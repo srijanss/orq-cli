@@ -2387,8 +2387,10 @@ fn resume_with_design_issues(roots: &StorageRoots, provider: Option<&dyn Project
             audit(Outcome::Allowed, Some(run), None);
             reply(202, json!({ "run": now_run }))
         }
+        // The reason can quote what the person typed (a viewport, a severity, a field's name), so the
+        // audit keeps only that it was refused; the person is told why.
         Some(Ok(RunControlOutcome::Refused(why))) => {
-            audit(Outcome::Refused, Some(run), Some(&why));
+            audit(Outcome::Refused, Some(run), Some("the run or its issues were refused"));
             reply(409, json!({ "error": why }))
         }
         // The reason can name a path on this machine, so the caller is only told it failed.
