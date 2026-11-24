@@ -180,6 +180,31 @@ pub fn start_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
     }
 }
 
+/// Checks the package again and freezes it anew when a run its design review paused for files
+/// resumes. The package's own checks do not know what the review asked for, so the run stays paused,
+/// with nothing frozen anew, until each file of `requested` is in the main checkout as a regular file.
+pub fn refreeze_design_package(
+    run: &DesignPackageRun,
+    requested: &DesignFilesNeeded,
+) -> DesignPackageOutcome {
+    let missing: Vec<NeededFile> = requested
+        .files
+        .iter()
+        .filter(|file| {
+            !std::fs::symlink_metadata(run.main_checkout.join(&file.path))
+                .is_ok_and(|meta| meta.file_type().is_file())
+        })
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return DesignPackageOutcome::FilesNeeded(DesignFilesNeeded {
+            feature: requested.feature.clone(),
+            files: missing,
+        });
+    }
+    start_design_package(run)
+}
+
 /// Checks the package again when a paused run resumes. A run that froze its package goes on only
 /// while the main checkout's package is still the one frozen; a run still waiting for design files
 /// checks the folder again as if it were starting.

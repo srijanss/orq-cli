@@ -2621,7 +2621,7 @@ fn stages(
             outcome
         };
         // A run that paused for design files checks the feature's package again and freezes it anew on resume.
-        let refreeze = || {
+        let refreeze = |requested: &orq_orchestrator::DesignFilesNeeded| {
             let run = orq_orchestrator::DesignPackageRun {
                 main_checkout: &main_checkout,
                 feature: &options.features[0],
@@ -2630,7 +2630,7 @@ fn stages(
                 worktree,
                 limits: Default::default(),
             };
-            refreeze_of(orq_orchestrator::start_design_package(&run))
+            refreeze_package(&run, requested)
         };
         let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, feature: &options.features[0], review: &review, correct: &correct, review_code: &review_code, refreeze: &refreeze };
         match design_loop_ending(orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)?) {
@@ -3016,6 +3016,12 @@ fn design_loop_ending(outcome: orq_orchestrator::DesignLoopOutcome) -> Option<(E
     }
 }
 
+/// Checks the package anew for a run its design review paused for files, which goes on only once each
+/// file asked for (`requested`) is there, and freezes it.
+fn refreeze_package(run: &orq_orchestrator::DesignPackageRun, requested: &orq_orchestrator::DesignFilesNeeded) -> orq_orchestrator::Refreeze {
+    refreeze_of(orq_orchestrator::refreeze_design_package(run, requested))
+}
+
 /// What the package checked anew on resume means for the design loop.
 fn refreeze_of(outcome: orq_orchestrator::DesignPackageOutcome) -> orq_orchestrator::Refreeze {
     match outcome {
@@ -3037,7 +3043,7 @@ struct PipelineDesignSteps<'a> {
     review: &'a dyn Fn(u32) -> orq_orchestrator::DesignReviewOutcome,
     correct: &'a dyn Fn(u32, &orq_orchestrator::CorrectionPart) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
     review_code: &'a dyn Fn(u32, &str) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
-    refreeze: &'a dyn Fn() -> orq_orchestrator::Refreeze,
+    refreeze: &'a dyn Fn(&orq_orchestrator::DesignFilesNeeded) -> orq_orchestrator::Refreeze,
 }
 
 impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
@@ -3083,8 +3089,8 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
         Some(self.feature.to_string())
     }
 
-    fn refreeze(&mut self) -> Result<orq_orchestrator::Refreeze, StoreError> {
-        Ok((self.refreeze)())
+    fn refreeze(&mut self, requested: &orq_orchestrator::DesignFilesNeeded) -> Result<orq_orchestrator::Refreeze, StoreError> {
+        Ok((self.refreeze)(requested))
     }
 }
 
@@ -3377,6 +3383,36 @@ mod tests {
             Refreeze::Stopped("the design package cannot be used: DESIGN.md is not UTF-8".to_string())
         );
         assert_eq!(super::refreeze_of(DesignPackageOutcome::Changed("moved".to_string())), Refreeze::Stopped("moved".to_string()));
+    }
+
+    /// On resume the package is checked for the files the design review asked for, not only by its own checks.
+    #[test]
+    fn a_resumed_run_stays_paused_until_the_files_its_design_review_asked_for_are_there() {
+        use orq_orchestrator::{DesignFilesNeeded, DesignMode, DesignPackageRun, DesignSettings, NeededFile, Refreeze};
+        let (checkout, logs, worktree) = (
+            orq_test_support::TempDir::new("orq-refreeze-checkout"),
+            orq_test_support::TempDir::new("orq-refreeze-logs"),
+            orq_test_support::TempDir::new("orq-refreeze-worktree"),
+        );
+        let settings = DesignSettings {
+            start_command: None,
+            ready_path: "/".to_string(),
+            ready_timeout: std::time::Duration::from_secs(1),
+            max_correction_rounds: 3,
+            verify_after_rounds: 2,
+            mode: DesignMode::Prepared,
+            viewports: Default::default(),
+        };
+        let run = DesignPackageRun { main_checkout: checkout.path(), feature: "landing-page", settings: &settings, run_logs: logs.path(), worktree: worktree.path(), limits: Default::default() };
+        let request = DesignFilesNeeded {
+            feature: "landing-page".to_string(),
+            files: vec![NeededFile { what: "the approved signature artwork".to_string(), path: "designs/landing-page/assets/signatures.svg".to_string() }],
+        };
+        assert_eq!(super::refreeze_package(&run, &request), Refreeze::FilesNeeded(request.clone()));
+        let asked = checkout.path().join("designs/landing-page/assets/signatures.svg");
+        std::fs::create_dir_all(asked.parent().unwrap()).unwrap();
+        std::fs::write(&asked, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>").unwrap();
+        assert_ne!(super::refreeze_package(&run, &request), Refreeze::FilesNeeded(request), "the file asked for is there now");
     }
 
     #[test]

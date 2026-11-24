@@ -8,7 +8,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use orq_orchestrator::{
-    drop_refused_needs, run_design_loop, CorrectionOutcome, DesignLoopOutcome, DesignLoopSteps,
+    drop_refused_needs, run_design_loop, CorrectionOutcome, DesignFilesNeeded, DesignLoopOutcome,
+    DesignLoopSteps,
     DesignReview, DesignReviewOutcome, DesignVerdict, IssueNeeds, IssueStatus, NeededFile,
     Refreeze, ReviewIssue, RunRecord, RunStore, Severity, StoreError,
 };
@@ -145,10 +146,16 @@ impl DesignLoopSteps for Fake {
         Ok(CorrectionOutcome::Done)
     }
 
-    fn refreeze(&mut self) -> Result<Refreeze, StoreError> {
-        self.log.push("refreeze".to_string());
+    fn refreeze(&mut self, requested: &DesignFilesNeeded) -> Result<Refreeze, StoreError> {
+        self.log.push(refreezing(requested));
         Ok(Refreeze::Frozen)
     }
+}
+
+/// The log line of a new freeze: the files the review asked for, which it is to check.
+fn refreezing(requested: &DesignFilesNeeded) -> String {
+    let paths: Vec<&str> = requested.files.iter().map(|f| f.path.as_str()).collect();
+    format!("refreeze {} {}", requested.feature, paths.join(" "))
 }
 
 fn signature_file() -> NeededFile {
@@ -289,8 +296,11 @@ fn resuming_after_the_file_is_added_freezes_the_package_anew_keeps_the_round_cou
     );
     assert_eq!(
         resumed.log,
-        ["refreeze", "review 3"],
-        "the package is frozen anew, then the page reviewed again as round 3"
+        [
+            "refreeze landing-page designs/landing-page/assets/signatures.svg",
+            "review 3"
+        ],
+        "the package is frozen anew once the file asked for is checked, then the page reviewed again as round 3"
     );
     let events = w.store.events("run-2").unwrap();
     assert!(
@@ -324,8 +334,8 @@ impl DesignLoopSteps for Refreezing {
     fn review_code(&mut self, batch: u32, from: &str) -> Result<CorrectionOutcome, StoreError> {
         self.fake.review_code(batch, from)
     }
-    fn refreeze(&mut self) -> Result<Refreeze, StoreError> {
-        self.fake.log.push("refreeze".to_string());
+    fn refreeze(&mut self, requested: &DesignFilesNeeded) -> Result<Refreeze, StoreError> {
+        self.fake.log.push(refreezing(requested));
         Ok(self.answer.clone())
     }
 }
@@ -351,7 +361,11 @@ fn resuming_while_the_package_still_lacks_files_pauses_again_and_a_refused_packa
         reason.starts_with("the design needs files the package does not have: "),
         "{reason}"
     );
-    assert_eq!(resumed.fake.log, ["refreeze"], "no review without the files");
+    assert_eq!(
+        resumed.fake.log,
+        ["refreeze landing-page designs/landing-page/assets/signatures.svg"],
+        "no review without the files"
+    );
 
     let mut refused = Refreezing {
         fake: Fake::new(Vec::new()),

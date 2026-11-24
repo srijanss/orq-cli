@@ -46,8 +46,9 @@ pub trait DesignLoopSteps {
     fn package_feature(&mut self) -> Option<String> {
         None
     }
-    /// Checks the feature's package again and freezes it anew, when a run paused for files resumes.
-    fn refreeze(&mut self) -> Result<Refreeze, StoreError> {
+    /// Checks the feature's package again and freezes it anew, when a run paused for files resumes;
+    /// the run goes on only once each file the review asked for (`requested`) is in the package.
+    fn refreeze(&mut self, _requested: &DesignFilesNeeded) -> Result<Refreeze, StoreError> {
         Ok(Refreeze::Frozen)
     }
 }
@@ -149,7 +150,8 @@ pub fn run_design_loop(
             .last()
             .filter(|r| state.asked.contains(&r.round) && !state.refrozen.contains(&r.round))
         {
-            match steps.refreeze()? {
+            let requested = files_requested(store, run_id, steps, last)?;
+            match steps.refreeze(&requested)? {
                 Refreeze::Frozen => {
                     record(
                         store,
@@ -362,6 +364,18 @@ fn ask_for_files(
     last: &Recorded,
     max_correction_rounds: u32,
 ) -> Result<DesignLoopOutcome, StoreError> {
+    let request = files_requested(store, run_id, steps, last)?;
+    let open = fixable_issues(&last.issues);
+    pause_for_files(store, run_id, last, max_correction_rounds, request, open)
+}
+
+/// The files review `last` asks for, each under the run's package folder `designs/<feature>/`.
+fn files_requested(
+    store: &RunStore,
+    run_id: &str,
+    steps: &mut dyn DesignLoopSteps,
+    last: &Recorded,
+) -> Result<DesignFilesNeeded, StoreError> {
     let feature = match steps.package_feature() {
         Some(feature) => feature,
         None => store.load(run_id)?.feature_id,
@@ -376,15 +390,7 @@ fn ask_for_files(
             });
         }
     }
-    let open = fixable_issues(&last.issues);
-    pause_for_files(
-        store,
-        run_id,
-        last,
-        max_correction_rounds,
-        DesignFilesNeeded { feature, files },
-        open,
-    )
+    Ok(DesignFilesNeeded { feature, files })
 }
 
 /// Pauses the run after review `last` for the files of `request`, naming the `open` issues; the request

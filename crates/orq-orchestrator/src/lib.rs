@@ -97,7 +97,7 @@ pub use design_loop::{
     DESIGN_FIX_TASK_LIMIT, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE,
 };
 pub use design_package::{
-    resume_design_package, start_design_package, AssignedViewport, DesignFilesNeeded,
+    refreeze_design_package, resume_design_package, start_design_package, AssignedViewport, DesignFilesNeeded,
     DesignManifest, DesignPackageOutcome, DesignPackageRun, ManifestFile, MissingPieces,
     NeededFile, PackageLimits,
 };

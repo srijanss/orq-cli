@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use orq_orchestrator::{
-    resume_design_package, start_design_package, DesignManifest, DesignMode, DesignPackageOutcome,
-    DesignPackageRun, DesignSettings, PackageLimits, Viewport,
+    refreeze_design_package, resume_design_package, start_design_package, DesignFilesNeeded,
+    DesignManifest, DesignMode, DesignPackageOutcome, DesignPackageRun, DesignSettings, NeededFile,
+    PackageLimits, Viewport,
 };
 use orq_test_support::{GitFixture, TempDir};
 use sha2::{Digest, Sha256};
@@ -1175,4 +1176,52 @@ fn resuming_a_frozen_run_restores_the_worktree_copy() {
     let copy = f.worktree.join(".orq-design/references/desktop.png");
     assert_eq!(read(&copy), png(1440, 900));
     assert!(fs::metadata(&copy).unwrap().permissions().readonly());
+}
+
+fn asked_for(paths: &[&str]) -> DesignFilesNeeded {
+    DesignFilesNeeded {
+        feature: "checkout".to_string(),
+        files: paths
+            .iter()
+            .map(|path| NeededFile {
+                what: format!("the approved {path}"),
+                path: format!("designs/checkout/{path}"),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn a_package_refrozen_for_files_a_review_asked_for_waits_until_each_is_in_the_package() {
+    let f = Fixture::new("asked-for");
+    f.full_package();
+    let started = frozen(f.start());
+    let requested = asked_for(&["assets/signatures.svg", "UX.md"]);
+
+    // The package is whole by its own checks, but the signature artwork the review asked for is not
+    // there: the run stays paused for that file alone, and the frozen package is left as it was.
+    assert_eq!(
+        refreeze_design_package(&f.run(), &requested),
+        DesignPackageOutcome::FilesNeeded(asked_for(&["assets/signatures.svg"]))
+    );
+    assert_eq!(frozen(f.resume()), started, "nothing is frozen anew");
+
+    f.put("assets/signatures.svg", SAFE_SVG);
+    let manifest = frozen(refreeze_design_package(&f.run(), &requested));
+    assert!(
+        manifest
+            .files
+            .iter()
+            .any(|file| file.path == "assets/signatures.svg"),
+        "{manifest:?}"
+    );
+    assert_ne!(manifest.package_sha256, started.package_sha256);
+    assert_eq!(
+        read(&f.logs.path().join("design/package/assets/signatures.svg")),
+        SAFE_SVG.as_bytes()
+    );
+    assert_eq!(
+        read(&f.worktree.join(".orq-design/assets/signatures.svg")),
+        SAFE_SVG.as_bytes()
+    );
 }
