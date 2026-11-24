@@ -1,10 +1,11 @@
 //! A problem already in the ledger (an old entry depending on a name removed by hand) never refuses an append
 //! or an edit of another entry; only a problem the appended or edited entry brings does.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-use orq_features::{FeatureDraft, FieldEdits, LoadedLedger};
+use orq_features::{parse_ledger, validate_changed_entries, FeatureDraft, FeatureEntry, FieldEdits, LoadedLedger};
 
 fn ledger(label: &str, text: &str) -> PathBuf {
     let dir = orq_test_support::process_temp_dir().join(format!("orq-append-existing-{}-{label}", std::process::id()));
@@ -87,6 +88,42 @@ fn an_existing_self_dependency_or_cycle_does_not_refuse_the_append() {
     into_cycle.depends_on = Some(vec!["a".into()]);
     let loaded = LoadedLedger::load(&path).unwrap();
     assert!(loaded.append(&into_cycle).is_ok(), "leading into an existing cycle is not a new cycle");
+}
+
+/// Entries as given, each parsed alone, so a repeated name (which a whole ledger never loads with) can be built.
+fn entries(items: &[&str]) -> Vec<FeatureEntry> {
+    items.iter().flat_map(|item| parse_ledger(&format!("[{item}]")).unwrap()).collect()
+}
+
+const A_TO_B: &str = "{\"featureName\": \"a\", \"status\": \"draft\", \"dependsOn\": [\"b\"]}";
+const A: &str = "{\"featureName\": \"a\", \"status\": \"draft\"}";
+const B_TO_A: &str = "{\"featureName\": \"b\", \"status\": \"draft\", \"dependsOn\": [\"a\"]}";
+
+#[test]
+fn a_cycle_through_either_holder_of_an_existing_repeated_name_refuses_the_new_entry() {
+    for order in [[A_TO_B, A, B_TO_A], [A, A_TO_B, B_TO_A]] {
+        let list = entries(&order);
+
+        let refused = validate_changed_entries(&list, &HashSet::new(), &|index| index == 2).unwrap_err();
+
+        assert_eq!(refused.to_string(), "dependency cycle among: a, b", "{order:?}");
+    }
+}
+
+#[test]
+fn an_existing_cycle_through_the_first_holder_of_a_repeated_name_is_reported() {
+    let list = entries(&[A_TO_B, A, B_TO_A, "{\"featureName\": \"new-one\", \"status\": \"draft\"}"]);
+
+    let existing = validate_changed_entries(&list, &HashSet::new(), &|index| index == 3).unwrap();
+
+    let shown: Vec<String> = existing.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown,
+        [
+            "the project's ledger has a problem in an existing entry: featureName \"a\" is repeated",
+            "the project's ledger has a problem in an existing entry: dependency cycle among: a, b",
+        ]
+    );
 }
 
 #[test]

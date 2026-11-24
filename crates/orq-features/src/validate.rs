@@ -219,11 +219,14 @@ fn cycle_names(entries: &[FeatureEntry], members: &[usize]) -> Vec<String> {
 /// strongly connected component with more than one member, found by an iterative Tarjan pass (linear, no
 /// recursion depth to blow). Features that merely lead into or out of a cycle are not members of it.
 fn find_cycles(entries: &[FeatureEntry]) -> Vec<Vec<usize>> {
-    let index_of: HashMap<&str, usize> =
-        entries.iter().enumerate().map(|(i, e)| (e.feature_name.as_str(), i)).collect();
+    // A dependency leads to every entry with that name, so a repeated name cannot hide a cycle.
+    let mut holders: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, e) in entries.iter().enumerate() {
+        holders.entry(e.feature_name.as_str()).or_default().push(i);
+    }
     let edges: Vec<Vec<usize>> = entries
         .iter()
-        .map(|e| e.depends_on.iter().filter_map(|d| index_of.get(d.as_str()).copied()).collect())
+        .map(|e| e.depends_on.iter().flat_map(|d| holders.get(d.as_str()).into_iter().flatten().copied()).collect())
         .collect();
     let n = entries.len();
     let unvisited = usize::MAX;
