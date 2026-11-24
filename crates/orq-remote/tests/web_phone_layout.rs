@@ -88,6 +88,74 @@ fn the_sidebar_track_widens_by_the_left_inset_so_its_padding_never_squeezes_the_
     }
 }
 
+/// What the `.shell::before` strip ends up with for `property` at `width`: only rules whose
+/// selector names that pseudo-element on `.shell`, the most specific and then the latest winning.
+fn strip_at(css: &str, property: &str, width: f64) -> Option<String> {
+    let mut best: Option<((bool, usize, usize), String)> = None;
+    let mut order = 0;
+    for rule in parse(css, None).iter().filter(|r| applies(&r.media, width)) {
+        for selector in rule.selectors.iter().filter(|s| subject(s).strip_suffix("::before").is_some_and(|base| can_match(base, ".shell"))) {
+            for (_, v) in rule.declarations.iter().filter(|(p, _)| p == property) {
+                order += 1;
+                let key = (v.contains("!important"), specificity(selector), order);
+                if best.as_ref().map_or(true, |(k, _)| key > *k) {
+                    best = Some((key, v.replace("!important", "").trim().to_string()));
+                }
+            }
+        }
+    }
+    best.map(|(_, v)| v)
+}
+
+#[test]
+fn the_status_bar_area_is_covered_by_a_solid_fixed_strip() {
+    // Installed on a notched iPhone the page draws under the status bar; an opaque element fixed to the
+    // top edge keeps iOS from laying its blur over that area.
+    let css = css();
+    for width in WIDTHS {
+        for (property, expected) in [("content", "\"\""), ("position", "fixed"), ("top", "0"), ("left", "0"), ("right", "0"), ("height", "env(safe-area-inset-top)"), ("background", "var(--sidebar)"), ("pointer-events", "none")] {
+            assert_eq!(strip_at(&css, property, width).as_deref(), Some(expected), "{property} at {width}px");
+        }
+        for property in ["backdrop-filter", "-webkit-backdrop-filter", "filter"] {
+            assert_eq!(strip_at(&css, property, width), None, "{property} at {width}px");
+        }
+    }
+    // A wide screen has the sidebar layout and no strip.
+    assert_eq!(strip_at(&css, "position", 1200.0), None);
+}
+
+#[test]
+fn the_status_bar_strip_paints_above_the_tab_sheet_and_its_backdrop() {
+    let css = css();
+    let z = |value: &str| -> i64 { value.parse().unwrap_or_else(|_| panic!("z-index {value:?} is not a number")) };
+    for width in WIDTHS {
+        let strip = z(&strip_at(&css, "z-index", width).unwrap_or_else(|| panic!("no strip z-index at {width}px")));
+        // Every z-index any tab bar or backdrop rule can set, so the opened sheet's own one counts too.
+        let below: Vec<(String, i64)> = parse(&css, None)
+            .iter()
+            .filter(|r| applies(&r.media, width))
+            .flat_map(|r| r.selectors.iter().filter(|s| can_match(s, ".tabbar") || can_match(s, ".tabbar-backdrop")).flat_map(move |s| r.declarations.iter().filter(|(p, _)| p == "z-index").map(move |(_, v)| (s.clone(), z(v)))))
+            .collect();
+        for selector in [".tabbar-backdrop", ".tabbar[data-open]"] {
+            assert!(below.iter().any(|(s, _)| s == selector), "{selector} sets a z-index at {width}px: {below:?}");
+        }
+        for (selector, index) in below {
+            assert!(strip > index, "the strip ({strip}) paints above {selector} ({index}) at {width}px");
+        }
+    }
+}
+
+#[test]
+fn the_top_bar_itself_never_blurs() {
+    let css = css();
+    for rule in parse(&css, None).iter().filter(|r| r.selectors.iter().any(|s| can_match(s, ".topbar"))) {
+        if let Some((property, value)) = rule.declarations.iter().find(|(p, _)| ["backdrop-filter", "-webkit-backdrop-filter", "filter"].contains(&p.as_str())) {
+            panic!("{:?} in {:?} sets {property}: {value}", rule.selectors, rule.media);
+        }
+    }
+    assert_eq!(effective(&css, ".topbar", "background"), "var(--sidebar)");
+}
+
 #[test]
 fn pulling_past_the_top_does_not_bounce_or_reload_the_installed_app() {
     let css = css();
