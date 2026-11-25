@@ -7963,7 +7963,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
         <div className="settings-page">
           {/* The passkeys are read before the settings; their card is placed lower by the stylesheet. */}
           <PasskeysCard onSignOut={onSignOut} />
-          <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} reloads={reloads} token={token} onSignedOut={onSignedOut} onChanged={() => setReloads(reloads + 1)} />} onSignedOut={onSignedOut} />
+          <Loaded key={API_SETTINGS} reloads={reloads} token={token} path={API_SETTINGS} loading="Loading the settings…" parse={parseSettings} draw={(settings) => <SettingsView settings={settings} reloads={reloads} token={token} onSignedOut={onSignedOut} onChanged={() => { setReloads(reloads + 1); window.dispatchEvent(new Event(SETTINGS_CHANGED)); }} />} onSignedOut={onSignedOut} />
           <section className="card settings-card settings-audit">
             <SettingsHead icon="doc">Activity</SettingsHead>
             <a className="settings-link" href="/settings/audit" onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate("/settings/audit"); } }}>
@@ -8101,6 +8101,8 @@ function Scoped({ token, onSignedOut, onSignOut }) {
 // The Ask orq panel's state is in the address: no `ask` closed, `?ask=` the chat list, `?ask=<chat>` that chat.
 // A page change drops the query (navigate), so it is written back after every move and the panel stays open.
 const ASK_PARAM = "ask";
+// Sent on the window when the global settings were changed, so the Ask orq panel reads them again.
+const SETTINGS_CHANGED = "orq:settings-changed";
 const CHAT_ID = /^chat-[A-Za-z0-9_-]{1,64}$/;
 
 function askFromAddress() {
@@ -8130,7 +8132,14 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
   const [drafting, setDrafting] = useState(null);
   const [picked, pick] = useAskProject(projectId === null && token === SESSION, token);
   const project = projectId !== null ? projectId : picked.id;
-  const gate = askGate(useAskRead(API_SETTINGS, token, onSignedOut, 0).data);
+  // The settings are read again after a change on the Settings page, so setting the agent there unlocks the panel.
+  const [settingsReads, setSettingsReads] = useState(0);
+  useEffect(() => {
+    const changed = () => setSettingsReads((reads) => reads + 1);
+    window.addEventListener(SETTINGS_CHANGED, changed);
+    return () => window.removeEventListener(SETTINGS_CHANGED, changed);
+  }, []);
+  const gate = askGate(useAskRead(API_SETTINGS, token, onSignedOut, settingsReads).data);
   // A chat and a draft belong to the project they were opened in: moving to another project's page goes
   // to that project's chat list, and nothing of the last one is drawn or asked of the new one meanwhile.
   const [shown, setShown] = useState(project);

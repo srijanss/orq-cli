@@ -438,6 +438,25 @@ fn with_no_ask_orq_agent_the_panel_points_to_settings_and_settings_saves_the_age
 }
 
 #[test]
+fn setting_the_ask_orq_agent_on_the_settings_page_unlocks_the_open_panel() {
+    let options = route("GET", "/api/settings/options", vec![reply(json!({"options": [{"harness": "claude", "models": ["claude-opus-5-5"]}]}))]);
+    let saved = route("POST", "/api/settings/agents", vec![reply(settings(true, true))]);
+    // The page and the panel each read the settings once with no agent; every read after the save has one.
+    let reads = route("GET", "/api/settings", vec![reply(settings(false, true)), reply(settings(false, true)), reply(settings(true, true))]);
+    let steps = vec![
+        json!({"wait": "[data-ask-no-agent]"}),
+        json!({"click": "[data-agent-edit=ask_orq_agent]"}),
+        json!({"wait": "[data-agent-harness]"}),
+        json!({"click": "[data-agent-save]"}),
+        json!({"click": "[data-confirm]"}),
+        json!({"wait": "[data-ask-new]"}),
+        json!({"eval": "gate", "js": "return document.querySelectorAll('[data-ask-no-agent]').length;"}),
+    ];
+    let Some(result) = open_after(1440, "/settings?ask=", vec![reads, options, saved], true, steps, "try { localStorage.setItem('orq.ask.project', 'alpha'); } catch (e) {}\n") else { return };
+    assert_eq!(eval(&result, "gate"), 0, "the panel no longer says to set the agent: {result}");
+}
+
+#[test]
 fn a_token_only_session_sees_the_passkey_reason_and_with_remote_actions_off_the_box_is_the_reason() {
     let reason = "var p = document.querySelector('[data-ask-passkey]'); var r = document.querySelector('[data-ask-remote-off]'); return {passkey: p ? p.textContent : null, off: r ? r.textContent : null, box: document.querySelectorAll('[data-ask-composer]').length, new: document.querySelectorAll('[data-ask-new]').length};";
     let Some(token) = open(1440, "/projects/alpha/reviews", vec![], false, vec![json!({"click": ASK}), json!({"wait": "[data-ask-passkey]"}), json!({"eval": "reason", "js": reason})]) else { return };
