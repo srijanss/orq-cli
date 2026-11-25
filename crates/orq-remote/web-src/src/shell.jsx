@@ -1,8 +1,8 @@
 // The page frame. On a desktop: a sidebar with the Dashboard, the chosen project's sections and
 // Settings, which collapses to an icon rail. On a phone there is no sidebar: a top bar (theme,
-// brand, the page's Refresh) and a fixed bottom tab bar with two rows of icon tabs hold the same
-// destinations. The place lives in the address path, so Back and Forward move it.
-import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
+// brand, the page's Refresh) and a fixed bottom tab bar of icon tabs hold the same destinations, its
+// second row behind a grab handle. The place lives in the address path, so Back and Forward move it.
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
 import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./router.js";
@@ -139,10 +139,13 @@ export function Shell(props) {
 // "Ask orq": a toggle among the sections, not a link. It opens and closes the chat panel over or beside the
 // page, which stays where it is; while the panel is open it has the section pill too. `ask` is
 // { open, onToggle } from the page, or null where nothing listens (the entry then does nothing).
-function AskToggle({ ask, className = undefined, size = 20, label = "label" }) {
+function AskToggle({ ask, className = undefined, size = 20, label = "label", tabIndex = undefined, onToggled = undefined }) {
   const open = ask !== null && ask.open === true;
   return (
-    <button type="button" className={className} data-ask-orq aria-expanded={open ? "true" : "false"} title="Ask orq" onClick={() => ask?.onToggle?.()}>
+    <button type="button" className={className} data-ask-orq tabIndex={tabIndex} aria-expanded={open ? "true" : "false"} title="Ask orq" onClick={() => {
+        ask?.onToggle?.();
+        onToggled?.(!open);
+      }}>
       <Icon name="chat" size={size} />
       <span className={label}>Ask orq</span>
     </button>
@@ -172,29 +175,171 @@ function PhoneShell({ projectId = null, ask = null, panel = null, children }) {
   );
 }
 
+// A finger has to move this far before a press on the handle is a drag rather than a tap.
+const DRAG_SLOP = 6;
+// A click within this long of a drag's end is the drag's own, not a tap.
+const DRAG_CLICK_MS = 300;
+const SETTLE = "height 200ms ease-out";
+const now = () => performance.now();
+
+function prefersReducedMotion() {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+// Whether the second row was left open, per browser; closed when storage is unavailable.
+const MORE_KEY = "orq.tabbar.more";
+
+function storedMoreOpen() {
+  try {
+    return window.localStorage.getItem(MORE_KEY) === "open";
+  } catch (unavailable) {
+    return false;
+  }
+}
+
+function storeMoreOpen(open) {
+  try {
+    window.localStorage.setItem(MORE_KEY, open ? "open" : "closed");
+  } catch (unavailable) {
+    // Without storage it is only forgotten on the next visit.
+  }
+}
+
 // Todos and Reviews sit in the bar's second row; every other section is in the first.
 function inSecondRow(entry) {
   return entry.href === "/todos" || entry.href.endsWith("/reviews");
 }
 
-// The bar's two rows of icon tabs, on the same five columns: Home, Features, Orchestrations, Queue and
-// Settings, then Todos, Reviews and Ask orq. Each name stays as a visually hidden label.
+// The bar's icon tabs, on five columns: Home, Features, Orchestrations, Queue and Settings always show,
+// under a short grip handle; Todos, Reviews and Ask orq are a second row the handle slides in and out.
+// Each name stays as a visually hidden label.
 export function TabBar({ entries, path, ask = null }) {
-  const rows = [entries.filter((entry) => !inSecondRow(entry)), entries.filter(inSecondRow)];
+  const first = entries.filter((entry) => !inSecondRow(entry));
+  const second = entries.filter(inSecondRow);
+  // On a page whose section is in the second row, or with the Ask orq panel open, the row opens so the
+  // marked tab is in sight: when the bar mounts, and when such a page or the panel comes up later, except
+  // for a page chosen from the row itself, which closes it.
+  const askOpen = ask !== null && ask.open === true;
+  const onSecondRow = second.some((entry) => within(path, entry.href));
+  const [open, setShown] = useState(() => onSecondRow || askOpen || storedMoreOpen());
+  // What the person opens or closes is remembered; what opens by itself is not.
+  const setOpen = (value) => {
+    setShown(value);
+    storeMoreOpen(value);
+  };
+  const [seen, setSeen] = useState({ path, askOpen });
+  const chosen = useRef(false);
+  if (seen.path !== path || seen.askOpen !== askOpen) {
+    setSeen({ path, askOpen });
+    const cameTo = seen.path !== path && onSecondRow && !chosen.current;
+    if (cameTo || (askOpen && !seen.askOpen)) setShown(true);
+  }
+  useEffect(() => {
+    chosen.current = false;
+  }, [path]);
+  const choose = (entry) => {
+    // Choosing the page already shown moves nowhere, so nothing is left to skip.
+    chosen.current = entry.href !== path;
+    setOpen(false);
+  };
+  const row = useRef(null);
+  const bar = useRef(null);
+  // The page's content clears the bar at whatever height it has, open or closed.
+  useLayoutEffect(() => {
+    const nav = bar.current;
+    const root = document.documentElement;
+    if (!nav || typeof window.ResizeObserver !== "function") return undefined;
+    const observer = new window.ResizeObserver(() => root.style.setProperty("--tabbar-height", `${Math.ceil(nav.getBoundingClientRect().height)}px`));
+    observer.observe(nav);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty("--tabbar-height");
+    };
+  }, []);
+  // The row's open height, measured when it opens, and how much of it shows while a finger drags.
+  const [full, setFull] = useState(0);
+  const [pull, setPull] = useState(null);
+  const drag = useRef(null);
+  const dragEndedAt = useRef(-Infinity);
+  const reduced = prefersReducedMotion();
+  const measure = () => row.current?.scrollHeight ?? 0;
+  useLayoutEffect(() => {
+    if (open) setFull(measure());
+  }, [open]);
+
+  // How much of the row shows with the finger at `y`.
+  const showing = (current, y) => Math.min(current.height, Math.max(0, current.from + current.startY - y));
+  const onPointerDown = (event) => {
+    const height = open ? full : measure();
+    drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false };
+  };
+  const onPointerMove = (event) => {
+    const current = drag.current;
+    if (!current) return;
+    if (!current.moved && Math.abs(event.clientY - current.startY) < DRAG_SLOP) return;
+    if (!current.moved) event.currentTarget.setPointerCapture?.(event.pointerId);
+    current.moved = true;
+    if (!reduced) setPull(showing(current, event.clientY));
+  };
+  // Let go, the row settles open past half way and closed short of it.
+  const onPointerUp = (event) => {
+    const current = drag.current;
+    drag.current = null;
+    if (!current || !current.moved) return;
+    dragEndedAt.current = now();
+    setPull(null);
+    const opens = showing(current, event.clientY) > current.height / 2;
+    if (opens) setFull(current.height);
+    setOpen(opens);
+  };
+  // A cancelled drag, or one whose finger the handle lost, falls back to where it started.
+  const onPointerCancel = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    setPull(null);
+  };
+  const onLostPointerCapture = (event) => {
+    if (event.target === event.currentTarget) onPointerCancel();
+  };
+
+  const height = pull !== null ? pull : open ? full : 0;
+  const transition = pull !== null || reduced ? "none" : SETTLE;
+  const away = open ? undefined : -1;
   return (
-    <nav className="tabbar" aria-label="Sections">
-      {rows.map((row, at) => (
-        <div key={at} className="tabbar-row" data-tab-row={at + 1}>
-          {row.map((entry) => (
-            <a key={entry.href} href={entry.href} title={entry.label} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
-              <Icon name={entry.icon} size={28} />
-              <span className="tab-label">{entry.label}</span>
-            </a>
-          ))}
-          {at === 1 ? <AskToggle ask={ask} size={28} label="tab-label" /> : null}
-        </div>
-      ))}
+    <nav className="tabbar" aria-label="Sections" ref={bar} data-open={open ? "" : undefined}>
+      <button type="button" className="tabbar-handle" data-tab-handle aria-label="More sections" aria-expanded={open ? "true" : "false"} aria-controls="tabbar-more"
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onLostPointerCapture={onLostPointerCapture}
+        onClick={() => {
+          // The click a browser sends after a drag's lift is the drag's own, not a tap.
+          if (now() - dragEndedAt.current < DRAG_CLICK_MS) return;
+          setOpen(!open);
+        }} />
+      <div className="tabbar-row" data-tab-row="1">
+        {first.map((entry) => (
+          <Tab key={entry.href} entry={entry} path={path} />
+        ))}
+      </div>
+      <div id="tabbar-more" className="tabbar-row tabbar-more" data-tab-row="2" data-tab-drawer ref={row} aria-hidden={open ? undefined : "true"} style={{ height: `${height}px`, transition }}>
+        {second.map((entry) => (
+          <Tab key={entry.href} entry={entry} path={path} tabIndex={away} onChoose={choose} />
+        ))}
+        <AskToggle ask={ask} size={28} label="tab-label" tabIndex={away} onToggled={(opened) => {
+            if (!opened) setOpen(false);
+          }} />
+      </div>
     </nav>
+  );
+}
+
+function Tab({ entry, path, tabIndex = undefined, onChoose = undefined }) {
+  return (
+    <a href={entry.href} title={entry.label} tabIndex={tabIndex} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
+        if (isPlainLeftClick(event)) onChoose?.(entry);
+        goTo(entry, event);
+      }}>
+      <Icon name={entry.icon} size={28} />
+      <span className="tab-label">{entry.label}</span>
+    </a>
   );
 }
 

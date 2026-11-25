@@ -367,9 +367,14 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .topbar .brand { justify-self: center; }
   .topbar .theme-toggle { margin-left: 0; justify-self: start; }
   .topbar [data-refresh] { justify-self: end; }
-  .tabbar { display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--z-chrome); gap: 0.25rem; padding: 0.375rem 0.5rem; padding-left: calc(0.5rem + env(safe-area-inset-left)); padding-right: calc(0.5rem + env(safe-area-inset-right)); padding-bottom: calc(0.25rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
-  /* Two rows of tabs on the same five columns: Home, Features, Orchestrations, Queue and Settings, then Todos and Reviews. */
+  .tabbar { display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--z-chrome); padding: 0.375rem 0.5rem; padding-top: 1.125rem; padding-left: calc(0.5rem + env(safe-area-inset-left)); padding-right: calc(0.5rem + env(safe-area-inset-right)); padding-bottom: calc(0.25rem + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); }
+  /* Two rows of tabs on the same five columns: Home, Features, Orchestrations, Queue and Settings, then Todos, Reviews
+     and Ask orq. The second row slides in under the first from the grab handle at the bar's top, and out again. */
   .tabbar-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.25rem; }
+  .tabbar-more { overflow: hidden; }
+  .tabbar-more > * { margin-top: 0.25rem; }
+  .tabbar-handle { position: absolute; left: 50%; top: 0; width: 5rem; height: 1.125rem; margin-left: -2.5rem; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
+  .tabbar-handle::before { content: ""; position: absolute; left: 50%; top: 0.4375rem; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--sidebar-muted); }
   .tabbar a { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; text-decoration: none; color: var(--sidebar-muted); }
   .tabbar a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
   .tabbar button[data-ask-orq] { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border: 0; border-radius: 0.75rem; background: transparent; color: var(--sidebar-muted); font: inherit; }
@@ -380,7 +385,7 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .ask-body { flex: none; overflow-x: clip; overflow-y: visible; }
   .ask-composer { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
   .tabbar .tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .content { padding: 0.75rem; padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-right: calc(0.75rem + env(safe-area-inset-right)); padding-bottom: calc(8.5rem + env(safe-area-inset-bottom)); }
+  .content { padding: 0.75rem; padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-right: calc(0.75rem + env(safe-area-inset-right)); padding-bottom: calc(var(--tabbar-height, 8.5rem + env(safe-area-inset-bottom)) + 0.75rem); }
   .run-filters .search-box { flex: 1 1 100%; }
   .run-filters select { flex: 1 1 0; min-width: 0; padding: 0 1.75rem 0 0.5rem; background-position: right 0.75rem center, right 0.4375rem center; }
   .run-filters .sort-toggle { flex: none; }
