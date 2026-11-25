@@ -10,8 +10,9 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 10] = [
+const SELECTORS: [&str; 11] = [
     "[data-resume]",
+    "[data-accept]",
     "[data-review-again]",
     "[data-queue-run-resume]",
     "[data-queue-run-review-again]",
@@ -146,6 +147,47 @@ fn a_failed_run_with_commits_no_review_saw_offers_review_again_now() {
 
     let Some(out) = detail(one("r-fail", "failed"), vec![], vec![]) else { return };
     assert_eq!(count(last(&out), "[data-review-again]"), 0, "a failed run with nothing new to review: {out}");
+}
+
+fn waiting_for_files(id: &str, stage: &str) -> Value {
+    let mut run = one(id, "design_files_needed");
+    run["stage"] = json!(stage);
+    run
+}
+
+#[test]
+fn a_run_waiting_for_design_files_offers_resume_and_offers_accept_only_once_something_was_built() {
+    let Some(out) = detail(waiting_for_files("r-files", "design_package"), vec![], vec![]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-resume]"), 1, "the header offers Resume: {out}");
+    assert_eq!(count(frame, "[data-queue-run-resume]"), 1, "and Queue resume: {out}");
+    assert_eq!(count(frame, "[data-accept]"), 0, "nothing was built, so nothing to accept: {out}");
+    assert_eq!(count(frame, "[data-queue-run-accept]"), 0, "{out}");
+
+    let Some(out) = detail(waiting_for_files("r-later", "implement_and_review"), vec![], vec![]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-resume]"), 1, "{out}");
+    assert_eq!(count(frame, "[data-accept]"), 1, "earlier work was built, so it may be accepted: {out}");
+    assert_eq!(count(frame, "[data-queue-run-accept]"), 1, "{out}");
+
+    let rows = [waiting_for_files("r-files", "design_package"), waiting_for_files("r-later", "implement_and_review")];
+    let list = json!({"status": 200, "json": {"runs": rows, "next_cursor": null, "total": 2, "running": 0, "remote_actions": true}});
+    let Some(out) = run_page("/projects/alpha/orchestrations".into(), vec![list, projects()], vec![json!({"submit": TOKEN})]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-resume]"), 2, "each row offers Resume: {out}");
+    assert_eq!(count(frame, "[data-queue-run-resume]"), 2, "{out}");
+    assert_eq!(count(frame, "[data-accept]"), 1, "only the row with built work offers Accept: {out}");
+    assert_eq!(count(frame, "[data-queue-run-accept]"), 1, "{out}");
+}
+
+#[test]
+fn the_header_resume_of_a_run_waiting_for_design_files_checks_then_posts_to_the_resume_path() {
+    let check = json!({"status": 200, "json": {"next": "design_package"}});
+    let ok = json!({"status": 202, "json": {"run": "r-next"}});
+    let Some(out) = detail(waiting_for_files("r-files", "design_package"), vec![check, ok], vec![json!({"click": "[data-resume]"}), json!({"click": "[data-confirm]"})]) else { return };
+    let gets: Vec<String> = out["requests"].as_array().unwrap().iter().filter(|r| r["method"] != "POST").filter_map(|r| r["url"].as_str()).map(String::from).collect();
+    assert!(gets.iter().any(|u| u == "/api/projects/alpha/runs/r-files/resume-check"), "{gets:?}");
+    assert_eq!(posts(&out), vec![("/api/projects/alpha/runs/r-files/resume".to_string(), json!({}))]);
 }
 
 #[test]

@@ -1081,7 +1081,7 @@ fn a_run_waiting_for_design_files_shows_what_is_needed_where_and_why_with_resume
 }
 
 #[test]
-fn a_run_waiting_for_design_files_may_be_accepted_as_it_stands_from_its_page() {
+fn a_run_waiting_for_design_files_before_anything_was_built_is_not_offered_accept_on_its_page() {
     let s = setup("design-panel-files-needed-accept");
     files_needed_run(&s, "r-1");
     let mut body = page(&s, "/api/projects/alpha/runs/r-1");
@@ -1093,7 +1093,7 @@ fn a_run_waiting_for_design_files_may_be_accepted_as_it_stands_from_its_page() {
     };
     let end = last(&out);
     assert_eq!(count(end, "[data-design-files-needed]"), 1, "{out}");
-    assert_eq!(count(end, "[data-accept]"), 1, "{out}");
+    assert_eq!(count(end, "[data-accept]"), 0, "it stopped at design_package: nothing to deliver: {out}");
 }
 
 #[test]

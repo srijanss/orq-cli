@@ -116,6 +116,37 @@ fn a_failed_run_with_clean_committed_work_is_tested_after_the_reply_and_refusals
     assert_eq!(*tested.lock().unwrap(), ["r-fail"], "only an acceptable run is tested");
 }
 
+/// A run of `repo` that stopped for design files at `stage`.
+fn add_files_needed_run(s: &Setup, repo: &Path, run: &str, stage: &str) {
+    add_run(s, repo, run, &[]);
+    let store = RunStore::new(&s.roots.state);
+    for (n, (kind, payload)) in [("stage.started", json!({})), ("run.completed", json!({"ending": "design_files_needed"}))].into_iter().enumerate() {
+        let event = Event { schema_version: 1, event_id: format!("{run}-s{n}"), run_id: run.into(), project_id: project_id(repo), feature_id: format!("f-{run}"), kind: kind.into(), stage: Some(stage.into()), attempt: 1, occurred_at: format!("2026-11-01T10:00:0{n}Z"), payload };
+        store.append_event(&event).unwrap();
+    }
+}
+
+#[test]
+fn a_run_waiting_for_design_files_before_anything_was_built_is_refused_and_one_at_a_later_stage_is_accepted() {
+    let s = setup("run-accept-files-needed");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_files_needed_run(&s, &alpha, "r-files", "design_package");
+    add_files_needed_run(&s, &alpha, "r-later", "implement_and_review");
+    let tested = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = tested.clone();
+    let tests: Tests = Arc::new(move |worktree: &Path| {
+        seen.lock().unwrap().push(worktree.file_name().unwrap().to_string_lossy().into_owned());
+        Ok(())
+    });
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone()).with_accept_tests(tests);
+
+    assert_eq!(post(&s, &provider, "r-files"), (409, json!({"error": "nothing has been built yet: add the files and resume"})));
+    assert_eq!(kinds(&s, "r-files"), ["stage.started", "run.completed"], "a refused accept changes nothing");
+    assert_eq!(post(&s, &provider, "r-later"), (202, json!({"run": "r-later"})));
+    assert_eq!(kinds_once(&s, "r-later", 4), ["stage.started", "run.completed", "run.accept_started", "run.completed"]);
+    assert_eq!(*tested.lock().unwrap(), ["r-later"], "only the run with built work is tested");
+}
+
 #[test]
 fn a_run_whose_tests_are_running_is_not_accepted_twice_and_failing_tests_leave_it_failed() {
     let s = setup("run-accept-twice");

@@ -5543,11 +5543,18 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
 }
 
 // The run states that have an action.
-const CONTROLLED = ["running", "pause_requested", "paused", "failed", "blocked", "needs_review", "merged"];
-const RESUMABLE = ["paused", "failed", "blocked", "needs_review"];
-const DISCARDABLE = [...RESUMABLE, "merged"];
+const CONTROLLED = ["running", "pause_requested", "paused", "failed", "blocked", "needs_review", "design_files_needed", "merged"];
+// A run waiting for design files resumes once they are added.
+const RESUMABLE = ["paused", "failed", "blocked", "needs_review", "design_files_needed"];
+const DISCARDABLE = ["paused", "failed", "blocked", "needs_review", "merged"];
 // A run waiting for design files may be accepted as it stands, as one waiting on a review decision.
 const ACCEPTABLE = ["failed", "needs_review", "design_files_needed"];
+
+// Whether Accept is offered for `run`: not for one that stopped for design files at the design_package stage,
+// before the implementer ran, as nothing was built that an accept could deliver.
+function acceptable(run) {
+  return ACCEPTABLE.includes(run.state) && !(run.state === "design_files_needed" && run.stage === "design_package");
+}
 
 const SET_ASIDE_QUESTION = "Your changes to these files are stashed, the run is merged, and your changes are put back. If they conflict, they stay in the stash and orq tells you where.";
 const DIRTY_SHOWN = 10;
@@ -6150,7 +6157,8 @@ function DesignFilesNeeded({ run, control }) {
   );
 }
 
-// Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one and
+// Pause and Stop on a running run, Stop on one asked to pause, Resume on a paused, failed or blocked one or one
+// waiting for design files (Accept too once something was built), and
 // Review again on one that needs review, when the server allows actions. Resume asks the server where the run
 // would continue before asking. Discard on the runs Resume is on and Clear on a merged one first ask what the
 // branch would lose. Accept on a failed or needs_review run asks first; its tests then run on the server, so the
@@ -6187,14 +6195,14 @@ function RowActions({ run, control, menu = false }) {
   const merges = run.delivery === "merge_local";
   const acceptQuestion = merges ? "Accept " + run.run_id + "? Its tests run in its worktree; if they pass it is merged into " + target + "." : "Accept " + run.run_id + "? The tests run in its worktree; if they pass it is marked review ready.";
   const acceptDone = (accepted) => "Accepting " + (accepted || run.run_id) + ": its tests are running. " + (merges ? "It is merged into " + target + " when they pass." : "It shows as review ready when they pass.");
-  const accept = ACCEPTABLE.includes(run.state) ? <RunAction kind="accept" label="Accept" tone="primary" icon="check" question={acceptQuestion} path={runPath("accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={acceptDone} /> : null;
+  const accept = acceptable(run) ? <RunAction kind="accept" label="Accept" tone="primary" icon="check" question={acceptQuestion} path={runPath("accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={acceptDone} /> : null;
   // A merge-local run accepted before an accept merged such a run: the accept route merges it now.
   const mergeAccepted = run.state === "completed" && run.merge_pending === true ? <RunAction kind="merge-accepted" label={"Merge into " + target} tone="primary" icon="check" question={"Merge " + run.run_id + " into " + target + "? Its tests passed when it was accepted; they run again only if " + target + " moved since."} path={runPath("accept")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Merging " + run.run_id + " into " + target + "."} /> : null;
   // A failed run whose commits after its last review no review saw may be reviewed again from there.
   const reviewAgain = run.state === "failed" && run.reviewable_again === true ? <RunAction kind="review-again" label="Review again" icon="rotate" question={"Review " + run.run_id + " again? A session reviews the commits after its last review and fixes what that review finds."} path={runPath("review-again")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Reviewing again." : "Reviewing again as run " + next + ".")} /> : null;
   const queued = (kind, action, label, title, answers = false) => <RunAction kind={kind} label={label} icon="clock" answers={answers} question={"Queue " + title + " " + run.run_id + "? It starts when the project's limits and queue hours allow."} path={controlPath(control, "queue/add")} body={{ action, run: run.run_id }} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Queued " + title + " " + run.run_id + "."} />;
   const queueResume = !RESUMABLE.includes(run.state) ? null : run.state === "needs_review" ? queued("queue-run-review-again", "review_again", "Queue review again", "Review again") : queued("queue-run-resume", "resume", "Queue resume", "Resume", true);
-  const queueAccept = ACCEPTABLE.includes(run.state) ? queued("queue-run-accept", "accept", "Queue accept", "Accept") : null;
+  const queueAccept = acceptable(run) ? queued("queue-run-accept", "accept", "Queue accept", "Accept") : null;
   const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
   // Only the run page carries the design review, so only there does a design run take a person's issues.
   const designIssues = takesDesignIssues(run) ? <DesignIssuesAction run={run} control={control} /> : null;

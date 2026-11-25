@@ -737,6 +737,14 @@ fn merge_after_accept_pending(store: &orq_orchestrator::RunStore, run: &str) -> 
     orq_orchestrator::merge_after_accept_pending(&record, &events)
 }
 
+/// Whether `run` stopped for design files at the design_package stage, before the implementer ran: an
+/// accept of it would deliver nothing.
+fn stopped_before_building(store: &orq_orchestrator::RunStore, run: &str) -> bool {
+    let Ok(events) = store.events(run) else { return false };
+    let summary = orq_orchestrator::summarize_run(&events);
+    summary.phase == orq_orchestrator::RunPhase::DesignFilesNeeded && summary.stage.as_deref() == Some("design_package")
+}
+
 /// Sets `features` completed in the ledger of the project at `repo`, recorded at `at`, as a run that
 /// delivered completes them; the names it set.
 fn complete_in_ledger(repo: &Path, features: &[String], at: &str) -> Result<Vec<String>, String> {
@@ -1530,6 +1538,9 @@ impl StoreProjects {
         let mut accepting = self.accepting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if accepting.contains(run) {
             return Ok(RunControlOutcome::Refused(format!("{run} is already being accepted")));
+        }
+        if stopped_before_building(&store, run) {
+            return Ok(RunControlOutcome::Refused("nothing has been built yet: add the files and resume".into()));
         }
         let merge_only = merge_after_accept_pending(&store, run);
         let checked = if merge_only { orq_orchestrator::merge_accepted_check(&store, run) } else { orq_orchestrator::accept_check(&store, run) };
