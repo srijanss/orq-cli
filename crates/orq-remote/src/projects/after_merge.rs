@@ -27,6 +27,9 @@ const COMMANDS: &str = "after_merge.commands";
 const RELEASE_CREATED: &str = "release.created";
 /// Written when a merge's release was refused.
 const RELEASE_REFUSED: &str = "release.refused";
+/// Written when a merge whose go was interrupted before its release needs none any more: it left the
+/// target branch, or a later release covers it.
+const RELEASE_SKIPPED: &str = "release.skipped";
 
 /// The runs, as (state root, run id), a round saw going in a project that declared `[after_merge]`.
 static SEEN: LazyLock<Mutex<HashSet<(PathBuf, String)>>> = LazyLock::new(Mutex::default);
@@ -121,7 +124,7 @@ fn job_for(state: &Path, runs: &RunStore, root: &Path, run: &str, with_release: 
     }
     let had = |kinds: &[&str]| events.iter().any(|event| kinds.contains(&event.kind.as_str()));
     let merged = events.iter().rev().filter(|event| event.kind == "merge.completed").find_map(|event| event.payload["head_sha"].as_str().map(str::to_string))?;
-    let release = if !with_release || had(&[RELEASE_CREATED, RELEASE_REFUSED]) {
+    let release = if !with_release || had(&[RELEASE_CREATED, RELEASE_REFUSED, RELEASE_SKIPPED]) {
         None
     } else {
         match declared_release(root) {
@@ -192,17 +195,29 @@ fn enqueue(root: &Path, jobs: Vec<Job>) {
     }
 }
 
-/// A merge-local run that ended merged and whose merge no go has looked at yet.
+/// A merge-local run that ended merged and whose merge's commands or release no go has settled yet.
 struct Unsettled {
     run: String,
     branch: String,
     merged: String,
     /// When its merge landed, to put several in the order they landed.
     at: String,
+    /// A go started its commands, or recorded why it ran none.
+    commands_done: bool,
+    /// Its release was made, refused or skipped, or a go ended normally without one (the project made
+    /// none then). A go closed as interrupted leaves it owed.
+    release_done: bool,
 }
 
-/// The merges under `state` that ended merged with nothing recorded of their release or `[after_merge]`
-/// and that no go holds now, by project id.
+impl Unsettled {
+    /// Whether the merge still owes what the project gives a merge.
+    fn owes(&self, wants: &Wants) -> bool {
+        (wants.commands && !self.commands_done) || (wants.release && !self.release_done)
+    }
+}
+
+/// The merges under `state` that ended merged with their commands or their release not settled and that
+/// no go holds now, by project id.
 fn unsettled_runs(state: &Path) -> HashMap<String, Vec<Unsettled>> {
     let runs = RunStore::new(state);
     let mut found: HashMap<String, Vec<Unsettled>> = HashMap::new();
@@ -218,7 +233,14 @@ fn unsettled_runs(state: &Path) -> HashMap<String, Vec<Unsettled>> {
             continue;
         }
         let ended_merged = events.iter().rev().find(|event| event.kind == "run.completed").is_some_and(|event| event.payload["ending"] == "merged");
-        if !ended_merged || events.iter().any(|event| [STARTED, COMMANDS, RELEASE_CREATED, RELEASE_REFUSED].contains(&event.kind.as_str())) {
+        if !ended_merged {
+            continue;
+        }
+        let had = |kinds: &[&str]| events.iter().any(|event| kinds.contains(&event.kind.as_str()));
+        let commands_done = had(&[STARTED, COMMANDS]);
+        let ended_normally = events.iter().any(|event| event.kind == COMMANDS && event.payload["interrupted"] != true);
+        let release_done = had(&[RELEASE_CREATED, RELEASE_REFUSED, RELEASE_SKIPPED]) || ended_normally;
+        if commands_done && release_done {
             continue;
         }
         let Some((merged, at)) = events
@@ -229,26 +251,33 @@ fn unsettled_runs(state: &Path) -> HashMap<String, Vec<Unsettled>> {
         else {
             continue;
         };
-        found.entry(record.project_id).or_default().push(Unsettled { run, branch: record.target_branch, merged, at });
+        found.entry(record.project_id).or_default().push(Unsettled { run, branch: record.target_branch, merged, at, commands_done, release_done });
     }
     found
 }
 
-/// Whether the project at `root` gives a merge a go: it declares `[after_merge]` commands, or a `[release]`
-/// that releases on merge (or either is wrong, which the go reports). An `[after_merge]` with no commands
-/// needs none.
-fn gives_a_go(root: &Path) -> bool {
+/// What a go gives a merge in a project.
+struct Wants {
+    /// It declares `[after_merge]` commands (or a wrong `[after_merge]`, which the go reports). One with no
+    /// commands needs none.
+    commands: bool,
+    /// It releases on merge (or its `[release]` is wrong, which the go reports).
+    release: bool,
+}
+
+/// What a go gives a merge in the project at `root`.
+fn wants(root: &Path) -> Wants {
     let commands = match declared(root) {
         Some(Ok(declared)) => !declared.commands.is_empty(),
         Some(Err(_)) => true,
         None => false,
     };
-    commands
-        || match declared_release(root) {
-            Some(Ok(settings)) => settings.release_on_merge == ReleaseOnMerge::Auto,
-            Some(Err(_)) => true,
-            None => false,
-        }
+    let release = match declared_release(root) {
+        Some(Ok(settings)) => settings.release_on_merge == ReleaseOnMerge::Auto,
+        Some(Err(_)) => true,
+        None => false,
+    };
+    Wants { commands, release }
 }
 
 /// The main checkout of each project under the server's scan root, by project id.
@@ -285,15 +314,21 @@ impl super::super::StoreProjects {
             0
         } else {
             let roots = project_roots(self);
-            unsettled.iter().filter(|(project, _)| roots.get(*project).is_some_and(|root| gives_a_go(root))).map(|(_, merges)| merges.len()).sum()
+            let owing = |(project, merges): (&String, &Vec<Unsettled>)| {
+                let Some(root) = roots.get(project) else { return 0 };
+                let wants = wants(root);
+                merges.iter().filter(|merge| merge.owes(&wants)).count()
+            };
+            unsettled.iter().map(owing).sum()
         };
         let held = locked(&IN_FLIGHT).iter().filter(|(root, _)| root == state).count();
         held + waiting
     }
 
-    /// Gives each merge no round settled (the server restarted as its run ended) the go it missed: one go
-    /// per project, the newest merge's release with it; a merge no longer on its target, or a release
-    /// commit already follows, is recorded as not ran with the reason.
+    /// Gives each merge no round settled (the server restarted as its run ended, or in the middle of its
+    /// go) what it missed: one go per project, the newest merge's release with it; a merge no longer on its
+    /// target, or a release commit already follows, is recorded as not ran (or its release as skipped,
+    /// when its commands had their go) with the reason.
     pub(super) fn settle_unsettled(&self) {
         let state = &self.roots.state;
         let unsettled = unsettled_runs(state);
@@ -306,7 +341,9 @@ impl super::super::StoreProjects {
             let Some(root) = roots.get(&project) else {
                 continue;
             };
-            if !gives_a_go(root) {
+            let wants = wants(root);
+            merges.retain(|merge| merge.owes(&wants));
+            if merges.is_empty() {
                 continue;
             }
             merges.sort_by(|a, b| a.at.cmp(&b.at));
@@ -324,6 +361,7 @@ impl super::super::StoreProjects {
                     released_by(root, &merge.branch, &merge.merged).map(|version| format!("released by {version}"))
                 };
                 match reason {
+                    Some(reason) if merge.commands_done => append(&runs, &merge.run, RELEASE_SKIPPED, json!({"merged": merge.merged, "reason": redact(&reason)})),
                     Some(reason) => append(&runs, &merge.run, COMMANDS, json!({"ran": false, "ok": false, "merged": merge.merged, "reason": redact(&reason), "commands": []})),
                     None => kept.push(merge.run),
                 }
