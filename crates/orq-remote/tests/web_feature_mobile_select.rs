@@ -343,8 +343,8 @@ fn the_phone_selection_mode_marks_a_row_with_a_quote_bar_a_tint_and_a_bottom_she
     assert!(bar.contains("border-radius: 0.75rem 0.75rem 0 0") && bar.contains("animation: marked-actions-in 150ms"), "{bar}");
     assert!(rule(phone, "  .selecting .marked-actions .selected-count {").contains("color: var(--text-muted)"));
     assert!(rule(phone, "  .selecting .marked-group > .run-action {").contains("flex: 1 1 0"), "two buttons share the row equally");
-    let secondary = rule(phone, "  .selecting .marked-actions .secondary-button {");
-    assert!(secondary.contains("background: transparent") && secondary.contains("border-color: var(--border)"), "{secondary}");
+    let buttons = rule(phone, "  .selecting .marked-actions .primary-button, .selecting .marked-actions .secondary-button {");
+    assert!(buttons.contains("width: 100%") && buttons.contains("justify-content: center"), "each button fills its share of the row: {buttons}");
     assert!(css.contains("@keyframes marked-actions-in"), "the bar slides up");
 
     let calm = &css[css.find("@media (max-width: 700px) and (prefers-reduced-motion: reduce) {").expect("a reduced-motion rule")..];

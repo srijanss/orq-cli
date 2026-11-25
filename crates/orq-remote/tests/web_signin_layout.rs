@@ -21,13 +21,13 @@ fn the_card_sits_centred_in_a_full_height_page() {
         return;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
-    let scenario = json!({"url": "/dashboard", "responses": [], "steps": [], "selectors": [".signin-page > .signin", ".signin h1", ".signin .primary"]});
+    let scenario = json!({"url": "/dashboard", "responses": [], "steps": [], "selectors": [".signin-page > .signin", ".signin h1", ".signin .primary-button"]});
     let output = Command::new("node").arg(format!("{dir}/tests/web_react_harness.mjs")).arg(format!("{dir}/web/app.react.js")).arg(scenario.to_string()).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     let m = &out["frames"][0]["settled"]["matches"];
     assert_eq!(out["frames"][0]["settled"]["matches"][".signin h1"], 0, "no heading above the buttons: {out}");
-    for k in [".signin-page > .signin", ".signin .primary"] {
+    for k in [".signin-page > .signin", ".signin .primary-button"] {
         assert_eq!(m[k], 1, "{k}: {out}");
     }
 }
@@ -39,8 +39,10 @@ fn the_page_centres_a_wide_card_and_the_primary_button_fills_it() {
     assert!(page.contains("min-height: 100dvh") && page.contains("display: flex") && page.contains("align-items: center") && page.contains("justify-content: center"), "{page}");
     let card = rule(&css, "\n.signin {");
     assert!(card.contains("max-width: 28rem") && card.contains("width: 100%"), "{card}");
-    let primary = rule(&css, ".signin .primary {");
-    assert!(primary.contains("width: 100%") && primary.contains("background: var(--primary)") && primary.contains("color: var(--on-primary)"), "{primary}");
+    let primary = rule(&css, ".signin .primary-button {");
+    assert!(primary.contains("width: 100%"), "{primary}");
+    let shared = rule(&css, "\n.primary-button {");
+    assert!(shared.contains("background: var(--primary)") && shared.contains("color: var(--on-primary)"), "{shared}");
     assert!(!css.contains(".signin .theme-toggle { align-self: flex-end; margin-left: 0; order: -1; }"), "the theme switch moves to the bottom");
 }
 
@@ -55,12 +57,10 @@ fn the_passkey_button_carries_a_passkey_icon() {
 }
 
 #[test]
-fn the_primary_button_is_the_sidebar_pill_colour_in_dark_and_the_dark_colour_in_light() {
+fn the_primary_button_is_the_accent_blue_with_white_text_in_both_themes() {
     let css = css();
-    assert_eq!(css.matches("--primary: #dbeafe").count(), 2, "dark blocks: the sidebar's selected pill");
-    assert_eq!(css.matches("--on-primary: #0f172a").count(), 2, "dark blocks: its dark text");
-    assert_eq!(css.matches("--primary: #0f172a").count(), 2, "light blocks: the dark colour");
-    assert_eq!(css.matches("--on-primary: #ffffff").count(), 2, "light blocks: white text");
+    assert_eq!(css.matches("--primary: #2563eb").count(), 4, "every theme block: the accent blue");
+    assert_eq!(css.matches("--on-primary: #ffffff").count(), 4, "every theme block: white text");
 }
 
 #[test]

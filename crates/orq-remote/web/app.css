@@ -9,8 +9,9 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
-  --primary: #dbeafe;
-  --on-primary: #0f172a;
+  --primary: #2563eb;
+  --on-primary: #ffffff;
+  --primary-strong: #1d4ed8;
   --sidebar-active-bg: #dbeafe;
   --surface: #1f2937;
   --text: #f3f4f6;
@@ -61,8 +62,9 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
-  --primary: #dbeafe;
-  --on-primary: #0f172a;
+  --primary: #2563eb;
+  --on-primary: #ffffff;
+  --primary-strong: #1d4ed8;
   --sidebar-active-bg: #dbeafe;
   --surface: #1f2937;
   --text: #f3f4f6;
@@ -114,8 +116,9 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
-  --primary: #0f172a;
+  --primary: #2563eb;
   --on-primary: #ffffff;
+  --primary-strong: #1d4ed8;
   --sidebar-active-bg: #dbeafe;
   --surface: #f1f5f9;
   --text: #111827;
@@ -167,8 +170,9 @@
   --sidebar-divider: #3b4a5f;
   --sidebar-surface: #1f2937;
   --sidebar-active-text: #0f172a;
-  --primary: #0f172a;
+  --primary: #2563eb;
   --on-primary: #ffffff;
+  --primary-strong: #1d4ed8;
   --sidebar-active-bg: #dbeafe;
 --surface: #f1f5f9;
 --text: #111827;
@@ -226,8 +230,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 input, select, textarea { max-width: 100%; }
 .page-header > *, .page-header .has-back > *, .header-status > *, .feature-detail-head > *, .feature-detail-line > *, .run-detail-head > *, .review-report-head > *, .confirm-fields > *, .confirm-actions > *, .confirm > * { min-width: 0; }
 a { color: var(--accent); }
-button { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0 0.75rem; font: inherit; font-size: 0.9375rem; cursor: pointer; }
-input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.75rem; box-sizing: border-box; font: inherit; }
+/* One layout for every button: its icon and label in one centred row, 0.375rem apart. Primary, secondary and
+   danger buttons only change the colours. */
+button { display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0 0.875rem; font: inherit; font-size: 0.9375rem; font-weight: 600; cursor: pointer; }input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.75rem; box-sizing: border-box; font: inherit; }
 /* A text area is an input that grows: the same tokens, about four lines tall, resized only in height. */
 textarea { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: calc(4 * 1.5em + 1rem); padding: 0.5rem 0.75rem; box-sizing: border-box; font: inherit; line-height: 1.5; resize: vertical; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 0.75rem 1rem; }
@@ -235,7 +240,7 @@ textarea { background: var(--surface); color: var(--text); border: 1px solid var
 .signin-page { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; background: var(--bg); }
 .signin { width: 100%; max-width: 28rem; box-sizing: border-box; padding: 2rem; display: flex; flex-direction: column; gap: 1rem; }
 .signin-divider { flex: none; height: 1px; margin: 0.5rem 0; background: var(--border); }
-.signin .primary { display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; min-height: 44px; font: inherit; font-weight: 600; background: var(--primary); color: var(--on-primary); border: 0; border-radius: 0.5rem; }
+.signin .primary-button { width: 100%; justify-content: center; }
 .signin input { width: 100%; }
 .signin h1 { margin: 0; font-size: 1.5rem; }
 .signin label { display: flex; flex-direction: column; gap: 0.25rem; }
@@ -436,7 +441,9 @@ p[role=alert]:empty { display: none; }
   .run-table tr.run-row td:nth-child(5) { grid-column: 1 / -1; }
   .run-table tr.run-row td:nth-child(5):empty { display: none; }
 }
-.marked-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.75rem; margin: 0.75rem 0; }
+/* The selection bar is a toolbar: the count, then the buttons on one line, and why a start is held back once under them. */
+.marked-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: 0.75rem 0; }
+.marked-group > [data-start-blocked] { flex-basis: 100%; }
 .select-mode { display: none; }
 .marked-group { display: contents; }
 .selected-count { align-self: center; margin-right: auto; font-weight: 600; }
@@ -486,9 +493,7 @@ p[role=alert]:empty { display: none; }
   .selecting .marked-group { display: flex; flex: 1 1 100%; flex-wrap: wrap; gap: 0.5rem; }
   .selecting .marked-group > .run-action { flex: 1 1 0; min-width: 0; }
   .selecting .marked-group > .run-action:has(.confirm) { flex-basis: 100%; }
-  .selecting .marked-actions .primary-button { justify-content: center; width: 100%; min-height: 44px; border-radius: 0.5rem; }
-  .selecting .marked-actions .secondary-button { background: transparent; color: var(--text); border-color: var(--border); }
-  .selecting .marked-actions .secondary-button:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .selecting .marked-actions .primary-button, .selecting .marked-actions .secondary-button { justify-content: center; width: 100%; min-height: 44px; border-radius: 0.5rem; }
   .feature-list.selecting { padding-bottom: calc(var(--marked-actions-height, 5rem) + 1rem); }
   .selecting .feature-table tr.feature:has(.feature-mark) { cursor: pointer; }
   .feature-table tr.feature:has(.feature-mark) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
@@ -639,6 +644,7 @@ select:hover { border-color: var(--text-muted); }
 .feature-detail-title > .run-actions { display: flex; margin: 0.75rem 0 0.5rem; }
 .feature-detail-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5rem; margin: 0.75rem 0 0; }
 .feature-detail-actions > .feature-editor:has(> :not(button)) { flex-basis: 100%; }
+.feature-detail-actions + [data-start-blocked] { display: block; margin: 0.5rem 0 0; }
 .feature-detail-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
 .run-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .feature-detail-line h2 { margin: 0; overflow-wrap: anywhere; }
@@ -910,8 +916,12 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .danger-button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--status-failed); border-radius: 0.5rem; background: transparent; color: var(--status-failed); font: inherit; font-weight: 600; cursor: pointer; }
 .danger-button:hover { background: var(--status-failed-bg); }
 .primary-button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--primary); border-radius: 0.5rem; background: var(--primary); color: var(--on-primary); font: inherit; font-weight: 600; cursor: pointer; }
-.primary-button:hover { background: color-mix(in srgb, var(--primary) 88%, var(--text)); }
-.primary-button .icon, .danger-button .icon { flex: none; }
+.primary-button:hover:not(:disabled), .primary-button:active:not(:disabled) { background: var(--primary-strong); border-color: var(--primary-strong); }
+.primary-button:disabled, .secondary-button:disabled { opacity: 0.5; cursor: default; }
+/* Another action beside a primary one: the surface colour with a border, a faint accent tint on hover. */
+.secondary-button { display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; padding: 0 0.875rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--surface); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+.secondary-button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.primary-button .icon, .secondary-button .icon, .danger-button .icon { flex: none; }
 .run-action { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; max-width: 100%; }
 .run-action:has(> .confirm), .run-action:has(> .run-action-note) { flex-basis: 100%; }
 .confirm { display: grid; gap: 0.625rem; width: 100%; max-width: 36rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); box-sizing: border-box; }

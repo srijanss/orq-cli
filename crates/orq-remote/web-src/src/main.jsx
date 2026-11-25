@@ -154,7 +154,7 @@ function PasskeyButton({ onSignedIn, enrolled = true, onAskToken }) {
   };
   return (
     <div className="passkey-signin">
-      <button type="button" className="primary" onClick={go}>
+      <button type="button" className="primary-button"onClick={go}>
         <Icon name="passkey" size={20} />
         Sign in with a passkey
       </button>
@@ -185,7 +185,7 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
       {unreachable ? (
         <>
           <p role="alert">Can't reach orq. Check that this device is connected to Tailscale, then try again.</p>
-          <button type="button" className="primary" onClick={onRetry}>
+          <button type="button" className="primary-button"onClick={onRetry}>
             Retry
           </button>
           <ThemeToggle />
@@ -201,7 +201,7 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
             Access token
             <input ref={field} type="password" autoComplete="off" spellCheck={false} aria-label="Access token" onKeyDown={(event) => event.key === "Enter" && submit()} />
           </label>
-          <button type="button" className="primary" onClick={submit}>
+          <button type="button" className="primary-button"onClick={submit}>
             Sign in
           </button>
         </>
@@ -3161,7 +3161,7 @@ function blockedOf(control) {
 // before the action is sent.
 const REASK_DECISION = "Resume without answering? The session will stop at the same decision.";
 
-function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null, float = false, body: sent = {}, answers = false, decision = null }) {
+function RunAction({ kind, label, question, path, check, token, onSignedOut, onDone, done, tone, icon, asking = false, onCancel = null, opensIn = null, blocked = null, blockedNote = true, float = false, body: sent = {}, answers = false, decision = null }) {
   const [phase, setPhase] = useState(asking && blocked === null ? "asking" : "idle");
   const floating = float && !usePhone();
   const button = useRef(null);
@@ -3256,7 +3256,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
     return (
       <div className="run-action">
         {phase !== "done" ? <button type="button" ref={button} className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null || phase === "checking" || phase === "sending"} aria-expanded={open ? "true" : "false"} title={blocked ?? undefined} onClick={open ? cancel : ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
-        {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
+        {phase === "idle" && note === "" && blockedNote ? <BlockedNote reason={blocked} /> : null}
         {phase === "checking" ? <span role="status" className="sr-only">Checking…</span> : null}
         {phase === "sending" ? <span role="status" className="sr-only">Sending…</span> : null}
         {open && !hidden ? (
@@ -3272,7 +3272,7 @@ function RunAction({ kind, label, question, path, check, token, onSignedOut, onD
   return (
     <div className="run-action">
       {phase === "idle" ? <button type="button" className={toneClass(tone)} {...{ ["data-" + kind]: "" }} disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}>{icon ? <Icon name={icon} size={16} /> : null}{label}</button> : null}
-      {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
+      {phase === "idle" && note === "" && blockedNote ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? <Confirm question={posed} answer={"Yes, " + label.toLowerCase()} tone={tone} onConfirm={confirm} onCancel={cancel}>{field}</Confirm> : null}
       {phase === "sending" ? <span role="status">Sending…</span> : null}
@@ -3619,8 +3619,7 @@ function LaunchAction({ feature, control }) {
   const asked = "Start " + feature.name + " with " + choice.phrase + "?";
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className="primary-button" data-start-with="" disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}><Icon name="sliders" size={16} />Start with…</button> : null}
-      {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
+      {phase === "idle" ? <button type="button" className="secondary-button" data-start-with="" disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}><Icon name="sliders" size={16} />Start with…</button> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
         <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
@@ -3868,7 +3867,7 @@ function PromoteMarked({ names, control, onFinished, place = null }) {
   };
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className="primary-button secondary-button" data-promote-marked onClick={() => setPhase("asking")}><Icon name="arrowUp" size={16} />{label}</button> : null}
+      {phase === "idle" ? <button type="button" className="secondary-button" data-promote-marked onClick={() => setPhase("asking")}><Icon name="arrowUp" size={16} />{label}</button> : null}
       {phase === "asking" ? (
         <Confirm question={"Promote " + featuresPhrase(names, place) + "?"} answer="Yes, promote" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
       ) : null}
@@ -3953,7 +3952,6 @@ function StartMarked({ names, control, onFinished, place = null }) {
   return (
     <div className="run-action">
       {phase === "idle" ? <button type="button" className="primary-button" data-start-marked disabled={blocked !== null} title={blocked ?? undefined} onClick={ask}><Icon name="play" size={16} />{label}</button> : null}
-      {phase === "idle" && note === "" ? <BlockedNote reason={blocked} /> : null}
       {phase === "checking" ? <span role="status">Checking…</span> : null}
       {phase === "asking" ? (
         <Confirm question={asked} answer="Yes, start" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")}>
@@ -3997,7 +3995,7 @@ function QueueAction({ feature, control }) {
   };
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className="primary-button secondary-button" data-queue-feature onClick={() => { setNote(null); setPhase("asking"); }}><Icon name="clock" size={16} />Queue</button> : null}
+      {phase === "idle" ? <button type="button" className="secondary-button" data-queue-feature onClick={() => { setNote(null); setPhase("asking"); }}><Icon name="clock" size={16} />Queue</button> : null}
       {phase === "asking" ? (
         <Confirm question={"Queue " + feature.name + "?"} detail="The server starts it when the project's limits and queue hours allow." answer="Yes, queue" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
       ) : null}
@@ -4022,7 +4020,7 @@ function QueueMarked({ names, control, onFinished, place = null }) {
   };
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" className="primary-button secondary-button" data-queue-marked onClick={() => setPhase("asking")}><Icon name="clock" size={16} />{"Queue " + names.length + placeSuffix(place)}</button> : null}
+      {phase === "idle" ? <button type="button" className="secondary-button" data-queue-marked onClick={() => setPhase("asking")}><Icon name="clock" size={16} />{"Queue " + names.length + placeSuffix(place)}</button> : null}
       {phase === "asking" ? (
         <Confirm question={"Queue " + featuresPhrase(names, place) + "?"} detail="The server starts each when the project's limits and queue hours allow." answer="Yes, queue" tone="primary" onConfirm={send} onCancel={() => setPhase("idle")} />
       ) : null}
@@ -4574,7 +4572,7 @@ function FeatureEditor({ name = null, features, control, embedded = false, initi
   );
   return (
     <div className="feature-editor">
-      {phase === "idle" ? (adding ? <button type="button" className="primary-button" data-feature-add onClick={open}><Icon name="plus" size={16} />Add feature</button> : <button type="button" data-feature-edit onClick={open}><Icon name="pencil" size={16} />Edit</button>) : null}
+      {phase === "idle" ? (adding ? <button type="button" className="primary-button" data-feature-add onClick={open}><Icon name="plus" size={16} />Add feature</button> : <button type="button" className="secondary-button" data-feature-edit onClick={open}><Icon name="pencil" size={16} />Edit</button>) : null}
       {phase === "loading" ? <span role="status">Loading the feature…</span> : null}
       {popup ? (
         <div className="feature-modal" data-feature-modal>
@@ -4627,9 +4625,10 @@ function SwipeButton({ feature, onPress }) {
 // A start while the server waits to restart still goes ahead, but the restart then waits for that run too.
 const RESTART_START_QUESTION = "orq will restart after this run; start anyway?";
 
-function FeatureAction({ feature, control, asking = false, onCancel = null }) {
+// blockedNote: whether Start shows why it is held back beside it; a feature's page shows that once under its actions instead.
+function FeatureAction({ feature, control, asking = false, onCancel = null, blockedNote = true }) {
   const name = encodeURIComponent(feature.name);
-  const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel };
+  const shared = { token: control.token, onSignedOut: control.onSignedOut, onDone: control.onDone, tone: "primary", asking, onCancel, blockedNote };
   return feature.status === "pending"
     ? <RunAction {...shared} kind="start" label="Start" icon="play" opensIn={control.projectId} blocked={blockedOf(control)} question={control.restartPending === true ? RESTART_START_QUESTION : "Start " + feature.name + "?"} path={controlPath(control, "features/" + name + "/runs")} done={(run, body) => withWarning(run === "" ? "Started." : "Started run " + run + ".", body)} />
     : <RunAction {...shared} kind="promote" label="Promote" icon="arrowUp" question={"Promote " + feature.name + "?"} path={controlPath(control, "features/" + name + "/promote")} done={(_, reply) => "Promoted " + (typeof reply.feature === "string" ? reply.feature : feature.name) + "; it is pending."} />;
@@ -4859,6 +4858,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
               {group.promote.length > 0 ? <PromoteMarked names={group.promote} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
               {group.start.length > 0 ? <StartMarked names={group.start} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
               {group.start.length > 0 ? <QueueMarked names={group.start} control={group.control} place={group.place} onFinished={finished(group)} /> : null}
+              {group.start.length > 0 ? <BlockedNote reason={blockedOf(group.control)} /> : null}
             </div>
           ))}
         </div>
@@ -5004,14 +5004,15 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
         </div>
         {control !== null ? (
           <div className="feature-detail-actions">
-            <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} />
-            {feature.status === "pending" || feature.status === "draft" ? <FeatureAction key={feature.status} feature={feature} control={control} /> : null}
+            {feature.status === "pending" || feature.status === "draft" ? <FeatureAction key={feature.status} feature={feature} control={control} blockedNote={false} /> : null}
             {feature.status === "pending" ? <LaunchAction feature={feature} control={control} /> : null}
             {feature.status === "pending" ? <QueueAction feature={feature} control={control} /> : null}
+            <FeatureEditor key={feature.name} name={feature.name} features={features} control={control} />
             {feature.status === "draft" ? <button type="button" data-improve-draft onClick={() => setImproving(true)}><Icon name="doc" size={16} />Improve draft</button> : null}
             <FrontendSwitch key={feature.name + "/" + kindOf(feature.kind)} feature={feature} control={control} />
           </div>
         ) : null}
+        {control !== null && feature.status === "pending" ? <BlockedNote reason={blockedOf(control)} /> : null}
         <p className="muted" data-design-package>Design package: <code>{"designs/" + feature.name + "/"}</code></p>
         {control !== null && improving ? <DraftWithOrqDialog draft={{ project: projectId, name: feature.name }} token={control.token} onSignedOut={control.onSignedOut} onClose={() => setImproving(false)} /> : null}
         {control !== null && feature.status === "draft" ? <QueueWish key={feature.name} feature={feature} control={control} /> : null}
