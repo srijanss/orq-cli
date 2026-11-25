@@ -5811,12 +5811,22 @@ function DesignGroup({ group, source }) {
         })}
       </ol>
       {withRounds.map((member) => (
-        <details key={member.feature} className="design-group-member-design" data-member-design={member.feature} open={member.feature === newest}>
-          <summary>{member.feature}</summary>
-          <DesignReview design={member.design} source={source} />
-        </details>
+        <MemberDesign key={member.feature} member={member} open={member.feature === newest} source={source} />
       ))}
     </section>
+  );
+}
+
+// One member's design rounds, folded unless `open`. A folded member's rounds are drawn (and their images asked
+// for) only once it is first opened; after that they stay, so folding it again keeps what was picked.
+function MemberDesign({ member, open, source }) {
+  const [seen, setSeen] = useState(open);
+  const shown = seen || open;
+  return (
+    <details className="design-group-member-design" data-member-design={member.feature} open={open} onToggle={(event) => { if (event.currentTarget.open) setSeen(true); }}>
+      <summary>{member.feature}</summary>
+      {shown ? <DesignReview design={member.design} source={source} /> : null}
+    </details>
   );
 }
 

@@ -177,8 +177,22 @@ fn each_members_design_rounds_are_grouped_under_it_with_the_newest_member_open()
     );
     assert_eq!(
         count(end, "[data-member-design='shop-header'] [data-design-pick]"),
+        0,
+        "a folded member's rounds wait until it is opened: {out}"
+    );
+    let opened = open_run(
+        group_run(),
+        vec![],
+        vec![json!({"click": "[data-member-design='shop-header'] summary"})],
+    )
+    .unwrap();
+    assert_eq!(
+        count(
+            last(&opened),
+            "[data-member-design='shop-header'] [data-design-pick]"
+        ),
         2,
-        "its own two rounds: {out}"
+        "its own two rounds: {opened}"
     );
     assert_eq!(
         count(
@@ -196,6 +210,43 @@ fn each_members_design_rounds_are_grouped_under_it_with_the_newest_member_open()
         0,
         "another member's issue: {out}"
     );
+}
+
+/// The design image paths the page asked for.
+fn images_asked(out: &Value) -> Vec<String> {
+    out["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["url"].as_str())
+        .filter_map(|url| url.split_once("/design/image?path="))
+        .map(|(_, path)| path.replace("%2F", "/"))
+        .collect()
+}
+
+#[test]
+fn a_folded_members_images_are_asked_for_only_once_it_is_opened() {
+    let mut run = group_run();
+    for member in run["design_group"]["members"].as_array_mut().unwrap() {
+        let feature = member["feature"].as_str().unwrap().to_string();
+        for round in member["design"]["rounds"].as_array_mut().into_iter().flatten() {
+            let image = format!("members/{feature}/round-{}/desktop/index.png", round["round"]);
+            round["viewports"] = json!([{"name": "desktop", "width": 1440, "height": 900, "reference": null, "captures": [{"route": "/", "image": image, "failure": null}]}]);
+        }
+    }
+    let png = json!({"status": 200, "json": {"content_type": "image/png", "data": "iVBORw0KGgo="}});
+    let pngs = vec![png.clone(), png.clone(), png.clone(), png];
+
+    let Some(folded) = open_run(run.clone(), pngs.clone(), vec![]) else {
+        return;
+    };
+    let asked = images_asked(&folded);
+    assert!(asked.iter().any(|path| path.starts_with("members/shop-cards/")), "the open member's: {asked:?}");
+    assert!(!asked.iter().any(|path| path.starts_with("members/shop-header/")), "nothing of the folded member: {asked:?}");
+
+    let opened = open_run(run, pngs, vec![json!({"click": "[data-member-design='shop-header'] summary"})]).unwrap();
+    let asked = images_asked(&opened);
+    assert!(asked.iter().any(|path| path.starts_with("members/shop-header/")), "once opened: {asked:?}");
 }
 
 #[test]
