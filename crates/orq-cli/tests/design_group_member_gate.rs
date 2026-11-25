@@ -335,11 +335,16 @@ fn a_django_design_groups_member_gates_run_only_the_changed_apps_tests_and_the_f
 
     let (resumed, all) = p.resume_all_passed(&provider, &run_id, &[]);
 
-    assert_eq!(p.pytest_runs().last().map(String::as_str), Some(""), "the final gate runs the whole suite: {all}");
+    p.note("django-resumed", &resumed, &all);
+    assert_eq!(
+        p.pytest_runs(),
+        ["src/shop", "src/blog src/shop", ""],
+        "the member gates, then the whole suite exactly once: {all}"
+    );
     assert!(p.logs(&resumed).join("gate.log").is_file(), "{all}");
     let starts = gate_starts(&p.events(&resumed));
-    assert!(!starts.is_empty(), "{all}");
-    assert!(starts.iter().all(|s| s["scope"] == "full" && s.get("member").is_none()), "{starts:#?}");
+    assert_eq!(starts.len(), 1, "the final gate starts once: {starts:#?}\n{all}");
+    assert!(starts[0]["scope"] == "full" && starts[0].get("member").is_none(), "{starts:#?}");
     let _ = std::fs::remove_dir_all(&p.home);
 }
 
