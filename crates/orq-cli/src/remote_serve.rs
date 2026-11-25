@@ -1605,7 +1605,7 @@ mod restart_merge_tests {
     fn event(store: &RunStore, run: &str, kind: &str, payload: serde_json::Value) {
         let record = store.load(run).unwrap();
         let n = store.events(run).unwrap().len();
-        let event = Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: record.project_id, feature_id: record.feature_id, kind: kind.into(), stage: Some("merge".into()), attempt: 1, occurred_at: format!("2026-11-25T15:42:0{n}Z"), payload };
+        let event = Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: record.project_id, feature_id: record.feature_id, kind: kind.into(), stage: Some("merge_local".into()), attempt: 1, occurred_at: format!("2026-11-25T15:42:0{n}Z"), payload };
         store.append_event(&event).unwrap();
     }
 
