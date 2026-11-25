@@ -822,6 +822,92 @@ fn a_design_group_runs_each_members_session_and_stops_at_the_member_needing_revi
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
+/// Runs the group `std,fa,fb` until fa's design review stops it, then marks every member passed and the run
+/// unended, as if each member had got through its gate and design loop before orq died: the id of that run.
+fn group_with_every_member_passed(
+    w: &Group,
+    agent: &orq_test_support::FakeAgent,
+    provider: &orq_test_support::FakeProvider,
+) -> String {
+    let root = w.repo.root().to_str().unwrap().to_string();
+    let first = w.orq_run(
+        agent,
+        provider,
+        &[
+            "run", "--repo", &root, "--group", "std,fa,fb", "--remote", "origin", "--target", "main",
+            "--no-ci-check",
+        ],
+    );
+    assert!(!first.status.success(), "{}", text(&first.stderr));
+    let run_id = w.run_ids().pop().unwrap();
+    let log = w.home.join("state/orq/runs").join(&run_id).join("events.jsonl");
+    let lines: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.contains("\"run.completed\""))
+        .map(str::to_string)
+        .collect();
+    let step = lines
+        .iter()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .find(|e| e["type"] == "design_group.member_step")
+        .unwrap();
+    let mut kept: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    for (index, member) in ["std", "fa", "fb"].iter().enumerate() {
+        let mut passed = step.clone();
+        passed["type"] = "design_group.member_passed".into();
+        passed["event_id"] = format!("{}-passed-{member}", step["event_id"].as_str().unwrap()).into();
+        passed["payload"] = serde_json::json!({"member": member, "index": index + 1, "of": 3, "step": "passed"});
+        kept.push_str(&format!("{passed}\n"));
+    }
+    std::fs::write(&log, kept).unwrap();
+    run_id
+}
+
+#[test]
+fn a_design_group_whose_members_all_passed_runs_the_whole_branch_reviews_once_then_delivers_once() {
+    let w = group("finish");
+    w.prepare();
+    let agent = orq_test_support::FakeAgent::builder().commit("feat: a member").build();
+    let provider = orq_test_support::FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], "https://github.example/o/r/pull/7\n")
+        .reply(&["pr", "view"], "{\"number\":7,\"url\":\"https://github.example/o/r/pull/7\"}\n")
+        .build();
+    let root = w.repo.root().to_str().unwrap().to_string();
+    let run_id = group_with_every_member_passed(&w, &agent, &provider);
+    let before = w.sessions().len();
+
+    let resumed = w.orq_run(
+        &agent,
+        &provider,
+        &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", &root],
+    );
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    assert!(resumed.status.success(), "{all}");
+    let sessions = w.sessions();
+    assert!(
+        !sessions[before..].iter().any(|s| s.contains("/implement-and-review")),
+        "no member's session runs again: {sessions:#?}"
+    );
+    let reviews: Vec<&String> = sessions[before..].iter().filter(|s| s.contains("/review-and-fix")).collect();
+    assert_eq!(reviews.len(), 2, "the two whole-branch reviews run once each: {reviews:#?}\n{all}");
+    assert!(reviews[0].contains("how the members' components fit the design together"), "the design code review first: {}", reviews[0]);
+    assert!(reviews[1].contains("review the whole branch once, as one change"), "then the code review: {}", reviews[1]);
+    let resumed_id = w.run_ids().into_iter().find(|id| *id != run_id).unwrap();
+    let events = w.events(&resumed_id);
+    assert!(member_steps(&events).is_empty(), "passed members are not redone: {events:#?}");
+    for stage in ["group_design_code_review", "group_code_review"] {
+        let completed = events.iter().filter(|e| e["type"] == "stage.completed" && e["stage"] == stage).count();
+        assert_eq!(completed, 1, "{stage} completes once: {events:#?}");
+    }
+    assert_eq!(events.iter().filter(|e| e["type"] == "design_group.finished").count(), 1);
+    let created = provider.calls().iter().filter(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])).count();
+    assert_eq!(created, 1, "the group is delivered once: {all}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &byte in bytes {
