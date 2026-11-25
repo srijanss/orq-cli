@@ -599,14 +599,7 @@ fn denied_by(roots: &StorageRoots, rule: &str) -> Option<String> {
     match tool {
         "Bash" => {
             let command = spec.strip_suffix(":*").unwrap_or(spec);
-            let words: Vec<&str> = command.split_whitespace().collect();
-            DENIED_COMMANDS
-                .iter()
-                .find(|denied| {
-                    let denied: Vec<&str> = denied.split_whitespace().collect();
-                    words.starts_with(&denied)
-                })
-                .map(|denied| format!("Bash({denied}:*)"))
+            denied_command(command).map(|denied| format!("Bash({denied}:*)"))
         }
         "Read" | "Edit" | "Write" => {
             let path = Path::new(spec.strip_prefix('/')?);
@@ -627,6 +620,38 @@ fn denied_by(roots: &StorageRoots, rule: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// The denied command `command` would run, if any, wherever it sits: behind options (`git -C dir push`), a path
+/// (`/usr/bin/git push`), quotes (`git 'push'`) or a wrapper (`env sudo ...`), and for `rm` any recursive form
+/// (`-r -f`, `-fr`, `--recursive`). It errs on refusing: a denied program followed anywhere by its denied word
+/// counts.
+fn denied_command(command: &str) -> Option<&'static str> {
+    let words: Vec<String> = command
+        .split_whitespace()
+        .map(|word| word.replace(['\'', '"'], ""))
+        .collect();
+    let program = |word: &str| word.rsplit('/').next().unwrap_or(word).to_string();
+    let recursive = |word: &str| {
+        word == "--recursive"
+            || (word.starts_with('-') && !word.starts_with("--") && word.contains(['r', 'R']))
+    };
+    DENIED_COMMANDS.iter().copied().find(|denied| {
+        let mut parts = denied.split_whitespace();
+        let (first, second) = (parts.next().unwrap_or_default(), parts.next());
+        words.iter().enumerate().any(|(at, word)| {
+            program(word) == first
+                && second.is_none_or(|second| {
+                    words[at + 1..].iter().any(|later| {
+                        if first == "rm" {
+                            recursive(later)
+                        } else {
+                            later == second
+                        }
+                    })
+                })
+        })
+    })
 }
 
 /// The rule that allows editing the project's ledger, which the person may allow for a chat without a refused

@@ -554,6 +554,69 @@ fn allowing_needs_the_passkey_confirmation_and_every_allow_and_removal_is_audite
 }
 
 #[test]
+fn a_denied_command_behind_options_a_path_quotes_or_a_wrapper_cannot_be_allowed() {
+    let s = setup("deny-forms");
+    git_repo(&s.scan, "alpha");
+    let chat = create_chat(&s);
+    let commands = [
+        "git -C /srv/repo push origin main",
+        "/usr/bin/git push origin main",
+        "git 'push' origin main",
+        "env sudo ls",
+        "nice -n 5 sudo ls",
+        "rm -r -f build",
+        "rm -fr build",
+        "rm --recursive build",
+        "cargo --locked publish",
+        "npm --yes publish",
+        "orq --verbose serve",
+    ];
+    let calls: Vec<(String, &str, Value)> = commands
+        .iter()
+        .enumerate()
+        .map(|(n, command)| (format!("t{n}"), "Bash", json!({ "command": command })))
+        .collect();
+    let calls: Vec<(&str, &str, Value)> = calls
+        .iter()
+        .map(|(id, name, input)| (id.as_str(), *name, input.clone()))
+        .collect();
+    reply_with(&s, refused_reply(&calls));
+    say(&s, &chat, "publish it");
+
+    let refused = refused_items(&s, &chat);
+    assert_eq!(refused.len(), commands.len(), "{refused:?}");
+    for item in &refused {
+        let rule = item["rule"].as_str().unwrap_or_else(|| panic!("a rule: {item}"));
+        let (status, body) = allow(
+            &s,
+            &chat,
+            json!({"rule": rule, "scope": "once", "assertion": "yes"}),
+            Who::Passkey,
+        );
+        assert_eq!(status, 422, "{rule}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("always denied"),
+            "{rule}: {body}"
+        );
+    }
+    assert_eq!(read_chat(&s, &chat)["rules"], json!([]));
+
+    // A command that only mentions a denied word as data, before the command it names, is not refused for it.
+    reply_with(
+        &s,
+        refused_reply(&[("u1", "Bash", json!({"command": "orq queue add push-docs"}))]),
+    );
+    say(&s, &chat, "queue push-docs");
+    let (status, body) = allow(
+        &s,
+        &chat,
+        json!({"rule": "Bash(orq queue add:*)", "scope": "once", "assertion": "yes"}),
+        Who::Passkey,
+    );
+    assert_eq!(status, 200, "{body}");
+}
+
+#[test]
 fn the_server_confirms_an_allow_with_a_passkey_check_of_its_own_purpose() {
     use orq_core::remote_inbox::step_up_purpose;
     // A challenge the page asks for to allow a rule cannot turn remote actions on, nor the other way round.
