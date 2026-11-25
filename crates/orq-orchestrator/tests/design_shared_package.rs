@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use orq_orchestrator::{
-    design_scope, design_scope_note, review_design, start_design_package_scoped, CaptureOutcome,
-    CaptureRecord, CaptureRun, DesignAgent, DesignMode, DesignPackageOutcome, DesignPackageRun,
-    DesignReviewRun, DesignScope, DesignSettings, DesignVerdict, PackageLimits, PageCapture,
-    Viewport,
+    design_scope, design_scope_note, prepare_design, review_design, start_design_package_scoped,
+    CaptureOutcome, CaptureRecord, CaptureRun, DesignAgent, DesignMode, DesignPackageOutcome,
+    DesignPackageRun, DesignPrepareOutcome, DesignPreparer, DesignReviewRun, DesignScope,
+    DesignSettings, DesignVerdict, PackageLimits, PageCapture, PrepareRequest, Viewport,
 };
 use orq_test_support::{GitFixture, TempDir};
 use serde_json::{json, Value};
@@ -452,4 +452,35 @@ fn without_the_lines_the_package_is_the_features_own_folder() {
         "{needed:?}"
     );
     assert!(!f.design_dir().join("scope.json").exists());
+}
+
+/// A preparer that asks for one asset, as an infer-mode run's preparer does when the package lacks it.
+struct AsksForALogo;
+
+impl DesignPreparer for AsksForALogo {
+    fn prepare(&mut self, _request: &PrepareRequest) -> Result<String, String> {
+        Ok(json!({
+            "conflicts": [], "inferred": [],
+            "needed_files": [{"path": "assets/logo.png", "what": "the logo", "why": "the header shows it"}],
+        })
+        .to_string())
+    }
+}
+
+#[test]
+fn the_design_preparer_of_a_shared_package_reads_and_asks_for_files_in_the_shared_folder() {
+    let f = Fixture::new();
+    let DesignPackageOutcome::Frozen(manifest) =
+        f.start("Build the process section.\nDesign package: home\nDesign components: H03\n")
+    else {
+        panic!("the shared package is not frozen");
+    };
+
+    let outcome = prepare_design(&f.package_run(), &manifest, &mut AsksForALogo);
+
+    let DesignPrepareOutcome::FilesNeeded(needed) = outcome else {
+        panic!("{outcome:?}");
+    };
+    let paths: Vec<&str> = needed.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, vec![format!("designs/{PACKAGE}/assets/logo.png")]);
 }

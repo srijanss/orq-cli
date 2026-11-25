@@ -138,7 +138,8 @@ impl InferenceLabel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparerNeed {
-    /// Where it goes, relative to `designs/<feature>/`: under `references/` or `assets/`.
+    /// Where it goes, relative to the package folder `designs/<package>/`: under `references/` or
+    /// `assets/`.
     pub path: String,
     pub what: String,
     pub why: String,
@@ -292,7 +293,7 @@ pub fn prepare_design(
     // The package as frozen, as the main checkout holds it, and the implementer's copy.
     let copies = [
         package.clone(),
-        run.main_checkout.join(DESIGNS_DIR).join(run.feature),
+        run.main_checkout.join(DESIGNS_DIR).join(package_name(run)),
         run.worktree.join(WORKTREE_COPY_DIR),
     ];
     let fingerprint = || copies.iter().map(|dir| folder_hash(dir)).collect::<Result<Vec<_>, _>>();
@@ -328,7 +329,7 @@ pub fn prepare_design(
         Ok(files) => files,
         Err(why) => return DesignPrepareOutcome::Failed(why),
     };
-    let request = match files_needed(run.feature, &answer) {
+    let request = match files_needed(run.feature, &package_name(run), &answer) {
         Ok(request) => request,
         Err(why) => return DesignPrepareOutcome::Failed(why),
     };
@@ -378,7 +379,7 @@ fn references_needed(run: &DesignPackageRun) -> DesignFilesNeeded {
                  infers the design from at least one reference",
                 size.width, size.height
             ),
-            path: format!("{DESIGNS_DIR}/{}/references/{name}.png", run.feature),
+            path: format!("{DESIGNS_DIR}/{}/references/{name}.png", package_name(run)),
         })
         .collect();
     DesignFilesNeeded {
@@ -387,10 +388,22 @@ fn references_needed(run: &DesignPackageRun) -> DesignFilesNeeded {
     }
 }
 
+/// The folder under `designs/` the run's package comes from: the shared package its frozen scope
+/// names, else the feature's own.
+fn package_name(run: &DesignPackageRun) -> String {
+    crate::design_package::frozen_design_scope(run.run_logs)
+        .map_or_else(|| run.feature.to_string(), |scope| scope.package)
+}
+
 /// The design files needed request for what the preparer needs from a person: each file it names,
-/// where it goes and why, and a decision on each conflict it could not resolve. A named file that is
-/// not a plain path under `references/` or `assets/` makes the answer invalid.
-fn files_needed(feature: &str, answer: &PrepareAnswer) -> Result<DesignFilesNeeded, String> {
+/// where it goes (in `designs/<package>/`) and why, and a decision on each conflict it could not
+/// resolve. A named file that is not a plain path under `references/` or `assets/` makes the answer
+/// invalid.
+fn files_needed(
+    feature: &str,
+    package: &str,
+    answer: &PrepareAnswer,
+) -> Result<DesignFilesNeeded, String> {
     let line = |text: &str| -> String {
         text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
     };
@@ -413,7 +426,7 @@ fn files_needed(feature: &str, answer: &PrepareAnswer) -> Result<DesignFilesNeed
         }
         files.push(NeededFile {
             what: format!("{}, needed because {}", line(&need.what), line(&need.why)),
-            path: format!("{DESIGNS_DIR}/{feature}/{}", need.path),
+            path: format!("{DESIGNS_DIR}/{package}/{}", need.path),
         });
     }
     for conflict in answer.conflicts.iter().filter(|conflict| !conflict.resolved) {
@@ -423,7 +436,7 @@ fn files_needed(feature: &str, answer: &PrepareAnswer) -> Result<DesignFilesNeed
                 line(&conflict.description),
                 line(&conflict.sources.join(", "))
             ),
-            path: format!("{DESIGNS_DIR}/{feature}/{DESIGN_DOC}"),
+            path: format!("{DESIGNS_DIR}/{package}/{DESIGN_DOC}"),
         });
     }
     Ok(DesignFilesNeeded { feature: feature.to_string(), files })
