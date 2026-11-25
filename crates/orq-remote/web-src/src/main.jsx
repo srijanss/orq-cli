@@ -8319,6 +8319,14 @@ function AskDraft({ token, onSignedOut, projectId, context, onAbout, onOpened, g
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
   const made = useRef(null);
+  // A send still under way when the draft is left (another project, the list) opens nothing when it ends.
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => {
+      shown.current = false;
+    };
+  }, []);
   useEffect(() => {
     onAbout(aboutText(context, projectId, feature));
   }, [projectId, context.kind, context.target, feature]);
@@ -8352,7 +8360,7 @@ function AskDraft({ token, onSignedOut, projectId, context, onAbout, onOpened, g
         setNote(await reasonOf(response, "The message could not be sent."));
         return false;
       }
-      onOpened(made.current);
+      if (shown.current) onOpened(made.current);
       return true;
     } catch (unreachable) {
       setNote("The server could not be reached.");

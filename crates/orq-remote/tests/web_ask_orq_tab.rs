@@ -421,6 +421,37 @@ fn a_chat_made_whose_first_message_fails_keeps_the_words_and_the_retry_goes_to_t
 }
 
 #[test]
+fn a_new_chat_still_sending_when_the_person_moves_to_another_project_does_not_open_there() {
+    let run_page = format!("/projects/alpha/orchestrations/{RUN}");
+    let made = chat(NEW_CHAT, "Why did it stop", json!({"kind": "run", "target": RUN}), false);
+    let routes = vec![
+        two_projects(),
+        run_route("failed"),
+        route("GET", "/api/projects/beta/chats", vec![reply(json!({"chats": []}))]),
+        route("POST", "/api/projects/alpha/chats", vec![reply(json!({"chat": made}))]),
+        // The first message is accepted a second late, after the page has moved to beta.
+        route("POST", &format!("/api/projects/alpha/chats/{NEW_CHAT}/messages"), vec![json!({"status": 202, "body": {"turn": 1}, "after": 1000})]),
+        route("GET", "/api/projects/*", vec![reply(json!({"chat": made, "items": [], "rules": [], "running": false}))]),
+    ];
+    // While the box is disabled for the send, the page moves to beta; well after the reply, the panel is looked at.
+    let leave = "window.__moved = setInterval(function () { if (!document.querySelector('[data-ask-input]:disabled')) return; clearInterval(window.__moved); history.pushState(null, '', '/projects/beta/reviews'); window.dispatchEvent(new Event('orq:navigate')); setTimeout(function () { document.body.setAttribute('data-late', ''); }, 2000); }, 20);\n";
+    let steps = vec![
+        json!({"click": ASK}),
+        json!({"click": "[data-ask-new]"}),
+        json!({"wait": "[data-ask-input]"}),
+        json!({"type": "[data-ask-input]", "value": "Why did it stop?"}),
+        json!({"click": "[data-ask-send]"}),
+        json!({"wait": "body[data-late]"}),
+        json!({"eval": "shown", "js": "return {list: document.querySelectorAll('[data-ask-new]').length, conversation: document.querySelectorAll('[data-ask-conversation]').length};"}),
+    ];
+    let Some(result) = open_after(1440, &run_page, routes, true, steps, leave) else { return };
+    assert_eq!(eval(&result, "address"), "/projects/beta/reviews?ask=", "beta stays on its chat list: {result}");
+    assert_eq!(eval(&result, "shown"), &json!({"list": 1, "conversation": 0}), "{result}");
+    let asked: Vec<Value> = eval(&result, "sent").as_array().unwrap().iter().filter(|r| r["path"].as_str().unwrap().contains(NEW_CHAT) && r["method"] == "GET").cloned().collect();
+    assert!(asked.is_empty(), "alpha's new chat is not opened anywhere: {result}");
+}
+
+#[test]
 fn outside_a_project_the_panel_asks_which_project_and_remembers_the_last_one() {
     let two = route("GET", "/api/projects", vec![reply(json!({"projects": [project(), {"id": "beta", "name": "beta", "available": true, "features": 0, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24}]}))]);
     let beta_chats = route("GET", "/api/projects/beta/chats", vec![reply(json!({"chats": []}))]);
