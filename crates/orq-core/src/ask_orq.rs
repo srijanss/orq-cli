@@ -4,14 +4,14 @@
 
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-use crate::remote_inbox::{ProjectsProvider, Response};
+use crate::remote_inbox::{ProjectsProvider, Response, StepUp};
 use crate::storage::StorageRoots;
 
 /// How long one turn may run before it is stopped.
@@ -102,6 +102,13 @@ fn open(roots: &StorageRoots) -> Result<Connection, String> {
             started_at INTEGER NOT NULL,
             ended_at INTEGER,
             PRIMARY KEY (chat_id, n)
+        );
+        CREATE TABLE IF NOT EXISTS ask_orq_rules (
+            chat_id TEXT NOT NULL,
+            rule TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (chat_id, rule)
         );",
     )
     .map_err(|_| "the chats could not be read".to_string())?;
@@ -237,8 +244,9 @@ fn agent(roots: &StorageRoots) -> Option<(String, Option<String>)> {
 }
 
 /// Answers a request on `/api/projects/{id}/chats` and below (`tail` is what follows `/chats`). Every route needs
-/// a passkey session (`passkey`), since replies can quote files; a change also needs remote actions on. Each
-/// message, stop and delete leaves an audit line, allowed or refused.
+/// a passkey session (`confirm` is its step-up check), since replies can quote files; a change also needs remote
+/// actions on, and allowing a rule a passkey confirmation too. Each message, stop, delete, allow and removal of a
+/// rule leaves an audit line, allowed or refused.
 #[allow(clippy::too_many_arguments)]
 pub fn route(
     roots: &StorageRoots,
@@ -247,37 +255,46 @@ pub fn route(
     tail: &[&str],
     method: &str,
     body: &[u8],
-    passkey: bool,
+    confirm: Option<StepUp>,
 ) -> Response {
     let audited = match (tail, method) {
         ([chat, "messages"], "POST") => Some(("chat.message", *chat)),
         ([chat, "stop"], "POST") => Some(("chat.stop", *chat)),
         ([chat], "DELETE") => Some(("chat.delete", *chat)),
+        ([chat, "allow"], "POST") => Some(("chat.allow", *chat)),
+        ([chat, "allow"], "DELETE") => Some(("chat.disallow", *chat)),
         _ => None,
     };
     let Some((action, chat)) = audited else {
-        return answer(roots, provider, id, tail, method, body, passkey);
+        return answer(roots, provider, id, tail, method, body, confirm);
     };
-    // The message's first characters, or for a stop or delete the chat's title (its first message's).
-    let note = match action {
-        "chat.message" => serde_json::from_slice::<Value>(body)
+    // The message's first characters, the rule allowed or removed, or for a stop or delete the chat's title (its
+    // first message's).
+    let field = |name: &str| {
+        serde_json::from_slice::<Value>(body)
             .ok()
-            .and_then(|fields| {
-                fields["text"]
-                    .as_str()
-                    .map(preview)
-            }),
+            .and_then(|fields| fields[name].as_str().map(preview))
+    };
+    let note = match action {
+        "chat.message" => field("text"),
+        "chat.allow" => field("rule").map(|rule| {
+            let scope = field("scope").unwrap_or_default();
+            format!("{rule} ({scope})")
+        }),
+        "chat.disallow" => field("rule"),
         _ => open(roots)
             .ok()
             .and_then(|conn| load_chat(&conn, id, chat).ok().flatten())
             .map(|chat| chat.title),
     };
-    let response = answer(roots, provider, id, tail, method, body, passkey);
+    let response = answer(roots, provider, id, tail, method, body, confirm);
     let refusal = (response.status >= 400).then(|| {
-        response.body["error"]
-            .as_str()
-            .unwrap_or("refused")
-            .to_string()
+        let why = response.body["error"].as_str().unwrap_or("refused");
+        // A refused rule is named with why, so the log says what was asked for.
+        match (action, note.as_deref()) {
+            ("chat.allow" | "chat.disallow", Some(rule)) => format!("{rule}: {why}"),
+            _ => why.to_string(),
+        }
     });
     audit(
         roots,
@@ -326,9 +343,9 @@ fn answer(
     tail: &[&str],
     method: &str,
     body: &[u8],
-    passkey: bool,
+    confirm: Option<StepUp>,
 ) -> Response {
-    if !passkey {
+    if confirm.is_none() {
         return error(403, "Chats need a passkey sign-in");
     }
     let read = matches!(method, "GET" | "HEAD");
@@ -350,8 +367,12 @@ fn answer(
     match (tail, read, method) {
         ([], true, _) => list(&conn, id),
         ([], false, "POST") => create(roots, provider, &conn, id, body),
-        ([chat], true, _) => read_chat(roots, &conn, id, chat),
+        ([chat], true, _) => read_chat(roots, &conn, &place.root, id, chat),
         ([chat, "messages"], false, "POST") => send(roots, provider, &conn, &place, id, chat, body),
+        ([chat, "allow"], false, "POST") => {
+            allow_rule(roots, &conn, &place.root, id, chat, body, confirm)
+        }
+        ([chat, "allow"], false, "DELETE") => remove_rule(&conn, id, chat, body),
         ([chat, "stop"], false, "POST") => stop(roots, &conn, id, chat, body),
         ([chat], false, "DELETE") => delete(roots, &conn, id, chat, body),
         _ => error(405, "this action is not one a chat takes"),
@@ -466,7 +487,7 @@ fn create(
         .mode(0o700)
         .create(&dir)
         .is_err()
-        || std::fs::write(dir.join("settings.json"), chat_settings()).is_err()
+        || std::fs::write(dir.join("settings.json"), chat_settings(roots, &[])).is_err()
     {
         return error(500, "the chat could not be created");
     }
@@ -483,15 +504,240 @@ fn create(
     }
 }
 
-/// The only tools a chat's turns have.
-const CHAT_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+/// The only tools a chat's turns have, each only as far as its settings allow.
+const CHAT_TOOLS: [&str; 6] = ["Read", "Grep", "Glob", "Bash", "Edit", "Write"];
 
-/// The chat's Claude settings: don't-ask mode, reading only.
-fn chat_settings() -> String {
-    json!({ "permissions": { "defaultMode": "dontAsk", "allow": CHAT_TOOLS } }).to_string()
+/// What a chat may do by itself: reading, and orq's own read commands.
+const DEFAULT_RULES: [&str; 20] = [
+    "Read",
+    "Grep",
+    "Glob",
+    "Bash(orq runs:*)",
+    "Bash(orq queue list:*)",
+    "Bash(orq features:*)",
+    "Bash(orq review show:*)",
+    "Bash(orq worktree list:*)",
+    "Bash(orq --version)",
+    "Bash(git status:*)",
+    "Bash(git log:*)",
+    "Bash(git diff:*)",
+    "Bash(git show:*)",
+    "Bash(ls:*)",
+    "Bash(cat:*)",
+    "Bash(head:*)",
+    "Bash(tail:*)",
+    "Bash(wc:*)",
+    "Bash(grep:*)",
+    "mcp__project-mcp",
+];
+
+/// The commands a chat may never run, whatever is allowed later.
+const DENIED_COMMANDS: [&str; 6] = [
+    "git push",
+    "cargo publish",
+    "npm publish",
+    "rm -rf",
+    "orq serve",
+    "sudo",
+];
+
+/// What a chat may never do, whatever is allowed later: publish, run orq's server, act as root, or read orq's
+/// secrets.
+fn deny_rules(roots: &StorageRoots) -> Vec<String> {
+    let mut rules: Vec<String> = DENIED_COMMANDS
+        .iter()
+        .map(|command| format!("Bash({command}:*)"))
+        .collect();
+    for secret in [
+        crate::remote_inbox::RemoteConfig::token_path(roots),
+        crate::passkey_store::PasskeyStore::path(roots),
+    ] {
+        rules.push(format!("Read(/{})", secret.display()));
+    }
+    rules.extend(
+        [
+            "Read(~/.claude/.credentials.json)",
+            "Read(**/.env)",
+            "Read(**/.env.*)",
+        ]
+        .map(str::to_string),
+    );
+    rules
 }
 
-fn read_chat(roots: &StorageRoots, conn: &Connection, project: &str, chat: &str) -> Response {
+/// The chat's Claude settings: don't-ask mode, the defaults with `allowed` after them, and the denies.
+fn chat_settings(roots: &StorageRoots, allowed: &[String]) -> String {
+    let mut allow: Vec<String> = DEFAULT_RULES.iter().map(|rule| rule.to_string()).collect();
+    allow.extend(allowed.iter().cloned());
+    json!({ "permissions": { "defaultMode": "dontAsk", "allow": allow, "deny": deny_rules(roots) } })
+        .to_string()
+}
+
+/// Writes the settings of the chat's next turn, with every rule allowed in it, then drops the rules allowed for
+/// that turn only.
+fn settle_turn_settings(roots: &StorageRoots, conn: &Connection, chat: &str) -> Result<(), String> {
+    let rules =
+        chat_rules(conn, chat).map_err(|_| "the chat's rules could not be read".to_string())?;
+    let allowed: Vec<String> = rules.into_iter().map(|(rule, _)| rule).collect();
+    std::fs::write(
+        chat_dir(roots, chat).join("settings.json"),
+        chat_settings(roots, &allowed),
+    )
+    .map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM ask_orq_rules WHERE chat_id = ?1 AND scope = 'once'",
+        params![chat],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// The deny rule `rule` falls under, if any: a command starting with a denied one, or a file that is one of orq's
+/// secrets or a `.env` file.
+fn denied_by(roots: &StorageRoots, rule: &str) -> Option<String> {
+    let (tool, spec) = rule.strip_suffix(')')?.split_once('(')?;
+    match tool {
+        "Bash" => {
+            let command = spec.strip_suffix(":*").unwrap_or(spec);
+            let words: Vec<&str> = command.split_whitespace().collect();
+            DENIED_COMMANDS
+                .iter()
+                .find(|denied| {
+                    let denied: Vec<&str> = denied.split_whitespace().collect();
+                    words.starts_with(&denied)
+                })
+                .map(|denied| format!("Bash({denied}:*)"))
+        }
+        "Read" | "Edit" | "Write" => {
+            let path = Path::new(spec.strip_prefix('/')?);
+            let name = path.file_name()?.to_string_lossy();
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let secrets = [
+                Some(crate::remote_inbox::RemoteConfig::token_path(roots)),
+                Some(crate::passkey_store::PasskeyStore::path(roots)),
+                home.map(|home| home.join(".claude").join(".credentials.json")),
+            ];
+            if name == ".env" || name.starts_with(".env.") {
+                Some(format!("Read(**/{name})"))
+            } else if secrets.iter().flatten().any(|secret| secret == path) {
+                Some(format!("Read(/{})", path.display()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The rule that allows editing the project's ledger, which the person may allow for a chat without a refused
+/// call, since adding and changing drafts is the common case.
+fn ledger_rule(root: &Path) -> String {
+    format!("Edit(/{})", root.join(".tdd-features.json").display())
+}
+
+/// The rules the refused calls of chat `chat` would need, each the narrowest that allows exactly its call.
+fn refused_rules(roots: &StorageRoots, conn: &Connection, root: &Path, chat: &str) -> Vec<String> {
+    let turns: Vec<i64> = conn
+        .prepare("SELECT n FROM ask_orq_turns WHERE chat_id = ?1 ORDER BY n")
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![chat], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap_or_default();
+    turns
+        .iter()
+        .flat_map(|n| {
+            let raw = std::fs::read_to_string(turn_file(roots, chat, *n)).unwrap_or_default();
+            turn_items(&raw, root)
+        })
+        .filter_map(|item| item["rule"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Allows `{rule}` in chat `chat`, for the next turn only (`scope` "once") or for the rest of the chat ("chat"),
+/// with the passkey confirmation in `{assertion}`. Only the rule a refused call of the chat would need, or the
+/// ledger's edits, and never one a deny covers.
+#[allow(clippy::too_many_arguments)]
+fn allow_rule(
+    roots: &StorageRoots,
+    conn: &Connection,
+    root: &Path,
+    project: &str,
+    chat: &str,
+    body: &[u8],
+    confirm: Option<StepUp>,
+) -> Response {
+    let fields = match body_fields(body, &["rule", "scope", "assertion"]) {
+        Ok(fields) => fields,
+        Err(refusal) => return refusal,
+    };
+    let (Some(rule), Some(scope @ ("once" | "chat"))) =
+        (fields["rule"].as_str(), fields["scope"].as_str())
+    else {
+        return error(400, "the request body is not one this action takes");
+    };
+    if !confirm.is_some_and(|confirm| confirm(&fields["assertion"])) {
+        return error(401, "allowing a rule needs the passkey confirmation");
+    }
+    let chat = match found(conn, project, chat) {
+        Ok(chat) => chat,
+        Err(refusal) => return refusal,
+    };
+    if let Some(deny) = denied_by(roots, rule) {
+        return error(422, &format!("{rule} is always denied ({deny})"));
+    }
+    if rule != ledger_rule(root)
+        && !refused_rules(roots, conn, root, &chat.id)
+            .iter()
+            .any(|refused| refused == rule)
+    {
+        return error(
+            422,
+            &format!("{rule} is wider than any refused call of this chat; allow the rule a refused call names"),
+        );
+    }
+    let added = conn.execute(
+        "INSERT INTO ask_orq_rules (chat_id, rule, scope, created_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (chat_id, rule) DO UPDATE SET scope = CASE WHEN scope = 'chat' THEN 'chat' ELSE excluded.scope END",
+        params![chat.id, rule, scope, now()],
+    );
+    match added {
+        Ok(_) => reply(200, json!({ "rule": rule, "scope": scope })),
+        Err(_) => error(500, "the rule could not be allowed"),
+    }
+}
+
+/// Removes `{rule}` from the rules allowed in chat `chat`.
+fn remove_rule(conn: &Connection, project: &str, chat: &str, body: &[u8]) -> Response {
+    let fields = match body_fields(body, &["rule"]) {
+        Ok(fields) => fields,
+        Err(refusal) => return refusal,
+    };
+    let Some(rule) = fields["rule"].as_str() else {
+        return error(400, "the request body is not one this action takes");
+    };
+    let chat = match found(conn, project, chat) {
+        Ok(chat) => chat,
+        Err(refusal) => return refusal,
+    };
+    match conn.execute(
+        "DELETE FROM ask_orq_rules WHERE chat_id = ?1 AND rule = ?2",
+        params![chat.id, rule],
+    ) {
+        Ok(1) => reply(200, json!({ "removed": rule })),
+        Ok(_) => error(404, "that rule is not allowed in this chat"),
+        Err(_) => error(500, "the rule could not be removed"),
+    }
+}
+
+fn read_chat(
+    roots: &StorageRoots,
+    conn: &Connection,
+    root: &Path,
+    project: &str,
+    chat: &str,
+) -> Response {
     let chat = match found(conn, project, chat) {
         Ok(chat) => chat,
         Err(refusal) => return refusal,
@@ -517,18 +763,40 @@ fn read_chat(roots: &StorageRoots, conn: &Connection, project: &str, chat: &str)
     for (n, text, state, reason) in &turns {
         items.push(json!({ "type": "user", "turn": n, "text": crate::redact::redact(text), "state": state, "reason": reason }));
         let raw = std::fs::read_to_string(turn_file(roots, &chat.id, *n)).unwrap_or_default();
-        items.extend(turn_items(&raw));
+        items.extend(turn_items(&raw, root));
     }
+    let rules = match chat_rules(conn, &chat.id) {
+        Ok(rules) => rules,
+        Err(refusal) => return refusal,
+    };
+    let rules: Vec<Value> = rules
+        .iter()
+        .map(|(rule, scope)| json!({ "rule": rule, "scope": scope }))
+        .collect();
     reply(
         200,
-        json!({ "chat": chat.json(running(conn, &chat.id)), "items": items, "running": running(conn, &chat.id) }),
+        json!({ "chat": chat.json(running(conn, &chat.id)), "items": items, "rules": rules, "running": running(conn, &chat.id) }),
     )
 }
 
-/// The items one turn's stream-json holds: assistant texts, tool calls with their results, and the result.
-pub fn turn_items(raw: &str) -> Vec<Value> {
+/// The rules allowed in chat `chat` beyond the defaults, oldest first, each with its scope.
+fn chat_rules(conn: &Connection, chat: &str) -> Result<Vec<(String, String)>, Response> {
+    conn.prepare(
+        "SELECT rule, scope FROM ask_orq_rules WHERE chat_id = ?1 ORDER BY created_at, rowid",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map(params![chat], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .map_err(|_| error(500, "the chat could not be read"))
+}
+
+/// The items one turn's stream-json holds: assistant texts, tool calls with their results, and the result. A
+/// refused call carries the narrowest rule that would allow it; `root` is where relative paths start.
+pub fn turn_items(raw: &str, root: &Path) -> Vec<Value> {
     let mut items: Vec<Value> = Vec::new();
-    let mut tools: Vec<(String, usize)> = Vec::new();
+    let mut tools: Vec<(String, usize, Value)> = Vec::new();
     for line in raw.lines() {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -539,7 +807,11 @@ pub fn turn_items(raw: &str) -> Vec<Value> {
                     match part["type"].as_str() {
                         Some("text") => items.push(json!({ "type": "assistant", "text": crate::redact::redact(part["text"].as_str().unwrap_or("")) })),
                         Some("tool_use") => {
-                            tools.push((part["id"].as_str().unwrap_or("").to_string(), items.len()));
+                            tools.push((
+                                part["id"].as_str().unwrap_or("").to_string(),
+                                items.len(),
+                                part.clone(),
+                            ));
                             items.push(json!({ "type": "tool", "name": crate::redact::redact(part["name"].as_str().unwrap_or("")), "input": input_summary(&part["input"]), "status": "running", "result": null }));
                         }
                         _ => {}
@@ -553,12 +825,13 @@ pub fn turn_items(raw: &str) -> Vec<Value> {
                     .flatten()
                     .filter(|part| part["type"] == "tool_result")
                 {
-                    let Some(&(_, at)) = tools
+                    let Some((_, at, _)) = tools
                         .iter()
-                        .find(|(id, _)| part["tool_use_id"] == id.as_str())
+                        .find(|(id, _, _)| part["tool_use_id"] == id.as_str())
                     else {
                         continue;
                     };
+                    let at = *at;
                     let result = result_text(&part["content"]);
                     let status = if part["is_error"] == true {
                         if refused(&result) {
@@ -574,6 +847,15 @@ pub fn turn_items(raw: &str) -> Vec<Value> {
                 }
             }
             Some("result") => {
+                // Claude Code lists the calls its permissions refused; their results may not say so.
+                for denial in event["permission_denials"].as_array().into_iter().flatten() {
+                    if let Some((_, at, _)) = tools
+                        .iter()
+                        .find(|(id, _, _)| denial["tool_use_id"] == id.as_str())
+                    {
+                        items[*at]["status"] = json!("refused");
+                    }
+                }
                 let error = (event["is_error"] == true).then(|| {
                     crate::redact::redact(
                         event["result"]
@@ -587,7 +869,80 @@ pub fn turn_items(raw: &str) -> Vec<Value> {
             _ => {}
         }
     }
+    for (_, at, call) in &tools {
+        if items[*at]["status"] == "refused" {
+            let rule = narrowest_rule(call["name"].as_str().unwrap_or(""), &call["input"], root);
+            items[*at]["rule"] = json!(rule.map(|rule| crate::redact::redact(&rule)));
+        }
+    }
     items
+}
+
+/// Characters that make a command more than one simple command, or a rule mean more than it says.
+const NOT_SIMPLE: [char; 14] = [
+    ';', '&', '|', '<', '>', '$', '`', '\n', '(', ')', '{', '}', '\\', '*',
+];
+
+/// The rule that would allow exactly the call of tool `name` with `input`, or none when no rule that narrow can
+/// say it: a command's first words (two or three, never fewer than two before a wildcard, or the whole command),
+/// one file for an edit or a read, or the tool's own name for any other tool.
+fn narrowest_rule(name: &str, input: &Value, root: &Path) -> Option<String> {
+    match name {
+        "Bash" => {
+            let command = input["command"].as_str()?;
+            if command.contains(NOT_SIMPLE) || command.contains("::") {
+                return None;
+            }
+            let words: Vec<&str> = command.split_whitespace().collect();
+            let plain = |word: &&str| {
+                !word.starts_with('-')
+                    && word
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            };
+            let prefix: Vec<&str> = words.iter().copied().take(3).take_while(plain).collect();
+            match (prefix.len(), words.len()) {
+                (_, 0) => None,
+                (2.., _) => Some(format!("Bash({}:*)", prefix.join(" "))),
+                _ => Some(format!("Bash({})", words.join(" "))),
+            }
+        }
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Read" => {
+            let path = input["file_path"]
+                .as_str()
+                .or(input["notebook_path"].as_str())?;
+            let path = absolute(root, path)?;
+            let tool = if name == "Read" { "Read" } else { "Edit" };
+            Some(format!("{tool}(/{})", path.display()))
+        }
+        _ if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+        {
+            Some(name.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// `path` made absolute from `root` with its `.` and `..` resolved, or none when it holds a character a rule's
+/// path would read as a pattern.
+fn absolute(root: &Path, path: &str) -> Option<PathBuf> {
+    if path.is_empty() || path.contains(['*', '?', '[', ']', '{', '}', '(', ')', '\\', '\n']) {
+        return None;
+    }
+    let mut resolved = PathBuf::from("/");
+    for part in root.join(path).components() {
+        match part {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::Normal(name) => resolved.push(name),
+            _ => {}
+        }
+    }
+    Some(resolved)
 }
 
 /// Whether a tool's error says Claude Code's permissions refused the call.
@@ -638,7 +993,10 @@ fn input_summary(input: &Value) -> String {
 /// A title or audit note from `text`: its first characters, redacted before it is cut so a key the cut ends inside
 /// is not shown in part.
 fn preview(text: &str) -> String {
-    crate::redact::redact(text).chars().take(TITLE_CHARS).collect()
+    crate::redact::redact(text)
+        .chars()
+        .take(TITLE_CHARS)
+        .collect()
 }
 
 /// `text` cut to at most `max` bytes, at a character boundary.
@@ -917,6 +1275,16 @@ fn send(
     } else {
         text.to_string()
     };
+    if settle_turn_settings(roots, conn, &chat.id).is_err() {
+        end_turn(
+            roots,
+            &chat.id,
+            n,
+            "failed",
+            Some("the chat's settings could not be written"),
+        );
+        return error(500, "the chat's settings could not be written");
+    }
     match start_turn(roots, place, &chat, n, stdin) {
         Ok(pid) => {
             let _ = conn.execute(
@@ -999,6 +1367,10 @@ fn delete(
         Ok(1) => {
             let _ = conn.execute(
                 "DELETE FROM ask_orq_turns WHERE chat_id = ?1",
+                params![chat.id],
+            );
+            let _ = conn.execute(
+                "DELETE FROM ask_orq_rules WHERE chat_id = ?1",
                 params![chat.id],
             );
             match std::fs::remove_dir_all(chat_dir(roots, &chat.id)) {
@@ -1091,7 +1463,11 @@ fn turn_args(roots: &StorageRoots, place: &ChatPlace, chat: &Chat, n: i64) -> Ve
     args.extend(["--permission-mode".to_string(), "dontAsk".to_string()]);
     // The tools a chat has at all, so settings it inherits from the user or the project cannot widen them, and
     // no MCP server from their configuration.
-    args.extend(["--tools".to_string(), CHAT_TOOLS.join(","), "--strict-mcp-config".to_string()]);
+    args.extend([
+        "--tools".to_string(),
+        CHAT_TOOLS.join(","),
+        "--strict-mcp-config".to_string(),
+    ]);
     args
 }
 
@@ -1136,7 +1512,13 @@ fn start_turn(
                     return;
                 }
                 Err(_) => {
-                    end_turn(&roots, &chat_id, n, "failed", Some("the reply could not be watched"));
+                    end_turn(
+                        &roots,
+                        &chat_id,
+                        n,
+                        "failed",
+                        Some("the reply could not be watched"),
+                    );
                     kill_group(pid);
                     let _ = child.wait();
                     return;
@@ -1172,7 +1554,9 @@ fn ended(status: std::process::ExitStatus) -> Option<String> {
     use std::os::unix::process::ExitStatusExt;
     match (status.code(), status.signal()) {
         (Some(0), _) => None,
-        (Some(code), _) => Some(format!("the reply ended with an error (exit status {code})")),
+        (Some(code), _) => Some(format!(
+            "the reply ended with an error (exit status {code})"
+        )),
         (None, Some(signal)) => Some(format!("the reply was ended by signal {signal}")),
         (None, None) => Some("the reply ended with an error".to_string()),
     }

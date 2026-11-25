@@ -17,7 +17,7 @@ use crate::passkey_store::PasskeyStore;
 pub const CONFIRM_SECS: u64 = 120;
 
 /// The changes that are confirmed with the passkey; a challenge is issued for no other purpose.
-pub const PURPOSES: &[&str] = &["remote_actions.on"];
+pub const PURPOSES: &[&str] = &["remote_actions.on", "chat.allow"];
 
 /// Most confirmation challenges kept at once; past this the oldest go first.
 const MAX_PENDING: usize = 256;

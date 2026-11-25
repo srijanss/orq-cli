@@ -735,9 +735,19 @@ pub fn handle_with_body(roots: &StorageRoots, config: &RemoteConfig, project_id:
     answer(roots, config, project_id, project_name, request, body, Some(provider), None)
 }
 
-/// A check that an assertion from the page confirms turning remote actions on, given only for a
-/// request from a passkey session; it spends the challenge the assertion answers.
+/// A check that an assertion from the page confirms the change asked for (see [`step_up_purpose`]),
+/// given only for a request from a passkey session; it spends the challenge the assertion answers.
 pub type StepUp<'a> = &'a dyn Fn(&Value) -> bool;
+
+/// The purpose a step-up assertion for a request on `path` must have been issued for: allowing a rule in
+/// an Ask orq chat has its own, so neither challenge can be spent on the other change.
+pub fn step_up_purpose(path: &str) -> &'static str {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    match crate::ask_orq::target(path) {
+        Some((_, tail)) if matches!(tail.as_slice(), [_, "allow"]) => "chat.allow",
+        _ => "remote_actions.on",
+    }
+}
 
 /// Like [`handle_with_body`], from a passkey session whose step-up assertions `confirm` checks.
 #[allow(clippy::too_many_arguments)]
@@ -3067,7 +3077,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
     let (path, query) = request.path.split_once('?').unwrap_or((request.path, ""));
     if let Some((id, tail)) = crate::ask_orq::target(path) {
-        return crate::ask_orq::route(roots, provider, id, &tail, request.method, body, confirm.is_some());
+        return crate::ask_orq::route(roots, provider, id, &tail, request.method, body, confirm);
     }
     if let Some((id, feature)) = run_start_target(path) {
         match request.method {

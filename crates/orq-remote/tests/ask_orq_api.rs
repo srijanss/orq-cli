@@ -279,7 +279,7 @@ fn a_chat_is_created_and_each_message_is_a_claude_turn_in_the_main_checkout_whos
 }
 
 #[test]
-fn a_turn_has_only_the_reading_tools_whatever_settings_and_servers_it_would_inherit() {
+fn a_turn_has_only_the_chat_tools_whatever_settings_and_servers_it_would_inherit() {
     let s = setup("only-reading-tools");
     git_repo(&s.scan, "alpha");
     let chat = create_chat(&s, "alpha", json!({}));
@@ -288,10 +288,17 @@ fn a_turn_has_only_the_reading_tools_whatever_settings_and_servers_it_would_inhe
 
     let calls = calls(&s);
     let (args, _, _) = &calls[0];
-    // A user's or project's settings allowing Bash or Write cannot widen what a chat may use.
-    assert_eq!(value_after(args, "--tools"), Some("Read,Grep,Glob"), "{args:?}");
+    // A user's or project's settings allowing another tool cannot widen what a chat may use.
+    assert_eq!(
+        value_after(args, "--tools"),
+        Some("Read,Grep,Glob,Bash,Edit,Write"),
+        "{args:?}"
+    );
     // Nor can an MCP server from the project's or user's configuration.
-    assert!(args.contains(&"--strict-mcp-config".to_string()), "{args:?}");
+    assert!(
+        args.contains(&"--strict-mcp-config".to_string()),
+        "{args:?}"
+    );
 }
 
 fn project_id(repo: &Path) -> String {
@@ -809,7 +816,11 @@ fn a_reply_that_never_reads_its_message_is_still_stopped_at_the_time_limit() {
     wait_for(|| !Path::new(&format!("/proc/{pid}")).exists());
     let gone = !Path::new(&format!("/proc/{pid}")).exists();
     std::fs::remove_file(s.base.join("deaf")).unwrap();
-    assert_eq!(state, (json!("stopped"), json!("the reply ran out of time")), "{item}");
+    assert_eq!(
+        state,
+        (json!("stopped"), json!("the reply ran out of time")),
+        "{item}"
+    );
     assert!(gone, "the fake that would not read was killed");
 }
 
@@ -822,8 +833,14 @@ fn a_reply_whose_agent_fails_or_cannot_start_is_recorded_as_failed_not_done() {
     say(&s, "alpha", &chat, "why did it fail?");
     let read = read_chat(&s, "alpha", &chat);
     let item = &read["items"][0];
-    assert_eq!(item["state"], "failed", "an agent that exits with an error wrote no reply: {read}");
-    assert_eq!(item["reason"], "the reply ended with an error (exit status 3)", "{read}");
+    assert_eq!(
+        item["state"], "failed",
+        "an agent that exits with an error wrote no reply: {read}"
+    );
+    assert_eq!(
+        item["reason"], "the reply ended with an error (exit status 3)",
+        "{read}"
+    );
     assert_eq!(read["items"].as_array().unwrap().len(), 1, "{read}");
 
     let s = Setup {
@@ -836,7 +853,10 @@ fn a_reply_whose_agent_fails_or_cannot_start_is_recorded_as_failed_not_done() {
     let read = read_chat(&s, "alpha", &chat);
     assert_eq!(read["running"], false, "{read}");
     assert_eq!(
-        (read["items"][0]["state"].as_str(), read["items"][0]["reason"].as_str()),
+        (
+            read["items"][0]["state"].as_str(),
+            read["items"][0]["reason"].as_str()
+        ),
         (Some("failed"), Some("the reply could not be started")),
         "{read}"
     );
@@ -873,9 +893,15 @@ fn a_key_cut_by_a_preview_limit_is_redacted_whole_before_it_is_cut() {
         audit.last().unwrap()["reason"].to_string(),
     ];
     for shown in &seen {
-        assert!(!shown.contains("AKIAABCD"), "no part of the key is shown: {seen:?}");
+        assert!(
+            !shown.contains("AKIAABCD"),
+            "no part of the key is shown: {seen:?}"
+        );
     }
-    assert!(read["chat"]["title"].as_str().unwrap().starts_with("xxxx"), "{read}");
+    assert!(
+        read["chat"]["title"].as_str().unwrap().starts_with("xxxx"),
+        "{read}"
+    );
 }
 
 #[test]
@@ -1107,12 +1133,16 @@ fn the_stream_sends_a_chats_items_as_the_reply_is_written_and_only_to_a_passkey_
 fn serve(s: &Setup) -> (orq_remote::Server, String) {
     let state = std::sync::Arc::new(orq_remote::ServerState {
         roots: s.roots.clone(),
-        config: RemoteConfig { token: "tok".into() },
+        config: RemoteConfig {
+            token: "tok".into(),
+        },
         project_id: "server-project".into(),
         project_name: "server".into(),
     });
     let host = orq_core::passkey_register::PasskeyHost::from_setting(web_push_session::RP).unwrap();
-    let auth = std::sync::Arc::new(orq_core::passkey_routes::PasskeyAuth::new(host).with_loopback_token(false));
+    let auth = std::sync::Arc::new(
+        orq_core::passkey_routes::PasskeyAuth::new(host).with_loopback_token(false),
+    );
     let server = orq_remote::Server::start_with_auth(
         std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
         state,
@@ -1135,7 +1165,9 @@ fn a_stream_taken_up_again_sends_every_item_again_since_any_may_have_changed_mea
 
     // The page had every item, but the tool's (index 2) only while it was still running.
     let mut stream = std::net::TcpStream::connect(server.addr()).unwrap();
-    stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
     write!(
         stream,
         "GET /api/projects/alpha/chats/{chat}/stream HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\nLast-Event-ID: 3\r\n\r\n"
@@ -1144,7 +1176,9 @@ fn a_stream_taken_up_again_sends_every_item_again_since_any_may_have_changed_mea
     let got = read_for(&mut stream, Duration::from_millis(1500));
     assert!(got.contains(" 200 "), "{got}");
     assert!(
-        got.contains("id: 2\nevent: item") && got.contains("\"status\":\"ok\"") && got.contains("line one"),
+        got.contains("id: 2\nevent: item")
+            && got.contains("\"status\":\"ok\"")
+            && got.contains("line one"),
         "the tool's finished state reaches the page: {got}"
     );
 }

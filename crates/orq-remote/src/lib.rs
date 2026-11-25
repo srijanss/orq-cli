@@ -332,7 +332,8 @@ fn json_reply(code: u16, body: Vec<u8>) -> Response {
 fn reply_to(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &str, authorization: Option<&str>, cookie: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
     let request = remote_inbox::Request { method, path, peer, authorization };
     let state = &shared.state;
-    let confirm = |assertion: &serde_json::Value| shared.auth.as_ref().is_some_and(|auth| auth.confirm(&state.roots, cookie, "remote_actions.on", assertion));
+    let purpose = remote_inbox::step_up_purpose(path);
+    let confirm = |assertion: &serde_json::Value| shared.auth.as_ref().is_some_and(|auth| auth.confirm(&state.roots, cookie, purpose, assertion));
     let step_up: Option<remote_inbox::StepUp> = shared.auth.as_ref().filter(|auth| auth.has_session(cookie)).map(|_| &confirm as remote_inbox::StepUp);
     let reply = match &shared.projects {
         Some(projects) => remote_inbox::handle_with_confirm(&state.roots, &state.config, &state.project_id, &state.project_name, &request, body, projects.as_ref(), step_up),
