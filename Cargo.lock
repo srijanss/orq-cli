@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "orq-agents"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "orq-test-support",
  "serde_json",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "orq-cli"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "libc",
  "orq-agents",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "orq-core"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "libc",
  "orq-test-support",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "orq-features"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "libc",
  "orq-agents",
@@ -1209,14 +1209,14 @@ dependencies = [
 
 [[package]]
 name = "orq-git"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "orq-test-support",
 ]
 
 [[package]]
 name = "orq-herdr"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "orq-test-support",
  "serde_json",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "orq-orchestrator"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "libc",
  "orq-core",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "orq-remote"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "orq-test-support"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "orq-core",
  "orq-features",
@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "orq-tui"
-version = "0.26.0"
+version = "0.27.0"
 dependencies = [
  "ratatui",
  "unicode-segmentation",
