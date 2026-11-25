@@ -1089,6 +1089,10 @@ pub struct StoreProjects {
     gh: Option<PathBuf>,
     /// The program asked which models take images when a design role is saved; `pi` on PATH when unset.
     pi: Option<PathBuf>,
+    /// The program an Ask orq turn starts; `claude` when unset.
+    chat_agent: Option<PathBuf>,
+    /// How long an Ask orq turn may run; [`orq_core::ask_orq::TIME_LIMIT`] when unset.
+    chat_time_limit: Option<std::time::Duration>,
 }
 
 /// A report serve builds for a run whose own build of it failed: the run, its head, and the evidence its events hold.
@@ -1166,6 +1170,8 @@ impl StoreProjects {
     /// server runs none of their tests.
     pub fn new(roots: orq_core::storage::StorageRoots, scan_root: std::path::PathBuf) -> Self {
         fail_interrupted_accepts(&orq_orchestrator::RunStore::new(&roots.state));
+        // An Ask orq reply the last server was watching is not left looking as if it were still being written.
+        let _ = orq_core::ask_orq::interrupt_running(&roots);
         StoreProjects {
             roots,
             scan_root,
@@ -1186,7 +1192,21 @@ impl StoreProjects {
             plan_timeout: None,
             gh: None,
             pi: None,
+            chat_agent: None,
+            chat_time_limit: None,
         }
+    }
+
+    /// Has each Ask orq turn start `agent` instead of the `claude` on PATH.
+    pub fn with_chat_agent(mut self, agent: PathBuf) -> Self {
+        self.chat_agent = Some(agent);
+        self
+    }
+
+    /// Stops an Ask orq turn after `limit` instead of [`orq_core::ask_orq::TIME_LIMIT`].
+    pub fn with_chat_time_limit(mut self, limit: std::time::Duration) -> Self {
+        self.chat_time_limit = Some(limit);
+        self
     }
 
     /// Has the target push ask GitHub about its branch through `gh` instead of the `gh` on PATH.
@@ -1871,6 +1891,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
 
     fn decide_plan(&self, id: &str, run: &str, replace: bool) -> Result<orq_core::remote_inbox::PlanDecision, String> {
         self.decide_plan_run(id, run, replace)
+    }
+
+    fn chat_place(&self, id: &str) -> Result<Option<orq_core::ask_orq::ChatPlace>, String> {
+        let Some((git, root)) = self.settings_key(id)? else { return Ok(None) };
+        Ok(Some(orq_core::ask_orq::ChatPlace {
+            root,
+            project: orq_git::project_id(&git),
+            program: self.chat_agent.clone().unwrap_or_else(|| PathBuf::from("claude")),
+            time_limit: self.chat_time_limit.unwrap_or(orq_core::ask_orq::TIME_LIMIT),
+        }))
     }
 
     fn push_text(&self, id: &str, run: Option<&str>, event: &str) -> Result<Option<serde_json::Value>, String> {

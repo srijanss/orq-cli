@@ -185,6 +185,11 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
             let credentials = Credentials { forwarded: is_forwarded(&headers), authorization, cookie };
             return follow(shared, peer, credentials, base, cursor, method == "HEAD").await;
         }
+        if let Some(base) = chat_stream_target(&path) {
+            let after = last_event_id.as_deref().and_then(|id| id.parse::<usize>().ok());
+            let credentials = Credentials { forwarded: is_forwarded(&headers), authorization, cookie };
+            return follow_chat(shared, peer, credentials, base, after, method == "HEAD").await;
+        }
     }
     let session = cookie.clone();
     let authorization = effective_authorization(&shared, peer.ip(), is_forwarded(&headers), authorization, cookie).await;
@@ -444,6 +449,106 @@ async fn follow(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials,
         }
     });
     // A HEAD gets the stream's headers and nothing to follow.
+    let body = if head { axum::body::Body::empty() } else { axum::body::Body::from_stream(stream) };
+    let mut response = Response::new(body);
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
+}
+
+/// How often a chat being streamed is read again.
+const CHAT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// `/api/projects/{id}/chats/{chat}/stream`: the chat's own path, read on each look. Nothing else is a chat stream.
+fn chat_stream_target(path: &str) -> Option<String> {
+    let plain = |segment: &str| !segment.is_empty() && segment != "." && segment != "..";
+    match path.strip_prefix('/')?.split('/').collect::<Vec<_>>().as_slice() {
+        ["api", "projects", project, "chats", chat, "stream"] if plain(project) && plain(chat) => Some(format!("/api/projects/{project}/chats/{chat}")),
+        _ => None,
+    }
+}
+
+/// Answers a chat stream: the handler's own refusal when it refuses (a chat needs a passkey session, so the
+/// request's cookie goes with every look), otherwise server-sent events: each item of the chat as `item` with
+/// its index as the id, again when it changes (a tool's result arriving), and `state` when a reply starts or
+/// ends. `after` is the last item index the page already has.
+async fn follow_chat(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials, base: String, after: Option<usize>, head: bool) -> Response {
+    struct Chat {
+        shared: Arc<Shared>,
+        peer: SocketAddr,
+        credentials: Credentials,
+        base: String,
+        sent: Vec<String>,
+        running: Option<bool>,
+        queue: std::collections::VecDeque<String>,
+        quiet: std::time::Duration,
+    }
+    // Reads the chat; its status and body.
+    async fn look(state: &Chat) -> Option<(u16, Vec<u8>)> {
+        let (shared, ip, path, cookie) = (state.shared.clone(), state.peer.ip(), state.base.clone(), state.credentials.cookie.clone());
+        // Judged on every look, so a logout or an expired session ends the stream.
+        let authorization = effective_authorization(&shared, ip, state.credentials.forwarded, state.credentials.authorization.clone(), cookie.clone()).await;
+        tokio::task::spawn_blocking(move || reply_to(&shared, ip, "GET", &path, authorization.as_deref(), cookie.as_deref(), b"")).await.ok()
+    }
+    // Queues what is new or changed in the chat; says whether there was anything.
+    fn absorb(state: &mut Chat, page: &serde_json::Value) -> bool {
+        let before = state.queue.len();
+        for (index, item) in page["items"].as_array().into_iter().flatten().enumerate() {
+            let text = item.to_string();
+            if state.sent.get(index) == Some(&text) {
+                continue;
+            }
+            state.queue.push_back(format!("id: {index}\nevent: item\ndata: {}\n\n", serde_json::json!({ "index": index, "item": item })));
+            match state.sent.get_mut(index) {
+                Some(sent) => *sent = text,
+                None => state.sent.push(text),
+            }
+        }
+        let running = page["running"].as_bool();
+        if running.is_some() && running != state.running {
+            state.running = running;
+            state.queue.push_back(format!("event: state\ndata: {}\n\n", serde_json::json!({ "running": running })));
+        }
+        state.queue.len() > before
+    }
+
+    let mut state = Chat { shared, peer, credentials, base, sent: Vec::new(), running: None, queue: Default::default(), quiet: Default::default() };
+    // The first look decides the answer: a refused or unknown request is the handler's plain reply.
+    let Some((code, body)) = look(&state).await else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+    if code != 200 {
+        return json_reply(code, body);
+    }
+    state.queue.push_back(": connected\n\n".to_string());
+    if let Ok(page) = serde_json::from_slice::<serde_json::Value>(&body) {
+        // The items the page already has count as sent, as they are now.
+        if let Some(after) = after {
+            state.sent = page["items"].as_array().into_iter().flatten().take(after + 1).map(|item| item.to_string()).collect();
+        }
+        absorb(&mut state, &page);
+    }
+    let stream = futures_util::stream::unfold(state, |mut state| async move {
+        loop {
+            if let Some(chunk) = state.queue.pop_front() {
+                return Some((Ok::<_, std::convert::Infallible>(chunk), state));
+            }
+            tokio::time::sleep(CHAT_POLL).await;
+            let page = match look(&state).await {
+                Some((200, body)) => serde_json::from_slice::<serde_json::Value>(&body).ok()?,
+                _ => return None,
+            };
+            if absorb(&mut state, &page) {
+                state.quiet = std::time::Duration::ZERO;
+            } else {
+                state.quiet += CHAT_POLL;
+                if state.quiet >= FOLLOW_KEEPALIVE {
+                    state.queue.push_back(": keepalive\n\n".to_string());
+                    state.quiet = std::time::Duration::ZERO;
+                }
+            }
+        }
+    });
     let body = if head { axum::body::Body::empty() } else { axum::body::Body::from_stream(stream) };
     let mut response = Response::new(body);
     let headers = response.headers_mut();

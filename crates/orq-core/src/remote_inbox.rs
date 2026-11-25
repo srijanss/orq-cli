@@ -484,6 +484,12 @@ pub trait ProjectsProvider {
     fn decide_plan(&self, _id: &str, _run: &str, _replace: bool) -> Result<PlanDecision, String> {
         Ok(PlanDecision::Unknown)
     }
+
+    /// Where a chat of project `id` runs and how its turns start; `None` when there is no such project or this
+    /// provider cannot run chats.
+    fn chat_place(&self, _id: &str) -> Result<Option<crate::ask_orq::ChatPlace>, String> {
+        Ok(None)
+    }
 }
 
 /// What Draft with orq drafts from.
@@ -703,7 +709,7 @@ pub fn public_settings(path: &std::path::Path) -> Result<Value, String> {
     let models: Vec<Value> = doc.get("models").and_then(|item| item.as_table_like()).map(|table| table.iter().filter_map(|(name, item)| item.as_table_like().map(|t| json!({"name": crate::redact::redact(name), "harness": field(t, "harness"), "model": field(t, "model"), "effort": field(t, "effort")}))).collect()).unwrap_or_default();
     // Off unless this one setting is a real `true`; `remote_control` never turns it on.
     let remote_actions = doc.get("remote_actions").and_then(|item| item.as_bool()) == Some(true);
-    Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "models": models, "remote_actions": remote_actions, "version": crate::remote_settings::version_of(&text)}))
+    Ok(json!({"implementer": section("implementer"), "reviewer": section("reviewer"), "ask_orq_agent": section("ask_orq_agent"), "models": models, "remote_actions": remote_actions, "version": crate::remote_settings::version_of(&text)}))
 }
 
 /// How the review store knows a project: the id its reports are saved under and its display name.
@@ -747,6 +753,8 @@ pub fn action_body_cap(path: &str) -> usize {
         MAX_TODO_BODY
     } else if run_target(path, "design-issues").is_some() {
         MAX_DESIGN_ISSUES_BODY
+    } else if crate::ask_orq::target(path).is_some() {
+        crate::ask_orq::MAX_BODY
     } else {
         MAX_ACTION_BODY
     }
@@ -807,7 +815,7 @@ fn run_control_target(path: &str) -> Option<(&str, &str, RunControl)> {
 }
 
 /// Whether the settings switch remote actions on; anything unreadable counts as off.
-fn remote_actions_on(roots: &StorageRoots) -> bool {
+pub(crate) fn remote_actions_on(roots: &StorageRoots) -> bool {
     public_settings(&roots.config_file()).ok().and_then(|settings| settings["remote_actions"].as_bool()) == Some(true)
 }
 
@@ -907,7 +915,7 @@ fn set_remote_actions(roots: &StorageRoots, body: &[u8], confirm: Option<StepUp>
 }
 
 /// Whether `harness` with `model` is one of `options` (`[{harness, models}]`), exactly as listed.
-fn offered(options: &Value, harness: &str, model: &str) -> bool {
+pub(crate) fn offered(options: &Value, harness: &str, model: &str) -> bool {
     options.as_array().is_some_and(|options| options.iter().any(|option| option["harness"] == harness && option["models"].as_array().is_some_and(|models| models.iter().any(|offered| offered == model))))
 }
 
@@ -930,7 +938,10 @@ enum EffortChoice<'a> {
 /// or null is not touched. An effort must be one of the levels listed for its harness, null clears it, and
 /// one left out is kept unless the harness lists levels that do not include it. Leaves an audit line for
 /// the attempt.
-fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8]) -> Response {
+///
+/// The Ask orq agent (`ask_orq_agent`) is set the same way, but only to a Claude model, since a chat relies on
+/// Claude Code's settings and refusals, and only from a passkey session, since its replies can quote files.
+fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, body: &[u8], confirm: Option<StepUp>) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     use crate::remote_settings::{write_if_version, SettingsWriteError};
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
@@ -945,14 +956,14 @@ fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, bod
         audit(Outcome::Refused, Some("bad request body"));
         error(400, "the request body is not one this action takes")
     };
-    if let Some(refusal) = body_refusal(body, &["implementer", "reviewer", "version"]) {
+    if let Some(refusal) = body_refusal(body, &["implementer", "reviewer", "ask_orq_agent", "version"]) {
         audit(Outcome::Refused, Some("bad request body"));
         return refusal;
     }
     let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
     let Some(version) = fields["version"].as_str() else { return bad_body() };
     let mut chosen: Vec<(&str, &str, &str, EffortChoice)> = Vec::new();
-    for role in ["implementer", "reviewer"] {
+    for role in ["implementer", "reviewer", "ask_orq_agent"] {
         match &fields[role] {
             Value::Null => {}
             Value::Object(agent) if agent.keys().all(|key| ["harness", "model", "effort"].contains(&key.as_str())) => {
@@ -972,6 +983,16 @@ fn set_agents(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, bod
     }
     if chosen.is_empty() {
         return bad_body();
+    }
+    if let Some((_, harness, _, _)) = chosen.iter().find(|(role, _, _, _)| *role == "ask_orq_agent") {
+        if confirm.is_none() {
+            audit(Outcome::Refused, Some("needs a passkey sign-in"));
+            return error(403, "Changing the Ask orq agent needs a passkey sign-in");
+        }
+        if *harness != "claude" {
+            audit(Outcome::Refused, Some("the Ask orq agent is Claude only"));
+            return error(422, "The Ask orq agent can only be a Claude model");
+        }
     }
     let options = match provider.map(|provider| provider.setting_options()) {
         Some(Ok(Some(options))) => options,
@@ -3045,6 +3066,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return error(401, "a valid bearer token is required");
     }
     let (path, query) = request.path.split_once('?').unwrap_or((request.path, ""));
+    if let Some((id, tail)) = crate::ask_orq::target(path) {
+        return crate::ask_orq::route(roots, provider, id, &tail, request.method, body, confirm.is_some());
+    }
     if let Some((id, feature)) = run_start_target(path) {
         match request.method {
             "POST" => return start_run(roots, provider, id, feature, body),
@@ -3109,7 +3133,7 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return restart_server(roots, provider, body, confirm.is_some());
     }
     if path == "/api/settings/agents" && request.method == "POST" {
-        return set_agents(roots, provider, body);
+        return set_agents(roots, provider, body, confirm);
     }
     if let Some(id) = (request.method == "POST").then(|| project_target(path, "settings")).flatten() {
         return save_project_settings(roots, provider, id, body, confirm.is_some());

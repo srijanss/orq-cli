@@ -78,7 +78,7 @@ fn a_value_that_looks_like_a_secret_is_redacted_even_in_an_allowed_field() {
 fn no_config_file_means_empty_settings_and_a_broken_one_is_an_error_naming_no_path() {
     let s = setup("settings-none", None);
     let (status, body) = ask(&s, "GET", Some("Bearer tok"));
-    assert_eq!((status, without_version(&body["settings"])), (200, json!({"implementer": null, "reviewer": null, "models": [], "remote_actions": false})), "{body}");
+    assert_eq!((status, without_version(&body["settings"])), (200, json!({"implementer": null, "reviewer": null, "ask_orq_agent": null, "models": [], "remote_actions": false})), "{body}");
     assert_eq!(body["settings"]["version"].as_str().map(str::len), Some(64), "{body}");
 
     let s = setup("settings-bad", Some("this is [not toml"));
