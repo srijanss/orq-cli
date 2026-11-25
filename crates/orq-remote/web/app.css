@@ -373,7 +373,7 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .tabbar-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.25rem; }
   .tabbar-more { overflow: hidden; }
   .tabbar-more > * { margin-top: 0.25rem; }
-  .tabbar-handle { position: absolute; left: 50%; top: 0; width: 5rem; height: 1.125rem; margin-left: -2.5rem; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
+  .tabbar-handle { position: absolute; left: 50%; top: 0; width: 5rem; height: 1.125rem; min-height: 0; margin-left: -2.5rem; padding: 0; border: 0; background: none; cursor: grab; touch-action: none; }
   .tabbar-handle::before { content: ""; position: absolute; left: 50%; top: 0.4375rem; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--sidebar-muted); }
   .tabbar a { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; text-decoration: none; color: var(--sidebar-muted); }
   .tabbar a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }

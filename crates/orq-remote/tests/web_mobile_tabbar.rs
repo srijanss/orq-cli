@@ -300,6 +300,13 @@ fn the_bars_use_the_sidebar_colours_and_the_current_tab_in_either_row_is_the_lig
 }
 
 #[test]
+fn the_handle_drops_the_buttons_44px_minimum_so_it_fits_above_the_first_row() {
+    let css = css();
+    let handle = rule(phone(&css), ".tabbar-handle {");
+    assert!(handle.contains("height: 1.125rem") && handle.contains("min-height: 0"), "the handle is only as tall as the space above the tabs: {handle}");
+}
+
+#[test]
 fn the_two_rows_use_a_five_column_grid() {
     let css = css();
     let phone = phone(&css);
@@ -365,6 +372,20 @@ fn in_a_browser_the_second_row_sits_under_the_first_on_its_columns() {
         assert!(edge(&result, "nav.tabbar", 0, "top") <= edge(&result, FIRST, 0, "top"), "{boxes}\n=> {width}: both rows are inside the bar");
         assert!(edge(&result, SECOND, 0, "bottom") <= edge(&result, "nav.tabbar", 0, "bottom"), "{boxes}\n=> {width}: both rows are inside the bar");
     }
+}
+
+/// What a tap a few pixels inside the top edge of the first row's middle tab lands on.
+const TOP_OF_MIDDLE_TAB: &str = "var tab = document.querySelectorAll('nav.tabbar > [data-tab-row=\"1\"] a')[2].getBoundingClientRect(); \
+    var hit = document.elementFromPoint(tab.left + tab.width / 2, tab.top + 4); return hit && hit.closest('a') ? 'tab' : (hit && hit.closest('[data-tab-handle]') ? 'handle' : String(hit && hit.tagName));";
+
+#[test]
+fn in_a_browser_the_handle_stays_above_the_first_row() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    let steps = json!([{"wait": "nav.tabbar a"}, {"boxes": HANDLE}, {"boxes": FIRST}, {"eval": "hit", "js": TOP_OF_MIDDLE_TAB}]);
+    let result = web_chromium::measure_with(&chromium, 390, "/dashboard", &projects(), steps, SETTLED).result;
+    assert!(result.get("error").is_none(), "{result}");
+    assert!(edge(&result, HANDLE, 0, "bottom") <= edge(&result, FIRST, 0, "top"), "the handle ends where the first row starts: {result}");
+    assert_eq!(result["evals"]["hit"], "tab", "a tap on the top of a first-row tab reaches the tab: {result}");
 }
 
 fn projects() -> Vec<web_chromium::Reply> {
