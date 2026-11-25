@@ -200,6 +200,38 @@ fn a_pi_design_reviewer_whose_models_cannot_be_listed_or_are_not_listed_is_refus
 }
 
 #[test]
+fn a_pi_listing_without_an_images_column_is_refused() {
+    let p = project("pi-no-images-column", true);
+    p.design_reviewer("openai/gpt-6.1-sol");
+    p.mark_frontend("page");
+    // The model is listed, but whether it accepts images is unknown.
+    p.pi_script("#!/bin/sh\nprintf 'provider  model  context  max-out  thinking\\nopenai  gpt-6.1-sol  400K  128K  yes\\n'\n");
+    let output = p.run(&["--feature", "page", "--check"]);
+    assert_refused(&p, &output, "page", "pi doesn't list openai/gpt-6.1-sol");
+}
+
+#[test]
+fn a_pi_design_reviewer_without_pi_installed_is_refused() {
+    let p = project("pi-missing", true);
+    p.design_reviewer("openai/gpt-6.1-sol");
+    p.mark_frontend("page");
+    // The run's PATH has git and nothing else, so no pi installed on this machine is found.
+    let git = std::env::split_paths(&std::env::var_os("PATH").unwrap()).map(|dir| dir.join("git")).find(|git| git.is_file()).unwrap();
+    let only_git = p.home.join("only-git");
+    std::fs::create_dir_all(&only_git).unwrap();
+    std::os::unix::fs::symlink(git, only_git.join("git")).unwrap();
+    let output = p
+        .command()
+        .args(["run", "--repo"])
+        .arg(p.repo.root())
+        .args(["--remote", "origin", "--target", "main", "--feature", "page", "--check"])
+        .env("PATH", &only_git)
+        .output()
+        .unwrap();
+    assert_refused(&p, &output, "page", "pi's models could not be listed");
+}
+
+#[test]
 fn a_pi_listing_that_never_ends_is_bounded_and_refused() {
     let p = project("pi-hangs", true);
     p.design_reviewer("openai/gpt-6.1-sol");
