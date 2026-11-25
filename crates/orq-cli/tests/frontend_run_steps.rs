@@ -37,6 +37,35 @@ fn check_group(repo: &GitFixture, group: &str) -> Output {
         .unwrap()
 }
 
+/// The project can run its design steps: a `[design]` table and a claude design reviewer, so a frontend run is
+/// not refused for its design setup (tests/run_refuses_frontend_without_design.rs).
+fn design_ready(repo: &GitFixture) {
+    std::fs::create_dir_all(repo.root().join(".orq")).unwrap();
+    std::fs::write(
+        repo.root().join(".orq/run.toml"),
+        "[design]\nstart_command = [\"false\"]\n\n[design.viewports]\ndesktop = \"400x300\"\ntablet = \"300x400\"\nmobile = \"200x400\"\n",
+    )
+    .unwrap();
+    let home = repo.root().with_extension("orq-home");
+    let roots = orq_core::storage::StorageRoots::resolve(&|name| match name {
+        "XDG_DATA_HOME" => Some(home.join("data").display().to_string()),
+        "XDG_CONFIG_HOME" => Some(home.join("config").display().to_string()),
+        "XDG_STATE_HOME" => Some(home.join("state").display().to_string()),
+        "XDG_CACHE_HOME" => Some(home.join("cache").display().to_string()),
+        _ => None,
+    })
+    .unwrap();
+    roots.create_all().unwrap();
+    let mut store = orq_core::store::Store::open(&roots.database()).unwrap();
+    let root = std::fs::canonicalize(repo.root()).unwrap();
+    let revision = store.project_settings(&root).unwrap().revision;
+    let settings = orq_core::project_settings::ProjectSettings {
+        design_reviewer: Some(orq_core::project_settings::ProjectAgent { harness: "claude".to_string(), model: "claude-opus-5-5".to_string(), effort: None }),
+        ..Default::default()
+    };
+    store.save_project_settings(&root, revision, &settings).unwrap();
+}
+
 #[test]
 fn a_grouped_run_with_one_frontend_feature_starts_as_a_design_group() {
     let repo = GitFixture::new();
@@ -48,6 +77,7 @@ fn a_grouped_run_with_one_frontend_feature_starts_as_a_design_group() {
 
     let kind = orq(&repo).args(["feature", "kind", "--repo"]).arg(repo.root()).args(["--id", "page", "frontend"]).output().unwrap();
     assert!(kind.status.success(), "{}", text(&kind.stderr));
+    design_ready(&repo);
 
     // Its one frontend member's package is the only one, so the group is a design group.
     let design_group = check_group(&repo, "page,engine");

@@ -462,6 +462,39 @@ fn refuse(resuming: Option<&str>, message: &str, code: u8) -> ExitCode {
     ExitCode::from(code)
 }
 
+/// Why a run of `features` may not start when one of them is frontend (marked in orq.db) and the project cannot
+/// run its design steps: no `[design]` table (`has_design_table` false), or design agents the project settings do
+/// not accept. Names the first frontend feature. `Ok(None)` when it may start, and always when none is frontend.
+fn frontend_design_refusal(project: &orq_git::Project, features: &[String], has_design_table: bool) -> Result<Option<String>, String> {
+    let Ok(roots) = orq_core::storage::StorageRoots::resolve(&|name| std::env::var(name).ok()) else {
+        return Ok(None);
+    };
+    let frontend = orq_remote::projects::frontend_features_at(&roots.database(), &kind_root(project))?;
+    let Some(feature) = features.iter().find(|feature| frontend.contains(feature.as_str())) else {
+        return Ok(None);
+    };
+    let reason = if !has_design_table {
+        Some("this frontend feature's project has no design settings: add a [design] table to .orq/run.toml".to_string())
+    } else {
+        checked_design_agents(&project_settings(project)?).err()
+    };
+    Ok(reason.map(|reason| format!("feature {} may not start a run: {}", printable(feature), printable(&reason))))
+}
+
+/// The design agents a project with `settings` uses, checked as `orq_core::project_settings::design_agents`
+/// does; pi's models are listed only when a design role uses pi.
+fn checked_design_agents(settings: &orq_core::project_settings::ProjectSettings) -> Result<orq_core::project_settings::DesignAgents, String> {
+    let uses_pi = [&settings.design_reviewer, &settings.design_verifier, &settings.design_preparer]
+        .iter()
+        .any(|agent| agent.as_ref().is_some_and(|agent| agent.harness == "pi"));
+    let listing = if uses_pi {
+        find_program("pi").and_then(|program| pi_model_listing(&program, std::time::Duration::from_secs(5)))
+    } else {
+        None
+    };
+    orq_core::project_settings::design_agents(settings, orq_agents::effort_levels, listing.as_deref())
+}
+
 /// [`run`], for the run that resumes `resuming` when given.
 fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
     let Some(parsed) = parse_run_args(args) else { return usage_error() };
@@ -575,8 +608,18 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
     if let Some(Err(reason)) = parsed.model.as_deref().map(orq_orchestrator::checked_model) {
         return fail(format!("--model: {reason}"));
     }
-    if let Err(err) = orq_orchestrator::load_run_settings(&project.root, &|name| std::env::var(name).ok()) {
-        return fail(format!("run settings: {err}"));
+    let run_settings = match orq_orchestrator::load_run_settings(&project.root, &|name| std::env::var(name).ok()) {
+        Ok(settings) => settings,
+        Err(err) => return fail(format!("run settings: {err}")),
+    };
+    // A frontend run whose design steps cannot run is refused before it is recorded; a resume (run again once
+    // the agents are set) and a publish keep what the run itself does.
+    if !parsed.resume && !parsed.publish {
+        match frontend_design_refusal(&project, &features, run_settings.design.is_some()) {
+            Ok(None) => {}
+            Ok(Some(message)) => return refuse(resuming, &message, EXIT_INELIGIBLE),
+            Err(message) => return fail(message),
+        }
     }
     if parsed.detach || parsed.check {
         if parsed.run_id.is_some() || (parsed.detach && parsed.check) {
@@ -1645,15 +1688,7 @@ fn design_review(args: &[OsString]) -> ExitCode {
         Ok(settings) => settings,
         Err(err) => return refuse(err),
     };
-    let uses_pi = [&settings.design_reviewer, &settings.design_verifier, &settings.design_preparer]
-        .iter()
-        .any(|agent| agent.as_ref().is_some_and(|agent| agent.harness == "pi"));
-    let listing = if uses_pi {
-        find_program("pi").and_then(|program| pi_model_listing(&program, std::time::Duration::from_secs(5)))
-    } else {
-        None
-    };
-    let agents = match orq_core::project_settings::design_agents(&settings, orq_agents::effort_levels, listing.as_deref()) {
+    let agents = match checked_design_agents(&settings) {
         Ok(agents) => agents,
         Err(err) => return refuse(err),
     };
