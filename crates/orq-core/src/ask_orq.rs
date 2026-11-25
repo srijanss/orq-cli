@@ -574,10 +574,19 @@ fn chat_settings(roots: &StorageRoots, allowed: &[String]) -> String {
 }
 
 /// Writes the settings of the chat's next turn, with every rule allowed in it, then drops the rules allowed for
-/// that turn only.
-fn settle_turn_settings(roots: &StorageRoots, conn: &Connection, chat: &str) -> Result<(), String> {
+/// that turn only, returning them so they can be put back if the turn doesn't start.
+fn settle_turn_settings(
+    roots: &StorageRoots,
+    conn: &Connection,
+    chat: &str,
+) -> Result<Vec<String>, String> {
     let rules =
         chat_rules(conn, chat).map_err(|_| "the chat's rules could not be read".to_string())?;
+    let once: Vec<String> = rules
+        .iter()
+        .filter(|(_, scope)| scope == "once")
+        .map(|(rule, _)| rule.clone())
+        .collect();
     let allowed: Vec<String> = rules.into_iter().map(|(rule, _)| rule).collect();
     std::fs::write(
         chat_dir(roots, chat).join("settings.json"),
@@ -589,7 +598,17 @@ fn settle_turn_settings(roots: &StorageRoots, conn: &Connection, chat: &str) -> 
         params![chat],
     )
     .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(once)
+}
+
+/// Puts back the rules allowed once that a turn which never started took; a rule allowed for the chat since wins.
+fn restore_once_rules(conn: &Connection, chat: &str, once: &[String]) {
+    for rule in once {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO ask_orq_rules (chat_id, rule, scope, created_at) VALUES (?1, ?2, 'once', ?3)",
+            params![chat, rule, now()],
+        );
+    }
 }
 
 /// The deny rule `rule` falls under, if any: a command starting with a denied one, or a file that is one of orq's
@@ -1300,7 +1319,7 @@ fn send(
     } else {
         text.to_string()
     };
-    if settle_turn_settings(roots, conn, &chat.id).is_err() {
+    let Ok(once) = settle_turn_settings(roots, conn, &chat.id) else {
         end_turn(
             roots,
             &chat.id,
@@ -1309,7 +1328,7 @@ fn send(
             Some("the chat's settings could not be written"),
         );
         return error(500, "the chat's settings could not be written");
-    }
+    };
     match start_turn(roots, place, &chat, n, stdin) {
         Ok(pid) => {
             let _ = conn.execute(
@@ -1319,6 +1338,7 @@ fn send(
             reply(202, json!({ "turn": n }))
         }
         Err(_) => {
+            restore_once_rules(conn, &chat.id, &once);
             end_turn(
                 roots,
                 &chat.id,

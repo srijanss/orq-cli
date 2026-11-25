@@ -617,6 +617,58 @@ fn a_denied_command_behind_options_a_path_quotes_or_a_wrapper_cannot_be_allowed(
 }
 
 #[test]
+fn a_rule_allowed_once_is_kept_for_the_next_turn_that_starts_when_a_reply_could_not_be_started() {
+    let s = setup("once-kept");
+    git_repo(&s.scan, "alpha");
+    let chat = create_chat(&s);
+    reply_with(
+        &s,
+        refused_reply(&[("t1", "Bash", json!({"command": "orq queue add feat-x"}))]),
+    );
+    say(&s, &chat, "queue feat-x");
+    let rule = "Bash(orq queue add:*)";
+    let (status, body) = allow(
+        &s,
+        &chat,
+        json!({"rule": rule, "scope": "once", "assertion": "yes"}),
+        Who::Passkey,
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // The agent can't be started: the reply fails, and no turn used the rule.
+    let options: std::sync::Arc<orq_remote::projects::AgentOptionsSource> =
+        std::sync::Arc::new(|| vec![("claude".to_string(), vec!["opus".to_string()])]);
+    let broken = Setup {
+        base: s.base.clone(),
+        scan: s.scan.clone(),
+        roots: s.roots.clone(),
+        provider: StoreProjects::new(s.roots.clone(), s.scan.clone())
+            .with_agent_options(options)
+            .with_chat_agent(s.base.join("no-such-claude")),
+    };
+    let (status, body) = send(
+        &broken,
+        "POST",
+        &format!("/api/projects/alpha/chats/{chat}/messages"),
+        json!({"text": "Allowed. Try again."}),
+    );
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(
+        read_chat(&s, &chat)["rules"],
+        json!([{"rule": rule, "scope": "once"}])
+    );
+
+    reply_with(&s, quiet_reply());
+    say(&s, &chat, "Allowed. Try again.");
+    say(&s, &chat, "and again");
+    assert_eq!(
+        allowed_per_turn(&s),
+        [vec![], vec![rule.to_string()], vec![]]
+    );
+    assert_eq!(read_chat(&s, &chat)["rules"], json!([]));
+}
+
+#[test]
 fn the_server_confirms_an_allow_with_a_passkey_check_of_its_own_purpose() {
     use orq_core::remote_inbox::step_up_purpose;
     // A challenge the page asks for to allow a rule cannot turn remote actions on, nor the other way round.
