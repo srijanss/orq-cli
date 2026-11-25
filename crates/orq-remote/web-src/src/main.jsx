@@ -8126,7 +8126,8 @@ function useAskAddress(path) {
 // project's chat list or the open chat's id.
 function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }) {
   const [about, setAbout] = useState(null);
-  const [drafting, setDrafting] = useState(false);
+  // The context of the chat being begun, taken from the page when New chat was pressed, or null.
+  const [drafting, setDrafting] = useState(null);
   const [picked, pick] = useAskProject(projectId === null && token === SESSION, token);
   const project = projectId !== null ? projectId : picked.id;
   const gate = askGate(useAskRead(API_SETTINGS, token, onSignedOut, 0).data);
@@ -8134,9 +8135,9 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
   // to that project's chat list, and nothing of the last one is drawn or asked of the new one meanwhile.
   const [shown, setShown] = useState(project);
   const moved = project !== shown;
-  const open = (chat !== "" || drafting) && !moved && project !== null && token === SESSION;
+  const open = (chat !== "" || drafting !== null) && !moved && project !== null && token === SESSION;
   const openChat = (id) => {
-    setDrafting(false);
+    setDrafting(null);
     onChat(id);
   };
   useEffect(() => {
@@ -8165,12 +8166,12 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
         <p className="ask-reason" data-ask-passkey>Ask orq needs a passkey sign-in. Sign in with your passkey on this device to read and send chats.</p>
       ) : null}
       {token === SESSION && projectId === null && !open ? <AskProjectPicker picked={picked} onPick={pick} /> : null}
-      {project === null || token !== SESSION ? null : drafting && !moved ? (
-        <AskDraft token={token} onSignedOut={onSignedOut} projectId={project} context={projectId === null ? { kind: "project" } : pageContext(path)} onAbout={setAbout} onOpened={openChat} gate={gate} />
+      {project === null || token !== SESSION ? null : drafting !== null && !moved ? (
+        <AskDraft token={token} onSignedOut={onSignedOut} projectId={project} context={drafting} onAbout={setAbout} onOpened={openChat} gate={gate} />
       ) : open ? (
         <AskChat key={project + "\n" + chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} onGone={() => openChat("")} gate={gate} />
       ) : (
-        <AskChatList key={project} token={token} onSignedOut={onSignedOut} projectId={project} onOpen={openChat} onNew={() => setDrafting(true)} gate={gate} />
+        <AskChatList key={project} token={token} onSignedOut={onSignedOut} projectId={project} onOpen={openChat} onNew={() => setDrafting(projectId === null ? { kind: "project" } : pageContext(path))} gate={gate} />
       )}
     </aside>
   );
@@ -8354,7 +8355,7 @@ function AskDraft({ token, onSignedOut, projectId, context, onAbout, onOpened, g
   return (
     <>
       <div className="ask-body" data-ask-draft />
-      {gate !== null ? gate : <AskComposer key={suggestion} initial={suggestion} sending={sending} note={note} onSend={send} />}
+      {gate !== null ? gate : <AskComposer initial={suggestion} sending={sending} note={note} onSend={send} />}
     </>
   );
 }
@@ -8801,6 +8802,11 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
 // The box grows with its text up to 8 lines (its max-height), then scrolls.
 function AskComposer({ sending, note, onSend, busy = null, initial = "" }) {
   const [text, setText] = useState(initial);
+  // A suggestion that comes later fills the box only while the person hasn't typed in it.
+  const typed = useRef(false);
+  useEffect(() => {
+    if (!typed.current) setText(initial);
+  }, [initial]);
   const phone = usePhone();
   const box = useRef(null);
   useLayoutEffect(() => {
@@ -8823,7 +8829,7 @@ function AskComposer({ sending, note, onSend, busy = null, initial = "" }) {
       {note !== "" ? <p role="alert" className="ask-reason">{note}</p> : null}
       {busy !== null ? <p className="ask-reason" data-ask-box-reason>{busy}</p> : null}
       <div className="ask-composer" data-ask-composer>
-        <textarea ref={box} data-ask-input aria-label="Message orq" rows={1} value={text} disabled={sending || busy !== null} onKeyDown={key} onChange={(event) => setText(event.target.value)} />
+        <textarea ref={box} data-ask-input aria-label="Message orq" rows={1} value={text} disabled={sending || busy !== null} onKeyDown={key} onChange={(event) => { typed.current = true; setText(event.target.value); }} />
         <button type="button" className="primary-button" data-ask-send disabled={sending || busy !== null || text.trim() === ""} onClick={submit}>Send</button>
       </div>
     </div>

@@ -350,6 +350,23 @@ fn new_chat_follows_the_page_it_was_opened_on_with_an_editable_suggested_message
 }
 
 #[test]
+fn a_new_chat_keeps_the_page_it_was_begun_on_and_the_persons_words_while_they_move_to_another_page() {
+    let run_page = format!("/projects/alpha/orchestrations/{RUN}");
+    let steps = vec![
+        json!({"click": ASK}),
+        json!({"click": "[data-ask-new]"}),
+        json!({"wait": "[data-ask-about]", "text": format!("About {RUN} · ")}),
+        json!({"type": "[data-ask-input]", "value": "My own question"}),
+        json!({"click": ".sidebar nav a[href='/projects/alpha/queue']"}),
+        json!({"wait": "main.content h1", "text": "Queue"}),
+        json!({"wait": "[data-ask-input]"}),
+        json!({"eval": "draft", "js": DRAFT}),
+    ];
+    let Some(result) = open(1440, &run_page, vec![run_route("failed")], true, steps) else { return };
+    assert_eq!(eval(&result, "draft"), &json!({"message": "My own question", "about": format!("About {RUN} · home-v02-assets")}), "{result}");
+}
+
+#[test]
 fn outside_a_project_the_panel_asks_which_project_and_remembers_the_last_one() {
     let two = route("GET", "/api/projects", vec![reply(json!({"projects": [project(), {"id": "beta", "name": "beta", "available": true, "features": 0, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24}]}))]);
     let beta_chats = route("GET", "/api/projects/beta/chats", vec![reply(json!({"chats": []}))]);
