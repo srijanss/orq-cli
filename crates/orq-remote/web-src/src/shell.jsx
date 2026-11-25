@@ -136,12 +136,25 @@ export function Shell(props) {
   return phone ? <PhoneShell {...props} /> : <DesktopShell {...props} />;
 }
 
+// "Ask orq": a toggle among the sections, not a link. It opens and closes the chat panel over or beside the
+// page, which stays where it is; while the panel is open it has the section pill too. `ask` is
+// { open, onToggle } from the page, or null where nothing listens (the entry then does nothing).
+function AskToggle({ ask, className = undefined, size = 20, label = "label" }) {
+  const open = ask !== null && ask.open === true;
+  return (
+    <button type="button" className={className} data-ask-orq aria-expanded={open ? "true" : "false"} title="Ask orq" onClick={() => ask?.onToggle?.()}>
+      <Icon name="chat" size={size} />
+      <span className={label}>Ask orq</span>
+    </button>
+  );
+}
+
 // Signing out on a phone is on the Settings page; the bar's corner holds the page's Refresh.
-function PhoneShell({ projectId = null, children }) {
+function PhoneShell({ projectId = null, ask = null, panel = null, children }) {
   const { path, entries, announcement } = usePlace(projectId);
   const refresh = useSyncExternalStore(subscribeToRefresh, () => pageRefresh);
   return (
-    <div className="shell phone" data-shell>
+    <div className={ask !== null && ask.open ? "shell phone asking" : "shell phone"} data-shell>
       <header className="topbar">
         <ThemeToggle />
         <span className="brand"><Icon name="logo" size={24} />Orq</span>
@@ -152,7 +165,8 @@ function PhoneShell({ projectId = null, children }) {
         ) : <span />}
       </header>
       <main className="content">{children}</main>
-      <TabBar entries={entries} path={path} />
+      <TabBar entries={entries} path={path} ask={ask} />
+      {ask !== null && ask.open ? panel : null}
       <Announcer text={announcement} />
     </div>
   );
@@ -164,8 +178,8 @@ function inSecondRow(entry) {
 }
 
 // The bar's two rows of icon tabs, on the same five columns: Home, Features, Orchestrations, Queue and
-// Settings, then Todos and Reviews. Each name stays as a visually hidden label.
-export function TabBar({ entries, path }) {
+// Settings, then Todos, Reviews and Ask orq. Each name stays as a visually hidden label.
+export function TabBar({ entries, path, ask = null }) {
   const rows = [entries.filter((entry) => !inSecondRow(entry)), entries.filter(inSecondRow)];
   return (
     <nav className="tabbar" aria-label="Sections">
@@ -177,13 +191,14 @@ export function TabBar({ entries, path }) {
               <span className="tab-label">{entry.label}</span>
             </a>
           ))}
+          {at === 1 ? <AskToggle ask={ask} size={28} label="tab-label" /> : null}
         </div>
       ))}
     </nav>
   );
 }
 
-function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null, onSignOut = null, children }) {
+function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null, onSignOut = null, ask = null, panel = null, children }) {
   const { path, entries, announcement } = usePlace(projectId);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -224,7 +239,7 @@ function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null
   }, [listOpen]);
 
   return (
-    <div className={collapsed ? "shell collapsed" : "shell"} data-shell>
+    <div className={"shell" + (collapsed ? " collapsed" : "") + (ask !== null && ask.open ? " asking" : "")} data-shell>
       <aside id="sidebar" className="sidebar" aria-label="Navigation">
         <div className="sidebar-head">
           <span className="brand" data-brand>
@@ -264,6 +279,7 @@ function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null
                   </ul>
                 </div>
               ) : null}
+              {entry.href.endsWith("/reviews") ? <AskToggle ask={ask} className="nav-toggle" /> : null}
             </Fragment>
           ))}
         </nav>
@@ -280,6 +296,7 @@ function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null
       </aside>
       <Announcer text={announcement} />
       <main className="content">{children}</main>
+      {ask !== null && ask.open ? panel : null}
     </div>
   );
 }

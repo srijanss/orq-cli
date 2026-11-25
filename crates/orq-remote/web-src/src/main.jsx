@@ -6743,6 +6743,11 @@ function stepDuration(events) {
   if (first === null || last === null) return null;
   const seconds = Math.round((last - first) / 1000);
   if (seconds < 1) return null;
+  return spanText(seconds);
+}
+
+// A span of whole seconds as "12s", "3m 4s" or "1h 2m".
+function spanText(seconds) {
   return seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m " + (seconds % 60) + "s" : Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
 }
 
@@ -8062,11 +8067,464 @@ function Scoped({ token, onSignedOut, onSignOut }) {
   useEffect(() => {
     if (known) lastProject = named;
   }, [known, named]);
+  const [ask, setAsk] = useAskAddress(path);
+  const toggle = { open: ask !== null, onToggle: () => setAsk(ask === null ? "" : null) };
+  const panel = <AskPanel token={token} onSignedOut={onSignedOut} path={path} projectId={named} chat={ask} onChat={setAsk} onClose={() => setAsk(null)} />;
   return (
-    <Shell projectId={projects === null || known ? named : null} projects={inProject ? projects : menuProjects} onOpenSwitcher={openSwitcher} onSignOut={onSignOut}>
+    <Shell projectId={projects === null || known ? named : null} projects={inProject ? projects : menuProjects} onOpenSwitcher={openSwitcher} onSignOut={onSignOut} ask={toggle} panel={panel}>
       <SignedIn token={token} onSignedOut={onSignedOut} onSignOut={onSignOut} projectId={named} projects={projects} />
     </Shell>
   );
+}
+
+// The Ask orq panel's state is in the address: no `ask` closed, `?ask=` the chat list, `?ask=<chat>` that chat.
+// A page change drops the query (navigate), so it is written back after every move and the panel stays open.
+const ASK_PARAM = "ask";
+const CHAT_ID = /^chat-[A-Za-z0-9_-]{1,64}$/;
+
+function askFromAddress() {
+  const value = new URLSearchParams(window.location.search).get(ASK_PARAM);
+  if (value === null) return null;
+  return CHAT_ID.test(value) ? value : "";
+}
+
+function useAskAddress(path) {
+  const [ask, setAsk] = useState(askFromAddress);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (ask === null) params.delete(ASK_PARAM);
+    else params.set(ASK_PARAM, ask);
+    const query = params.toString();
+    const next = window.location.pathname + (query === "" ? "" : "?" + query) + window.location.hash;
+    if (next !== window.location.pathname + window.location.search + window.location.hash) window.history.replaceState(window.history.state, "", next);
+  }, [ask, path]);
+  return [ask, setAsk];
+}
+
+// The Ask orq panel: beside the page on desktop, a full-screen sheet on a phone. `chat` is "" for the
+// project's chat list or the open chat's id.
+function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }) {
+  const [about, setAbout] = useState(null);
+  const open = chat !== "" && projectId !== null;
+  return (
+    <aside className="ask-panel" data-ask-panel aria-label="Ask orq">
+      <div className="ask-head">
+        {open ? (
+          <button type="button" className="ask-back" data-ask-back aria-label="All chats" onClick={() => onChat("")}>
+            <Icon name="arrowLeft" size={20} />
+          </button>
+        ) : null}
+        <div className="ask-title">
+          <h2>Ask orq</h2>
+          {open && about !== null ? <p className="ask-about" data-ask-about>{about}</p> : null}
+        </div>
+        <button type="button" className="ask-close" data-ask-close aria-label="Close Ask orq" onClick={onClose}>
+          <Icon name="close" size={20} />
+        </button>
+      </div>
+      {projectId === null ? null : open ? (
+        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={projectId} chatId={chat} onAbout={setAbout} />
+      ) : (
+        <AskChatList token={token} onSignedOut={onSignedOut} projectId={projectId} onOpen={onChat} />
+      )}
+    </aside>
+  );
+}
+
+function chatsPath(projectId, tail = "") {
+  return "/api/projects/" + encodeURIComponent(projectId) + "/chats" + tail;
+}
+
+function isChat(chat) {
+  return chat !== null && typeof chat === "object" && typeof chat.id === "string" && CHAT_ID.test(chat.id) && typeof chat.title === "string";
+}
+
+// What a chat is about, in words: the run or feature it names, the queue or the project.
+function contextText(context) {
+  if (context === null || typeof context !== "object") return "The project";
+  if ((context.kind === "run" || context.kind === "feature") && typeof context.target === "string") return context.target;
+  return context.kind === "queue" ? "The queue" : "The project";
+}
+
+// Reads `path` as JSON while `key` is unchanged: { data, failure } with a reason in failure.
+function useAskRead(path, token, onSignedOut, key) {
+  const [state, setState] = useState({ data: null, failure: null });
+  useEffect(() => {
+    let current = true;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const response = await get(path, token, controller.signal);
+        if (!current) return;
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        if (!response.ok) {
+          const reason = await reasonOf(response, "The chats could not be read.");
+          if (current) setState({ data: null, failure: reason });
+          return;
+        }
+        const data = await jsonOrNull(response);
+        if (current) setState({ data, failure: data === null ? "The chats could not be read." : null });
+      } catch (failure) {
+        if (current && !controller.signal.aborted) setState({ data: null, failure: "The server could not be reached." });
+      }
+    })();
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [path, token, key]);
+  return state;
+}
+
+function AskChatList({ token, onSignedOut, projectId, onOpen }) {
+  const { data, failure } = useAskRead(chatsPath(projectId), token, onSignedOut, 0);
+  const chats = data !== null && Array.isArray(data.chats) ? data.chats.filter(isChat) : null;
+  return (
+    <div className="ask-body">
+      {failure !== null ? <p role="alert" className="ask-reason">{failure}</p> : null}
+      {chats === null ? (failure === null ? <p className="muted" role="status">Loading the chats…</p> : null) : chats.length === 0 ? (
+        <p className="muted">No chats yet.</p>
+      ) : (
+        <ul className="ask-chats" data-ask-chats>
+          {chats.map((chat) => (
+            <li key={chat.id}>
+              <button type="button" data-ask-chat={chat.id} onClick={() => onOpen(chat.id)}>
+                <span className="ask-chat-title">
+                  {chat.running === true ? <span className="ask-running-dot" data-ask-running title="orq is working" /> : null}
+                  {chat.title === "" ? "New chat" : chat.title}
+                </span>
+                <span className="ask-chat-meta">
+                  {contextText(chat.context)}
+                  {typeof chat.last_message_at === "string" ? <> · <Moment at={chat.last_message_at} /></> : null}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// The words a tool call's closed line reads: "Read main.jsx" for a file tool, "Bash: <command>" otherwise.
+const FILE_TOOLS = new Set(["Read", "Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
+function toolLabel(item) {
+  const name = typeof item.name === "string" ? item.name : "Tool";
+  const input = typeof item.input === "string" ? item.input : "";
+  if (input === "") return name;
+  if (FILE_TOOLS.has(name)) return name + " " + input.split("/").filter((part) => part !== "").pop();
+  return name + ": " + input;
+}
+
+// The rule that allows editing a project's ledger, which a refused ledger edit names.
+const LEDGER_RULE = /^Edit\(.*\/\.tdd-features\.json\)$/;
+
+// The passkey's answer for allowing a rule, or { reason } when there is none.
+async function chatAllowAssertion() {
+  const assertion = await confirmWithPasskey("chat.allow");
+  if (assertion === null) return { reason: "The passkey check was cancelled." };
+  if (typeof assertion.status === "number") return { reason: assertion.status === 401 ? "Sign in with your passkey again." : "The passkey check could not start." };
+  return { assertion };
+}
+
+// Each server-sent event of `body` as { event, data }, comments left out.
+async function* serverEvents(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    let end = buffer.indexOf("\n\n");
+    while (end !== -1) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      end = buffer.indexOf("\n\n");
+      let event = "message";
+      const data = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+      }
+      if (data.length > 0) yield { event, data: data.join("\n") };
+    }
+  }
+}
+
+const STREAM_RETRY_MS = 3000;
+
+// Follows chat `path`'s stream while the chat is open: each item as it comes or changes (by its index), and
+// whether a reply runs. A stream that ends is opened again; one the server refuses is not.
+function useChatStream(path, token, onItem, onRunning) {
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer = null;
+    const follow = async () => {
+      try {
+        const response = await get(path + "/stream", token, controller.signal);
+        if (!response.ok || response.body === null) return;
+        for await (const { event, data } of serverEvents(response.body)) {
+          let parsed = null;
+          try {
+            parsed = JSON.parse(data);
+          } catch (unreadable) {
+            parsed = null;
+          }
+          if (parsed === null || typeof parsed !== "object") continue;
+          if (event === "item" && Number.isInteger(parsed.index) && parsed.index >= 0) onItem(parsed.index, parsed.item);
+          if (event === "state" && typeof parsed.running === "boolean") onRunning(parsed.running);
+        }
+      } catch (broken) {
+        if (controller.signal.aborted) return;
+      }
+      if (!controller.signal.aborted) timer = setTimeout(follow, STREAM_RETRY_MS);
+    };
+    follow();
+    return () => {
+      controller.abort();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [path, token]);
+}
+
+// How long orq has been working on the reply, since this page saw it start.
+function Elapsed({ since }) {
+  useClock();
+  return <span className="ask-elapsed">{spanText(Math.max(0, Math.round((Date.now() - since) / 1000)))}</span>;
+}
+
+const TURN_ENDS = { failed: "Failed", stopped: "Stopped", interrupted: "Interrupted" };
+
+// The items to draw, with a line after each turn that failed, was stopped or was interrupted, saying why.
+function withTurnEnds(items) {
+  const drawn = [];
+  let turn = null;
+  const close = () => {
+    if (turn !== null && TURN_ENDS[turn.state] !== undefined) drawn.push({ type: "turn-end", state: turn.state, reason: typeof turn.reason === "string" ? turn.reason : "" });
+  };
+  items.forEach((item, at) => {
+    if (item !== null && typeof item === "object" && item.type === "user") {
+      close();
+      turn = item;
+    }
+    drawn.push({ ...item, at });
+  });
+  close();
+  return drawn;
+}
+
+function AskChat({ token, onSignedOut, projectId, chatId, onAbout }) {
+  const path = chatsPath(projectId, "/" + encodeURIComponent(chatId));
+  const [reads, setReads] = useState(0);
+  const { data, failure } = useAskRead(path, token, onSignedOut, reads);
+  const [allowed, setAllowed] = useState([]);
+  const [notes, setNotes] = useState({});
+  const [sending, setSending] = useState(false);
+  const [sendNote, setSendNote] = useState("");
+  const [items, setItems] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [since, setSince] = useState(() => Date.now());
+  const [stopping, setStopping] = useState("idle");
+  const [stopNote, setStopNote] = useState("");
+  const chat = data !== null && isChat(data.chat) ? data.chat : null;
+  const working = (next) => {
+    setRunning((was) => {
+      if (next && !was) setSince(Date.now());
+      return next;
+    });
+  };
+  useEffect(() => {
+    if (data === null) return;
+    setItems(Array.isArray(data.items) ? data.items : []);
+    working(data.running === true);
+  }, [data]);
+  useChatStream(path, token, (index, item) => setItems((all) => {
+    const next = [...all];
+    while (next.length < index) next.push(null);
+    next[index] = item;
+    return next;
+  }), working);
+  useEffect(() => {
+    onAbout(chat === null ? null : "About " + contextText(chat.context));
+  }, [chat === null ? null : chat.id]);
+  const stop = async () => {
+    setStopping("sending");
+    setStopNote("");
+    try {
+      const response = await actionRequest(path + "/stop", token, {});
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (!response.ok) setStopNote(await reasonOf(response, "The reply could not be stopped."));
+      else setReads((n) => n + 1);
+    } catch (unreachable) {
+      setStopNote("The server could not be reached.");
+    }
+    setStopping("idle");
+  };
+  const allow = async (rule, scope) => {
+    setNotes((all) => ({ ...all, [rule]: "" }));
+    try {
+      const confirmed = await chatAllowAssertion();
+      if (confirmed.reason !== undefined) {
+        setNotes((all) => ({ ...all, [rule]: confirmed.reason }));
+        return;
+      }
+      // A 401 here is a passkey check the server did not accept, said in its words, not a sign-out.
+      const response = await actionRequest(path + "/allow", token, { rule, scope, assertion: confirmed.assertion });
+      if (!response.ok) {
+        const reason = await reasonOf(response, "The rule could not be allowed.");
+        setNotes((all) => ({ ...all, [rule]: reason }));
+        return;
+      }
+      setAllowed((all) => (all.includes(rule) ? all : [...all, rule]));
+    } catch (unreachable) {
+      setNotes((all) => ({ ...all, [rule]: "The server could not be reached." }));
+    }
+  };
+  // Sends a message; true when the server took it.
+  const send = async (text) => {
+    setSending(true);
+    setSendNote("");
+    try {
+      const response = await actionRequest(path + "/messages", token, { text });
+      if (response.status === 401) {
+        onSignedOut();
+        return false;
+      }
+      if (!response.ok) {
+        setSendNote(await reasonOf(response, "The message could not be sent."));
+        return false;
+      }
+      setReads((n) => n + 1);
+      return true;
+    } catch (unreachable) {
+      setSendNote("The server could not be reached.");
+      return false;
+    } finally {
+      setSending(false);
+    }
+  };
+  const actions = { allow, allowed, notes, retry: (rule) => send("Allowed: " + rule + ". Try again."), sending };
+  return (
+    <>
+      <div className="ask-body" data-ask-conversation>
+        {failure !== null ? <p role="alert" className="ask-reason">{failure}</p> : null}
+        {withTurnEnds(items).map((item, at) => (
+          <AskItem key={at} item={item} place={chatId + "\n" + item.at} actions={actions} />
+        ))}
+        {running ? (
+          <div className="ask-working" data-ask-working role="status">
+            <span>orq is working · <Elapsed since={since} /></span>
+            {stopping === "idle" ? <button type="button" className="danger-button" data-ask-stop onClick={() => setStopping("asking")}><Icon name="stop" size={16} />Stop</button> : null}
+          </div>
+        ) : null}
+        {running && stopping !== "idle" ? (
+          <Confirm question="Stop orq's reply?" detail="What it has done so far stays." answer="Yes, stop" tone="danger" busy={stopping === "sending"} onConfirm={stop} onCancel={() => setStopping("idle")} />
+        ) : null}
+        {stopNote !== "" ? <p role="alert" className="ask-reason">{stopNote}</p> : null}
+      </div>
+      <AskComposer sending={sending} note={sendNote} onSend={send} busy={running ? "orq is working on a reply. Wait for it, or stop it." : null} />
+    </>
+  );
+}
+
+// The message box: a text area and Send. `busy` is why it can't be used now, or null.
+function AskComposer({ sending, note, onSend, busy = null }) {
+  const [text, setText] = useState("");
+  const submit = async () => {
+    if (text.trim() === "" || sending) return;
+    if (await onSend(text)) setText("");
+  };
+  return (
+    <div className="ask-composer-wrap">
+      {note !== "" ? <p role="alert" className="ask-reason">{note}</p> : null}
+      {busy !== null ? <p className="ask-reason" data-ask-box-reason>{busy}</p> : null}
+      <form className="ask-composer" data-ask-composer onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        <textarea data-ask-input aria-label="Message orq" rows={1} value={text} disabled={sending || busy !== null} onChange={(event) => setText(event.target.value)} />
+        <button type="submit" className="primary-button" data-ask-send disabled={sending || busy !== null || text.trim() === ""}>Send</button>
+      </form>
+    </div>
+  );
+}
+
+// A call orq was not allowed to make: highlighted, with its rule and the ways to allow it.
+function AskRefused({ item, actions }) {
+  const rule = typeof item.rule === "string" ? item.rule : null;
+  const note = rule !== null ? actions.notes[rule] || "" : "";
+  const done = rule !== null && actions.allowed.includes(rule);
+  return (
+    <div className="ask-refused" data-ask-refused>
+      <p className="ask-refused-what">
+        <strong>Refused:</strong> {toolLabel(item)}
+        {rule !== null ? <> (<code>{rule}</code>)</> : null}
+      </p>
+      {rule !== null ? (
+        <div className="ask-refused-actions">
+          {done ? (
+            <button type="button" className="primary-button" data-ask-retry disabled={actions.sending} onClick={() => actions.retry(rule)}>Try again</button>
+          ) : (
+            <>
+              <button type="button" data-ask-allow="once" onClick={() => actions.allow(rule, "once")}>Allow once</button>
+              <button type="button" data-ask-allow="chat" onClick={() => actions.allow(rule, "chat")}>Allow for this chat</button>
+              {LEDGER_RULE.test(rule) ? <button type="button" data-ask-allow="ledger" onClick={() => actions.allow(rule, "chat")}>Allow ledger edits</button> : null}
+            </>
+          )}
+        </div>
+      ) : null}
+      {note !== "" ? <p role="alert" className="ask-reason">{note}</p> : null}
+    </div>
+  );
+}
+
+function AskItem({ item, place, actions }) {
+  if (item === null || typeof item !== "object") return null;
+  if (item.type === "tool" && item.status === "refused") return <AskRefused item={item} actions={actions} />;
+  if (item.type === "turn-end") {
+    return (
+      <p className="ask-item ask-turn-end" data-ask-turn-end>
+        {TURN_ENDS[item.state]}
+        {item.reason !== "" ? ": " + item.reason : ""}
+      </p>
+    );
+  }
+  if (item.type === "user") {
+    return <div className="ask-item ask-user" data-ask-item="user">{typeof item.text === "string" ? item.text : ""}</div>;
+  }
+  if (item.type === "assistant") {
+    return (
+      <div className="ask-item ask-assistant" data-ask-item="assistant">
+        <Markdown text={typeof item.text === "string" ? item.text : ""} />
+      </div>
+    );
+  }
+  if (item.type === "tool") {
+    return (
+      <div className="ask-item ask-tool" data-ask-item="tool">
+        <StepDetail place={place} kind="ask-tool" label={toolLabel(item)}>
+          <pre className="ask-tool-body" data-ask-tool-body>
+            {(typeof item.input === "string" ? item.input : "") + (typeof item.result === "string" && item.result !== "" ? "\n\n" + item.result : "")}
+          </pre>
+        </StepDetail>
+      </div>
+    );
+  }
+  if (item.type === "result") {
+    const seconds = Number.isFinite(item.duration_ms) ? Math.max(1, Math.round(item.duration_ms / 1000)) : null;
+    return (
+      <p className="ask-item ask-turn-end" data-ask-turn-end>
+        {seconds === null ? "Done" : "Done in " + spanText(seconds)}
+        {typeof item.error === "string" && item.error !== "" ? " — " + item.error : ""}
+      </p>
+    );
+  }
+  return null;
 }
 
 // Storage can be missing or refuse to work (private windows, blocked site data); the page then

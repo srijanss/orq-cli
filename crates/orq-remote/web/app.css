@@ -318,6 +318,36 @@ a, button { -webkit-tap-highlight-color: transparent; }
 .sidebar nav a { display: flex; align-items: center; gap: 0.75rem; min-height: 38px; line-height: 1.25; font-size: 0.9375rem; white-space: nowrap; text-decoration: none; padding: 0 1rem; }
 .sidebar nav a[aria-current="page"] { font-weight: 500; background: var(--status-running-bg); }
 .shell.collapsed .sidebar .label { display: none; }
+/* Ask orq: a toggle among the section links, drawn like them, with their pill while its panel is open. */
+.sidebar nav .nav-toggle { display: flex; align-items: center; gap: 0.75rem; min-height: 38px; line-height: 1.25; font-size: 0.9375rem; font-weight: 400; white-space: nowrap; padding: 0 1rem; border: 0; border-radius: 0.5rem; margin-bottom: 0.125rem; background: transparent; color: var(--text); text-align: left; width: 100%; cursor: pointer; }
+.sidebar nav .nav-toggle[aria-expanded="true"] { font-weight: 500; background: var(--status-running-bg); color: var(--status-running); }
+/* The panel sits beside the page in its own column; the page keeps its own scroll. */
+.shell.asking { grid-template-columns: 240px minmax(0, 1fr) minmax(320px, 400px); grid-template-areas: "bar bar bar" "side main ask"; }
+.shell.asking.collapsed { grid-template-columns: 64px minmax(0, 1fr) minmax(320px, 400px); }
+.ask-panel { grid-area: ask; position: sticky; top: 0; height: 100dvh; align-self: start; box-sizing: border-box; display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: var(--surface); border-left: 1px solid var(--border); }
+.ask-head { flex: none; display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem; border-bottom: 1px solid var(--border); }
+.ask-title { flex: 1; min-width: 0; }
+.ask-head h2 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
+.ask-about { margin: 0; font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.ask-close, .ask-back { background: transparent; border: 0; min-height: 36px; min-width: 36px; color: var(--text-muted); }
+.ask-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.ask-chats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.ask-chats button { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 0.125rem; padding: 0.5rem 0.625rem; min-height: 44px; }
+.ask-chat-title { display: flex; align-items: center; gap: 0.375rem; font-weight: 500; overflow-wrap: anywhere; }
+.ask-chat-meta { font-size: 0.8125rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.ask-running-dot { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--status-running); }
+.ask-item { min-width: 0; overflow-wrap: anywhere; }
+.ask-item.ask-user { align-self: flex-end; max-width: 85%; padding: 0.5rem 0.75rem; border-radius: 0.75rem; background: var(--status-running-bg); white-space: pre-wrap; }
+.ask-item pre, .ask-tool-body { max-width: 100%; overflow-x: auto; }
+.ask-tool-body { max-height: 16rem; overflow-y: auto; margin: 0.25rem 0 0; font-size: 0.8125rem; white-space: pre; }
+.ask-refused { border-left: 3px solid var(--status-failed, #c0392b); padding: 0.375rem 0.5rem; background: var(--status-failed-bg, transparent); border-radius: 0.375rem; display: flex; flex-direction: column; gap: 0.375rem; }
+.ask-refused-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.ask-turn-end, .ask-working { font-size: 0.8125rem; color: var(--text-muted); }
+.ask-working { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.ask-composer { flex: none; display: flex; gap: 0.5rem; align-items: flex-end; padding: 0.75rem; border-top: 1px solid var(--border); }
+.ask-composer textarea { flex: 1; min-width: 0; resize: none; font: inherit; line-height: 1.4; max-height: calc(8 * 1.4em + 1rem); overflow-y: auto; box-sizing: border-box; }
+.ask-reason { padding: 0.75rem; margin: 0; color: var(--text-muted); }
+.ask-new { display: flex; flex-direction: column; gap: 0.5rem; }
 .tabbar { display: none; }
 .topbar, .tabbar { --text: var(--sidebar-text); --text-muted: var(--sidebar-muted); --border: var(--sidebar-border); --surface: var(--sidebar-surface); color: var(--sidebar-text); background: var(--sidebar); }
 @media (max-width: 700px) {
@@ -333,6 +363,13 @@ a, button { -webkit-tap-highlight-color: transparent; }
   .tabbar-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.25rem; }
   .tabbar a { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border-radius: 0.75rem; text-decoration: none; color: var(--sidebar-muted); }
   .tabbar a[aria-current="page"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
+  .tabbar button[data-ask-orq] { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.5rem 0.25rem; box-sizing: border-box; min-height: 48px; border: 0; border-radius: 0.75rem; background: transparent; color: var(--sidebar-muted); font: inherit; }
+  .tabbar button[data-ask-orq][aria-expanded="true"] { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
+  /* On a phone the panel is a full-screen sheet over the page and its bars; its box sits in the sheet's flow. */
+  .shell.asking, .shell.asking.collapsed { grid-template-columns: 1fr; grid-template-areas: "bar" "main"; }
+  .ask-panel { position: fixed; inset: 0; height: auto; align-self: stretch; justify-self: stretch; z-index: var(--z-dialog); border-left: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); overflow-y: auto; }
+  .ask-body { flex: none; overflow-y: visible; }
+  .ask-composer { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
   .tabbar .tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .content { padding: 0.75rem; padding-left: calc(0.75rem + env(safe-area-inset-left)); padding-right: calc(0.75rem + env(safe-area-inset-right)); padding-bottom: calc(8.5rem + env(safe-area-inset-bottom)); }
   .run-filters .search-box { flex: 1 1 100%; }
