@@ -548,6 +548,10 @@ fn a_token_violation_open_for_verify_after_rounds_rounds_goes_to_the_verifier() 
         1,
         "the token issue has been open for two rounds"
     );
+    // Only the design preparer searches: the verifier, as the reviewer, keeps a read tool only.
+    let argv = f.argv("verifier", 1);
+    let tools = argv.iter().position(|a| a == "--tools").expect("--tools");
+    assert_eq!(argv[tools + 1], "read", "{argv:?}");
     let written: Value =
         serde_json::from_slice(&fs::read(f.design_dir().join("round-2/review.json")).unwrap())
             .unwrap();

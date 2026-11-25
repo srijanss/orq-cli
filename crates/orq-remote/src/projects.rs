@@ -663,10 +663,11 @@ fn needed_why(what: &str, path: &str) -> &'static str {
     }
 }
 
-/// What a run waiting for design files still needs, from its last request: each file's description, path in
-/// `designs/<feature>/`, why it is needed and, for a reference, its viewport.
-fn design_files_needed(events: &[orq_orchestrator::Event]) -> Option<serde_json::Value> {
+/// What a run waiting for design files still needs, from its last request: the package folder they go in
+/// (`designs/<package>/`), and each file's description, path in it, why it is needed and, for a reference, its viewport.
+fn design_files_needed(events: &[orq_orchestrator::Event], logs_dir: &Path) -> Option<serde_json::Value> {
     let payload = &events.iter().rev().find(|event| event.kind == "design.files_needed")?.payload;
+    let package = needed_package(&payload["feature"], logs_dir);
     let files: Vec<serde_json::Value> = payload["files"]
         .as_array()?
         .iter()
@@ -675,7 +676,31 @@ fn design_files_needed(events: &[orq_orchestrator::Event]) -> Option<serde_json:
             Some(serde_json::json!({"what": orq_core::redact::redact(what), "path": orq_core::redact::redact(path), "why": needed_why(what, path), "viewport": needed_viewport(what, path)}))
         })
         .collect();
-    Some(serde_json::json!({"feature": shown_text(&payload["feature"]), "files": files}))
+    Some(serde_json::json!({"feature": shown_text(&payload["feature"]), "package": package, "files": files}))
+}
+
+/// The design package folder in `root`'s `designs/` that `feature` resolves to: the shared one its description
+/// names, else its own; `None` when that folder is not there or the description's package lines are invalid.
+fn design_package_of(root: &Path, feature: &str, description: Option<&str>) -> Option<String> {
+    let package = match orq_orchestrator::design_scope(feature, description) {
+        Ok(scope) => scope.map_or_else(|| feature.to_string(), |scope| scope.package),
+        Err(_) => return None,
+    };
+    let plain = !package.is_empty() && package.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') && package != "." && package != "..";
+    (plain && root.join("designs").join(&package).is_dir()).then_some(package)
+}
+
+/// The package a run waiting for files of `feature` reads: its frozen scope's (a group member's own, else the
+/// run's), else the feature's name.
+fn needed_package(feature: &serde_json::Value, logs_dir: &Path) -> serde_json::Value {
+    let member = feature.as_str().filter(|name| !name.is_empty() && !name.contains(['/', '\\']) && *name != "." && *name != "..");
+    let scope = member
+        .and_then(|name| orq_orchestrator::frozen_design_scope(&logs_dir.join(GROUP_MEMBERS_DIR).join(name)))
+        .or_else(|| orq_orchestrator::frozen_design_scope(logs_dir));
+    match scope {
+        Some(scope) => shown_text(&serde_json::json!(scope.package)),
+        None => shown_text(feature),
+    }
 }
 
 /// Records as failed every accept a server that stopped left without a result: nothing runs its tests anymore.
@@ -2355,7 +2380,8 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .into_iter()
             .map(|entry| {
                 let kind = if frontend.contains(&entry.feature_name) { "frontend" } else { "standard" };
-                serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": orq_core::redact::redact(entry.status.as_str()), "depends_on": entry.depends_on.iter().map(|name| orq_core::redact::redact(name)).collect::<Vec<_>>(), "test_file": entry.test_file.as_deref().map(orq_core::redact::redact), "recorded_at": entry.recorded_at.as_deref().map(orq_core::redact::redact), "kind": kind})
+                let package = design_package_of(&root, &entry.feature_name, entry.description.as_deref()).map(|package| orq_core::redact::redact(&package));
+                serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": orq_core::redact::redact(entry.status.as_str()), "depends_on": entry.depends_on.iter().map(|name| orq_core::redact::redact(name)).collect::<Vec<_>>(), "test_file": entry.test_file.as_deref().map(orq_core::redact::redact), "recorded_at": entry.recorded_at.as_deref().map(orq_core::redact::redact), "kind": kind, "design_package": package})
             })
             .collect();
         Ok(Some(serde_json::Value::Array(list)))
@@ -2697,7 +2723,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             }
         }
         if summary.phase == orq_orchestrator::RunPhase::DesignFilesNeeded {
-            if let Some(needed) = design_files_needed(&events) {
+            if let Some(needed) = design_files_needed(&events, &logs_dir) {
                 shown["design_files_needed"] = needed;
             }
         }

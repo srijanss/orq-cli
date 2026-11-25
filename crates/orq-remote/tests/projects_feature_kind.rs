@@ -70,6 +70,36 @@ fn a_feature_set_to_frontend_reads_back_as_frontend_and_every_other_stays_standa
     assert_eq!(std::fs::read(alpha.join(".tdd-features.json")).unwrap(), ledger, "the ledger gets no new field");
 }
 
+#[test]
+fn each_feature_says_the_design_package_folder_it_resolves_to_its_own_a_shared_one_or_none() {
+    let s = setup("kind-design-package");
+    let alpha = git_repo(&s.scan, "alpha");
+    let ledger = json!([
+        {"featureName": "page", "status": "pending"},
+        {"featureName": "home", "status": "pending", "description": "The footer.\n\nDesign package: egiftit-homepage\nDesign components: F01\n"},
+        {"featureName": "lost", "status": "pending", "description": "Design package: nowhere\n"},
+        {"featureName": "engine", "status": "draft"},
+    ]);
+    std::fs::write(alpha.join(".tdd-features.json"), ledger.to_string()).unwrap();
+    for package in ["page", "egiftit-homepage", "home"] {
+        std::fs::create_dir_all(alpha.join("designs").join(package)).unwrap();
+    }
+
+    let (status, body) = call(&s, "GET", "/api/projects/alpha/features", Some("Bearer tok"), b"");
+    assert_eq!(status, 200, "{body}");
+    let packages: Vec<(String, Value)> = body["features"].as_array().unwrap().iter().map(|f| (f["name"].as_str().unwrap().to_string(), f["design_package"].clone())).collect();
+    assert_eq!(
+        packages,
+        [
+            ("page".to_string(), json!("page")),
+            ("home".to_string(), json!("egiftit-homepage")),
+            ("lost".to_string(), Value::Null),
+            ("engine".to_string(), Value::Null),
+        ],
+        "a feature naming a shared package reads it, never its own folder; a package not on disk is none"
+    );
+}
+
 fn create_run(s: &Setup, repo: &Path, run: &str, feature: &str) {
     use orq_orchestrator::{Event, RunRecord, RunStore};
     let project = orq_git::project_id(&orq_git::resolve_project(repo).unwrap());

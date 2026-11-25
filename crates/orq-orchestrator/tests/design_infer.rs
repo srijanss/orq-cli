@@ -447,11 +447,26 @@ fn the_agent_preparer_runs_a_read_only_harness_and_orq_writes_the_files_it_answe
         assert!(prompt.contains(&package.display().to_string()), "{harness}: {prompt}");
         assert!(prompt.contains("needed_files") && prompt.contains("\"files\""), "{harness}: the answer's shape is given: {prompt}");
         assert!(args.contains(&"openai/gpt-6.1-sol"), "{harness}: {args:?}");
-        // The session gets a read tool only: it can write nowhere, orq writes its files.
-        let tools = if harness == "pi" { "read" } else { "Read" };
-        assert!(args.windows(2).any(|w| w == ["--tools", tools]), "{args:?}");
+        // The session gets read-only search tools as well, to find an existing asset in the worktree: it can
+        // write nowhere and run nothing, orq writes its files.
+        if harness == "pi" {
+            assert!(args.windows(2).any(|w| w == ["--tools", "read,grep,find,ls"]), "{args:?}");
+            for flag in ["--no-extensions", "--no-mcp", "--no-context-files", "--no-session"] {
+                assert!(args.contains(&flag), "{flag}: {args:?}");
+            }
+        } else {
+            assert!(args.windows(2).any(|w| w == ["--tools", "Read,Grep,Glob"]), "{args:?}");
+            assert!(args.windows(2).any(|w| w == ["--allowedTools", "Read,Grep,Glob"]), "{args:?}");
+            assert!(args.contains(&"--strict-mcp-config"), "{args:?}");
+        }
         let flags = &args[..args.len() - 2];
-        assert!(!flags.iter().any(|a| a.contains("write") || a.contains("Write") || *a == "--add-dir"), "{flags:?}");
+        assert!(
+            !flags.iter().any(|a| {
+                let a = a.to_ascii_lowercase();
+                a.contains("write") || a.contains("edit") || a.contains("bash") || a == "--add-dir"
+            }),
+            "{flags:?}"
+        );
         assert!(String::from_utf8(read(&log)).unwrap().contains("from the agent"), "{harness}");
     }
 
@@ -482,6 +497,44 @@ fn the_agent_preparer_runs_a_read_only_harness_and_orq_writes_the_files_it_answe
         let why = prepare_retrying(&mut preparer, &request).unwrap_err();
         assert!(why.contains(expected), "{tag}: {why}");
     }
+}
+
+/// The search-the-repository step and the "Existing assets" rule, as both the prompt and the skill say them.
+fn says_to_search_the_repository(text: &str, what: &str) {
+    for needle in ["search the worktree", ".orq-design/", "node_modules", "Existing assets", "measured", "needed_files", "where you searched"] {
+        assert!(text.contains(needle), "{what} lacks {needle:?}: {text}");
+    }
+}
+
+#[test]
+fn the_prepare_prompt_and_the_bundled_skill_say_to_search_the_repository_for_an_existing_asset_before_asking_for_it() {
+    let f = Fixture::new("search-step");
+    let manifest = f.freeze();
+    let bin = TempDir::new("orq-design-infer-search-step");
+    let prepared = f.logs.path().join("design/prepared");
+    fs::create_dir_all(&prepared).unwrap();
+    let package = f.logs.path().join("design/package");
+    let request = PrepareRequest { feature: "checkout", package: &package, prepared: &prepared, manifest: &manifest };
+    let program = fake_program(bin.path(), "answering", r#"printf '%s' '{"conflicts":[],"inferred":[],"needed_files":[]}'"#);
+    let agent = DesignAgent { program, harness: "pi".to_string(), model: "m".to_string(), thinking: None };
+    // A skill missing from disk is given as nothing: the prompt alone says it.
+    let mut preparer = AgentPreparer {
+        agent: &agent,
+        worktree: &f.worktree,
+        skill: "",
+        log: f.logs.path().join("design/preparer.log"),
+        timeout: Duration::from_secs(20),
+    };
+    prepare_retrying(&mut preparer, &request).unwrap();
+    let args = String::from_utf8(read(&bin.path().join("args"))).unwrap();
+    let args: Vec<&str> = args.split("\n--\n").collect();
+    let prompt = args[args.len() - 2];
+    says_to_search_the_repository(prompt, "the prompt");
+    assert!(!prompt.contains("read tool only"), "the preparer can search: {prompt}");
+
+    let skill = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../orq-agents/design_skills/design-prepare/SKILL.md")).unwrap();
+    says_to_search_the_repository(&skill, "SKILL.md");
+    assert!(!skill.contains("read tool only"), "{skill}");
 }
 
 #[test]

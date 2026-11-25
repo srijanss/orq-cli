@@ -454,6 +454,36 @@ fn a_run_waiting_for_design_files_lists_each_with_its_path_why_and_the_size_of_a
     );
 }
 
+/// The run's package frozen for the shared package `designs/<package>/`, as a feature naming it is.
+fn freeze_shared_scope(s: &Setup, run: &str, package: &str) {
+    let scope = json!({"feature": "login", "package": package, "components": ["F01"], "done": []});
+    write(
+        &design_dir(s, run).join("scope.json"),
+        scope.to_string().as_bytes(),
+    );
+}
+
+#[test]
+fn a_run_waiting_for_design_files_names_its_package_folder_from_its_frozen_scope_else_its_feature()
+{
+    let s = setup("design-files-needed-package");
+    files_needed_run(&s, "r-1");
+    let body = page(&s, "/api/projects/alpha/runs/r-1");
+    assert_eq!(
+        body["run"]["design_files_needed"]["package"],
+        json!("login"),
+        "no frozen scope: {body}"
+    );
+
+    freeze_shared_scope(&s, "r-1", "egiftit-homepage");
+    let body = page(&s, "/api/projects/alpha/runs/r-1");
+    assert_eq!(
+        body["run"]["design_files_needed"]["package"],
+        json!("egiftit-homepage"),
+        "{body}"
+    );
+}
+
 #[test]
 fn the_run_page_carries_each_design_round_with_its_viewports_issues_suggestions_and_unassessed_checks(
 ) {
@@ -1165,6 +1195,31 @@ fn the_files_needed_panel_fits_a_phone() {
     body["remote_actions"] = json!(true);
 
     laid_out(&chromium, 390, &body, "[data-design-needed-file]", &[]);
+}
+
+#[test]
+fn a_run_of_a_feature_in_a_shared_package_waiting_for_files_says_to_add_them_to_the_shared_folder()
+{
+    let s = setup("design-panel-files-needed-shared");
+    files_needed_run(&s, "r-1");
+    freeze_shared_scope(&s, "r-1", "egiftit-homepage");
+    let body = page(&s, "/api/projects/alpha/runs/r-1");
+
+    let Some(out) = open("r-1", body, vec![], vec![], vec![]) else {
+        return;
+    };
+
+    let shown = texts(last(&out));
+    position(
+        &shown,
+        "Add these to designs/egiftit-homepage/, then resume.",
+    );
+    assert!(
+        !shown
+            .iter()
+            .any(|text| text.contains("Add these to designs/login/")),
+        "{out}"
+    );
 }
 
 #[test]

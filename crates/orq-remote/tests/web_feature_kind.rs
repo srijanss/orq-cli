@@ -42,9 +42,12 @@ fn feature(name: &str, kind: Option<&str>) -> Value {
     f
 }
 
-/// "page" is frontend, "engine" standard, and "older" comes from a server that says no kind (standard).
+/// "page" is frontend with its own design package, "engine" standard, and "older" comes from a server that says
+/// no kind (standard).
 fn ledger(actions: bool) -> Value {
-    json!({"status": 200, "json": {"features": [feature("page", Some("frontend")), feature("engine", Some("standard")), feature("older", None)], "remote_actions": actions}})
+    let mut page = feature("page", Some("frontend"));
+    page["design_package"] = json!("page");
+    json!({"status": 200, "json": {"features": [page, feature("engine", Some("standard")), feature("older", None)], "remote_actions": actions}})
 }
 
 fn run_row(id: &str, feature: &str, kind: Option<&str>) -> Value {
@@ -169,6 +172,34 @@ fn a_feature_page_says_where_its_design_package_is_expected_and_offers_the_switc
     let end = last(&out);
     assert_eq!(count(end, "[data-frontend-switch]"), 1, "{out}");
     assert!(on(end), "{out}");
+}
+
+/// "home" is in the shared package egiftit-homepage, "lone" is frontend with no package on disk, "engine" standard.
+fn package_ledger() -> Value {
+    let mut home = feature("home", Some("frontend"));
+    home["design_package"] = json!("egiftit-homepage");
+    let mut lone = feature("lone", Some("frontend"));
+    lone["design_package"] = Value::Null;
+    json!({"status": 200, "json": {"features": [home, lone, feature("engine", Some("standard"))], "remote_actions": false}})
+}
+
+#[test]
+fn a_feature_page_names_the_shared_package_folder_its_feature_reads_or_says_none_was_found() {
+    let page = |name: &str| run(&format!("/projects/alpha/features/{name}"), vec![package_ledger(), no_runs(), projects()], vec![]);
+    let Some(out) = page("home") else { return };
+    let end = last(&out);
+    assert_eq!(count(end, "[data-design-package]"), 1, "{out}");
+    assert!(shows(end, "designs/egiftit-homepage/"), "{out}");
+    assert!(!shows(end, "designs/home/"), "never the feature's own name: {out}");
+
+    let Some(out) = page("lone") else { return };
+    let end = last(&out);
+    assert!(shows(end, "No design package found"), "{out}");
+    assert!(!shows(end, "designs/lone/"), "{out}");
+
+    let Some(out) = page("engine") else { return };
+    let end = last(&out);
+    assert!(!shows(end, "No design package found"), "a standard feature needs none: {out}");
 }
 
 #[test]

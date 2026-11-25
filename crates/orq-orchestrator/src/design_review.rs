@@ -912,7 +912,7 @@ fn ask(
             "\nYour previous answer was not accepted: {why}. Answer again with one JSON object only.\n"
         ));
     }
-    let argv = agent_argv(agent, &review_images(context), prompt)?;
+    let argv = agent_argv(agent, DesignTools::Read, &review_images(context), prompt)?;
     run_agent(run, agent, role, &argv)
 }
 
@@ -974,7 +974,12 @@ impl PairReview {
         schema: &str,
     ) -> Result<Vec<String>, String> {
         let prompt = review_prompt(skill, schema, "design reviewer", &self.context);
-        agent_argv(agent, &review_images(&self.context), prompt)
+        agent_argv(
+            agent,
+            DesignTools::Read,
+            &review_images(&self.context),
+            prompt,
+        )
     }
 
     /// The answer checked as a round's answer is: the schema, the ids, the evidence, the bases
@@ -1105,10 +1110,36 @@ fn scope_prompt(scope: &ReviewScope) -> String {
     text
 }
 
-/// A one-shot, read-only session of the agent's harness, the images attached (pi) or named for
-/// its read tool (claude), the prompt last. No design role ever gets a write tool.
+/// The tools a design role's session gets: never a write, edit or shell tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DesignTools {
+    /// The design reviewer and verifier: a read tool only.
+    Read,
+    /// The design preparer: read, and search the worktree for an existing asset.
+    Search,
+}
+
+impl DesignTools {
+    fn pi(self) -> &'static str {
+        match self {
+            DesignTools::Read => "read",
+            DesignTools::Search => "read,grep,find,ls",
+        }
+    }
+
+    fn claude(self) -> &'static str {
+        match self {
+            DesignTools::Read => "Read",
+            DesignTools::Search => "Read,Grep,Glob",
+        }
+    }
+}
+
+/// A one-shot, read-only session of the agent's harness with `tools`, the images attached (pi) or
+/// named for its read tool (claude), the prompt last. No design role ever gets a write tool.
 pub(crate) fn agent_argv(
     agent: &DesignAgent,
+    tools: DesignTools,
     images: &[PathBuf],
     prompt: String,
 ) -> Result<Vec<String>, String> {
@@ -1131,7 +1162,7 @@ pub(crate) fn agent_argv(
             if let Some(thinking) = &agent.thinking {
                 argv.extend(["--thinking".to_string(), thinking.clone()]);
             }
-            argv.extend(["--tools", "read"].map(str::to_string));
+            argv.extend(["--tools", tools.pi()].map(str::to_string));
             argv.extend(images.iter().map(|image| format!("@{}", image.display())));
         }
         "claude" => {
@@ -1142,9 +1173,9 @@ pub(crate) fn agent_argv(
             argv.extend(
                 [
                     "--tools",
-                    "Read",
+                    tools.claude(),
                     "--allowedTools",
-                    "Read",
+                    tools.claude(),
                     "--disable-slash-commands",
                     "--strict-mcp-config",
                     "--setting-sources",

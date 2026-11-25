@@ -5041,7 +5041,11 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           </div>
         ) : null}
         {control !== null && feature.status === "pending" ? <BlockedNote reason={blockedOf(control)} /> : null}
-        <p className="muted" data-design-package>Design package: <code>{"designs/" + feature.name + "/"}</code></p>
+        {typeof feature.design_package === "string" && feature.design_package !== "" ? (
+          <p className="muted" data-design-package>Design package: <code>{"designs/" + feature.design_package + "/"}</code></p>
+        ) : kindOf(feature.kind) === "frontend" ? (
+          <p className="muted" data-design-package>No design package found</p>
+        ) : null}
         {control !== null && improving ? <DraftWithOrqDialog draft={{ project: projectId, name: feature.name }} token={control.token} onSignedOut={control.onSignedOut} onClose={() => setImproving(false)} /> : null}
         {control !== null && feature.status === "draft" ? <QueueWish key={feature.name} feature={feature} control={control} /> : null}
         <div className="feature-tabs" role="tablist" aria-label="Feature details">
@@ -6120,13 +6124,14 @@ function DesignFilesNeeded({ run, control }) {
   const needed = run.design_files_needed;
   if (needed === null || typeof needed !== "object") return null;
   const files = listOf(needed.files).filter((file) => file !== null && typeof file === "object" && typeof file.path === "string");
-  const feature = textOr(needed.feature, run.feature);
+  // The package folder the run reads (a shared one for a feature in it), else its feature's own.
+  const pkg = textOr(needed.package, textOr(needed.feature, run.feature));
   const path = (tail) => controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/" + tail);
   const resume = control === null || !RUN_ID.test(run.run_id) ? null : <RunAction kind="resume" tone="primary" icon="rotate" label="Resume" question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={path("resume")} check={path("resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next, reply, answered) => resumedNote(next, answered)} />;
   return (
     <section className="design-files-needed" aria-label="Design files needed" data-design-files-needed>
       <h3>Design files needed</h3>
-      <p>{"Add these to designs/" + feature + "/, then resume."}</p>
+      <p>{"Add these to designs/" + pkg + "/, then resume."}</p>
       <ul className="design-needed-files">
         {files.map((file) => {
           const viewport = file.viewport !== null && typeof file.viewport === "object" ? sizeOf(file.viewport.width, file.viewport.height) : null;
