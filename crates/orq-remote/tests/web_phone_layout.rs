@@ -127,7 +127,18 @@ fn the_status_bar_area_is_covered_by_a_solid_fixed_strip() {
 #[test]
 fn the_status_bar_strip_paints_above_the_tab_sheet_and_its_backdrop() {
     let css = css();
-    let z = |value: &str| -> i64 { value.parse().unwrap_or_else(|_| panic!("z-index {value:?} is not a number")) };
+    // A z-index is a number or one of the layer scale's tokens, read from the stylesheet's root block.
+    let z = |value: &str| -> i64 {
+        let number = match value.strip_prefix("var(").and_then(|v| v.strip_suffix(')')) {
+            Some(token) => {
+                let needle = format!("{token}: ");
+                let at = css.find(&needle).unwrap_or_else(|| panic!("no {token} token"));
+                css[at + needle.len()..].split(';').next().unwrap().trim().to_string()
+            }
+            None => value.to_string(),
+        };
+        number.parse().unwrap_or_else(|_| panic!("z-index {value:?} is not a number"))
+    };
     for width in WIDTHS {
         let strip = z(&strip_at(&css, "z-index", width).unwrap_or_else(|| panic!("no strip z-index at {width}px")));
         // Every z-index any tab bar or backdrop rule can set, so the opened sheet's own one counts too.

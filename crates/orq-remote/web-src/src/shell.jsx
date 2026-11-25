@@ -11,6 +11,19 @@ import { currentPath, isPlainLeftClick, navigate, subscribeToLocation } from "./
 // The same breakpoint the stylesheet uses for the phone layout.
 const PHONE_QUERY = "(max-width: 700px)";
 
+// An opened dropdown list scrolls itself, not the page, so its chosen row is fully in view.
+export function showChosenRow(list) {
+  if (list === null) return;
+  const row = list.querySelector("[aria-selected=\"true\"]");
+  if (row === null) return;
+  const box = list.getBoundingClientRect();
+  const top = box.top + list.clientTop;
+  const bottom = top + list.clientHeight;
+  const at = row.getBoundingClientRect();
+  if (at.bottom > bottom) list.scrollTop += at.bottom - bottom;
+  else if (at.top < top) list.scrollTop -= top - at.top;
+}
+
 export function navigationEntries(projectId) {
   const entries = [
     { label: "Dashboard", icon: "home", href: "/dashboard" },
@@ -358,6 +371,10 @@ function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null
 
   const [listOpen, setListOpen] = useState(false);
   const switchBox = useRef(null);
+  const switchList = useRef(null);
+  useEffect(() => {
+    if (listOpen) showChosenRow(switchList.current);
+  }, [listOpen]);
   const choices = [{ value: "", label: "All projects" }];
   if (projectId !== null && !(projects ?? []).some((project) => project.id === projectId)) choices.push({ value: projectId, label: projectId });
   for (const project of projects ?? []) choices.push({ value: project.id, label: project.name });
@@ -418,7 +435,7 @@ function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null
                     <span className="project-switcher-text">{currentName}</span>
                     <Icon name="chevronDown" size={18} />
                   </button>
-                  <ul className="project-list" data-project-list role="listbox" aria-label="Project" hidden={!listOpen}>
+                  <ul className="project-list dropdown-list" ref={switchList} data-project-list role="listbox" aria-label="Project" hidden={!listOpen}>
                     {choices.map((choice) => (
                       <li key={choice.value} role="presentation">
                         <button type="button" role="option" tabIndex={-1} data-project-option={choice.value} aria-selected={choice.value === (projectId ?? "") ? "true" : "false"} onClick={() => choose(choice.value)}>

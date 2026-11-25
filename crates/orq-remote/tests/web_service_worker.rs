@@ -321,12 +321,12 @@ fn css_rule<'a>(css: &'a str, start: &str) -> &'a str {
 fn the_update_prompt_floats_over_the_page_in_theme_colours() {
     let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web/app.css")).unwrap();
     let scrim = css_rule(&css, ".update-scrim {");
-    for part in ["position: fixed", "inset: 0", "color-mix(in srgb, var(--bg) 55%, transparent)", "backdrop-filter: blur(2px)"] {
+    for part in ["position: fixed", "inset: 0", "background: var(--scrim)", "backdrop-filter: blur(2px)"] {
         assert!(scrim.contains(part), "scrim {part}: {scrim}");
     }
     let card = css_rule(&css, ".update-card {");
     for part in ["position: fixed", "background: var(--surface)", "border-radius: 0.75rem", "max-width: 24rem",
-        "box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 25%, transparent)", "animation: update-in 150ms"] {
+        "box-shadow: var(--shadow-dialog)", "animation: update-in 150ms"] {
         assert!(card.contains(part), "card {part}: {card}");
     }
     let phone = css.find("@media (max-width: 700px) {\n  .update-card").map(|at| &css[at..]).expect("the phone card query");

@@ -5,7 +5,7 @@
 import { Fragment, cloneElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { Shell, usePageRefresh, usePhone } from "./shell.jsx";
+import { Shell, showChosenRow, usePageRefresh, usePhone } from "./shell.jsx";
 import { Badge, PILLS, StatusPill } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { Markdown } from "./markdown.jsx";
@@ -3736,6 +3736,9 @@ function ProjectChooser({ choices, value, onChoose, label = "Project", placehold
     };
   }, [open]);
   useEffect(() => {
+    if (open) showChosenRow(list.current);
+  }, [open]);
+  useEffect(() => {
     if (!open || active < 0 || list.current === null) return;
     const option = list.current.querySelectorAll("[role=option]")[active];
     if (option) option.focus();
@@ -3783,7 +3786,7 @@ function ProjectChooser({ choices, value, onChoose, label = "Project", placehold
         <span className={current === null ? "project-switcher-text muted" : "project-switcher-text"}>{current === null ? placeholder : current.name}</span>
         <Icon name="chevronDown" size={18} />
       </button>
-      <ul className="project-list" ref={list} role="listbox" aria-label={label} hidden={!open}>
+      <ul className="project-list dropdown-list" ref={list} role="listbox" aria-label={label} hidden={!open}>
         {choices.map((choice) => (
           <li key={choice.id ?? ""} role="presentation">
             <button type="button" role="option" tabIndex={-1} data-project-choice={choice.id ?? ""} aria-selected={choice.id === value ? "true" : "false"} onClick={() => choose(choice)}>{choice.name}</button>

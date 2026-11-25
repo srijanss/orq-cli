@@ -151,10 +151,11 @@ pub struct Measured {
 /// Opens `path` at `width` x 800 with `replies`, runs `steps` (each `{"click": selector, "text"?: text}`,
 /// `{"wait": selector, "text"?: text}`, `{"type": selector, "value": text}` filling a field, `{"lines":
 /// selector, "text": text}`, `{"boxes": selector}`, `{"styles": selector, "props": [css property, ...]}` or
-/// `{"tokens": [custom property, ...]}`), and returns what the probe measured: `boxes` maps each `boxes`
+/// `{"tokens": [custom property, ...]}` or `{"eval": name, "js": function body}`), and returns what the probe measured: `boxes` maps each `boxes`
 /// selector to the rounded rects (`left`, `top`, `right`, `bottom`) of every match, in order; `styles` maps
 /// each `styles` selector to every match's computed values of those properties; `tokens` maps each custom
-/// property to the colour it resolves to as a `color` (`rgb(...)`), on the page's root.
+/// property to the colour it resolves to as a `color` (`rgb(...)`), on the page's root; `evals` maps each
+/// `eval` name to what its body returned once the steps ran (`{"thrown": message}` if it threw).
 pub fn measure(chromium: &Path, width: u32, path: &str, replies: &[Reply], steps: Value) -> Measured {
     measure_with(chromium, width, path, replies, steps, "")
 }
@@ -411,12 +412,14 @@ const PROBE: &str = r##"
         result.styles = {};
         steps.forEach(function (step) { if (step.styles) result.styles[step.styles] = stylesOf(step.styles, step.props || []); });
         steps.forEach(function (step) { if (step.tokens) result.tokens = tokenColours(step.tokens); });
+        result.evals = {};
+        steps.forEach(function (step) { if (step.eval) { try { result.evals[step.eval] = new Function(step.js)(); } catch (e) { result.evals[step.eval] = {thrown: String(e)}; } } });
         document.getElementById("result").textContent = JSON.stringify(result);
       }, 300);
       return;
     }
     var step = steps[at];
-    if (step.lines || step.boxes || step.styles || step.tokens) { at += 1; waited = 0; return next(); }
+    if (step.lines || step.boxes || step.styles || step.tokens || step.eval) { at += 1; waited = 0; return next(); }
     var element = find(step);
     if (element === null) {
       waited += 50;

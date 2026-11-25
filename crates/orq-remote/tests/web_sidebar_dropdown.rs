@@ -60,7 +60,7 @@ fn escape_and_an_outside_click_close_the_list() {
 #[test]
 fn the_list_floats_over_the_page_and_is_compact() {
     let css = css();
-    let start = css.find(".project-list {").unwrap();
+    let start = css.find("\n.dropdown-list {").unwrap();
     let rule = &css[start..start + css[start..].find('}').unwrap()];
     assert!(rule.contains("position: absolute") && rule.contains("z-index"), "{rule}");
     let start = css.find("\n.project-switcher {").unwrap();
