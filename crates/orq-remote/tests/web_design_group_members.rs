@@ -581,6 +581,31 @@ fn the_run_page_reads_each_members_state_components_and_own_design_rounds() {
 }
 
 #[test]
+fn a_members_image_behind_a_link_anywhere_on_its_way_is_refused() {
+    const IMAGE: &str = "members/shop-cards/round-1/desktop/index.png";
+    // Each folder on the way to a member's capture, and the capture itself, from the run's logs.
+    for linked in [
+        "members",
+        "members/shop-cards",
+        "members/shop-cards/design",
+        "members/shop-cards/design/round-1/desktop/index.png",
+    ] {
+        let s = setup("design-group-member-link");
+        stored_group_run(&s, "r-1");
+        let logs = s.roots.state.join("logs").join("r-1");
+        let route = format!("/api/projects/alpha/runs/r-1/design/image?path={IMAGE}");
+        assert_eq!(get(&s, &route).0, 200, "served before {linked} is a link");
+
+        // The same content, moved aside and linked back where it was.
+        let (at, aside) = (logs.join(linked), logs.join("aside"));
+        std::fs::rename(&at, &aside).unwrap();
+        std::os::unix::fs::symlink(&aside, &at).unwrap();
+
+        assert_eq!(get(&s, &route).0, 404, "{linked} is a link");
+    }
+}
+
+#[test]
 fn the_runs_list_row_says_which_member_of_how_many_a_design_group_run_is_at() {
     let s = setup("design-group-runs-row");
     stored_group_run(&s, "r-1");
