@@ -550,6 +550,28 @@ fn a_chat_read_that_answers_after_the_stream_moved_on_does_not_take_back_what_th
     assert_eq!(eval(&result, "late"), &json!({"reply": "It finished", "working": 0}), "{result}");
 }
 
+#[test]
+fn a_refused_stream_signs_out_on_a_401_and_otherwise_says_the_live_updates_stopped_and_why() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let read = route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))]);
+    let stream = |answer: Value| route("GET", &format!("{CHAT_PATH}/stream"), vec![answer]);
+    // Marked a while after the chat shows, so the stream has answered.
+    let settle = "setTimeout(function () { document.body.setAttribute('data-late', ''); }, 1200);\n";
+    let note = "var n = document.querySelector('[data-ask-stream-note]'); return n ? n.textContent : null;";
+    let steps = vec![json!({"wait": "[data-ask-item=assistant]"}), json!({"wait": "body[data-late]"}), json!({"eval": "note", "js": note})];
+    let open_stream = json!({"status": 200, "hold": true, "stream": [event(": connected\n\n", 0)]});
+    let Some(live) = open_after(1440, &at, vec![read.clone(), stream(open_stream)], true, steps.clone(), settle) else { return };
+    let unauthorized = json!({"status": 401, "body": {"error": "sign in again"}});
+    let Some(refused) = open_after(1440, &at, vec![read.clone(), stream(unauthorized)], true, steps.clone(), settle) else { return };
+    assert_eq!(eval(&live, "note"), &Value::Null, "{live}");
+    let asked = |result: &Value| sent(result, "GET", "/auth/status").len();
+    assert_eq!(asked(&refused), asked(&live) + 1, "a 401 signs out, which asks who is signed in again: {refused}");
+
+    let gone = json!({"status": 404, "body": {"error": "this chat is gone"}});
+    let Some(stopped) = open_after(1440, &at, vec![read, stream(gone)], true, steps, settle) else { return };
+    assert_eq!(eval(&stopped, "note"), "Live updates stopped: this chat is gone", "{stopped}");
+}
+
 /// Run in the page before the app loads: once `selector` shows, the page moves to `path` as a link would.
 fn move_when(selector: &str, path: &str) -> String {
     format!("window.__moved = setInterval(function () {{ if (!document.querySelector({selector:?})) return; clearInterval(window.__moved); history.pushState(null, '', {path:?}); window.dispatchEvent(new Event('orq:navigate')); }}, 100);\n")

@@ -8501,15 +8501,24 @@ async function* serverEvents(body) {
 const STREAM_RETRY_MS = 3000;
 
 // Follows chat `path`'s stream while the chat is open: each item as it comes or changes (by its index), and
-// whether a reply runs. A stream that ends is opened again; one the server refuses is not.
-function useChatStream(path, token, onItem, onRunning) {
+// whether a reply runs. A stream that ends is opened again; one the server refuses is not: a 401 signs out,
+// any other refusal is told to `onStopped` with the server's reason.
+function useChatStream(path, token, onItem, onRunning, onSignedOut, onStopped) {
   useEffect(() => {
     const controller = new AbortController();
     let timer = null;
     const follow = async () => {
       try {
         const response = await get(path + "/stream", token, controller.signal);
-        if (!response.ok || response.body === null) return;
+        if (response.status === 401) {
+          onSignedOut();
+          return;
+        }
+        if (!response.ok || response.body === null) {
+          const reason = await reasonOf(response, "the server refused them.");
+          if (!controller.signal.aborted) onStopped(reason);
+          return;
+        }
         for await (const { event, data } of serverEvents(response.body)) {
           let parsed = null;
           try {
@@ -8607,6 +8616,8 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
   const [since, setSince] = useState(() => Date.now());
   const [stopping, setStopping] = useState("idle");
   const [stopNote, setStopNote] = useState("");
+  // Why the live updates stopped, or "" while they follow the chat.
+  const [streamNote, setStreamNote] = useState("");
   const [deleting, setDeleting] = useState("idle");
   const [deleteNote, setDeleteNote] = useState("");
   // The rule being removed: { rule, sending } while its question is open, else null; ruleNote is why one wasn't.
@@ -8647,7 +8658,7 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
     stream.running = running;
     stream.runningAt = stream.count;
     working(running);
-  });
+  }, onSignedOut, setStreamNote);
   useEffect(() => {
     onAbout(chat === null ? null : aboutText(chat.context, projectId));
   }, [chat === null ? null : chat.id]);
@@ -8764,6 +8775,7 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
           <Confirm question="Stop orq's reply?" detail="What it has done so far stays." answer="Yes, stop" tone="danger" busy={stopping === "sending"} onConfirm={stop} onCancel={() => setStopping("idle")} />
         ) : null}
         {stopNote !== "" ? <p role="alert" className="ask-reason">{stopNote}</p> : null}
+        {streamNote !== "" ? <p role="status" className="ask-reason" data-ask-stream-note>{"Live updates stopped: " + streamNote}</p> : null}
         {chat !== null ? (
           <div className="ask-chat-actions">
             {rules.length > 0 ? (
