@@ -205,7 +205,7 @@ struct Unsettled {
     /// A go started its commands, or recorded why it ran none.
     commands_done: bool,
     /// Its release was made, refused or skipped, or a go ended normally without one (the project made
-    /// none then). A go closed as interrupted leaves it owed.
+    /// none then). A go closed as interrupted, or a wrong `[after_merge]` recorded, leaves it owed.
     release_done: bool,
 }
 
@@ -238,7 +238,9 @@ fn unsettled_runs(state: &Path) -> HashMap<String, Vec<Unsettled>> {
         }
         let had = |kinds: &[&str]| events.iter().any(|event| kinds.contains(&event.kind.as_str()));
         let commands_done = had(&[STARTED, COMMANDS]);
-        let ended_normally = events.iter().any(|event| event.kind == COMMANDS && event.payload["interrupted"] != true);
+        // A go that ended normally ran its release first. A wrong [after_merge] is recorded before the
+        // release runs, and an interrupted go stopped before it may have, so neither settles it.
+        let ended_normally = events.iter().any(|event| event.kind == COMMANDS && event.payload["interrupted"] != true && event.payload.get("error").is_none());
         let release_done = had(&[RELEASE_CREATED, RELEASE_REFUSED, RELEASE_SKIPPED]) || ended_normally;
         if commands_done && release_done {
             continue;
@@ -656,5 +658,16 @@ mod tests {
         assert!(job.is_some());
         assert!(RunStore::new(&state).events("run-1").unwrap().iter().any(|event| event.kind == STARTED));
         assert_eq!(projects.merges_unsettled(), 1, "the go is made and the merge started, but nothing holds it yet");
+    }
+
+    #[test]
+    fn a_wrong_after_merge_recorded_before_the_release_leaves_the_release_owed() {
+        let (_projects, state, _repo) = merged_project("wrong");
+        let runs = RunStore::new(&state);
+        event(&runs, "run-1", COMMANDS, json!({"ran": false, "ok": false, "merged": "abc", "error": "wrong", "commands": []}));
+        let found = unsettled_runs(&state);
+        let merge = found.values().flatten().find(|merge| merge.run == "run-1").expect("still unsettled");
+        assert!(merge.commands_done);
+        assert!(!merge.release_done, "the error was written before the release ran");
     }
 }

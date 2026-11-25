@@ -398,6 +398,30 @@ fn a_merge_whose_go_was_interrupted_before_its_release_gets_the_release_and_not_
 }
 
 #[test]
+fn a_merge_whose_after_merge_was_wrong_and_whose_release_never_ran_still_gets_the_release() {
+    // A wrong [after_merge] is recorded on the run before the release runs; the server stopped in
+    // between. The error says nothing about the release, which is still owed.
+    let s = setup("wrong-after-merge-release", RELEASING);
+    let merged = merged_unseen(&s, "run-1-COM-01", "feat: the thing");
+    let store = RunStore::new(&s.roots.state);
+    event(&store, "run-1-COM-01", "after_merge.commands", json!({"ran": false, "ok": false, "merged": merged, "error": "the [after_merge] settings are wrong", "commands": []}));
+    assert_eq!(provider(&s).merges_unsettled(), 1, "its release is owed");
+    round(&s);
+    let created = wait_for(&s, "run-1-COM-01", "release.created").expect("the release was made");
+    assert_eq!(created.payload["version"], "0.1.3");
+    let until = Instant::now() + Duration::from_secs(5);
+    while provider(&s).merges_unsettled() != 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(provider(&s).merges_unsettled(), 0);
+    round(&s);
+    settle_time();
+    assert!(order(&s).is_empty(), "the commands are not run");
+    assert_eq!(events_of(&s, "run-1-COM-01", "after_merge.commands").len(), 1);
+    assert_eq!(events_of(&s, "run-1-COM-01", "release.created").len(), 1);
+}
+
+#[test]
 fn a_merge_in_a_project_whose_after_merge_has_no_commands_is_never_unsettled() {
     // Nothing to run and no release: the merge needs no go, so a pending restart never waits for it.
     let s = setup("unsettled-empty", "[after_merge]\ncommands = []\n");
