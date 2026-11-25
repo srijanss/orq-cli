@@ -617,6 +617,51 @@ fn a_denied_command_behind_options_a_path_quotes_or_a_wrapper_cannot_be_allowed(
 }
 
 #[test]
+fn a_wrapper_rule_whose_wildcard_could_still_name_a_denied_command_cannot_be_allowed() {
+    let s = setup("deny-wrapper-prefix");
+    git_repo(&s.scan, "alpha");
+    let chat = create_chat(&s);
+    reply_with(
+        &s,
+        refused_reply(&[
+            ("t1", "Bash", json!({"command": "env git -C /srv/repo push origin main"})),
+            ("t2", "Bash", json!({"command": "env cargo --locked publish"})),
+            ("t3", "Bash", json!({"command": "nice rm build -r"})),
+            ("t4", "Bash", json!({"command": "env git status"})),
+        ]),
+    );
+    say(&s, &chat, "push it");
+
+    let refused = refused_items(&s, &chat);
+    let rules: Vec<&str> = refused.iter().map(|item| item["rule"].as_str().unwrap()).collect();
+    assert_eq!(
+        rules,
+        ["Bash(env git:*)", "Bash(env cargo:*)", "Bash(nice rm build:*)", "Bash(env git status:*)"]
+    );
+    for rule in &rules[..3] {
+        let (status, body) = allow(
+            &s,
+            &chat,
+            json!({"rule": rule, "scope": "once", "assertion": "yes"}),
+            Who::Passkey,
+        );
+        assert_eq!(status, 422, "{rule}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("always denied"),
+            "{rule}: {body}"
+        );
+    }
+    // The wildcard after a named subcommand that isn't a denied one only adds that subcommand's arguments.
+    let (status, body) = allow(
+        &s,
+        &chat,
+        json!({"rule": rules[3], "scope": "once", "assertion": "yes"}),
+        Who::Passkey,
+    );
+    assert_eq!(status, 200, "{body}");
+}
+
+#[test]
 fn a_rule_allowed_once_is_kept_for_the_next_turn_that_starts_when_a_reply_could_not_be_started() {
     let s = setup("once-kept");
     git_repo(&s.scan, "alpha");

@@ -617,8 +617,11 @@ fn denied_by(roots: &StorageRoots, rule: &str) -> Option<String> {
     let (tool, spec) = rule.strip_suffix(')')?.split_once('(')?;
     match tool {
         "Bash" => {
-            let command = spec.strip_suffix(":*").unwrap_or(spec);
-            denied_command(command).map(|denied| format!("Bash({denied}:*)"))
+            let (command, prefix) = match spec.strip_suffix(":*") {
+                Some(command) => (command, true),
+                None => (spec, false),
+            };
+            denied_command(command, prefix).map(|denied| format!("Bash({denied}:*)"))
         }
         "Read" | "Edit" | "Write" => {
             let path = Path::new(spec.strip_prefix('/')?);
@@ -644,8 +647,10 @@ fn denied_by(roots: &StorageRoots, rule: &str) -> Option<String> {
 /// The denied command `command` would run, if any, wherever it sits: behind options (`git -C dir push`), a path
 /// (`/usr/bin/git push`), quotes (`git 'push'`) or a wrapper (`env sudo ...`), and for `rm` any recursive form
 /// (`-r -f`, `-fr`, `--recursive`). It errs on refusing: a denied program followed anywhere by its denied word
-/// counts.
-fn denied_command(command: &str) -> Option<&'static str> {
+/// counts. When `prefix`, the command is a rule's first words and any words may follow them, so a denied program
+/// counts unless a subcommand other than its denied one comes right after it (`orq queue add` but not `env git`),
+/// and `rm` always counts.
+fn denied_command(command: &str, prefix: bool) -> Option<&'static str> {
     let words: Vec<String> = command
         .split_whitespace()
         .map(|word| word.replace(['\'', '"'], ""))
@@ -659,9 +664,10 @@ fn denied_command(command: &str) -> Option<&'static str> {
         let mut parts = denied.split_whitespace();
         let (first, second) = (parts.next().unwrap_or_default(), parts.next());
         words.iter().enumerate().any(|(at, word)| {
+            let open = prefix && (first == "rm" || at + 1 == words.len());
             program(word) == first
                 && second.is_none_or(|second| {
-                    words[at + 1..].iter().any(|later| {
+                    open || words[at + 1..].iter().any(|later| {
                         if first == "rm" {
                             recursive(later)
                         } else {
