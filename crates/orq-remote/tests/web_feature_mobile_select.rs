@@ -398,10 +398,13 @@ fn the_reserved_height_follows_the_sheet_as_it_grows_and_shrinks_and_the_watch_e
     let out: Value = serde_json::from_slice(&output.stdout).unwrap();
     let style = |i: usize| out["frames"][i]["settled"]["styles"][".feature-list"].as_str().unwrap_or("").to_string();
     assert!(style(4).contains("--marked-actions-height: 160px"), "measured when it appears: {out}");
-    assert_eq!(out["frames"][4]["settled"]["watched"], 1, "the sheet is watched: {out}");
+    // The phone tab bar watches its own height too, so the sheet is counted on top of what was watched before.
+    let watched = |i: usize| out["frames"][i]["settled"]["watched"].as_u64().unwrap();
+    let before = watched(1);
+    assert_eq!(watched(4), before + 1, "the sheet is watched: {out}");
     assert_eq!(count(&out["frames"][5], SELECTORS[7]), 1, "Start's question is open in the sheet: {out}");
     assert!(style(6).contains("--marked-actions-height: 300px"), "the reservation grows with the sheet: {out}");
     assert!(style(7).contains("--marked-actions-height: 120px"), "and shrinks with it: {out}");
     assert!(!style(8).contains("--marked-actions-height"), "Done drops it: {out}");
-    assert_eq!(out["frames"][8]["settled"]["watched"], 0, "and stops watching the sheet: {out}");
+    assert_eq!(watched(8), before, "and stops watching the sheet: {out}");
 }

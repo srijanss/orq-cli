@@ -135,7 +135,8 @@ fn the_source_never_stores_anything_or_writes_html_from_text() {
             }
             assert!(!text.contains(banned), "{} uses {banned}", path.display());
         }
-        // Only the theme switch, the Dashboard's pins and Ask orq's project picker keep anything on the device:
+        // Only the theme switch, the Dashboard's pins, Ask orq's project picker and the phone tab bar's second row
+        // keep anything on the device (the last under "orq.tabbar.more"):
         // the theme's one choice under "orq.theme", the pinned project ids under "orq.pinned" and the project
         // picked outside a project under "orq.ask.project".
         let is_theme = path.file_name().map_or(false, |n| n == "theme.jsx");
@@ -146,6 +147,15 @@ fn the_source_never_stores_anything_or_writes_html_from_text() {
             for line in ["localStorage.getItem(ASK_PROJECT_KEY)", "localStorage.removeItem(ASK_PROJECT_KEY)", "localStorage.setItem(ASK_PROJECT_KEY, next)"] {
                 assert_eq!(masked.matches(line).count(), 1, "the picked project is kept once: {line}");
                 masked = masked.replace(line, "askProjectStore");
+            }
+            masked
+        } else if name == "shell.jsx" {
+            // The phone tab bar keeps whether its second row was left open under "orq.tabbar.more".
+            assert!(text.contains("const MORE_KEY = \"orq.tabbar.more\";"), "the tab bar keeps its second row under its own key");
+            let mut masked = text.clone();
+            for line in ["window.localStorage.getItem(MORE_KEY)", "window.localStorage.setItem(MORE_KEY, "] {
+                assert_eq!(masked.matches(line).count(), 1, "the second row is kept once: {line}");
+                masked = masked.replace(line, "moreStore");
             }
             masked
         } else {
