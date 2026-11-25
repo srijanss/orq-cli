@@ -2423,9 +2423,6 @@ fn stages(
             if resumed_from.is_some() {
                 hand_back_features(store, record, &orq_features::ledger_path(options.project), members);
             }
-            // The group's earlier members, held `in_progress` until delivery, are `completed` while the
-            // session runs, so its `init_feature` finds the member's dependencies met.
-            let released = release_for_member(store, record, &orq_features::ledger_path(options.project), options.features, members);
             let features: Vec<&str> = members.iter().map(String::as_str).collect();
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             // The session is asked to leave this file when it is finished, and is closed once it does.
@@ -2496,6 +2493,10 @@ fn stages(
                 terminal: options.interactive,
                 exit_marker: marker.map(std::path::Path::new),
             };
+            // The group's earlier members, held `in_progress` until delivery, are `completed` while the
+            // session runs, so its `init_feature` finds the member's dependencies met. Nothing between this
+            // and holding them again can return early.
+            let released = release_for_member(store, record, &orq_features::ledger_path(options.project), options.features, members);
             let before = ledger_statuses(&orq_features::ledger_path(options.project), "the implement session");
             let files_before = ledger_target_files(&orq_features::ledger_path(options.project), members);
             let outcome = run_implement_stage(store, run_id, &session);

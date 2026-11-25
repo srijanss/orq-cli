@@ -156,6 +156,7 @@ impl Group {
                if [ \"$s\" != completed ]; then echo \"Feature '$f' depends on feature(s) not yet completed: $d\" >> \"$HOME/refused\"; exit 3; fi\n\
              done\n\
              if [ \"$f\" = a ] && [ -f \"$HOME/reopen-x\" ]; then set_status x \"$ledger\" pending; fi\n\
+             if [ \"$f\" = a ] && [ -f \"$HOME/corrupt-handoff\" ]; then for r in \"$HOME\"/state/orq/runs/*/; do echo 'not json' > \"$r/handoff.json\"; done; fi\n\
              date > \"$f.txt\"\n\
              set_status \"$f\" \"$ledger\" completed\n\
              exec '{agent}' \"$@\"\n",
@@ -351,6 +352,22 @@ fn a_member_whose_dependency_outside_the_group_is_not_completed_is_still_refused
     let order = ledger_and_steps(&events);
     let b = order.iter().position(|l| l == "step b implement").unwrap();
     assert!(order[b..].iter().any(|l| l == "ledger.held_until_delivery {\"features\":[\"a\"]}"), "{order:#?}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
+#[test]
+fn a_member_session_that_cannot_be_prepared_leaves_the_earlier_members_held() {
+    // a's session leaves the run's handoff unreadable, so b's session cannot be prepared.
+    let w = group("unprepared", &["a"], Vec::new(), "");
+    std::fs::write(w.home.join("corrupt-handoff"), "").unwrap();
+    let agent = FakeAgent::builder().commit("feat: a member").build();
+
+    let first = w.run_group(&agent, &delivering());
+
+    let all = format!("{}{}", text(&first.stdout), text(&first.stderr));
+    assert!(all.contains("handoff.json"), "b's session fails on the handoff: {all}");
+    assert!(w.lines_of("seen").is_empty(), "b's session never started: {all}");
+    assert_eq!(w.status_of("a"), "in_progress", "a is not left completed: {all}");
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
