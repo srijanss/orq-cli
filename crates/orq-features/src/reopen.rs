@@ -46,10 +46,7 @@ pub fn await_delivery(path: &Path, names: &[String], branch: &str, run_id: &str)
     let run_value = serde_json::Value::from(run_id).to_string();
     edit_entries(path, names, &held, &|text, held| {
         let text = set_entry_statuses(text, held, FeatureStatus::AwaitingDelivery).map_err(|e| format!("{e:?}"))?;
-        held.iter().try_fold(text, |text, name| {
-            let text = with_field(&text, name, "heldOn", &branch_value)?;
-            with_field(&text, name, "heldBy", &run_value)
-        })
+        with_fields(&text, held, &[("heldOn", branch_value.clone()), ("heldBy", run_value.clone())])
     }, &mut || {})
 }
 
@@ -68,7 +65,7 @@ pub fn deliver_run_features(path: &Path, features: &[String], added: &[String], 
     };
     edit_entries(path, &names, &deliverable, &|text, completed| {
         let text = set_entry_statuses(text, completed, FeatureStatus::Completed).map_err(|e| format!("{e:?}"))?;
-        completed.iter().try_fold(text, |text, name| with_recorded_at(&text, name, recorded_at))
+        with_recorded_at(&text, completed, recorded_at)
     }, &mut || {})
 }
 
@@ -103,13 +100,12 @@ pub fn close_features(path: &Path, names: &[String], to: FeatureStatus, recorded
         }
         _ => false,
     };
-    let stamp = |text: String, name: &str| with_recorded_at(&text, name, recorded_at);
     edit(path, names, &closable, &|text, closed| {
         let text = set_entry_statuses(text, closed, to).map_err(|e| format!("{e:?}"))?;
         if to != FeatureStatus::Completed {
             return Ok(text);
         }
-        closed.iter().try_fold(text, |text, name| stamp(text, name))
+        with_recorded_at(&text, closed, recorded_at)
     }, &mut || {})
 }
 
@@ -123,7 +119,7 @@ pub fn complete_run_features(path: &Path, names: &[String], recorded_at: &str) -
     };
     edit(path, names, &open, &|text, completed| {
         let text = set_entry_statuses(text, completed, FeatureStatus::Completed).map_err(|e| format!("{e:?}"))?;
-        completed.iter().try_fold(text, |text, name| with_recorded_at(&text, name, recorded_at))
+        with_recorded_at(&text, completed, recorded_at)
     }, &mut || {})
 }
 
@@ -138,32 +134,23 @@ pub fn restore_completed_features(path: &Path, names: &[String], recorded_at: &s
     };
     edit(path, names, &lost, &|text, completed| {
         let text = set_entry_statuses(text, completed, FeatureStatus::Completed).map_err(|e| format!("{e:?}"))?;
-        completed.iter().try_fold(text, |text, name| with_recorded_at(&text, name, recorded_at))
+        with_recorded_at(&text, completed, recorded_at)
     }, &mut || {})
 }
 
-/// `text` with the `recordedAt` of the entry `name` set to `at`. A member added to an entry laid out one
-/// member per line goes on a line of its own, indented as the member before it.
-fn with_recorded_at(text: &str, name: &str, at: &str) -> Result<String, String> {
-    with_field(text, name, "recordedAt", &serde_json::Value::from(at).to_string())
+/// `text` with the `recordedAt` of each entry in `names` set to `at`, in one pass.
+fn with_recorded_at(text: &str, names: &[String], at: &str) -> Result<String, String> {
+    with_fields(text, names, &[("recordedAt", serde_json::Value::from(at).to_string())])
 }
 
-/// `text` with the member `key` of the entry `name` set to the JSON `value`. A member added to an entry
-/// laid out one member per line goes on a line of its own, indented as the member before it.
-fn with_field(text: &str, name: &str, key: &str, value: &str) -> Result<String, String> {
-    let edited = crate::edit::set_entry_fields(text, name, &[(key, value.to_string())]).map_err(|e| format!("{e:?}"))?;
-    let mut start = text.bytes().zip(edited.bytes()).position(|(a, b)| a != b).unwrap_or(text.len());
-    // A replaced value can first differ inside a multibyte character: back off to its start.
-    while !text.is_char_boundary(start) || !edited.is_char_boundary(start) {
-        start -= 1;
+/// `text` with the given members of each entry in `names` set to the given JSON values, in one pass. A
+/// member added to an entry laid out one member per line goes on a line of its own, indented as the
+/// member before it.
+fn with_fields(text: &str, names: &[String], members: &[(&str, String)]) -> Result<String, String> {
+    if names.is_empty() {
+        return Ok(text.to_string());
     }
-    let inline = format!(",\"{key}\":{value}");
-    if !edited[start..].starts_with(&inline) || !text[start..].starts_with('\n') {
-        return Ok(edited);
-    }
-    let line = &text[text[..start].rfind('\n').map_or(0, |i| i + 1)..start];
-    let indent = &line[..line.len() - line.trim_start().len()];
-    Ok(format!("{},\n{indent}\"{key}\": {value}{}", &text[..start], &text[start..]))
+    crate::edit::set_entries_fields(text, names, members).map_err(|e| format!("{e:?}"))
 }
 
 fn is(status: &LedgerStatus, wanted: FeatureStatus) -> bool {

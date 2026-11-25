@@ -20,7 +20,7 @@ pub fn set_entry_status(
 ) -> Result<String, EditError> {
     // The scanner below assumes well-formed JSON.
     serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| EditError::Malformed)?;
-    let span = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: None }
+    let span = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: Vec::new() }
         .status_span_of(feature_name)?
         .ok_or(EditError::UnknownFeature)?;
     let mut edited = String::with_capacity(text.len() + 16);
@@ -37,7 +37,7 @@ pub fn set_entry_status(
 pub fn set_entry_statuses(text: &str, names: &[String], status: FeatureStatus) -> Result<String, EditError> {
     serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| EditError::Malformed)?;
     let wanted: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
-    let spans = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: None }
+    let spans = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: Vec::new() }
         .scan_all(&|name| wanted.contains(name))?;
     // Entry names are unique, so each wanted name matches at most one entry.
     if spans.len() != wanted.len() {
@@ -66,24 +66,71 @@ pub(crate) fn set_entry_fields(
     members: &[(&str, String)],
 ) -> Result<String, EditError> {
     serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| EditError::Malformed)?;
-    let mut scanner = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: None };
+    let mut scanner = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: Vec::new() };
     scanner.scan(feature_name)?.ok_or(EditError::UnknownFeature)?;
-    let captured = scanner.captured.ok_or(EditError::UnknownFeature)?;
+    let captured = scanner.captured.pop().ok_or(EditError::UnknownFeature)?;
+    let mut ops = field_ops(text, &captured, members, false);
+    ops.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    let mut edited = text.to_string();
+    for (start, end, replacement) in ops {
+        edited.replace_range(start..end, &replacement);
+    }
+    Ok(edited)
+}
 
-    // (start, end, replacement); additions share one insertion point.
+/// [`set_entry_fields`] for every entry named in `names`, found in a single pass over `text`. A member
+/// added to an entry laid out one member per line goes on a line of its own, indented as the member
+/// before it. Every name must be in the ledger; nothing else changes.
+pub(crate) fn set_entries_fields(text: &str, names: &[String], members: &[(&str, String)]) -> Result<String, EditError> {
+    serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|_| EditError::Malformed)?;
+    let wanted: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+    let mut scanner = Scanner { bytes: text.as_bytes(), pos: 0, names: Default::default(), captured: Vec::new() };
+    scanner.scan_all(&|name| wanted.contains(name))?;
+    // Entry names are unique, so each wanted name matches at most one entry.
+    if scanner.captured.len() != wanted.len() {
+        return Err(EditError::UnknownFeature);
+    }
+    // Entries come in text order and each entry's ops lie inside it, so sorting the ops orders them all.
+    let mut ops: Vec<(usize, usize, String)> =
+        scanner.captured.iter().flat_map(|captured| field_ops(text, captured, members, true)).collect();
+    ops.sort_by_key(|(start, _, _)| *start);
+    let mut edited = String::with_capacity(text.len() + ops.iter().map(|(_, _, r)| r.len()).sum::<usize>());
+    let mut copied = 0;
+    for (start, end, replacement) in ops {
+        edited.push_str(&text[copied..start]);
+        edited.push_str(&replacement);
+        copied = end;
+    }
+    edited.push_str(&text[copied..]);
+    Ok(edited)
+}
+
+/// The edits, as (start, end, replacement), that set `members` in the entry `captured`: an existing
+/// member's value is replaced in place, missing ones are added after the last member. With `keep_layout`
+/// an addition to an entry whose last member ends its line goes on a line of its own.
+fn field_ops(text: &str, captured: &Captured, members: &[(&str, String)], keep_layout: bool) -> Vec<(usize, usize, String)> {
     let mut ops: Vec<(usize, usize, String)> = Vec::new();
+    let last_end = captured.fields.last().map(|(_, (_, end))| *end);
+    let separator = match last_end {
+        Some(end) if keep_layout && text[end..].starts_with('\n') => {
+            let line = &text[text[..end].rfind('\n').map_or(0, |i| i + 1)..end];
+            Some(format!("\n{}", &line[..line.len() - line.trim_start().len()]))
+        }
+        _ => None,
+    };
     let mut additions = String::new();
     for (key, value) in members {
         match captured.fields.iter().find(|(k, _)| k == key) {
             Some((_, (start, end))) => ops.push((*start, *end, value.clone())),
-            None => {
-                additions.push_str(&format!(",{}:{value}", serde_json::Value::from(*key)));
-            }
+            None => match &separator {
+                Some(separator) => additions.push_str(&format!(",{separator}{}: {value}", serde_json::Value::from(*key))),
+                None => additions.push_str(&format!(",{}:{value}", serde_json::Value::from(*key))),
+            },
         }
     }
     if !additions.is_empty() {
-        let insert_at = match captured.fields.last() {
-            Some((_, (_, end))) => *end,
+        let insert_at = match last_end {
+            Some(end) => end,
             None => {
                 // `{}`: no leading comma
                 additions.remove(0);
@@ -92,12 +139,7 @@ pub(crate) fn set_entry_fields(
         };
         ops.push((insert_at, insert_at, additions));
     }
-    ops.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
-    let mut edited = text.to_string();
-    for (start, end, replacement) in ops {
-        edited.replace_range(start..end, &replacement);
-    }
-    Ok(edited)
+    ops
 }
 
 fn status_text(status: FeatureStatus) -> &'static str {
@@ -116,8 +158,8 @@ struct Scanner<'a> {
     pos: usize,
     /// Every entry name met so far, so a repeat is caught whichever entry is edited.
     names: std::collections::HashSet<String>,
-    /// Member value spans and closing brace of the entry that matched.
-    captured: Option<Captured>,
+    /// Member value spans and closing brace of each entry that matched, in text order.
+    captured: Vec<Captured>,
 }
 
 /// Where the members of one entry object sit in the text.
@@ -214,7 +256,7 @@ impl Scanner<'_> {
         match (matches, status) {
             (true, None) => Err(EditError::Malformed),
             (true, found) => {
-                self.captured = Some(Captured { fields, close });
+                self.captured.push(Captured { fields, close });
                 Ok(found)
             }
             (false, _) => Ok(None),
