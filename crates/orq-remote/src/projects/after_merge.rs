@@ -150,6 +150,9 @@ fn job_for(state: &Path, runs: &RunStore, root: &Path, run: &str, with_release: 
     if commands.is_empty() && release.is_none() {
         return None;
     }
+    // Held from before the run shows its go started until the go recorded it, so a restart never sees
+    // the merge neither unsettled nor held.
+    locked(&IN_FLIGHT).insert((state.to_path_buf(), run.to_string()));
     if !commands.is_empty() {
         append(
             runs,
@@ -179,7 +182,6 @@ fn enqueue(root: &Path, jobs: Vec<Job>) {
     let mut goes = locked(&GOES);
     let go = goes.entry(root.to_path_buf()).or_default();
     for job in jobs {
-        locked(&IN_FLIGHT).insert((job.state.clone(), job.run.clone()));
         go.releasing += usize::from(job.release.is_some());
         go.pending.push(job);
     }
@@ -275,13 +277,17 @@ impl super::super::StoreProjects {
     /// in a project that gives a merge a go and that no go has looked at yet.
     pub fn merges_unsettled(&self) -> usize {
         let state = &self.roots.state;
-        let held = locked(&IN_FLIGHT).iter().filter(|(root, _)| root == state).count();
+        // The runs first, then what is held: a go is held before its run shows it started and let go of
+        // only after it recorded the run, so a merge that moves on in between is counted once or twice,
+        // never missed.
         let unsettled = unsettled_runs(state);
-        if unsettled.is_empty() {
-            return held;
-        }
-        let roots = project_roots(self);
-        let waiting: usize = unsettled.iter().filter(|(project, _)| roots.get(*project).is_some_and(|root| gives_a_go(root))).map(|(_, merges)| merges.len()).sum();
+        let waiting: usize = if unsettled.is_empty() {
+            0
+        } else {
+            let roots = project_roots(self);
+            unsettled.iter().filter(|(project, _)| roots.get(*project).is_some_and(|root| gives_a_go(root))).map(|(_, merges)| merges.len()).sum()
+        };
+        let held = locked(&IN_FLIGHT).iter().filter(|(root, _)| root == state).count();
         held + waiting
     }
 
@@ -545,5 +551,72 @@ fn append(runs: &RunStore, run: &str, kind: &str, payload: Value) {
     };
     if let Err(error) = runs.append_event(&event) {
         eprintln!("orq: cannot record {kind} on {run}: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orq_orchestrator::RunRecord;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).current_dir(dir).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn event(runs: &RunStore, run: &str, kind: &str, payload: Value) {
+        let record = runs.load(run).unwrap();
+        let n = runs.events(run).unwrap().len();
+        let event = Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: record.project_id, feature_id: record.feature_id, kind: kind.into(), stage: None, attempt: 1, occurred_at: format!("2026-11-25T15:42:0{n}Z"), payload };
+        runs.append_event(&event).unwrap();
+    }
+
+    /// A server over project `alpha` with one `[after_merge]` command, and its run `run-1` merged at HEAD.
+    fn merged_project(tag: &str) -> (super::super::super::StoreProjects, PathBuf, PathBuf) {
+        let base = orq_test_support::process_temp_dir().join(format!("orq-after-merge-unit-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let roots = orq_core::storage::StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+        roots.create_all().unwrap();
+        let scan = base.join("code");
+        std::fs::create_dir_all(scan.join("alpha")).unwrap();
+        let repo = std::fs::canonicalize(scan.join("alpha")).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join(".gitignore"), ".orq/\n").unwrap();
+        git(&repo, &["add", ".gitignore"]);
+        git(&repo, &["commit", "-q", "-m", "start"]);
+        std::fs::create_dir_all(repo.join(".orq")).unwrap();
+        std::fs::write(repo.join(".orq/run.toml"), "[after_merge]\ncommands = [[\"true\"]]\n").unwrap();
+        let runs = RunStore::new(&roots.state);
+        let head = git(&repo, &["rev-parse", "HEAD"]);
+        let record = RunRecord {
+            delivery: Delivery::MergeLocal,
+            run_id: "run-1".into(),
+            project_id: orq_git::project_id(&orq_git::resolve_project(&repo).unwrap()),
+            feature_id: "F-1".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: head.clone(),
+            branch: "orq/run-1".into(),
+            worktree: repo.join(".claude/worktrees/run-1"),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        runs.create(&record).unwrap();
+        event(&runs, "run-1", "merge.completed", json!({"head_sha": head, "target_branch": "main"}));
+        event(&runs, "run-1", "run.completed", json!({"ending": "merged"}));
+        let state = roots.state.clone();
+        (super::super::super::StoreProjects::new(roots, scan), state, repo)
+    }
+
+    #[test]
+    fn a_merge_whose_go_is_made_but_not_yet_queued_still_counts_as_unsettled() {
+        let (projects, state, repo) = merged_project("made");
+        assert_eq!(projects.merges_unsettled(), 1);
+        let job = job_for(&state, &RunStore::new(&state), &repo, "run-1", false, &|| unreachable!("no release"));
+        assert!(job.is_some());
+        assert!(RunStore::new(&state).events("run-1").unwrap().iter().any(|event| event.kind == STARTED));
+        assert_eq!(projects.merges_unsettled(), 1, "the go is made and the merge started, but nothing holds it yet");
     }
 }
