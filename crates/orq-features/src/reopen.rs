@@ -152,7 +152,11 @@ fn with_recorded_at(text: &str, name: &str, at: &str) -> Result<String, String> 
 /// laid out one member per line goes on a line of its own, indented as the member before it.
 fn with_field(text: &str, name: &str, key: &str, value: &str) -> Result<String, String> {
     let edited = crate::edit::set_entry_fields(text, name, &[(key, value.to_string())]).map_err(|e| format!("{e:?}"))?;
-    let start = text.bytes().zip(edited.bytes()).position(|(a, b)| a != b).unwrap_or(text.len());
+    let mut start = text.bytes().zip(edited.bytes()).position(|(a, b)| a != b).unwrap_or(text.len());
+    // A replaced value can first differ inside a multibyte character: back off to its start.
+    while !text.is_char_boundary(start) || !edited.is_char_boundary(start) {
+        start -= 1;
+    }
     let inline = format!(",\"{key}\":{value}");
     if !edited[start..].starts_with(&inline) || !text[start..].starts_with('\n') {
         return Ok(edited);

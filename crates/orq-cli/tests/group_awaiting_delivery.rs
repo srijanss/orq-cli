@@ -484,6 +484,25 @@ fn a_group_run_is_refused_before_anything_is_recorded_when_the_lock_pins_an_olde
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
+#[test]
+fn a_group_run_is_refused_when_the_lock_pins_a_prerelease_of_the_tdd_server_0_5_0_and_started_from_0_5_1() {
+    let w = group("prerelease-server", "c", "");
+    let agent = FakeAgent::builder().commit("feat: a member").build();
+    let provider = delivering();
+    let check = |version: &str| {
+        std::fs::write(w.repo.root().join(".mcpctl.lock"), format!("[[mcp]]\nname = \"outside-in-tdd-mcp\"\nversion = \"{version}\"\n")).unwrap();
+        let out = w.orq(&agent, &provider, &["run", "--repo", &w.root(), "--group", "a,b,c", "--remote", "origin", "--target", "main", "--check"]);
+        text(&out.stderr).contains("update outside-in-tdd-mcp to 0.5.0 (mcpctl) for group runs")
+    };
+
+    assert!(check("0.5.0-alpha.1"), "a prerelease of 0.5.0 is below 0.5.0");
+    assert!(check("v0.4.9+build.7"));
+    assert!(!check("0.5.0+build.7"), "build metadata is not a prerelease");
+    assert!(!check("0.5.1-rc.1"), "a prerelease of a later version is past 0.5.0");
+    assert!(!check("1.0.0"));
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
 /// A crc32 for the PNG chunks below.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;

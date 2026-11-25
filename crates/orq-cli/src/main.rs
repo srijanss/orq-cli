@@ -466,12 +466,17 @@ fn tdd_server_below_awaiting_delivery(root: &std::path::Path) -> bool {
         .find(|server| server.get("name").and_then(|n| n.as_str()) == Some("outside-in-tdd-mcp"))
         .and_then(|server| server.get("version").and_then(|v| v.as_str()));
     let Some(version) = version else { return false };
-    let parts: Option<Vec<u64>> = version.trim().trim_start_matches('v').split(['-', '+']).next().unwrap_or("").split('.').map(|part| part.parse().ok()).collect();
-    match parts.as_deref() {
-        Some([major, minor, ..]) => (*major, *minor) < (0, 5),
-        Some([major]) => *major == 0,
-        _ => false,
-    }
+    // Build metadata (`+...`) does not order; a prerelease (`-...`) is below its release.
+    let version = version.trim().trim_start_matches('v').split('+').next().unwrap_or("");
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, _)) => (core, true),
+        None => (version, false),
+    };
+    let parts: Option<Vec<u64>> = core.split('.').map(|part| part.parse().ok()).collect();
+    let Some(parts) = parts else { return false };
+    let at = |i: usize| parts.get(i).copied().unwrap_or(0);
+    let triple = (at(0), at(1), at(2));
+    triple < (0, 5, 0) || (triple == (0, 5, 0) && prerelease)
 }
 
 fn refuse(resuming: Option<&str>, message: &str, code: u8) -> ExitCode {
