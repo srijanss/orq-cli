@@ -114,14 +114,13 @@ fn inside_a_project_todos_still_points_at_slash_todos() {
 }
 
 #[test]
-fn the_phone_bar_shows_todos_among_its_five_tabs() {
-    let tabs = "nav.tabbar > a";
-    let Some(out) = shell(json!({"path": "/todos", "phone": true, "probe": [tabs, "[data-tab-drawer] a"]})) else { return };
+fn the_phone_bar_shows_todos_first_in_its_second_row() {
+    let second = "nav.tabbar > [data-tab-row=\"2\"] > a";
+    let Some(out) = shell(json!({"path": "/todos", "phone": true, "probe": [second]})) else { return };
     let frame = &out["frames"][0];
-    let texts = |selector: &str| -> Vec<String> { frame["probes"][selector].as_array().unwrap().iter().map(|item| item["text"].as_str().unwrap().to_string()).collect() };
-    assert_eq!(texts(tabs), ["Dashboard", "Todos", "Features", "Orchestrations", "Queue"], "{out}");
-    assert_eq!(frame["probes"][tabs][1]["current"], "page", "{out}");
-    assert_eq!(texts("[data-tab-drawer] a"), ["Reviews", "Settings"], "{out}");
+    let texts: Vec<&str> = frame["probes"][second].as_array().unwrap().iter().map(|item| item["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, ["Todos", "Reviews"], "{out}");
+    assert_eq!(frame["probes"][second][0]["current"], "page", "{out}");
 }
 
 #[test]

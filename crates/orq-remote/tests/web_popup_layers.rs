@@ -168,18 +168,6 @@ fn the_feature_modal_sits_on_the_dialog_layer() {
 }
 
 #[test]
-fn the_phone_more_sheet_and_its_backdrop_sit_on_their_layer_tokens() {
-    let Some(chromium) = web_chromium::binary() else { return };
-    // Opened, the tab bar is the More sheet, a sheet above its scrim.
-    let phone: [(&str, &str); 4] = [(".topbar", "--z-chrome"), (".tabbar-backdrop", "--z-scrim"), (".project-picker .project-list", "--z-menu"), (".tabbar[data-open]", "--z-dialog")];
-    let phone = &phone[..];
-    let steps = layer_steps(vec![json!({"wait": "[data-tab-handle]"}), json!({"click": "[data-tab-handle]"}), json!({"wait": ".tabbar-backdrop"}), json!({"tokens": ["--scrim"]})], phone);
-    let result = load(&chromium, "dark", 390, "/projects/p01/features", 2, false, steps);
-    assert_layers(&result, phone, "More sheet");
-    assert_eq!(style(&result, ".tabbar-backdrop", "background-color"), result["tokens"]["--scrim"].as_str().unwrap(), "the More sheet's backdrop is the scrim token");
-}
-
-#[test]
 fn the_phone_bars_and_the_selection_sheet_sit_on_their_layer_tokens() {
     let Some(chromium) = web_chromium::binary() else { return };
     let chrome: [(&str, &str); 2] = [(".topbar", "--z-chrome"), (".tabbar", "--z-chrome")];

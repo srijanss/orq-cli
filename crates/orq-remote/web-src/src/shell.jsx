@@ -1,8 +1,7 @@
 // The page frame. On a desktop: a sidebar with the Dashboard, the chosen project's sections and
 // Settings, which collapses to an icon rail. On a phone there is no sidebar: a top bar (theme,
-// brand, the page's Refresh) and a fixed bottom tab bar hold the same destinations; past five, the bar
-// keeps five and a grab handle on its top edge pulls the bar up to show them all. The place lives in the
-// address path, so Back and Forward move it.
+// brand, the page's Refresh) and a fixed bottom tab bar with two rows of icon tabs hold the same
+// destinations. The place lives in the address path, so Back and Forward move it.
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./icons.jsx";
 import { ThemeToggle } from "./theme.jsx";
@@ -159,209 +158,28 @@ function PhoneShell({ projectId = null, children }) {
   );
 }
 
-// The bar holds five tabs; past five, a grab handle at its top pulls the bar itself up, the other sections
-// showing as further rows of icons below the tabs.
-const BAR_TABS = 5;
-// A finger has to move this far before a press on the handle is a drag rather than a tap.
-const DRAG_SLOP = 6;
-// Letting go faster than this (px per ms, over the last 100ms) flicks the bar open or closed.
-const FLICK_SPEED = 0.5;
-const FLICK_WINDOW = 100;
-// A click within this long of a drag's end is the drag's own, not a tap.
-const DRAG_CLICK_MS = 300;
-const SETTLE = "height 200ms ease-out";
-
-function prefersReducedMotion() {
-  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// Todos and Reviews sit in the bar's second row; every other section is in the first.
+function inSecondRow(entry) {
+  return entry.href === "/todos" || entry.href.endsWith("/reviews");
 }
 
-const now = () => performance.now();
-
+// The bar's two rows of icon tabs, on the same five columns: Home, Features, Orchestrations, Queue and
+// Settings, then Todos and Reviews. Each name stays as a visually hidden label.
 export function TabBar({ entries, path }) {
-  // The drawer is open on the page it was opened on, so any move, Back and Forward included,
-  // closes it; the move also forgets it, so coming back doesn't reopen it.
-  const [openOn, setOpenOn] = useState(null);
-  if (openOn !== null && openOn !== path) setOpenOn(null);
-  const open = openOn === path;
-  // The drawer's open height, measured when it opens, and how much of it shows while a finger drags.
-  const [full, setFull] = useState(0);
-  const [pull, setPull] = useState(null);
-  const overflows = entries.length > BAR_TABS;
-  const shown = entries.slice(0, BAR_TABS);
-  const rest = entries.slice(BAR_TABS);
-  const reduced = prefersReducedMotion();
-  const bar = useRef(null);
-  const handle = useRef(null);
-  const drawer = useRef(null);
-  const drag = useRef(null);
-  const dragEndedAt = useRef(-Infinity);
-  // When a tap last lifted in the handle's strip above a tab's icon; the tab's click that follows it is the handle's.
-  const stripTapAt = useRef(-Infinity);
-  const wasOpen = useRef(false);
-
-  const measure = () => drawer.current?.scrollHeight ?? 0;
-  const setOpen = (value) => {
-    if (value) setFull(measure());
-    setOpenOn(value ? path : null);
-  };
-
-  useEffect(() => {
-    if (!open) {
-      // Focus goes back to the handle however the drawer closed.
-      if (wasOpen.current) handle.current?.focus();
-      wasOpen.current = false;
-      return undefined;
-    }
-    wasOpen.current = true;
-    const tiles = [...(drawer.current?.querySelectorAll("a") ?? [])];
-    (tiles.find((tile) => tile.getAttribute("aria-current") === "page") ?? tiles[0])?.focus();
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") {
-        setOpenOn(null);
-        return;
-      }
-      if (event.key !== "Tab" || !bar.current) return;
-      // Tab and Shift+Tab go round the handle, the tabs and the extra rows while the bar is open.
-      const stops = [...bar.current.querySelectorAll("a[href], button")].filter((stop) => stop.tabIndex >= 0);
-      if (stops.length === 0) return;
-      event.preventDefault();
-      const at = stops.indexOf(document.activeElement);
-      const next = event.shiftKey ? (at <= 0 ? stops.length - 1 : at - 1) : (at === -1 || at === stops.length - 1 ? 0 : at + 1);
-      stops[next].focus();
-    };
-    // A resize (a phone turning) can change the rows' height, so the open height follows it.
-    const onResize = () => setFull(measure());
-    document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("resize", onResize);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [open]);
-
-  // How much of the drawer shows with the finger at `y`.
-  const showing = (current, y) => Math.min(current.height, Math.max(0, current.from + current.startY - y));
-
-  const inHandleStrip = (event) => {
-    const box = handle.current?.getBoundingClientRect();
-    return !!box && event.clientY >= box.top && event.clientY < box.bottom && event.clientX >= box.left && event.clientX < box.right;
-  };
-
-  // Whether the press is on a tab, inside the handle's strip and above the tab's icon: that part of the tab is the
-  // handle's, so a tap there toggles the bar instead of following the tab.
-  const aboveTabIcon = (event) => {
-    const tab = event.target.closest?.("a");
-    if (!tab || tab.parentElement !== bar.current || !inHandleStrip(event)) return false;
-    const icon = tab.querySelector("svg")?.getBoundingClientRect();
-    return !!icon && event.clientY < icon.top;
-  };
-
-  const onPointerDown = (event) => {
-    stripTapAt.current = -Infinity;
-    if (!overflows) return;
-    // The handle's whole 44px strip, the tabs that paint over its lower part included, or the bar's own empty
-    // strip. A press there that doesn't move is a tap: the handle's above a tab's icon, the tab's on or below it.
-    if (!handle.current?.contains(event.target) && event.target !== bar.current && !inHandleStrip(event)) return;
-    const height = open ? full : measure();
-    drag.current = { startY: event.clientY, from: open ? height : 0, height, moved: false, aboveIcon: aboveTabIcon(event), samples: [{ y: event.clientY, t: now() }] };
-  };
-
-  const onPointerMove = (event) => {
-    const current = drag.current;
-    if (!current) return;
-    if (!current.moved && Math.abs(event.clientY - current.startY) < DRAG_SLOP) return;
-    // The bar takes the finger only once it drags: a capture from the press would send a tap's click
-    // to the bar instead of the handle.
-    if (!current.moved) event.currentTarget.setPointerCapture?.(event.pointerId);
-    current.moved = true;
-    const t = now();
-    current.samples = current.samples.filter((sample) => sample.t >= t - FLICK_WINDOW).concat({ y: event.clientY, t });
-    if (!reduced) setPull(showing(current, event.clientY));
-  };
-
-  const onPointerUp = (event) => {
-    const current = drag.current;
-    drag.current = null;
-    if (!current) return;
-    if (!current.moved) {
-      // The click that follows this lift lands on the tab; it toggles the bar instead.
-      if (current.aboveIcon) stripTapAt.current = now();
-      return;
-    }
-    dragEndedAt.current = now();
-    setPull(null);
-    // Upward speed over the last moments of the drag; 0 when the finger rested before lifting.
-    const t = now();
-    const recent = current.samples.find((sample) => sample.t >= t - FLICK_WINDOW);
-    const speed = recent ? (recent.y - event.clientY) / Math.max(1, t - recent.t) : 0;
-    const visible = showing(current, event.clientY);
-    const opens = current.from === 0
-      ? visible > current.height / 3 || speed > FLICK_SPEED
-      : !(current.height - visible > current.height / 3 || -speed > FLICK_SPEED);
-    if (opens) setFull(current.height);
-    setOpenOn(opens ? path : null);
-  };
-
-  // A cancelled drag, or one whose finger the bar lost (the lift releases it too, after the drag has ended),
-  // falls back to where it started.
-  const onPointerCancel = () => {
-    if (!drag.current) return;
-    drag.current = null;
-    setPull(null);
-  };
-  // Only the bar itself losing the finger ends the drag: on touch the handle holds the finger from the press,
-  // and the bar taking it over sends the handle a lostpointercapture that bubbles up here.
-  const onLostPointerCapture = (event) => {
-    if (event.target === event.currentTarget) onPointerCancel();
-  };
-
-  const height = pull !== null ? pull : open ? full : 0;
-  const transition = pull !== null || reduced ? "none" : SETTLE;
-
+  const rows = [entries.filter((entry) => !inSecondRow(entry)), entries.filter(inSecondRow)];
   return (
-    <>
-      {open ? <div className="tabbar-backdrop" data-tab-backdrop aria-hidden="true" onClick={() => setOpenOn(null)} /> : null}
-      <nav className="tabbar" aria-label="Sections" ref={bar} data-handle={overflows ? "" : undefined} data-open={open ? "" : undefined} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onLostPointerCapture={onLostPointerCapture}>
-        {overflows ? (
-          <button type="button" ref={handle} className="tabbar-handle" data-tab-handle aria-label="Show all sections" aria-expanded={open ? "true" : "false"} aria-controls="tabbar-all" onClick={() => {
-              if (now() - dragEndedAt.current < DRAG_CLICK_MS) return;
-              setOpen(!open);
-            }} />
-        ) : null}
-        {shown.map((entry) => (
-          <a key={entry.href} href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
-              if (now() - stripTapAt.current < DRAG_CLICK_MS) {
-                stripTapAt.current = -Infinity;
-                event.preventDefault();
-                setOpen(!open);
-                return;
-              }
-              // Choosing any section closes the open bar, the one already shown included.
-              if (open) setOpenOn(null);
-              goTo(entry, event);
-            }}>
-            <Icon name={entry.icon} size={28} />
-            <span className="tab-label">{entry.label}</span>
-          </a>
-        ))}
-        {overflows ? (
-          // The sections past the tab row, as further rows of the bar below it.
-          <div id="tabbar-all" className="tabbar-all" data-tab-drawer ref={drawer} aria-hidden={open ? undefined : "true"} style={{ height: `${height}px`, transition }}>
-            <div className="tabbar-grid">
-              {rest.map((entry) => (
-                <a key={entry.href} href={entry.href} title={entry.label} tabIndex={open ? undefined : -1} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
-                    setOpenOn(null);
-                    goTo(entry, event);
-                  }}>
-                  <Icon name={entry.icon} size={28} />
-                  <span className="tab-label">{entry.label}</span>
-                </a>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </nav>
-    </>
+    <nav className="tabbar" aria-label="Sections">
+      {rows.map((row, at) => (
+        <div key={at} className="tabbar-row" data-tab-row={at + 1}>
+          {row.map((entry) => (
+            <a key={entry.href} href={entry.href} title={entry.label} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => goTo(entry, event)}>
+              <Icon name={entry.icon} size={28} />
+              <span className="tab-label">{entry.label}</span>
+            </a>
+          ))}
+        </div>
+      ))}
+    </nav>
   );
 }
 

@@ -331,12 +331,12 @@ fn the_update_prompt_floats_over_the_page_in_theme_colours() {
     }
     let phone = css.find("@media (max-width: 700px) {\n  .update-card").map(|at| &css[at..]).expect("the phone card query");
     let phone_card = css_rule(phone, "  .update-card {");
-    for part in ["bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem)", "left: calc(16px + env(safe-area-inset-left))",
+    for part in ["bottom: calc(7rem + env(safe-area-inset-bottom) + 0.75rem)", "left: calc(16px + env(safe-area-inset-left))",
         "right: calc(16px + env(safe-area-inset-right))"] {
         assert!(phone_card.contains(part), "phone card {part}: {phone_card}");
     }
     let phone_fab = css_rule(phone, "  .update-fab {");
-    assert!(phone_fab.contains("bottom: calc(3.75rem + env(safe-area-inset-bottom) + 0.75rem)"), "{phone_fab}");
+    assert!(phone_fab.contains("bottom: calc(7rem + env(safe-area-inset-bottom) + 0.75rem)"), "{phone_fab}");
     let fab = css_rule(&css, ".update-fab {");
     for part in ["position: fixed", "width: 48px", "height: 48px", "border-radius: 50%"] {
         assert!(fab.contains(part), "fab {part}: {fab}");

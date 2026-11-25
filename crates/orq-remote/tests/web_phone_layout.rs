@@ -125,7 +125,7 @@ fn the_status_bar_area_is_covered_by_a_solid_fixed_strip() {
 }
 
 #[test]
-fn the_status_bar_strip_paints_above_the_tab_sheet_and_its_backdrop() {
+fn the_status_bar_strip_paints_above_the_tab_bar() {
     let css = css();
     // A z-index is a number or one of the layer scale's tokens, read from the stylesheet's root block.
     let z = |value: &str| -> i64 {
@@ -141,15 +141,13 @@ fn the_status_bar_strip_paints_above_the_tab_sheet_and_its_backdrop() {
     };
     for width in WIDTHS {
         let strip = z(&strip_at(&css, "z-index", width).unwrap_or_else(|| panic!("no strip z-index at {width}px")));
-        // Every z-index any tab bar or backdrop rule can set, so the opened sheet's own one counts too.
+        // Every z-index any tab bar rule can set.
         let below: Vec<(String, i64)> = parse(&css, None)
             .iter()
             .filter(|r| applies(&r.media, width))
-            .flat_map(|r| r.selectors.iter().filter(|s| can_match(s, ".tabbar") || can_match(s, ".tabbar-backdrop")).flat_map(move |s| r.declarations.iter().filter(|(p, _)| p == "z-index").map(move |(_, v)| (s.clone(), z(v)))))
+            .flat_map(|r| r.selectors.iter().filter(|s| can_match(s, ".tabbar")).flat_map(move |s| r.declarations.iter().filter(|(p, _)| p == "z-index").map(move |(_, v)| (s.clone(), z(v)))))
             .collect();
-        for selector in [".tabbar-backdrop", ".tabbar[data-open]"] {
-            assert!(below.iter().any(|(s, _)| s == selector), "{selector} sets a z-index at {width}px: {below:?}");
-        }
+        assert!(below.iter().any(|(s, _)| s == ".tabbar"), ".tabbar sets a z-index at {width}px: {below:?}");
         for (selector, index) in below {
             assert!(strip > index, "the strip ({strip}) paints above {selector} ({index}) at {width}px");
         }
