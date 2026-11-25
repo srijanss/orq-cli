@@ -35,6 +35,14 @@ pub fn reopen_unfinished_features(path: &Path, names: &[String]) -> Result<Vec<S
     reopen(path, names, &|status, _| is(status, FeatureStatus::Completed), FeatureStatus::InProgress, &mut || {})
 }
 
+/// Before a group member's session: each of `names` that the ledger at `path` records as `in_progress`
+/// (held there until the run delivers) becomes `completed`, so the member's dependencies on them are met;
+/// `recordedAt` is left alone, delivery sets it. Saved as [`reopen_features`] saves; returns the names
+/// that were released.
+pub fn release_held_features(path: &Path, names: &[String]) -> Result<Vec<String>, String> {
+    reopen(path, names, &|status, _| is(status, FeatureStatus::InProgress), FeatureStatus::Completed, &mut || {})
+}
+
 /// [`reopen_features`], calling `before_save` between each load and its save: a seam for tests
 /// that race another writer against the save.
 #[doc(hidden)]

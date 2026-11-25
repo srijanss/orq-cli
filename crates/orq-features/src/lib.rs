@@ -285,7 +285,7 @@ mod promote;
 pub use promote::{implementing_run, in_implement_step, promote_feature, RunEvents, promote_feature_waiting, reopen_completed_feature, reopen_open_findings, PromoteError, ReopenedFinding, FINDING_REOPENED};
 
 mod reopen;
-pub use reopen::{close_features, complete_run_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features, restore_completed_features};
+pub use reopen::{close_features, complete_run_features, release_held_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features, restore_completed_features};
 
 mod validate;
 pub use validate::{archived_dependency_notes, drop_archived_dependencies, feature_name_problem, validate_changed_entries, validate_entries, validate_entries_with_archive, ExistingProblem, ValidationError};

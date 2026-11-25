@@ -1422,6 +1422,60 @@ fn kept_by_group(store: &RunStore, record: &RunRecord, features: &[String]) -> V
     session_completed(store, &record.run_id).into_iter().filter(|(_, at)| *at == head).map(|(name, _)| name).collect()
 }
 
+/// Before a session of a group run implementing `members`: the group's `features` a session of the run
+/// (or of a run it resumes) completed, and which the ledger holds `in_progress` until delivery, are set
+/// `completed`, so the session's `init_feature` finds the member's dependencies on them met. An earlier
+/// member counts when its completion is at the head the branch is on or one the branch has built on
+/// since (its gate and design loop commit on top of it); one of `members` only at the head it is on
+/// (`kept_by_group`), as it is otherwise started again. A feature a later run took is left to that run.
+/// Recorded as `ledger.released_for_member {member, features}`. Returns the names released, which the
+/// caller holds again after the session. None for a single feature. Best effort: a failure is said.
+fn release_for_member(store: &RunStore, record: &RunRecord, ledger: &Path, features: &[String], members: &[String]) -> Vec<String> {
+    if features.len() < 2 {
+        return Vec::new();
+    }
+    let Some(head) = worktree_head(record) else { return Vec::new() };
+    let completions = session_completed(store, &record.run_id);
+    let mut kept_heads: Vec<(String, bool)> = Vec::new();
+    let mut kept = |at: &str| -> bool {
+        if at == head {
+            return true;
+        }
+        if let Some((_, known)) = kept_heads.iter().find(|(seen, _)| seen == at) {
+            return *known;
+        }
+        let ancestor = is_ancestor(&record.worktree, at, &head);
+        kept_heads.push((at.to_string(), ancestor));
+        ancestor
+    };
+    let earlier: Vec<String> = features
+        .iter()
+        .filter(|name| completions.iter().any(|(done, at)| done == *name && if members.contains(name) { *at == head } else { kept(at) }))
+        .cloned()
+        .collect();
+    if earlier.is_empty() {
+        return Vec::new();
+    }
+    let free = features_no_later_run_took(store, record, &earlier);
+    match orq_features::release_held_features(ledger, &free) {
+        Ok(released) => {
+            if !released.is_empty() {
+                record_ledger_event(store, record, "ledger.released_for_member", serde_json::json!({ "member": members.join(","), "features": released }));
+            }
+            released
+        }
+        Err(err) => {
+            eprintln!("orq: cannot set {} completed for the session of {}: {err}", free.join(","), members.join(","));
+            Vec::new()
+        }
+    }
+}
+
+/// Whether the commit `ancestor` is one `head` was built on, in `dir`'s repository; false when git cannot tell.
+fn is_ancestor(dir: &Path, ancestor: &str, head: &str) -> bool {
+    Command::new("git").arg("-C").arg(dir).args(["merge-base", "--is-ancestor", ancestor, head]).status().is_ok_and(|status| status.success())
+}
+
 /// Copies the `ledger.session_completed` events of `from` (its own and those it carried) into `record`'s
 /// run, so a resumed run knows what the sessions before it completed. Best effort: a failure is said.
 fn carry_session_completed(store: &RunStore, record: &RunRecord, from: &str) {
@@ -2369,6 +2423,9 @@ fn stages(
             if resumed_from.is_some() {
                 hand_back_features(store, record, &orq_features::ledger_path(options.project), members);
             }
+            // The group's earlier members, held `in_progress` until delivery, are `completed` while the
+            // session runs, so its `init_feature` finds the member's dependencies met.
+            let released = release_for_member(store, record, &orq_features::ledger_path(options.project), options.features, members);
             let features: Vec<&str> = members.iter().map(String::as_str).collect();
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             // The session is asked to leave this file when it is finished, and is closed once it does.
@@ -2441,7 +2498,10 @@ fn stages(
             };
             let before = ledger_statuses(&orq_features::ledger_path(options.project), "the implement session");
             let files_before = ledger_target_files(&orq_features::ledger_path(options.project), members);
-            let outcome = run_implement_stage(store, run_id, &session)?;
+            let outcome = run_implement_stage(store, run_id, &session);
+            // Whatever the session's ending, what was released for it is held again until delivery.
+            hold_until_delivery(store, record, &orq_features::ledger_path(options.project), &released);
+            let outcome = outcome?;
             restore_target_files(store, record, &orq_features::ledger_path(options.project), files_before.as_deref());
             // What the session completed is recorded, so the group check counts it.
             let completed = record_session_completed(store, record, &orq_features::ledger_path(options.project), members, before.as_deref());
