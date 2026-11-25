@@ -109,11 +109,16 @@ fn base() -> Vec<Value> {
 
 /// The page at `path`, `width` px wide, with `routes` in front of the base ones, after `steps`.
 fn open(width: u32, path: &str, routes: Vec<Value>, session: bool, steps: Vec<Value>) -> Option<Value> {
+    open_after(width, path, routes, session, steps, "")
+}
+
+/// As `open`, with `before` run in the page before the app loads (to leave something in its storage).
+fn open_after(width: u32, path: &str, routes: Vec<Value>, session: bool, steps: Vec<Value>, before: &str) -> Option<Value> {
     let chromium = web_chromium::binary()?;
     let mut all = routes;
     all.extend(base());
     // "</" is written "<\/" so a `</script>` in a reply never closes the page's inline script.
-    let init = FAKE.replace("__API__", &json!({"routes": all, "session": session}).to_string().replace("</", "<\\/"));
+    let init = before.to_string() + &FAKE.replace("__API__", &json!({"routes": all, "session": session}).to_string().replace("</", "<\\/"));
     let mut steps = steps;
     steps.push(json!({"eval": "sent", "js": "return window.__sent;"}));
     steps.push(json!({"eval": "address", "js": "return location.pathname + location.search;"}));
@@ -292,6 +297,72 @@ fn a_running_reply_streams_in_without_a_reload_and_stop_asks_first_then_shows_th
     assert_eq!(sent(&ended, "POST", &format!("{CHAT_PATH}/stop")), vec![json!({})], "{ended}");
     let end = eval(&ended, "end").as_str().unwrap();
     assert!(end.contains("Stopped") && end.contains("stopped from the web"), "the turn shows it was stopped and why: {end}");
+}
+
+const RUN: &str = "run-1795000000-1-1";
+const NEW_CHAT: &str = "chat-cccccccccccccccccc";
+
+/// The run's page reads it as failed (or `state`), for the feature home-v02-assets.
+fn run_route(state: &str) -> Value {
+    route("GET", &format!("/api/projects/alpha/runs/{RUN}"), vec![reply(json!({"run": {"run_id": RUN, "feature": "home-v02-assets", "state": state, "stage": "implement"}, "events": [], "next_cursor": null}))])
+}
+
+const DRAFT: &str = "var i = document.querySelector('[data-ask-input]'); var a = document.querySelector('[data-ask-about]'); return {message: i ? i.value : null, about: a ? a.textContent : null};";
+
+/// What New chat offers on the page at `path`: the suggested message and the header.
+fn new_chat_on(path: &str, routes: Vec<Value>) -> Option<Value> {
+    let result = open(1440, path, routes, true, vec![json!({"click": ASK}), json!({"click": "[data-ask-new]"}), json!({"wait": "[data-ask-input]"}), json!({"eval": "draft", "js": DRAFT})])?;
+    Some(eval(&result, "draft").clone())
+}
+
+#[test]
+fn new_chat_follows_the_page_it_was_opened_on_with_an_editable_suggested_message() {
+    let run_page = format!("/projects/alpha/orchestrations/{RUN}");
+    let Some(failed) = new_chat_on(&run_page, vec![run_route("failed")]) else { return };
+    assert_eq!(failed["message"], "What happened, and what should I do?", "{failed}");
+    assert_eq!(failed["about"], format!("About {RUN} · home-v02-assets"), "{failed}");
+    let Some(running) = new_chat_on(&run_page, vec![run_route("running")]) else { return };
+    assert_eq!(running["message"], "What is it doing now?", "{running}");
+    let Some(feature) = new_chat_on("/projects/alpha/features/home-v02-assets", vec![]) else { return };
+    assert_eq!((&feature["message"], &feature["about"]), (&json!("What is the state of this feature?"), &json!("About home-v02-assets")), "{feature}");
+    let Some(queue) = new_chat_on("/projects/alpha/queue", vec![]) else { return };
+    assert_eq!((&queue["message"], &queue["about"]), (&json!("Why isn't the queue moving?"), &json!("About the queue")), "{queue}");
+    let Some(other) = new_chat_on("/projects/alpha/reviews", vec![]) else { return };
+    assert_eq!((&other["message"], &other["about"]), (&json!(""), &json!("About alpha")), "the project: {other}");
+
+    // The message can be changed before it is sent; the chat is made about the run, then opened.
+    let made = chat(NEW_CHAT, "Why did it stop", json!({"kind": "run", "target": RUN}), false);
+    let routes = vec![
+        run_route("failed"),
+        route("POST", "/api/projects/alpha/chats", vec![reply(json!({"chat": made}))]),
+        route("POST", &format!("/api/projects/alpha/chats/{NEW_CHAT}/messages"), vec![json!({"status": 202, "body": {"turn": 1}})]),
+        route("GET", &format!("/api/projects/alpha/chats/{NEW_CHAT}"), vec![json!({"status": 200, "body": {"chat": made, "items": [], "rules": [], "running": false}})]),
+    ];
+    let steps = vec![json!({"click": ASK}), json!({"click": "[data-ask-new]"}), json!({"wait": "[data-ask-input]"}), json!({"type": "[data-ask-input]", "value": "Why did it stop?"}), json!({"click": "[data-ask-send]"}), json!({"wait": "[data-ask-conversation]"})];
+    let Some(sent_chat) = open(1440, &run_page, routes, true, steps) else { return };
+    let created = sent(&sent_chat, "POST", "/api/projects/alpha/chats");
+    assert_eq!(created.len(), 1, "{sent_chat}");
+    assert_eq!(created[0]["context"], json!({"kind": "run", "target": RUN}), "{sent_chat}");
+    assert_eq!(sent(&sent_chat, "POST", &format!("/api/projects/alpha/chats/{NEW_CHAT}/messages")), vec![json!({"text": "Why did it stop?"})], "{sent_chat}");
+    assert!(eval(&sent_chat, "address").as_str().unwrap().ends_with(&format!("?ask={NEW_CHAT}")), "{sent_chat}");
+}
+
+#[test]
+fn outside_a_project_the_panel_asks_which_project_and_remembers_the_last_one() {
+    let two = route("GET", "/api/projects", vec![reply(json!({"projects": [project(), {"id": "beta", "name": "beta", "available": true, "features": 0, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24}]}))]);
+    let beta_chats = route("GET", "/api/projects/beta/chats", vec![reply(json!({"chats": []}))]);
+    let choices = "return Array.from(document.querySelectorAll('[data-ask-project]')).map(function (b) { return b.getAttribute('data-ask-project'); });";
+    let Some(asking) = open(1440, "/dashboard", vec![two.clone(), beta_chats.clone()], true, vec![json!({"click": ASK}), json!({"wait": "[data-ask-project]"}), json!({"eval": "choices", "js": choices})]) else { return };
+    assert_eq!(eval(&asking, "choices"), &json!(["alpha", "beta"]), "{asking}");
+    let steps = vec![json!({"click": ASK}), json!({"click": "[data-ask-project=beta]"}), json!({"wait": "[data-ask-new]"}), json!({"eval": "kept", "js": "return localStorage.getItem('orq.ask.project');"})];
+    let Some(asked) = open(1440, "/dashboard", vec![two.clone(), beta_chats.clone()], true, steps) else { return };
+    assert_eq!(eval(&asked, "kept"), "beta", "{asked}");
+    assert_eq!(sent(&asked, "GET", "/api/projects/beta/chats").len(), 1, "{asked}");
+
+    let steps = vec![json!({"click": ASK}), json!({"click": "[data-ask-new]"}), json!({"wait": "[data-ask-input]"}), json!({"eval": "draft", "js": DRAFT})];
+    let Some(again) = open_after(1440, "/settings", vec![two, beta_chats], true, steps, "try { localStorage.setItem('orq.ask.project', 'beta'); } catch (e) {}\n") else { return };
+    assert_eq!(sent(&again, "GET", "/api/projects/beta/chats").len(), 1, "the last project is remembered: {again}");
+    assert_eq!(eval(&again, "draft")["about"], "About beta", "{again}");
 }
 
 const PYTHON_RULE: &str = "Bash(python3 tools/check.py)";

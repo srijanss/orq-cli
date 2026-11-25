@@ -347,7 +347,10 @@ a, button { -webkit-tap-highlight-color: transparent; }
 .ask-composer { flex: none; display: flex; gap: 0.5rem; align-items: flex-end; padding: 0.75rem; border-top: 1px solid var(--border); }
 .ask-composer textarea { flex: 1; min-width: 0; resize: none; font: inherit; line-height: 1.4; max-height: calc(8 * 1.4em + 1rem); overflow-y: auto; box-sizing: border-box; }
 .ask-reason { padding: 0.75rem; margin: 0; color: var(--text-muted); }
-.ask-new { display: flex; flex-direction: column; gap: 0.5rem; }
+.ask-new-chat { align-self: flex-start; display: inline-flex; align-items: center; gap: 0.375rem; min-height: 40px; }
+.ask-project { flex: none; margin: 0; padding: 0.75rem; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.ask-projects p { margin: 0; flex-basis: 100%; }
+.ask-projects button { min-height: 40px; }
 .tabbar { display: none; }
 .topbar, .tabbar { --text: var(--sidebar-text); --text-muted: var(--sidebar-muted); --border: var(--sidebar-border); --surface: var(--sidebar-surface); color: var(--sidebar-text); background: var(--sidebar); }
 @media (max-width: 700px) {

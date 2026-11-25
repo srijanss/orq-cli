@@ -8105,12 +8105,19 @@ function useAskAddress(path) {
 // project's chat list or the open chat's id.
 function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }) {
   const [about, setAbout] = useState(null);
-  const open = chat !== "" && projectId !== null;
+  const [drafting, setDrafting] = useState(false);
+  const [picked, pick] = useAskProject(projectId === null, token);
+  const project = projectId !== null ? projectId : picked.id;
+  const open = (chat !== "" || drafting) && project !== null;
+  const openChat = (id) => {
+    setDrafting(false);
+    onChat(id);
+  };
   return (
     <aside className="ask-panel" data-ask-panel aria-label="Ask orq">
       <div className="ask-head">
         {open ? (
-          <button type="button" className="ask-back" data-ask-back aria-label="All chats" onClick={() => onChat("")}>
+          <button type="button" className="ask-back" data-ask-back aria-label="All chats" onClick={() => openChat("")}>
             <Icon name="arrowLeft" size={20} />
           </button>
         ) : null}
@@ -8122,12 +8129,180 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
           <Icon name="close" size={20} />
         </button>
       </div>
-      {projectId === null ? null : open ? (
-        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={projectId} chatId={chat} onAbout={setAbout} />
+      {projectId === null && !open ? <AskProjectPicker picked={picked} onPick={pick} /> : null}
+      {project === null ? null : drafting ? (
+        <AskDraft token={token} onSignedOut={onSignedOut} projectId={project} context={projectId === null ? { kind: "project" } : pageContext(path)} onAbout={setAbout} onOpened={openChat} />
+      ) : open ? (
+        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} />
       ) : (
-        <AskChatList token={token} onSignedOut={onSignedOut} projectId={projectId} onOpen={onChat} />
+        <AskChatList key={project} token={token} onSignedOut={onSignedOut} projectId={project} onOpen={openChat} onNew={() => setDrafting(true)} />
       )}
     </aside>
+  );
+}
+
+// Outside a project the panel asks which one, and remembers the answer in this browser.
+const ASK_PROJECT_KEY = "orq.ask.project";
+
+function useAskProject(asking, token) {
+  const [id, setId] = useState(() => {
+    try {
+      return localStorage.getItem(ASK_PROJECT_KEY);
+    } catch (unavailable) {
+      return null;
+    }
+  });
+  const [projects, setProjects] = useState(null);
+  useEffect(() => {
+    if (!asking || projects !== null) return undefined;
+    let current = true;
+    (async () => {
+      try {
+        const response = await get(API_PROJECTS, token, undefined);
+        const list = response.ok ? parseProjects(await jsonOrNull(response)) : null;
+        if (current) setProjects(list === null ? [] : list);
+      } catch (unreachable) {
+        if (current) setProjects([]);
+      }
+    })();
+    return () => {
+      current = false;
+    };
+  }, [asking]);
+  // A remembered project that is no longer listed is asked again.
+  const known = id !== null && (projects === null || projects.some((project) => project.id === id)) ? id : null;
+  const pick = (next) => {
+    try {
+      if (next === null) localStorage.removeItem(ASK_PROJECT_KEY);
+      else localStorage.setItem(ASK_PROJECT_KEY, next);
+    } catch (unavailable) {
+      // Not remembered; it is still used now.
+    }
+    setId(next);
+  };
+  return [{ id: known, projects }, pick];
+}
+
+function AskProjectPicker({ picked, onPick }) {
+  if (picked.id !== null) {
+    return (
+      <p className="ask-project" data-ask-picked>
+        Project: <strong>{picked.id}</strong>
+        <button type="button" className="text-button" data-ask-change-project onClick={() => onPick(null)}>Change</button>
+      </p>
+    );
+  }
+  if (picked.projects === null) return <p className="muted ask-project" role="status">Loading the projects…</p>;
+  if (picked.projects.length === 0) return <p className="muted ask-project">No projects to ask about.</p>;
+  return (
+    <div className="ask-project ask-projects">
+      <p>Which project is this about?</p>
+      {picked.projects.map((project) => (
+        <button type="button" key={project.id} data-ask-project={project.id} onClick={() => onPick(project.id)}>{project.name || project.id}</button>
+      ))}
+    </div>
+  );
+}
+
+// The context a new chat takes from the page at `path`: its run, its feature, the queue or the project.
+function pageContext(path) {
+  const named = (pattern) => {
+    const match = pattern.exec(path);
+    if (match === null) return null;
+    try {
+      const name = decodeURIComponent(match[1]);
+      return name !== "" ? name : null;
+    } catch (malformed) {
+      return null;
+    }
+  };
+  const run = named(/^\/projects\/[^/]+\/orchestrations\/([^/]+)/);
+  if (run !== null && RUN_ID.test(run)) return { kind: "run", target: run };
+  const feature = named(/^\/projects\/[^/]+\/features\/([^/]+)/);
+  if (feature !== null) return { kind: "feature", target: feature };
+  if (/^\/projects\/[^/]+\/queue$/.test(path)) return { kind: "queue" };
+  return { kind: "project" };
+}
+
+// The header's words for a chat's context: "About run-… · feature", "About the queue", "About <project>".
+function aboutText(context, projectId, feature = null) {
+  if (context !== null && typeof context === "object") {
+    if (context.kind === "run" && typeof context.target === "string") return "About " + context.target + (feature ? " · " + feature : "");
+    if (context.kind === "feature" && typeof context.target === "string") return "About " + context.target;
+    if (context.kind === "queue") return "About the queue";
+  }
+  return "About " + projectId;
+}
+
+const TROUBLED_RUNS = ["failed", "blocked", "needs_review", "design_files_needed"];
+
+// The first message offered for a new chat about `context` (a run in `state`), or "".
+function suggestedMessage(context, state) {
+  if (context.kind === "run") {
+    if (TROUBLED_RUNS.includes(state)) return "What happened, and what should I do?";
+    return state === "running" ? "What is it doing now?" : "";
+  }
+  if (context.kind === "feature") return "What is the state of this feature?";
+  return context.kind === "queue" ? "Why isn't the queue moving?" : "";
+}
+
+// A chat not made yet: its context, a suggested first message, and Send, which makes the chat and opens it.
+function AskDraft({ token, onSignedOut, projectId, context, onAbout, onOpened }) {
+  const runPath = context.kind === "run" ? "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(context.target) : null;
+  const { data } = useAskRead(runPath, token, onSignedOut, 0);
+  const run = data !== null && data.run !== null && typeof data.run === "object" ? data.run : null;
+  const feature = run !== null && typeof run.feature === "string" ? run.feature : null;
+  const suggestion = suggestedMessage(context, run !== null ? run.state : null);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  const made = useRef(null);
+  useEffect(() => {
+    onAbout(aboutText(context, projectId, feature));
+  }, [projectId, context.kind, context.target, feature]);
+  const send = async (text) => {
+    setSending(true);
+    setNote("");
+    try {
+      if (made.current === null) {
+        const response = await actionRequest(chatsPath(projectId), token, { title: text, context });
+        if (response.status === 401) {
+          onSignedOut();
+          return false;
+        }
+        if (!response.ok) {
+          setNote(await reasonOf(response, "The chat could not be made."));
+          return false;
+        }
+        const body = await jsonOrNull(response);
+        if (body === null || !isChat(body.chat)) {
+          setNote("The chat could not be made.");
+          return false;
+        }
+        made.current = body.chat.id;
+      }
+      const response = await actionRequest(chatsPath(projectId, "/" + encodeURIComponent(made.current) + "/messages"), token, { text });
+      if (response.status === 401) {
+        onSignedOut();
+        return false;
+      }
+      if (!response.ok) {
+        setNote(await reasonOf(response, "The message could not be sent."));
+        return false;
+      }
+      onOpened(made.current);
+      return true;
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+      return false;
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <>
+      <div className="ask-body" data-ask-draft />
+      <AskComposer key={suggestion} initial={suggestion} sending={sending} note={note} onSend={send} />
+    </>
   );
 }
 
@@ -8150,6 +8325,7 @@ function contextText(context) {
 function useAskRead(path, token, onSignedOut, key) {
   const [state, setState] = useState({ data: null, failure: null });
   useEffect(() => {
+    if (path === null) return undefined;
     let current = true;
     const controller = new AbortController();
     (async () => {
@@ -8179,11 +8355,15 @@ function useAskRead(path, token, onSignedOut, key) {
   return state;
 }
 
-function AskChatList({ token, onSignedOut, projectId, onOpen }) {
+function AskChatList({ token, onSignedOut, projectId, onOpen, onNew }) {
   const { data, failure } = useAskRead(chatsPath(projectId), token, onSignedOut, 0);
   const chats = data !== null && Array.isArray(data.chats) ? data.chats.filter(isChat) : null;
   return (
     <div className="ask-body">
+      <button type="button" className="primary-button ask-new-chat" data-ask-new onClick={onNew}>
+        <Icon name="plus" size={16} />
+        New chat
+      </button>
       {failure !== null ? <p role="alert" className="ask-reason">{failure}</p> : null}
       {chats === null ? (failure === null ? <p className="muted" role="status">Loading the chats…</p> : null) : chats.length === 0 ? (
         <p className="muted">No chats yet.</p>
@@ -8350,7 +8530,7 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout }) {
     return next;
   }), working);
   useEffect(() => {
-    onAbout(chat === null ? null : "About " + contextText(chat.context));
+    onAbout(chat === null ? null : aboutText(chat.context, projectId));
   }, [chat === null ? null : chat.id]);
   const stop = async () => {
     setStopping("sending");
@@ -8436,8 +8616,8 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout }) {
 }
 
 // The message box: a text area and Send. `busy` is why it can't be used now, or null.
-function AskComposer({ sending, note, onSend, busy = null }) {
-  const [text, setText] = useState("");
+function AskComposer({ sending, note, onSend, busy = null, initial = "" }) {
+  const [text, setText] = useState(initial);
   const submit = async () => {
     if (text.trim() === "" || sending) return;
     if (await onSend(text)) setText("");
