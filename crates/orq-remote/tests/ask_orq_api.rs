@@ -53,11 +53,12 @@ fn setup(label: &str) -> Setup {
     let agent = base.join("fake-claude");
     // Each call records into a folder of its own, named so the calls sort in the order they started.
     let script = format!(
-        "#!/bin/sh\nd='{calls}'/$(date +%s%N)-$$\nmkdir -p \"$d\"\nprintf '%s\\0' \"$@\" > \"$d/args\"\npwd > \"$d/cwd\"\ncat > \"$d/stdin\"\ncat '{reply}'\nwhile [ -e '{hold}' ]; do sleep 0.05; done\nif [ -e '{more}' ]; then cat '{more}'; fi\n",
+        "#!/bin/sh\nd='{calls}'/$(date +%s%N)-$$\nmkdir -p \"$d\"\nprintf '%s\\0' \"$@\" > \"$d/args\"\npwd > \"$d/cwd\"\nwhile [ -e '{deaf}' ]; do sleep 0.05; done\ncat > \"$d/stdin\"\ncat '{reply}'\nwhile [ -e '{hold}' ]; do sleep 0.05; done\nif [ -e '{more}' ]; then cat '{more}'; fi\n",
         calls = base.join("calls").display(),
         reply = base.join("reply.jsonl").display(),
         hold = base.join("hold").display(),
         more = base.join("more.jsonl").display(),
+        deaf = base.join("deaf").display(),
     );
     std::fs::write(&agent, script).unwrap();
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -783,6 +784,32 @@ fn a_reply_over_the_time_limit_is_stopped_and_one_left_running_at_startup_is_mar
     assert_eq!(read["running"], false, "{read}");
     assert_eq!(read["items"][0]["state"], "interrupted", "{read}");
     std::fs::remove_file(s.base.join("hold")).unwrap();
+}
+
+#[test]
+fn a_reply_that_never_reads_its_message_is_still_stopped_at_the_time_limit() {
+    let s = setup("deaf");
+    let s = Setup {
+        provider: provider(&s.roots, &s.scan, &s.base.join("fake-claude"))
+            .with_chat_time_limit(Duration::from_millis(300)),
+        ..s
+    };
+    git_repo(&s.scan, "alpha");
+    // The fake reads nothing while this is there, and the longest message is more than a pipe holds.
+    std::fs::write(s.base.join("deaf"), "").unwrap();
+    let chat = create_chat(&s, "alpha", json!({}));
+    let long: String = "𝄞".repeat(20_000);
+    assert_eq!(message(&s, &chat, &long).0, 202);
+    let pid = call_pid(&s, 0);
+
+    wait_for(|| read_chat(&s, "alpha", &chat)["running"] == false);
+    let item = read_chat(&s, "alpha", &chat)["items"][0].clone();
+    let state = (item["state"].clone(), item["reason"].clone());
+    wait_for(|| !Path::new(&format!("/proc/{pid}")).exists());
+    let gone = !Path::new(&format!("/proc/{pid}")).exists();
+    std::fs::remove_file(s.base.join("deaf")).unwrap();
+    assert_eq!(state, (json!("stopped"), json!("the reply ran out of time")), "{item}");
+    assert!(gone, "the fake that would not read was killed");
 }
 
 #[test]

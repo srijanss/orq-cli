@@ -1115,10 +1115,14 @@ fn start_turn(
         .map_err(|error| error.to_string())?;
     let pid = child.id();
     let (roots, chat_id, limit) = (roots.clone(), chat.id.clone(), place.time_limit);
-    std::thread::spawn(move || {
-        if let Some(mut stdin) = child.stdin.take() {
+    // The message goes in on a thread of its own: a process that never reads it must not hold up the watcher,
+    // whose time limit then kills it (which ends the write too).
+    if let Some(mut stdin) = child.stdin.take() {
+        std::thread::spawn(move || {
             let _ = stdin.write_all(text.as_bytes());
-        }
+        });
+    }
+    std::thread::spawn(move || {
         let deadline = Instant::now() + limit;
         for poll in 1u64.. {
             match child.try_wait() {
