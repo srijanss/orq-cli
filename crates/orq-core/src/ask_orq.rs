@@ -1189,6 +1189,10 @@ fn kill_group(pid: u32) {
 /// Marks every turn still recorded as running as interrupted: called when the server starts, since the server
 /// that watched them is gone. Their processes are left alone, as a pid recorded then may name another process now.
 pub fn interrupt_running(roots: &StorageRoots) -> Result<usize, String> {
+    // No orq.db means no chats: starting a server never creates one.
+    if !roots.database().exists() {
+        return Ok(0);
+    }
     let conn = open(roots)?;
     conn.execute("UPDATE ask_orq_turns SET state = 'interrupted', reason = 'the server restarted while the reply was being written', ended_at = ?1 WHERE state = 'running'", params![now()])
         .map_err(|_| "the chats could not be updated".to_string())

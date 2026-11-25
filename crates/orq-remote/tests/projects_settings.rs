@@ -57,7 +57,8 @@ fn the_settings_list_the_agents_and_models_and_nothing_else_from_the_config() {
     assert_eq!(without_version(&body["settings"]), json!({
         "implementer": {"harness": "claude", "model": "opus", "effort": "high"},
         "reviewer": {"harness": "pi", "model": "openai/gpt-6.1-sol", "effort": null},
-        "models": [{"name": "opus", "harness": "claude", "model": "opus", "effort": null}],
+        "ask_orq_agent": null,
+        "models":[{"name": "opus", "harness": "claude", "model": "opus", "effort": null}],
         "remote_actions": false
     }), "{body}");
     let text = body.to_string();
