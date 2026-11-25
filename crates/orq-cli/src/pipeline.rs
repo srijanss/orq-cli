@@ -1610,10 +1610,16 @@ fn run_design_scope(ledger: &Path, logs: &Path, feature: &str) -> Result<Option<
 /// `task` with the run's frozen design scope appended, so a fix or code review session is told the same
 /// components as the design review.
 fn with_design_scope(task: &str, logs: &Path) -> String {
-    match orq_orchestrator::frozen_design_scope(logs).as_ref().and_then(orq_orchestrator::design_scope_note) {
+    match design_scope_note_of(logs) {
         Some(note) => format!("{task}{note}"),
         None => task.to_string(),
     }
+}
+
+/// What the run's fix and code review sessions are told of its frozen design scope: `None` for a feature
+/// that builds the whole page.
+fn design_scope_note_of(logs: &Path) -> Option<String> {
+    orq_orchestrator::frozen_design_scope(logs).as_ref().and_then(orq_orchestrator::design_scope_note)
 }
 
 /// The name of the run's package folder under `designs/`: the shared package its frozen scope records, else
@@ -2581,7 +2587,8 @@ fn stages(
         // Each part of a correction round is a fix session of its own, with the part's task (the whole
         // round's task when the round is one part).
         let correct = |batch: u32, part: &orq_orchestrator::CorrectionPart| {
-            let task = &with_design_scope(&part.task, logs);
+            // A scoped feature's part already ends with its scope note: the loop planned the part with room for it.
+            let task = &part.task;
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
             let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-fix.done"));
             let args = adapter_for(&options.implementer.harness)
@@ -3118,7 +3125,7 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
             sections: Vec::new(),
             issues: issues.to_vec(),
             suggestions: suggestions.to_vec(),
-            task: orq_orchestrator::design_fix_task(batch, self.max_correction_rounds, issues, suggestions),
+            task: with_design_scope(&orq_orchestrator::design_fix_task(batch, self.max_correction_rounds, issues, suggestions), self.run_logs),
         };
         (self.correct)(batch, &part)
     }
@@ -3134,6 +3141,10 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
     /// The package folder's name: the shared package the run was frozen with, else the feature's own.
     fn package_feature(&mut self) -> Option<String> {
         Some(package_name(self.run_logs, self.feature))
+    }
+
+    fn design_scope_note(&mut self) -> Option<String> {
+        design_scope_note_of(self.run_logs)
     }
 
     fn refreeze(&mut self, requested: &orq_orchestrator::DesignFilesNeeded) -> Result<orq_orchestrator::Refreeze, StoreError> {
@@ -3543,6 +3554,23 @@ mod tests {
         // A line that cannot be read stops the run with the reason.
         assert!(super::ledger_design_scope(&ledger, "bad").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_design_steps_give_the_loop_the_scope_note_rather_than_lengthening_planned_tasks() {
+        let logs = orq_test_support::process_temp_dir().join(format!("orq-design-scope-note-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&logs);
+        std::fs::create_dir_all(logs.join("design")).unwrap();
+        assert_eq!(super::design_scope_note_of(&logs), None);
+        let scope = orq_orchestrator::DesignScope {
+            feature: "home-process".to_string(),
+            package: "home".to_string(),
+            components: Some(vec!["H02".to_string()]),
+            done: Vec::new(),
+        };
+        std::fs::write(logs.join("design/scope.json"), serde_json::to_string(&scope).unwrap()).unwrap();
+        assert_eq!(super::design_scope_note_of(&logs), orq_orchestrator::design_scope_note(&scope));
+        let _ = std::fs::remove_dir_all(&logs);
     }
 
     #[test]

@@ -13,7 +13,8 @@ use orq_orchestrator::{
     design_scope, design_scope_note, prepare_design, review_design, start_design_package_scoped,
     CaptureOutcome, CaptureRecord, CaptureRun, DesignAgent, DesignMode, DesignPackageOutcome,
     DesignPackageRun, DesignPrepareOutcome, DesignPreparer, DesignReviewRun, DesignScope,
-    DesignSettings, DesignVerdict, PackageLimits, PageCapture, PrepareRequest, Viewport,
+    DesignSettings, DesignVerdict, PackageLimits, PageCapture, PrepareRequest, ReviewIssue, Viewport,
+    DESIGN_FIX_TASK_LIMIT, plan_correction_parts_noted,
 };
 use orq_test_support::{GitFixture, TempDir};
 use serde_json::{json, Value};
@@ -452,6 +453,43 @@ fn without_the_lines_the_package_is_the_features_own_folder() {
         "{needed:?}"
     );
     assert!(!f.design_dir().join("scope.json").exists());
+}
+
+/// An open issue of `section` whose long fields are each about `long` characters.
+fn long_issue(id: &str, section: &str, long: usize) -> ReviewIssue {
+    let mut value = issue(id, section, "open");
+    for field in ["expected", "actual", "fix_direction"] {
+        value[field] = json!(format!("{field} {}", "x".repeat(long)));
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn every_correction_part_with_the_scope_note_still_fits_the_task_limit() {
+    let scope = design_scope(
+        FEATURE,
+        Some("Design package: home\nDesign components: H02, H03\nDesign components done: H01\n"),
+    )
+    .unwrap()
+    .unwrap();
+    let note = design_scope_note(&scope).unwrap();
+    let report = Path::new("design/round-1/report.md");
+    // Rounds whose plain task is just under the limit, and rounds that are split into parts.
+    for long in [100, 300, 380, 400, 420, 600, 900] {
+        let issues: Vec<ReviewIssue> = (0..3)
+            .map(|n| long_issue(&format!("i{n}"), &format!("H0{} Section", n + 2), long))
+            .collect();
+        let parts = plan_correction_parts_noted(1, 3, &issues, &[], report, &note).unwrap();
+        for part in &parts {
+            assert!(
+                part.task.chars().count() <= DESIGN_FIX_TASK_LIMIT,
+                "long {long}: part {} is {} characters",
+                part.part,
+                part.task.chars().count()
+            );
+            assert!(part.task.ends_with(&note), "long {long}: {}", part.task);
+        }
+    }
 }
 
 /// A preparer that asks for one asset, as an infer-mode run's preparer does when the package lacks it.

@@ -58,6 +58,11 @@ pub trait DesignLoopSteps {
     fn package_feature(&mut self) -> Option<String> {
         None
     }
+    /// What each correction part's task ends with for a feature that builds some components of a shared
+    /// package ([`design_scope_note`]); the parts are planned with room for it. `None` by default.
+    fn design_scope_note(&mut self) -> Option<String> {
+        None
+    }
     /// Checks the feature's package again and freezes it anew, when a run paused for files resumes;
     /// the run goes on only once each file the review asked for (`requested`) is in the package.
     fn refreeze(&mut self, _requested: &DesignFilesNeeded) -> Result<Refreeze, StoreError> {
@@ -255,12 +260,14 @@ pub fn run_design_loop(
             }
             let batch = state.batches + 1;
             // The plan is recomputed from the same review on resume, so it is the same plan.
-            let parts = match plan_correction_parts(
+            let note = steps.design_scope_note().unwrap_or_default();
+            let parts = match plan_correction_parts_noted(
                 batch,
                 max_correction_rounds,
                 &issues,
                 &last.suggestions,
                 &round_report(last),
+                &note,
             ) {
                 Ok(parts) => parts,
                 Err(reason) => return Ok(DesignLoopOutcome::Stopped { reason }),
@@ -701,10 +708,48 @@ pub fn plan_correction_parts(
     suggestions: &[String],
     report: &Path,
 ) -> Result<Vec<CorrectionPart>, String> {
+    plan_parts(
+        batch,
+        of,
+        issues,
+        suggestions,
+        report,
+        DESIGN_FIX_TASK_LIMIT,
+    )
+}
+
+/// [`plan_correction_parts`] for a feature whose fix sessions are also told `note` (its design scope,
+/// [`design_scope_note`]): each part's task ends with it, and the parts are planned with room for it, so
+/// each task still fits [`DESIGN_FIX_TASK_LIMIT`].
+pub fn plan_correction_parts_noted(
+    batch: u32,
+    of: u32,
+    issues: &[ReviewIssue],
+    suggestions: &[String],
+    report: &Path,
+    note: &str,
+) -> Result<Vec<CorrectionPart>, String> {
+    let limit = DESIGN_FIX_TASK_LIMIT.saturating_sub(note.chars().count());
+    let mut parts = plan_parts(batch, of, issues, suggestions, report, limit)?;
+    for part in &mut parts {
+        part.task.push_str(note);
+    }
+    Ok(parts)
+}
+
+/// The parts of a round, each task at most `limit` characters.
+fn plan_parts(
+    batch: u32,
+    of: u32,
+    issues: &[ReviewIssue],
+    suggestions: &[String],
+    report: &Path,
+    limit: usize,
+) -> Result<Vec<CorrectionPart>, String> {
     let fixable = fixable_issues(issues);
     let issues = fixable.as_slice();
     let whole = design_fix_task(batch, of, issues, suggestions);
-    if whole.chars().count() <= DESIGN_FIX_TASK_LIMIT {
+    if whole.chars().count() <= limit {
         return Ok(vec![CorrectionPart {
             part: 1,
             of: 1,
@@ -721,7 +766,7 @@ pub fn plan_correction_parts(
         let issues: Vec<ReviewIssue> = unit.iter().flat_map(|u| u.issues.clone()).collect();
         let shortened = (noted || unit.iter().any(|u| u.shortened)).then_some(report);
         let task = design_fix_part_task(batch, of, (most, most), &issues, suggestions, shortened);
-        task.chars().count() <= DESIGN_FIX_TASK_LIMIT
+        task.chars().count() <= limit
     };
     let fits = |unit: &[Unit], suggestions: &[String]| fits_noted(unit, suggestions, false);
     // Each part as the units (a whole section, or one issue of a section too large) it holds.

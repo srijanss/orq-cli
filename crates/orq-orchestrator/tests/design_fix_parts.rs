@@ -139,6 +139,8 @@ struct Fake {
     interrupt_at_part: Option<u32>,
     /// This part of batch 1 stops the run.
     stop_at_part: Option<u32>,
+    /// What the fix sessions are told of the feature's design scope.
+    scope_note: Option<String>,
 }
 
 impl Fake {
@@ -151,6 +153,7 @@ impl Fake {
             code_reviews: Vec::new(),
             interrupt_at_part: None,
             stop_at_part: None,
+            scope_note: None,
         }
     }
 }
@@ -199,6 +202,10 @@ impl DesignLoopSteps for Fake {
     fn review_code(&mut self, batch: u32, from: &str) -> Result<CorrectionOutcome, StoreError> {
         self.code_reviews.push((batch, from.to_string()));
         Ok(CorrectionOutcome::Done)
+    }
+
+    fn design_scope_note(&mut self) -> Option<String> {
+        self.scope_note.clone()
     }
 }
 
@@ -410,6 +417,21 @@ fn an_issue_that_cannot_fit_even_shortened_fails_the_run_with_a_readable_reason(
         }
     );
     assert!(fake.parts.is_empty());
+    let _ = fs::remove_dir_all(&w.root);
+}
+
+#[test]
+fn each_part_of_a_scoped_feature_ends_with_its_scope_note_and_still_fits_the_limit() {
+    let w = world("scope-note");
+    let mut fake = Fake::new("head-1", vec![changes(three_part_issues()), pass()]);
+    let note = format!("\nDesign scope: {}\n", "H02 ".repeat(100));
+    fake.scope_note = Some(note.clone());
+    run_design_loop(&w.store, "run-1", 1, &mut fake).unwrap();
+    assert!(!fake.parts.is_empty());
+    for (_, part, _, task) in &fake.parts {
+        assert!(task.ends_with(&note), "part {part}: {task}");
+        assert!(task.chars().count() <= DESIGN_FIX_TASK_LIMIT, "part {part} is too long");
+    }
     let _ = fs::remove_dir_all(&w.root);
 }
 
