@@ -8585,6 +8585,14 @@ function usePinnedToEnd(changes) {
   return ref;
 }
 
+// `items` with `item` at `index` (gaps before it filled with null), as a new list.
+function placed(items, index, item) {
+  const next = [...items];
+  while (next.length < index) next.push(null);
+  next[index] = item;
+  return next;
+}
+
 function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate = null }) {
   const path = chatsPath(projectId, "/" + encodeURIComponent(chatId));
   const [reads, setReads] = useState(0);
@@ -8611,17 +8619,34 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
       return next;
     });
   };
+  // The read and the stream race: each stream event is numbered, and a read answers for the moment it was
+  // asked, so what the stream said after that moment stays over the read's older answer.
+  const heard = useRef({ count: 0, items: new Map(), running: null, runningAt: 0, readAt: 0 });
+  useEffect(() => {
+    heard.current.readAt = heard.current.count;
+  }, [path, reads]);
   useEffect(() => {
     if (data === null) return;
-    setItems(Array.isArray(data.items) ? data.items : []);
-    working(data.running === true);
+    const stream = heard.current;
+    let next = Array.isArray(data.items) ? data.items : [];
+    stream.items.forEach(({ item, at }, index) => {
+      if (at > stream.readAt) next = placed(next, index, item);
+    });
+    setItems(next);
+    working(stream.runningAt > stream.readAt ? stream.running : data.running === true);
   }, [data]);
-  useChatStream(path, token, (index, item) => setItems((all) => {
-    const next = [...all];
-    while (next.length < index) next.push(null);
-    next[index] = item;
-    return next;
-  }), working);
+  useChatStream(path, token, (index, item) => {
+    const stream = heard.current;
+    stream.count += 1;
+    stream.items.set(index, { item, at: stream.count });
+    setItems((all) => placed(all, index, item));
+  }, (running) => {
+    const stream = heard.current;
+    stream.count += 1;
+    stream.running = running;
+    stream.runningAt = stream.count;
+    working(running);
+  });
   useEffect(() => {
     onAbout(chat === null ? null : aboutText(chat.context, projectId));
   }, [chat === null ? null : chat.id]);

@@ -14,7 +14,8 @@ const LEDGER_RULE: &str = "Edit(/srv/alpha/.tdd-features.json)";
 
 /// Replaces the page's fetch with a scripted API before the app loads. `__API__` is `{routes, session}`:
 /// each route `{method, path, replies}` (a path ending in `*` matches by prefix) answers its replies in turn
-/// (the last one repeats); a reply is `{status, body}` or `{status, stream: [{after, text}], hold}`, a body
+/// (the last one repeats); a reply is `{status, body, after}` (answered `after` ms late) or
+/// `{status, stream: [{after, text}], hold}`, a body
 /// of text chunks sent `after` ms apart and left open when `hold`. Every request goes into `window.__sent`
 /// as `{method, path, body}`. `session` signs the page in with a passkey session (no token); the passkey
 /// prompt is answered by a fake credential.
@@ -61,7 +62,9 @@ const FAKE: &str = r#"
       var n = counts[i] || 0;
       counts[i] = n + 1;
       var reply = route.replies[Math.min(n, route.replies.length - 1)];
-      return Promise.resolve(reply.stream ? stream(reply) : json(reply.status || 200, reply.body));
+      if (reply.stream) return Promise.resolve(stream(reply));
+      if (reply.after) return new Promise(function (done) { setTimeout(function () { done(json(reply.status || 200, reply.body)); }, reply.after); });
+      return Promise.resolve(json(reply.status || 200, reply.body));
     }
     if (path === "/auth/status") return Promise.resolve(json(200, { passkeys: true, signed_in: api.session, csrf: "c-1" }));
     if (path === "/auth/confirm/begin") return Promise.resolve(json(200, { challenge: "AAAA", rpId: location.hostname, userVerification: "required", timeout: 1000, allowCredentials: [] }));
@@ -512,6 +515,22 @@ fn the_conversation_stays_pinned_to_its_newest_item_unless_the_person_scrolled_u
     let scroll_up = "window.__up = setInterval(function () { var c = document.querySelector('[data-ask-conversation]'); if (!c || c.scrollHeight <= c.clientHeight + 100 || c.scrollTop === 0) return; c.scrollTop = 0; c.dispatchEvent(new Event('scroll')); clearInterval(window.__up); }, 100);\n";
     let Some(up) = open_after(1440, &at, routes, true, steps, scroll_up) else { return };
     assert_eq!(eval(&up, "place")["top"], 0, "a person who scrolled up stays where they are: {up}");
+}
+
+#[test]
+fn a_chat_read_that_answers_after_the_stream_moved_on_does_not_take_back_what_the_stream_showed() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let asked = json!({"type": "user", "turn": 1, "text": "What is it doing now?", "state": "running", "reason": null});
+    let done = json!({"type": "user", "turn": 1, "text": "What is it doing now?", "state": "done", "reason": null});
+    // The stream says the turn is over before the (older) read of the chat answers that it is still running.
+    let stream = json!({"status": 200, "hold": true, "stream": [event(": connected\n\n", 0), item_event(0, done, 0), item_event(1, json!({"type": "assistant", "text": "It finished"}), 0), event("event: state\ndata: {\"running\": false}\n\n", 100)]});
+    let late = json!({"status": 200, "after": 800, "body": conversation(vec![asked], vec![], true)});
+    let routes = vec![route("GET", CHAT_PATH, vec![late]), route("GET", &format!("{CHAT_PATH}/stream"), vec![stream])];
+    // Looked at well after the read answered, then marked so the steps know.
+    let look = "setTimeout(function () { var a = document.querySelector('[data-ask-item=assistant]'); window.__late = {reply: a ? a.textContent : null, working: document.querySelectorAll('[data-ask-working]').length}; document.body.setAttribute('data-late', ''); }, 1800);\n";
+    let steps = vec![json!({"wait": "[data-ask-delete]"}), json!({"wait": "body[data-late]"}), json!({"eval": "late", "js": "return window.__late;"})];
+    let Some(result) = open_after(1440, &at, routes, true, steps, look) else { return };
+    assert_eq!(eval(&result, "late"), &json!({"reply": "It finished", "working": 0}), "{result}");
 }
 
 /// Run in the page before the app loads: once `selector` shows, the page moves to `path` as a link would.
