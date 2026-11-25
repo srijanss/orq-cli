@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.24.0"
+version = "0.24.1"
 edition = "2021"
 
 # Every orq run builds the whole workspace (and its hundreds of test binaries) into its own worktree's
