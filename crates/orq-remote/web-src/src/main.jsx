@@ -8130,11 +8130,20 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
   const [picked, pick] = useAskProject(projectId === null && token === SESSION, token);
   const project = projectId !== null ? projectId : picked.id;
   const gate = askGate(useAskRead(API_SETTINGS, token, onSignedOut, 0).data);
-  const open = (chat !== "" || drafting) && project !== null && token === SESSION;
+  // A chat and a draft belong to the project they were opened in: moving to another project's page goes
+  // to that project's chat list, and nothing of the last one is drawn or asked of the new one meanwhile.
+  const [shown, setShown] = useState(project);
+  const moved = project !== shown;
+  const open = (chat !== "" || drafting) && !moved && project !== null && token === SESSION;
   const openChat = (id) => {
     setDrafting(false);
     onChat(id);
   };
+  useEffect(() => {
+    if (!moved) return;
+    setShown(project);
+    openChat("");
+  }, [moved]);
   return (
     <aside className="ask-panel" data-ask-panel aria-label="Ask orq">
       <div className="ask-head">
@@ -8156,10 +8165,10 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
         <p className="ask-reason" data-ask-passkey>Ask orq needs a passkey sign-in. Sign in with your passkey on this device to read and send chats.</p>
       ) : null}
       {token === SESSION && projectId === null && !open ? <AskProjectPicker picked={picked} onPick={pick} /> : null}
-      {project === null || token !== SESSION ? null : drafting ? (
+      {project === null || token !== SESSION ? null : drafting && !moved ? (
         <AskDraft token={token} onSignedOut={onSignedOut} projectId={project} context={projectId === null ? { kind: "project" } : pageContext(path)} onAbout={setAbout} onOpened={openChat} gate={gate} />
       ) : open ? (
-        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} onGone={() => openChat("")} gate={gate} />
+        <AskChat key={project + "\n" + chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} onGone={() => openChat("")} gate={gate} />
       ) : (
         <AskChatList key={project} token={token} onSignedOut={onSignedOut} projectId={project} onOpen={openChat} onNew={() => setDrafting(true)} gate={gate} />
       )}
@@ -8368,7 +8377,13 @@ function contextText(context) {
 // Reads `path` as JSON while `key` is unchanged: { data, failure } with a reason in failure.
 function useAskRead(path, token, onSignedOut, key) {
   const [state, setState] = useState({ data: null, failure: null });
+  // What was read from one path is never shown for another; a re-read of the same path keeps it meanwhile.
+  const read = useRef(path);
   useEffect(() => {
+    if (read.current !== path) {
+      read.current = path;
+      setState({ data: null, failure: null });
+    }
     if (path === null) return undefined;
     let current = true;
     const controller = new AbortController();

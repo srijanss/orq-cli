@@ -514,6 +514,29 @@ fn the_conversation_stays_pinned_to_its_newest_item_unless_the_person_scrolled_u
     assert_eq!(eval(&up, "place")["top"], 0, "a person who scrolled up stays where they are: {up}");
 }
 
+/// Run in the page before the app loads: once `selector` shows, the page moves to `path` as a link would.
+fn move_when(selector: &str, path: &str) -> String {
+    format!("window.__moved = setInterval(function () {{ if (!document.querySelector({selector:?})) return; clearInterval(window.__moved); history.pushState(null, '', {path:?}); window.dispatchEvent(new Event('orq:navigate')); }}, 100);\n")
+}
+
+fn two_projects() -> Value {
+    let beta = json!({"id": "beta", "name": "beta", "available": true, "features": 0, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
+    route("GET", "/api/projects", vec![reply(json!({"projects": [project(), beta]}))])
+}
+
+#[test]
+fn moving_to_another_projects_page_leaves_the_open_chat_and_lists_that_projects_chats() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let routes = vec![two_projects(), route("GET", "/api/projects/beta/chats", vec![reply(json!({"chats": []}))]), route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))])];
+    let shown = "return {items: document.querySelectorAll('[data-ask-item]').length, about: document.querySelectorAll('[data-ask-about]').length};";
+    let steps = vec![json!({"wait": "main.content h1", "text": "Reviews"}), json!({"wait": "[data-ask-new]"}), json!({"eval": "shown", "js": shown})];
+    let Some(result) = open_after(1440, &at, routes, true, steps, &move_when("[data-ask-item=assistant]", "/projects/beta/reviews")) else { return };
+    assert_eq!(eval(&result, "address"), "/projects/beta/reviews?ask=", "{result}");
+    assert_eq!(eval(&result, "shown"), &json!({"items": 0, "about": 0}), "nothing of alpha's chat stays: {result}");
+    assert!(sent(&result, "GET", "/api/projects/beta/chats/chat-aaaaaaaaaaaaaaaaaa").is_empty(), "alpha's chat is not asked of beta: {result}");
+    assert_eq!(sent(&result, "GET", "/api/projects/beta/chats").len(), 1, "beta's chats are listed: {result}");
+}
+
 const PYTHON_RULE: &str = "Bash(python3 tools/check.py)";
 
 fn refused_turn() -> Vec<Value> {
