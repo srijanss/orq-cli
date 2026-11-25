@@ -5969,7 +5969,7 @@ function DesignReview({ design, source }) {
             <h4>{size === null ? name : name + " · " + size}</h4>
             {(captures.length === 0 ? [null] : captures).map((capture, at) => (
               <div key={at} className="design-pair">
-                {typeof viewport.reference === "string" ? <DesignImage images={images} source={source} path={viewport.reference} label={"Reference, " + name} kind="reference" onEnlarge={setEnlarged} /> : <p className="design-image-note muted">No reference</p>}
+                {typeof viewport.reference === "string" ? <DesignImage images={images} source={source} path={viewport.reference} label={"Reference, " + name} kind="reference" onEnlarge={setEnlarged} /> : <p className="design-image-note muted" data-design-rules-only="">Rules only: no reference image, reviewed against RESPONSIVE.md, UX.md and DESIGN.md</p>}
                 {capture === null ? <p className="design-image-note muted">No capture</p> : <DesignImage images={images} source={source} path={textOr(capture.image)} label={"Capture of " + textOr(capture.route, "/") + ", " + name} kind="capture" failure={typeof capture.failure === "string" ? capture.failure : null} onEnlarge={setEnlarged} />}
               </div>
             ))}

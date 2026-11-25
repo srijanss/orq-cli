@@ -20,6 +20,7 @@ use crate::design_package::{
     resume_design_package, DesignManifest, DesignPackageOutcome, DesignPackageRun, PackageLimits,
 };
 use crate::design_tokens::{apply_token_issues, check_design_tokens};
+use crate::run_settings::DesignMode;
 use crate::run_settings::DesignSettings;
 
 /// Under the run's logs: the frozen package, one folder per round, and the report.
@@ -350,6 +351,10 @@ struct RoundResult {
     needs_refused: Vec<String>,
     /// The person's issues the round was given, by the extra round they granted.
     person: Vec<PersonGrant>,
+    /// The viewports with no reference, reviewed by the rules alone (infer mode).
+    rules_only: Vec<String>,
+    /// Each issue orq dropped as invalid data (a reference-based issue for a rules-only viewport), and why.
+    issues_dropped: Vec<String>,
 }
 
 impl RoundResult {
@@ -363,6 +368,8 @@ impl RoundResult {
             reviewer_review: None,
             needs_refused: Vec::new(),
             person: Vec::new(),
+            rules_only: Vec::new(),
+            issues_dropped: Vec::new(),
         }
     }
 }
@@ -404,6 +411,9 @@ struct ReviewContext {
     token_issues: Vec<String>,
     /// The person's issues: the review reports each under its id, and each keeps its basis and severity.
     person: Vec<ReviewIssue>,
+    /// The viewports with no reference (infer mode): judged by DESIGN.md, UX.md and RESPONSIVE.md
+    /// alone, so an issue for one stands only on a rule.
+    rules_only: Vec<String>,
 }
 
 /// The binding documents (DESIGN.md, UX.md, RESPONSIVE.md) and token files of the frozen package
@@ -587,10 +597,18 @@ fn reviewed_round(
     person: Vec<ReviewIssue>,
 ) -> Result<RoundResult, String> {
     let refused = std::cell::RefCell::new(Vec::new());
-    let checked = |mut review: DesignReview| {
+    let dropped = std::cell::RefCell::new(Vec::new());
+    let checked = |(mut review, issues_dropped): (DesignReview, Vec<String>)| {
         apply_token_issues(&mut review, token_issues);
         *refused.borrow_mut() = drop_refused_needs(&mut review);
+        *dropped.borrow_mut() = issues_dropped;
         review
+    };
+    // In infer mode a viewport the package has no reference for is reviewed by the rules alone.
+    let rules_only = if run.settings.mode == DesignMode::Infer {
+        manifest.missing.viewports.clone()
+    } else {
+        Vec::new()
     };
     let round_name = format!("round-{}", run.round);
     let capture_bytes =
@@ -635,10 +653,16 @@ fn reviewed_round(
         rules: PackageRules::read(design_dir),
         token_issues: token_issues.iter().map(|issue| issue.id.clone()).collect(),
         person,
+        rules_only: rules_only.clone(),
+    };
+    let named = |mut result: RoundResult| {
+        result.rules_only = rules_only.clone();
+        result.issues_dropped = dropped.take();
+        Ok(result)
     };
     let review = match valid_review(run, run.reviewer, "design reviewer", &context) {
         Ok(review) => checked(review),
-        Err(why) => return Ok(RoundResult::blocked(why)),
+        Err(why) => return named(RoundResult::blocked(why)),
     };
     let Some(escalation) = escalation(
         &review,
@@ -646,7 +670,7 @@ fn reviewed_round(
         run.round,
         run.settings.verify_after_rounds,
     ) else {
-        return Ok(RoundResult {
+        return named(RoundResult {
             verdict: review.verdict,
             reason: None,
             review: Some(review),
@@ -655,6 +679,8 @@ fn reviewed_round(
             reviewer_review: None,
             needs_refused: refused.take(),
             person: Vec::new(),
+            rules_only: Vec::new(),
+            issues_dropped: Vec::new(),
         });
     };
     // The verifier reviews once more; its verdict replaces the reviewer's for the round.
@@ -670,13 +696,15 @@ fn reviewed_round(
                 reviewer_review: None,
                 needs_refused: refused.take(),
                 person: Vec::new(),
+                rules_only: Vec::new(),
+                issues_dropped: Vec::new(),
             }
         }
         Err(why) => RoundResult::blocked(why),
     };
     result.escalation = Some(escalation);
     result.reviewer_review = Some(review);
-    Ok(result)
+    named(result)
 }
 
 /// Why the round goes to the design verifier, if it does: the reviewer answered blocked or was not
@@ -765,13 +793,14 @@ fn freeze_package(run: &DesignReviewRun) -> Result<DesignManifest, String> {
     }
 }
 
-/// The agent's review, asked again once when its answer is invalid; still invalid, the reason.
+/// The agent's review, with the issues orq dropped as invalid data, asked again once when its answer
+/// is invalid; still invalid, the reason.
 fn valid_review(
     run: &DesignReviewRun,
     agent: &DesignAgent,
     role: &str,
     context: &ReviewContext,
-) -> Result<DesignReview, String> {
+) -> Result<(DesignReview, Vec<String>), String> {
     let package = context.design_dir.join(PACKAGE_DIR);
     let before = Fingerprint::take(run.worktree, &package)?;
     let mut rejected: Option<String> = None;
@@ -862,6 +891,7 @@ impl PairReview {
                 rules: PackageRules::read(design_dir),
                 token_issues: Vec::new(),
                 person: Vec::new(),
+                rules_only: Vec::new(),
             },
         })
     }
@@ -880,7 +910,7 @@ impl PairReview {
     /// The answer checked as a round's answer is: the schema, the ids, the evidence, the bases
     /// and the severities orq fixes.
     pub(crate) fn check(&self, answer: &str) -> Result<DesignReview, String> {
-        check_review(answer, &self.context)
+        check_review(answer, &self.context).map(|(review, _)| review)
     }
 }
 
@@ -905,7 +935,24 @@ fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext)
     }
     prompt.push_str("Captures:\n");
     for (path, route, viewport) in &context.captures {
-        prompt.push_str(&format!("- {path} (route {route}, viewport {viewport})\n"));
+        let rules_only = if context.rules_only.contains(viewport) {
+            ", rules only"
+        } else {
+            ""
+        };
+        prompt.push_str(&format!(
+            "- {path} (route {route}, viewport {viewport}{rules_only})\n"
+        ));
+    }
+    if !context.rules_only.is_empty() {
+        prompt.push_str(&format!(
+            "Rules only: {}. The package has no reference image for these viewports, so make no pixel \
+             or layout comparison for them against any reference: judge their captures against \
+             RESPONSIVE.md, UX.md and DESIGN.md only. Every issue for one of them has basis \"rule\" \
+             with \"quote\" (the line, quoted as written); orq drops any other issue for them as \
+             invalid data.\n",
+            context.rules_only.join(", ")
+        ));
     }
     let measurements = format!("round-{}/{MEASUREMENTS_FILE}", context.round);
     if context.design_dir.join(&measurements).is_file() {
@@ -1087,9 +1134,30 @@ pub(crate) fn run_agent_logged(
 /// The answer as a review: JSON matching the review schema, about this run, its references and
 /// this capture, every evidence path a file in the run's design folder, and a verdict its checks
 /// and issues allow.
-fn check_review(answer: &str, context: &ReviewContext) -> Result<DesignReview, String> {
+fn check_review(
+    answer: &str,
+    context: &ReviewContext,
+) -> Result<(DesignReview, Vec<String>), String> {
     let mut review: DesignReview = serde_json::from_str(answer.trim())
         .map_err(|e| format!("the answer is not JSON matching the review schema ({e})"))?;
+    // A viewport with no reference is judged by the rules alone: any other reviewer issue for it is
+    // invalid data, dropped before anything is decided from the review.
+    let mut dropped = Vec::new();
+    review.issues.retain(|issue| {
+        // The person's issues are theirs, whatever basis the reviewer gave them.
+        let invalid = context.rules_only.contains(&issue.viewport)
+            && !context.person.iter().any(|given| given.id == issue.id)
+            && issue.basis != Some(IssueBasis::Rule);
+        if invalid {
+            dropped.push(format!(
+                "the issue {:?} for the rules-only viewport {} has the basis {}, not rule",
+                issue.id,
+                issue.viewport,
+                issue.basis.map_or("none", IssueBasis::as_str)
+            ));
+        }
+        !invalid
+    });
     for (field, given, expected) in [
         ("run_id", &review.run_id, &context.run_id),
         (
@@ -1182,7 +1250,7 @@ fn check_review(answer: &str, context: &ReviewContext) -> Result<DesignReview, S
             ));
         }
     }
-    Ok(review)
+    Ok((review, dropped))
 }
 
 /// Whether the issue's basis holds: it names one, and a `rule` issue quotes a line of the package's
@@ -1359,6 +1427,8 @@ fn write_round(
         "review": result.review,
         "reviewer_review": result.reviewer_review,
         "needs_refused": result.needs_refused,
+        "rules_only": result.rules_only,
+        "issues_dropped": result.issues_dropped,
     });
     let written = std::fs::create_dir_all(&round_dir)
         .and_then(|()| {
@@ -1396,6 +1466,15 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
             "\nReviewed again by the design verifier: {}\n",
             line(escalation)
         ));
+    }
+    if !result.rules_only.is_empty() {
+        text.push_str(&format!(
+            "\nReviewed by the rules only (no reference; RESPONSIVE.md, UX.md and DESIGN.md): {}\n",
+            line(&result.rules_only.join(", "))
+        ));
+    }
+    for dropped in &result.issues_dropped {
+        text.push_str(&format!("\nDropped as invalid data: {}\n", line(dropped)));
     }
     if let Some(reason) = &result.reason {
         text.push_str(&format!("\nReason: {}\n", line(reason)));

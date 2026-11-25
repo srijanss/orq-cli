@@ -160,7 +160,7 @@ pub fn start_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
     let has_reference = scanned
         .as_ref()
         .is_some_and(|s| s.manifest.files.iter().any(|file| file.kind == "reference"));
-    let request = files_needed(run, &missing);
+    let request = files_needed(run, &missing, has_reference);
     let Some(scanned) = scanned.filter(|_| has_reference && request.files.is_empty()) else {
         // The person is shown where the files go.
         for sub in ["references", "assets"] {
@@ -292,11 +292,21 @@ fn missing_pieces(
 }
 
 /// The request for what is missing: every piece in `prepared` mode; in `infer` mode the documents
-/// are left to the design preparer.
-fn files_needed(run: &DesignPackageRun, missing: &MissingPieces) -> DesignFilesNeeded {
+/// are left to the design preparer, and once the package has a reference a viewport without one is
+/// reviewed by the rules alone, so only a package with no reference at all is asked for one.
+fn files_needed(
+    run: &DesignPackageRun,
+    missing: &MissingPieces,
+    has_reference: bool,
+) -> DesignFilesNeeded {
     let at = |path: &str| format!("{DESIGNS_DIR}/{}/{path}", run.feature);
     let mut files = Vec::new();
-    for name in &missing.viewports {
+    let viewports: &[String] = if run.settings.mode == DesignMode::Infer && has_reference {
+        &[]
+    } else {
+        &missing.viewports
+    };
+    for name in viewports {
         let size = run.settings.viewports.get(name);
         files.push(NeededFile {
             what: format!(

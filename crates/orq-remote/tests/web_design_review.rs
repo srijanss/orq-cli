@@ -690,6 +690,40 @@ fn a_changes_required_round_shows_its_verdict_viewports_issues_by_section_then_s
 }
 
 #[test]
+fn a_viewport_with_no_reference_is_shown_as_rules_only() {
+    let s = setup("design-panel-rules-only");
+    one_round_run(&s, "r-1", "pass", json!([]));
+    // An infer-mode package with the desktop reference only: mobile is reviewed by the rules alone.
+    let manifest_path = design_dir(&s, "r-1").join("manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|file| file["path"] != "references/mobile.png");
+    manifest["missing"]["viewports"] = json!(["mobile"]);
+    write(&manifest_path, manifest.to_string().as_bytes());
+    let body = page(&s, "/api/projects/alpha/runs/r-1");
+
+    let Some(out) = open("r-1", body, vec![], vec![], vec![]) else {
+        return;
+    };
+
+    let end = last(&out);
+    assert_eq!(count(end, "[data-design-viewport]"), 2, "{out}");
+    assert_eq!(count(end, "[data-design-reference]"), 1, "{out}");
+    let shown = texts(end);
+    assert!(
+        shown.iter().any(|text| text.starts_with("Rules only")),
+        "the mobile viewport is named rules only: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text == "No reference"),
+        "{shown:?}"
+    );
+}
+
+#[test]
 fn an_issue_that_needs_a_file_shows_the_file_instead_of_a_fix_direction() {
     let s = setup("design-panel-needs-file");
     let mut needing = issue("signatures", "Testimonials", "major", "open");
