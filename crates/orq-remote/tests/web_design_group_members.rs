@@ -212,6 +212,23 @@ fn each_members_design_rounds_are_grouped_under_it_with_the_newest_member_open()
     );
 }
 
+#[test]
+fn a_member_that_stopped_before_its_design_loop_says_where_it_stopped_not_its_last_design_round() {
+    for (step, said) in [
+        ("gate", "Stopped at the gate"),
+        ("implement", "Stopped while implementing"),
+        ("design", "Stopped in design round 1"),
+    ] {
+        let mut run = group_run();
+        run["design_group"]["members"][1]["step"] = json!(step);
+        let Some(out) = open_run(run, vec![], vec![]) else {
+            return;
+        };
+        let texts = texts(last(&out));
+        assert!(texts.contains(&said.to_string()), "{step}: {texts:?}");
+    }
+}
+
 /// The design image paths the page asked for.
 fn images_asked(out: &Value) -> Vec<String> {
     out["requests"]
@@ -503,6 +520,9 @@ fn the_run_page_reads_each_members_state_components_and_own_design_rounds() {
     // A member that reached its design loop covers what its frozen scope names; one still waiting, what the ledger says.
     assert_eq!(members[0]["components"], json!(["shop-header"]), "{group}");
     assert_eq!(members[2]["components"], json!(["footer"]), "{group}");
+    // The step the member it is at was in when it stopped; the others are at none.
+    let steps: Vec<&Value> = members.iter().map(|m| &m["step"]).collect();
+    assert_eq!(steps, [&Value::Null, &json!("design"), &Value::Null], "{group}");
     let rounds = |m: &Value| {
         m["design"]["rounds"].as_array().map(|rounds| {
             rounds

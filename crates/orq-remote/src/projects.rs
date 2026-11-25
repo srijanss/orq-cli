@@ -557,7 +557,9 @@ fn design_group_shown(events: &[orq_orchestrator::Event], phase: orq_orchestrato
             });
             let components = scope.and_then(|scope| scope.components).unwrap_or_default();
             let design = design_rounds_shown(member_events(events, member), &member_logs.join("design"), &format!("{GROUP_MEMBERS_DIR}/{member}/"));
-            json!({"feature": member, "state": state, "round": (round > 0).then_some(round), "components": components, "design": design})
+            // The step of the member it is at, so a stop at the gate is not read as one in its last design round.
+            let step = current.filter(|_| !passed);
+            json!({"feature": member, "state": state, "step": step, "round": (round > 0).then_some(round), "components": components, "design": design})
         })
         .collect();
     Some(json!({"at": at.map(|(_, index, ..)| index), "of": at.map_or(members.len() as u64, |(_, _, of, _)| of), "stopped": stopped, "members": shown}))

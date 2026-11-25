@@ -5759,6 +5759,7 @@ function designGroupOf(run) {
       feature: member.feature,
       state: textOr(member.state),
       round: Number.isInteger(member.round) ? member.round : null,
+      step: textOr(member.step),
       components: listOf(member.components).filter((id) => typeof id === "string" && id !== ""),
       design: designOf({ design: member.design }),
     }));
@@ -5782,7 +5783,11 @@ function memberStateOf(member) {
     case "gate": return ["Gate", "status-running", "play"];
     case "design": return [member.round === null ? "Design review" : "Design round" + round, "status-running", "play"];
     case "passed": return ["Passed", "status-completed", "check"];
-    case "stopped": return [member.round === null ? "Stopped" : "Stopped in design round" + round, "status-failed", "close"];
+    // Where it stopped is its step's: a member taken back to its gate keeps its earlier rounds, but did not stop in one.
+    case "stopped":
+      if (member.step === "implement") return ["Stopped while implementing", "status-failed", "close"];
+      if (member.step === "gate") return ["Stopped at the gate", "status-failed", "close"];
+      return [member.round === null ? "Stopped" : "Stopped in design round" + round, "status-failed", "close"];
     default: return ["Unknown", "status-queued", "flag"];
   }
 }
