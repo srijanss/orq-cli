@@ -434,15 +434,99 @@ fn frontend_features(options: &Options<'_>) -> Result<std::collections::HashSet<
     orq_remote::projects::frontend_features_at(&roots.database(), &root).map_err(other)
 }
 
-/// A grouped run with a frontend feature is refused for now: the design review step runs for one feature.
+/// A grouped run with frontend features is a design group only when they all name the same design package
+/// (`Design package:` in the ledger, else the feature's own folder): one mixing packages is refused, naming
+/// each member's.
 fn refuse_grouped_frontend(options: &Options<'_>) -> Result<(), StartError> {
     if options.features.len() < 2 {
         return Ok(());
     }
     let frontend = frontend_features(options)?;
-    match options.features.iter().find(|f| frontend.contains(f.as_str())) {
-        Some(feature) => Err(other(format!("{feature} is a frontend feature and cannot run in a group yet: run it on its own"))),
-        None => Ok(()),
+    let packages = group_packages(&orq_features::ledger_path(options.project), options.features, &frontend).map_err(other)?;
+    match packages.first() {
+        Some((_, first)) if packages.iter().any(|(_, package)| package != first) => {
+            let named: Vec<String> = packages.iter().map(|(member, package)| format!("{member} uses {package}")).collect();
+            Err(other(format!("the frontend members of a group must share one design package: {}", named.join(", "))))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Each of `features` that is `frontend`, in order, with the design package it names: its ledger scope's
+/// package, else its own folder.
+fn group_packages(ledger: &Path, features: &[String], frontend: &std::collections::HashSet<String>) -> Result<Vec<(String, String)>, String> {
+    let mut packages = Vec::new();
+    for member in features.iter().filter(|f| frontend.contains(f.as_str())) {
+        let scope = ledger_design_scope(ledger, member).map_err(|reason| format!("{member}: {reason}"))?;
+        packages.push((member.clone(), scope.map_or_else(|| member.clone(), |s| s.package)));
+    }
+    Ok(packages)
+}
+
+/// The members of a group run in its order: whether each is `frontend`, and the shared package's components
+/// its ledger scope names (none: the whole package, or a standard member).
+fn design_group_members(
+    ledger: &Path,
+    features: &[String],
+    frontend: &std::collections::HashSet<String>,
+) -> Result<Vec<orq_orchestrator::DesignGroupMember>, String> {
+    features
+        .iter()
+        .map(|feature| {
+            let is_frontend = frontend.contains(feature.as_str());
+            let components = if is_frontend {
+                ledger_design_scope(ledger, feature)
+                    .map_err(|reason| format!("{feature}: {reason}"))?
+                    .and_then(|scope| scope.components)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            Ok(orq_orchestrator::DesignGroupMember { feature: feature.clone(), frontend: is_frontend, components })
+        })
+        .collect()
+}
+
+/// Where a design group run is, for its progress lines: "member 3 of 7: egiftit-home-process".
+fn member_progress(at: &orq_orchestrator::MemberAt<'_>) -> String {
+    format!("member {} of {}: {}", at.index, at.of, at.member.feature)
+}
+
+/// How a design group run ends when a member stops it: the member's ending, its reason naming the member.
+fn member_stop(stop: orq_orchestrator::DesignGroupStop<Report>) -> Report {
+    let mut report = stop.stop;
+    let at = format!("member {} of {}: {}", stop.index, stop.of, stop.member);
+    report.detail = Some(match report.detail.take() {
+        Some(detail) => format!("{at}: {detail}"),
+        None => at,
+    });
+    report
+}
+
+/// How a stage of the run ends: `Some` with how the run stops.
+type StageStop = Result<Option<Report>, StoreError>;
+
+/// A design group run's steps, each one of the run's own stage closures.
+struct PipelineGroupSteps<'s> {
+    implement: &'s dyn Fn(&orq_orchestrator::MemberAt<'_>) -> StageStop,
+    gate: &'s dyn Fn(&orq_orchestrator::MemberAt<'_>) -> StageStop,
+    design: &'s dyn Fn(&orq_orchestrator::MemberAt<'_>, &[String]) -> StageStop,
+    finish: &'s dyn Fn() -> StageStop,
+}
+
+impl orq_orchestrator::DesignGroupSteps for PipelineGroupSteps<'_> {
+    type Stop = Report;
+    fn implement(&mut self, at: &orq_orchestrator::MemberAt<'_>) -> StageStop {
+        (self.implement)(at)
+    }
+    fn gate(&mut self, at: &orq_orchestrator::MemberAt<'_>) -> StageStop {
+        (self.gate)(at)
+    }
+    fn design(&mut self, at: &orq_orchestrator::MemberAt<'_>, done: &[String]) -> StageStop {
+        (self.design)(at, done)
+    }
+    fn finish(&mut self) -> StageStop {
+        (self.finish)()
     }
 }
 
@@ -2189,10 +2273,16 @@ fn stages(
     let worktree = record.worktree.as_path();
     let implementer = with_run_model(&options.implementer, options, settings);
     // A frontend run (one feature marked frontend) has the design package and design review steps.
-    let frontend_run = !options.publish && options.features.len() == 1 && {
-        let frontend = frontend_features(options).map_err(|e| StoreError::Corrupt(start_error_text(e)))?;
-        frontend.contains(&options.features[0])
+    let frontend = if options.publish {
+        Default::default()
+    } else {
+        frontend_features(options).map_err(|e| StoreError::Corrupt(start_error_text(e)))?
     };
+    let frontend_run = options.features.len() == 1 && frontend.contains(&options.features[0]);
+    // A group with frontend members (sharing one package, checked at start) is a design group: each member
+    // gets its own session, the gate and, a frontend member, its own design loop.
+    let group_members = design_group_members(&orq_features::ledger_path(options.project), options.features, &frontend).map_err(StoreError::Corrupt)?;
+    let design_group = options.features.len() > 1 && group_members.iter().any(|m| m.frontend);
 
     let Some(claude) = find_program(&options.implementer.harness) else {
         return stopped(Ending::Failed, harness_missing(&options.implementer.harness));
@@ -2260,28 +2350,39 @@ fn stages(
         // A resumed run whose agent session already finished goes on from the next stage; that was
         // recorded when the run began, so it survives a failure anywhere before here.
         if implement_inherited_from.is_none() && frontend_run {
-            if let Some(stop) = design_package(store, run_id, options, settings, logs, worktree)? {
+            if let Some(stop) = design_package(store, run_id, options, &options.features[0], settings, logs, worktree)? {
                 return Ok(stop);
             }
         }
-        if implement_inherited_from.is_none() {
-            if resumed_from.is_some() {
-                hand_back_features(store, record, &orq_features::ledger_path(options.project), options.features);
+        // A design group's package is frozen once, for its first frontend member; a resumed group checks the
+        // package it carried, unchanged.
+        if let Some(first) = group_members.iter().find(|m| m.frontend).filter(|_| design_group) {
+            if let Some(stop) = design_package(store, run_id, options, &first.feature, settings, logs, worktree)? {
+                return Ok(stop);
             }
-            let features: Vec<&str> = options.features.iter().map(String::as_str).collect();
+        }
+    }
+    // A session implementing `members` of the run's features (all of them, or one design group member), logged
+    // to `log`: `Some` with how the run stops when it does not finish.
+    let implement = |members: &[String], log: &Path| -> Result<Option<Report>, StoreError> {
+        {
+            if resumed_from.is_some() {
+                hand_back_features(store, record, &orq_features::ledger_path(options.project), members);
+            }
+            let features: Vec<&str> = members.iter().map(String::as_str).collect();
             let adapter = adapter_for(&options.implementer.harness).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             // The session is asked to leave this file when it is finished, and is closed once it does.
             let marker_path = logs.join("implement.done");
             let marker = (settings.auto_exit != Some(false)).then(|| marker_path.to_str()).flatten();
             // After a model switch the new session is told where the work stands, in words, never as the old conversation.
-            let handoff = orq_orchestrator::read_handoff(&store, &run_id)
+            let handoff = orq_orchestrator::read_handoff(store, run_id)
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?
                 .map(|h| orq_orchestrator::handoff_prompt(&h));
             // Remote control is asked for unless the project turned it off; a harness without it runs without and says so.
             let wants_remote_control = settings.remote_control != Some(false);
             if wants_remote_control && !adapter.supports(orq_agents::Capability::RemoteControl) {
                 let capability = orq_agents::Capability::RemoteControl.name();
-                if let Err(err) = orq_orchestrator::record_capability_skipped(&store, &record, "implement_and_review", &options.implementer.harness, capability) {
+                if let Err(err) = orq_orchestrator::record_capability_skipped(store, record, "implement_and_review", &options.implementer.harness, capability) {
                     eprintln!("orq: cannot record the skipped {capability} of {run_id}: {err:?}");
                 }
             }
@@ -2301,8 +2402,8 @@ fn stages(
                 open_feature: open_tdd.as_ref().map(|(name, phase, depth)| orq_agents::OpenFeature { name, phase, depth: *depth }),
             });
             // The session is told the features' files, and on a resumed run those already changed outside them.
-            let (declared_files, undeclared_files) = session_files(store, record, &orq_features::ledger_path(options.project), options.features, resumed_from.map(|from| from.run_id.as_str()));
-            let specs = feature_specs(&orq_features::ledger_path(options.project), options.features);
+            let (declared_files, undeclared_files) = session_files(store, record, &orq_features::ledger_path(options.project), members, resumed_from.map(|from| from.run_id.as_str()));
+            let specs = feature_specs(&orq_features::ledger_path(options.project), members);
             let spec_refs: Vec<(&str, &str)> = specs.iter().map(|(name, spec)| (name.as_str(), spec.as_str())).collect();
             let args = adapter
                 .implement_argv(&ImplementRequest {
@@ -2334,27 +2435,27 @@ fn stages(
                 env: database_env,
                 cwd: worktree,
                 session_id: None,
-                log: &logs.join("implement.log"),
+                log,
                 terminal: options.interactive,
                 exit_marker: marker.map(std::path::Path::new),
             };
             let before = ledger_statuses(&orq_features::ledger_path(options.project), "the implement session");
-            let files_before = ledger_target_files(&orq_features::ledger_path(options.project), options.features);
+            let files_before = ledger_target_files(&orq_features::ledger_path(options.project), members);
             let outcome = run_implement_stage(store, run_id, &session)?;
             restore_target_files(store, record, &orq_features::ledger_path(options.project), files_before.as_deref());
             // What the session completed is recorded, so the group check counts it.
-            let completed = record_session_completed(store, record, &orq_features::ledger_path(options.project), options.features, before.as_deref());
+            let completed = record_session_completed(store, record, &orq_features::ledger_path(options.project), members, before.as_deref());
             record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, "implement");
             undo_formatting_outside(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "implement_and_review");
             record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), "implement_and_review");
             if options.unattended {
                 if let Some(reason) = unanswered_need(store, run_id) {
-                    return stopped(Ending::Blocked, reason);
+                    return stopped(Ending::Blocked, reason).map(Some);
                 }
                 // What the session could not decide waits for a person, whatever else it left: a
                 // review that escalated too is drafted only once that is decided.
                 if let Some(decision) = needed_decision(outcome.reported.as_deref()) {
-                    return stopped(Ending::Blocked, decision);
+                    return stopped(Ending::Blocked, decision).map(Some);
                 }
             }
             // Nobody decides for an unattended run whose review escalated, however its session
@@ -2366,7 +2467,7 @@ fn stages(
                 && match escalated(worktree, &record.base_sha) {
                     Some(review) => {
                         if let Err(reason) = draft_followups(store, record, &orq_features::ledger_path(options.project), &review) {
-                            return stopped(Ending::Blocked, reason);
+                            return stopped(Ending::Blocked, reason).map(Some);
                         }
                         true
                     }
@@ -2377,27 +2478,36 @@ fn stages(
                 // decision is a human's, so the run waits for it instead of failing.
                 let review = (!options.unattended).then(|| outcome.reported.as_ref().and_then(|_| escalated(worktree, &record.base_sha))).flatten();
                 match review {
-                    Some(review) => return stopped(Ending::NeedsReview, escalation_reason(&review)),
+                    Some(review) => return stopped(Ending::NeedsReview, escalation_reason(&review)).map(Some),
                     None => {
                         return stopped(Ending::Failed, match outcome.reported {
                             Some(problem) => format!("the implement session reported a problem: {problem}"),
                             None => "the implement session failed".to_string(),
                         })
+                        .map(Some)
                     }
                 }
             }
             if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
-                return stopped(Ending::Blocked, reason);
+                return stopped(Ending::Blocked, reason).map(Some);
             }
-            if let Some(reason) = unfinished_group_member(options.project, options.features, &kept_by_group(store, record, options.features), before.as_deref()) {
+            if let Some(reason) = unfinished_group_member(options.project, members, &kept_by_group(store, record, members), before.as_deref()) {
                 // Recorded as the session's stage failing, so resuming starts the session again.
                 orq_orchestrator::record_implement_unfinished(store, run_id, &reason)?;
-                return stopped(Ending::Failed, reason);
+                return stopped(Ending::Failed, reason).map(Some);
             }
             // The session's work goes on to the gate and review: what it completed is held
             // `in_progress` until the run delivers it. A run that stopped above is left to
             // `reopen_undelivered`, as before.
             hold_until_delivery(store, record, &orq_features::ledger_path(options.project), &completed);
+        }
+        Ok(None)
+    };
+    // A resumed run whose agent session already finished goes on from the next stage. A design group's members
+    // have sessions of their own.
+    if !options.publish && implement_inherited_from.is_none() && !design_group {
+        if let Some(stop) = implement(options.features, &logs.join("implement.log"))? {
+            return Ok(stop);
         }
     }
 
@@ -2552,10 +2662,9 @@ fn stages(
     // A frontend run's design review step: `Some` with how the run stops when its page does not pass. The step
     // carries on from what the run's events record, and a pass holds only for the head it reviewed, so calling
     // it again after a later change reviews once more, to verify.
-    let design =|| -> Result<Option<Report>, StoreError> {
-        if !frontend_run {
-            return Ok(None);
-        }
+    // `feature`'s design loop, `at` naming the design group member it is (`None`: the run's one feature), its
+    // rounds kept in `design_logs`.
+    let design_for = |feature: &str, at: Option<&orq_orchestrator::MemberAt<'_>>, design_logs: &Path| -> Result<Option<Report>, StoreError> {
         let needs_review = |reason: String| stopped(Ending::NeedsReview, reason).map(Some);
         let Some(design_settings) = settings.design.as_ref() else {
             return needs_review("this frontend feature's project has no design settings: add a [design] table to .orq/run.toml".to_string());
@@ -2568,12 +2677,15 @@ fn stages(
         let skill = orq_agents::design_skill("design-review").unwrap_or_default();
         let max = u32::from(design_settings.max_correction_rounds);
         let review = |round: u32, person: &[orq_orchestrator::PersonGrant]| {
+            if let Some(at) = at {
+                eprintln!("orq: {}, design round {round}", member_progress(at));
+            }
             let run = orq_orchestrator::DesignReviewRun {
                 run_id,
                 main_checkout: &main_checkout,
-                feature: &options.features[0],
+                feature,
                 settings: design_settings,
-                run_logs: logs,
+                run_logs: design_logs,
                 worktree,
                 round,
                 reviewer: &agents.0,
@@ -2630,7 +2742,7 @@ fn stages(
             let Some(task) = orq_orchestrator::design_code_review_task(&skill, from, &reviewer_options, batch) else {
                 return Ok(orq_orchestrator::CorrectionOutcome::Stopped(format!("design correction round {batch} recorded no head to review its fix commits from")));
             };
-            let task = with_design_scope(&task, logs);
+            let task = with_design_scope(&task, design_logs);
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
             let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-code-review.done"));
             let args = adapter_for(&options.implementer.harness)
@@ -2665,20 +2777,107 @@ fn stages(
         let refreeze = |requested: &orq_orchestrator::DesignFilesNeeded| {
             let run = orq_orchestrator::DesignPackageRun {
                 main_checkout: &main_checkout,
-                feature: &options.features[0],
+                feature,
                 settings: design_settings,
-                run_logs: logs,
+                run_logs: design_logs,
                 worktree,
                 limits: Default::default(),
             };
             refreeze_package(&run, requested)
         };
-        let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, feature: &options.features[0], run_logs: logs, review: &review, correct: &correct, review_code: &review_code, refreeze: &refreeze };
-        match design_loop_ending(orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)?) {
+        let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, feature, run_logs: design_logs, review: &review, correct: &correct, review_code: &review_code, refreeze: &refreeze };
+        // A design group member's loop counts only its own rounds and correction budget.
+        let member = at.map(|at| at.member.feature.as_str());
+        match design_loop_ending(orq_orchestrator::run_design_loop_member(store, run_id, member, max, &mut steps)?) {
             None => Ok(None),
             Some((ending, text)) => stopped(ending, text).map(Some),
         }
     };
+    let design = || -> Result<Option<Report>, StoreError> {
+        if !frontend_run {
+            return Ok(None);
+        }
+        design_for(&options.features[0], None, logs)
+    };
+    // A design group runs its members in order, each with its own session, the gate and, a frontend member, its
+    // design loop scoped to its components; then one design code review and one code review over the whole
+    // branch. The run then goes on to rebase, the gate and delivery once, as any group does.
+    if design_group && !done("gate") {
+        let implement_member = |at: &orq_orchestrator::MemberAt<'_>| -> StageStop {
+            eprintln!("orq: {}, implement", member_progress(at));
+            let feature = at.member.feature.clone();
+            implement(std::slice::from_ref(&feature), &logs.join(format!("implement-{feature}.log")))
+        };
+        let gate_member = |at: &orq_orchestrator::MemberAt<'_>| -> StageStop {
+            eprintln!("orq: {}, gate", member_progress(at));
+            check()
+        };
+        let design_member = |at: &orq_orchestrator::MemberAt<'_>, done: &[String]| -> StageStop {
+            // A member's rounds are kept in a folder of its own, its scope naming its components and the earlier
+            // members' as done.
+            let design_logs = if orq_orchestrator::frozen_design_scope(logs).is_some() {
+                match orq_orchestrator::member_design_logs(logs, &at.member.feature, &at.member.components, done) {
+                    Ok(path) => path,
+                    Err(reason) => return stopped(Ending::Failed, reason).map(Some),
+                }
+            } else {
+                logs.to_path_buf()
+            };
+            design_for(&at.member.feature, Some(at), &design_logs)
+        };
+        let finish = || -> StageStop {
+            eprintln!("orq: the group's design code review and code review over the whole branch");
+            let reviews = [
+                (orq_orchestrator::GROUP_DESIGN_CODE_REVIEW_STAGE, "These are the commits of every member of a design group, each built and design reviewed in turn: review the whole branch once more for how the members' components fit the design together."),
+                (orq_orchestrator::GROUP_CODE_REVIEW_STAGE, "These are the commits of every member of a design group: review the whole branch once, as one change."),
+            ];
+            for (stage, what) in reviews {
+                let reviewer = spec(&options.reviewer);
+                let mut reviewer_options = format!("--reviewer {} --model {}", reviewer.harness, reviewer.model);
+                if let Some(thinking) = &reviewer.thinking {
+                    reviewer_options.push_str(&format!(" --thinking {thinking}"));
+                }
+                let skill = orq_agents::skill_command(&options.implementer.harness, "review-and-fix").map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+                let task = format!("{skill} {}..HEAD {reviewer_options}\n\n{what}", record.base_sha);
+                let allowed_commands = recheck_permissions(store, record, settings, logs)?;
+                let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join(format!("{stage}.done")));
+                let args = adapter_for(&options.implementer.harness)
+                    .and_then(|adapter| {
+                        adapter.fix_argv(&FixRequest {
+                            implementer: spec(&implementer),
+                            task: &task,
+                            exit_marker: marker.as_deref().and_then(Path::to_str),
+                            attended: options.interactive,
+                            allowed_commands: &allowed_commands,
+                        })
+                    })
+                    .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+                let session = ImplementSession {
+                    program: claude_program,
+                    args: &args,
+                    env: database_env,
+                    cwd: worktree,
+                    session_id: None,
+                    log: &logs.join(format!("{stage}.log")),
+                    terminal: options.interactive,
+                    exit_marker: marker.as_deref(),
+                };
+                fix_features.before(stage);
+                let outcome = orq_orchestrator::run_design_group_review(store, run_id, &session, stage);
+                fix_features.settle();
+                record_extra_features(store, record, &orq_features::ledger_path(options.project), options.features, stage);
+                record_undeclared_files(store, record, &orq_features::ledger_path(options.project), options.features, settings.rebase_generated.as_deref().unwrap_or_default(), stage);
+                if let orq_orchestrator::CorrectionOutcome::Stopped(reason) = outcome? {
+                    return stopped(Ending::Failed, reason).map(Some);
+                }
+            }
+            Ok(None)
+        };
+        let mut steps = PipelineGroupSteps { implement: &implement_member, gate: &gate_member, design: &design_member, finish: &finish };
+        if let Some(stop) = orq_orchestrator::run_design_group(store, run_id, &group_members, &mut steps)? {
+            return Ok(member_stop(stop));
+        }
+    }
     if !done("gate") {
         if at_boundary(store, run_id, &["implement_and_review"], "rebase", None, None)? {
             return paused("rebase");
@@ -2955,10 +3154,13 @@ fn stages(
 
 /// A frontend run's `design_package` step, before any agent: the feature's package is checked and frozen. `Some`
 /// with how the run stops: waiting for design files (listed in its events), or a package that cannot be used.
+/// `feature` is the run's one frontend feature, or a design group's first frontend member: the package is frozen
+/// once, for the whole group.
 fn design_package(
     store: &RunStore,
     run_id: &str,
     options: &Options<'_>,
+    feature: &str,
     settings: &orq_orchestrator::RunSettings,
     logs: &Path,
     worktree: &Path,
@@ -2970,7 +3172,7 @@ fn design_package(
     let main_checkout = crate::kind_root(options.project);
     let run = orq_orchestrator::DesignPackageRun {
         main_checkout: &main_checkout,
-        feature: &options.features[0],
+        feature,
         settings: design,
         run_logs: logs,
         worktree,
@@ -2982,7 +3184,7 @@ fn design_package(
         orq_orchestrator::record_design_package(store, run_id, "design.files_needed", serde_json::json!({"feature": needed.feature, "files": files}))?;
         stopped(Ending::DesignFilesNeeded, needed.message()).map(Some)
     };
-    let scope = match run_design_scope(&orq_features::ledger_path(options.project), logs, &options.features[0]) {
+    let scope = match run_design_scope(&orq_features::ledger_path(options.project), logs, feature) {
         Ok(scope) => scope,
         Err(reason) => return stopped(Ending::Failed, format!("the design package cannot be used: {reason}")).map(Some),
     };

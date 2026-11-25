@@ -1,5 +1,5 @@
-//! A run of a frontend feature uses the frontend steps; a grouped run with a frontend feature is refused for
-//! now, with the reason, and every other run starts as today.
+//! A run of a frontend feature uses the frontend steps; a grouped run with a frontend feature is a design group
+//! (tests/design_group_run.rs), and every other run starts as today.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -38,7 +38,7 @@ fn check_group(repo: &GitFixture, group: &str) -> Output {
 }
 
 #[test]
-fn a_grouped_run_with_a_frontend_feature_is_refused_with_the_reason() {
+fn a_grouped_run_with_one_frontend_feature_starts_as_a_design_group() {
     let repo = GitFixture::new();
     git(repo.root(), &["remote", "add", "origin", "git@github.com:o/r.git"]);
     write_ledger(repo.root(), &[LedgerEntry::new("page", "pending"), LedgerEntry::new("engine", "pending")]);
@@ -49,11 +49,9 @@ fn a_grouped_run_with_a_frontend_feature_is_refused_with_the_reason() {
     let kind = orq(&repo).args(["feature", "kind", "--repo"]).arg(repo.root()).args(["--id", "page", "frontend"]).output().unwrap();
     assert!(kind.status.success(), "{}", text(&kind.stderr));
 
-    let refused = check_group(&repo, "page,engine");
-    assert!(!refused.status.success(), "{}", text(&refused.stdout));
-    let stderr = text(&refused.stderr);
-    assert!(stderr.contains("page is a frontend feature"), "{stderr}");
-    assert!(stderr.contains("cannot run in a group"), "{stderr}");
+    // Its one frontend member's package is the only one, so the group is a design group.
+    let design_group = check_group(&repo, "page,engine");
+    assert!(design_group.status.success(), "{}", text(&design_group.stderr));
 }
 
 /// A run of feature `home`, marked frontend, whose page never starts, so its design review is blocked before any

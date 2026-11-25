@@ -247,6 +247,92 @@ pub fn frozen_design_scope(run_logs: &Path) -> Option<DesignScope> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// The folder of a design group's members' own logs, in the run's logs.
+const MEMBERS_DIR: &str = "members";
+
+/// What of the run's design folder a design group member's design loop reads: the frozen package, its
+/// manifest and what the preparer inferred, never another member's rounds or reports.
+const MEMBER_COPIED: [&str; 5] = [
+    MANIFEST_FILE,
+    PACKAGE_DIR,
+    "prepared",
+    "prepared.json",
+    "prepared.md",
+];
+
+/// The logs of design group member `member`'s design loop, `run_logs/members/<member>/`: its design
+/// folder holds a copy of the package the run froze once, and its scope, the package's `components` it
+/// builds with the components of the members before it (`done`) checked for regressions only. A copy
+/// already made is kept, so a resume goes on with the member's own rounds.
+pub fn member_design_logs(
+    run_logs: &Path,
+    member: &str,
+    components: &[String],
+    done: &[String],
+) -> Result<std::path::PathBuf, String> {
+    if !plain_word(member) {
+        return Err(format!("{member:?} is not a feature name"));
+    }
+    let logs = run_logs.join(MEMBERS_DIR).join(member);
+    let design = logs.join(RUN_DESIGN_DIR);
+    let frozen = run_logs.join(RUN_DESIGN_DIR);
+    let package = frozen_design_scope(run_logs)
+        .map(|scope| scope.package)
+        .ok_or_else(|| {
+            "the run's design package was not frozen for a shared package".to_string()
+        })?;
+    let failed = |e: std::io::Error| {
+        format!(
+            "the design folder of {member} could not be written ({:?})",
+            e.kind()
+        )
+    };
+    std::fs::create_dir_all(&design).map_err(failed)?;
+    for name in MEMBER_COPIED {
+        let (from, to) = (frozen.join(name), design.join(name));
+        if std::fs::symlink_metadata(&to).is_ok() {
+            continue;
+        }
+        match std::fs::symlink_metadata(&from) {
+            Ok(meta) if meta.is_dir() => copy_regular_tree(&from, &to).map_err(failed)?,
+            Ok(meta) if meta.is_file() => {
+                std::fs::copy(&from, &to).map_err(failed)?;
+            }
+            _ => {}
+        }
+    }
+    let scope_file = design.join(SCOPE_FILE);
+    if std::fs::symlink_metadata(&scope_file).is_err() {
+        let scope = DesignScope {
+            feature: member.to_string(),
+            package,
+            // A member naming no components builds the whole package.
+            components: (!components.is_empty()).then(|| components.to_vec()),
+            done: done.to_vec(),
+        };
+        let json = serde_json::to_vec_pretty(&scope)
+            .map_err(|e| format!("the design scope of {member} could not be written ({e})"))?;
+        std::fs::write(&scope_file, json).map_err(failed)?;
+    }
+    Ok(logs)
+}
+
+/// Copies the folders and regular files under `from` to `to`; a symlink is never followed or copied.
+fn copy_regular_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_regular_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// The components of a DESIGN.md: each `###` heading's leading word, with its section (the heading
 /// and what follows it up to the next heading of level 3 or above), in the document's order.
 pub fn design_components(design: &str) -> Vec<(String, String)> {

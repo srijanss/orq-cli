@@ -139,8 +139,39 @@ pub fn run_design_loop(
     max_correction_rounds: u32,
     steps: &mut dyn DesignLoopSteps,
 ) -> Result<DesignLoopOutcome, StoreError> {
+    run_design_loop_member(store, run_id, None, max_correction_rounds, steps)
+}
+
+/// [`run_design_loop`] for `member` of a design group run (`None`: the run's one feature): its events
+/// carry the member's name, and only its own count towards its rounds and correction budget.
+pub fn run_design_loop_member(
+    store: &RunStore,
+    run_id: &str,
+    member: Option<&str>,
+    max_correction_rounds: u32,
+    steps: &mut dyn DesignLoopSteps,
+) -> Result<DesignLoopOutcome, StoreError> {
+    // Every event of the loop is the member's own.
+    let record =
+        |store: &RunStore, run_id: &str, kind: &str, round: u32, payload: serde_json::Value| {
+            record_member(store, run_id, member, kind, round, payload)
+        };
+    let ask_for_files =
+        |store: &RunStore,
+         run_id: &str,
+         steps: &mut dyn DesignLoopSteps,
+         last: &Recorded,
+         max: u32| { ask_for_files(store, run_id, member, steps, last, max) };
+    let pause_for_files = |store: &RunStore,
+                           run_id: &str,
+                           last: &Recorded,
+                           max: u32,
+                           request: DesignFilesNeeded,
+                           open: Vec<ReviewIssue>| {
+        pause_for_files(store, run_id, member, last, max, request, open)
+    };
     loop {
-        let state = read_state(store, run_id)?;
+        let state = read_state(store, run_id, member)?;
         // Each time the person gave issues, one correction round more than the run's budget.
         let max_correction_rounds = max_correction_rounds + state.grants.len() as u32;
         // The person's issues the next batch is given first, when they gave some since the last batch.
@@ -386,18 +417,201 @@ pub fn run_design_loop(
     }
 }
 
+/// One member of a design group run, in the group's order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignGroupMember {
+    /// The member's feature.
+    pub feature: String,
+    /// Whether it is a frontend feature, which has a design loop of its own.
+    pub frontend: bool,
+    /// The ids of the shared package's components it builds; empty for a standard member.
+    pub components: Vec<String>,
+}
+
+/// Where in its group a member is: `index` of `of`, from 1.
+#[derive(Debug, Clone, Copy)]
+pub struct MemberAt<'a> {
+    pub index: usize,
+    pub of: usize,
+    pub member: &'a DesignGroupMember,
+}
+
+/// What a design group run asks of the run, member by member. Each step answers `Some` with how the run
+/// stops when the member does not get past it.
+pub trait DesignGroupSteps {
+    /// How the run stops.
+    type Stop;
+    /// The member's own implement session: only its own task.
+    fn implement(&mut self, at: &MemberAt<'_>) -> Result<Option<Self::Stop>, StoreError>;
+    /// The gate, on the branch as the member left it.
+    fn gate(&mut self, at: &MemberAt<'_>) -> Result<Option<Self::Stop>, StoreError>;
+    /// A frontend member's design loop, scoped to its components, `done` being the ids of the components
+    /// the members before it built.
+    fn design(
+        &mut self,
+        at: &MemberAt<'_>,
+        done: &[String],
+    ) -> Result<Option<Self::Stop>, StoreError>;
+    /// After the last member: the reviews over the whole branch.
+    fn finish(&mut self) -> Result<Option<Self::Stop>, StoreError>;
+}
+
+/// The member a design group run stopped at, with how it stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignGroupStop<S> {
+    pub index: usize,
+    pub of: usize,
+    pub member: String,
+    pub stop: S,
+}
+
+/// Runs the members of a design group in order, each through its implement session, the gate and (a
+/// frontend member) its design loop, then the group's reviews; `Some` with the member the run stopped at.
+pub fn run_design_group<S>(
+    store: &RunStore,
+    run_id: &str,
+    members: &[DesignGroupMember],
+    steps: &mut dyn DesignGroupSteps<Stop = S>,
+) -> Result<Option<DesignGroupStop<S>>, StoreError> {
+    let of = members.len();
+    let mut done: Vec<String> = Vec::new();
+    for (i, member) in members.iter().enumerate() {
+        let at = MemberAt {
+            index: i + 1,
+            of,
+            member,
+        };
+        let stopped = |stop: S| DesignGroupStop {
+            index: i + 1,
+            of,
+            member: member.feature.clone(),
+            stop,
+        };
+        // What the run (or a run it resumes) recorded of the member: a passed member is not redone, and
+        // one whose session finished goes on from the gate.
+        let recorded = group_events(store, run_id, &member.feature)?;
+        if !recorded.contains(&GROUP_MEMBER_PASSED) {
+            let member_event = |kind: &str, step: &str| {
+                record_group_event(
+                    store,
+                    run_id,
+                    kind,
+                    serde_json::json!({"member": member.feature, "index": i + 1, "of": of, "step": step}),
+                )
+            };
+            if !recorded.contains(&GROUP_MEMBER_IMPLEMENTED) {
+                member_event(GROUP_MEMBER_STEP, "implement")?;
+                if let Some(stop) = steps.implement(&at)? {
+                    return Ok(Some(stopped(stop)));
+                }
+                member_event(GROUP_MEMBER_IMPLEMENTED, "implement")?;
+            }
+            member_event(GROUP_MEMBER_STEP, "gate")?;
+            if let Some(stop) = steps.gate(&at)? {
+                return Ok(Some(stopped(stop)));
+            }
+            if member.frontend {
+                member_event(GROUP_MEMBER_STEP, "design")?;
+                if let Some(stop) = steps.design(&at, &done)? {
+                    return Ok(Some(stopped(stop)));
+                }
+            }
+            member_event(GROUP_MEMBER_PASSED, "passed")?;
+        }
+        done.extend(member.components.iter().cloned());
+    }
+    if store
+        .events(run_id)?
+        .iter()
+        .any(|e| e.kind == GROUP_FINISHED)
+    {
+        return Ok(None);
+    }
+    if let Some(stop) = steps.finish()? {
+        return Ok(Some(DesignGroupStop {
+            index: of,
+            of,
+            member: members
+                .last()
+                .map(|m| m.feature.clone())
+                .unwrap_or_default(),
+            stop,
+        }));
+    }
+    record_group_event(store, run_id, GROUP_FINISHED, serde_json::json!({"of": of}))?;
+    Ok(None)
+}
+
+/// A design group member's step starting: `{member, index, of, step}`, `step` being `implement`, `gate` or `design`.
+pub const GROUP_MEMBER_STEP: &str = "design_group.member_step";
+/// A design group member's implement session finished.
+const GROUP_MEMBER_IMPLEMENTED: &str = "design_group.member_implemented";
+/// A design group member got past its gate and design loop.
+const GROUP_MEMBER_PASSED: &str = "design_group.member_passed";
+/// The group's reviews over the whole branch finished.
+const GROUP_FINISHED: &str = "design_group.finished";
+
+/// The kinds of the run's design group events for `member`.
+fn group_events(
+    store: &RunStore,
+    run_id: &str,
+    member: &str,
+) -> Result<Vec<&'static str>, StoreError> {
+    Ok(store
+        .events(run_id)?
+        .iter()
+        .filter(|e| e.payload.get("member").and_then(|m| m.as_str()) == Some(member))
+        .filter_map(|e| {
+            [GROUP_MEMBER_IMPLEMENTED, GROUP_MEMBER_PASSED]
+                .into_iter()
+                .find(|k| *k == e.kind)
+        })
+        .collect())
+}
+
+/// Records a design group event of the run, under no stage.
+fn record_group_event(
+    store: &RunStore,
+    run_id: &str,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<(), StoreError> {
+    let record = store.load(run_id)?;
+    store.append_event(&Event {
+        schema_version: 1,
+        event_id: next_event_id(run_id),
+        run_id: run_id.to_string(),
+        project_id: record.project_id,
+        feature_id: record.feature_id,
+        kind: kind.to_string(),
+        stage: None,
+        attempt: 1,
+        occurred_at: now_rfc3339(),
+        payload,
+    })
+}
+
 /// Pauses the run for the files the open issues of review `last` need, each under `designs/<feature>/`,
 /// naming the other issues still open; the request is recorded as the run's `design.files_needed` event.
 fn ask_for_files(
     store: &RunStore,
     run_id: &str,
+    member: Option<&str>,
     steps: &mut dyn DesignLoopSteps,
     last: &Recorded,
     max_correction_rounds: u32,
 ) -> Result<DesignLoopOutcome, StoreError> {
     let request = files_requested(store, run_id, steps, last)?;
     let open = fixable_issues(&last.issues);
-    pause_for_files(store, run_id, last, max_correction_rounds, request, open)
+    pause_for_files(
+        store,
+        run_id,
+        member,
+        last,
+        max_correction_rounds,
+        request,
+        open,
+    )
 }
 
 /// The files review `last` asks for, each under the run's package folder `designs/<feature>/`.
@@ -429,6 +643,7 @@ fn files_requested(
 fn pause_for_files(
     store: &RunStore,
     run_id: &str,
+    member: Option<&str>,
     last: &Recorded,
     max_correction_rounds: u32,
     request: DesignFilesNeeded,
@@ -447,9 +662,10 @@ fn pause_for_files(
         let ids: Vec<&str> = open.iter().map(|i| i.id.as_str()).collect();
         reason.push_str(&format!("; other issues still open: {}", ids.join(", ")));
     }
-    record(
+    record_member(
         store,
         run_id,
+        member,
         "design.files_needed",
         last.round,
         serde_json::json!({
@@ -1058,6 +1274,34 @@ pub fn run_design_code_review(
     )
 }
 
+/// The stage of a design group's design code review over the whole branch, after its last member.
+pub const GROUP_DESIGN_CODE_REVIEW_STAGE: &str = "group_design_code_review";
+/// The stage of a design group's code review over the whole branch, after its design code review.
+pub const GROUP_CODE_REVIEW_STAGE: &str = "group_code_review";
+
+/// Runs one of a design group's reviews over the whole branch under `stage`; it stops the run when it fails.
+pub fn run_design_group_review(
+    store: &RunStore,
+    run_id: &str,
+    session: &crate::implement::ImplementSession<'_>,
+    stage: &str,
+) -> Result<CorrectionOutcome, StoreError> {
+    let what = if stage == GROUP_DESIGN_CODE_REVIEW_STAGE {
+        "group's design code review"
+    } else {
+        "group's code review"
+    };
+    let outcome = crate::implement::run_session_stage(store, run_id, session, stage, 1)?;
+    Ok(if outcome.success {
+        CorrectionOutcome::Done
+    } else {
+        CorrectionOutcome::Stopped(match outcome.reported {
+            Some(problem) => format!("the {what} session reported a problem: {problem}"),
+            None => format!("the {what} session failed"),
+        })
+    })
+}
+
 fn run_design_session(
     store: &RunStore,
     run_id: &str,
@@ -1142,7 +1386,7 @@ fn batch_issues(granted: Option<&Grant>, reviewed: &[ReviewIssue]) -> Vec<Review
     issues
 }
 
-fn read_state(store: &RunStore, run_id: &str) -> Result<State, StoreError> {
+fn read_state(store: &RunStore, run_id: &str, member: Option<&str>) -> Result<State, StoreError> {
     let mut state = State {
         reviews: Vec::new(),
         batches: 0,
@@ -1162,7 +1406,7 @@ fn read_state(store: &RunStore, run_id: &str) -> Result<State, StoreError> {
             .and_then(|n| u32::try_from(n).ok())
     };
     for event in store.events(run_id)? {
-        if event.stage.as_deref() != Some(DESIGN_REVIEW_STAGE) {
+        if event.stage.as_deref() != Some(DESIGN_REVIEW_STAGE) || !of_member(&event, member) {
             continue;
         }
         match event.kind.as_str() {
@@ -1239,10 +1483,19 @@ pub fn record_design_person_issues(
     viewports: &[String],
 ) -> Result<Vec<ReviewIssue>, String> {
     let grant = check_design_person_issues(store, run_id, text, viewports)?;
-    let state = read_state(store, run_id).map_err(|e| e.to_string())?;
+    let member = last_design_member(&store.events(run_id).map_err(|e| e.to_string())?);
+    let state = read_state(store, run_id, member.as_deref()).map_err(|e| e.to_string())?;
     let round = state.reviews.last().map_or(0, |r| r.round);
     let payload = serde_json::to_value(&grant).map_err(|e| e.to_string())?;
-    record(store, run_id, "design_person_issues", round, payload).map_err(|e| e.to_string())?;
+    record_member(
+        store,
+        run_id,
+        member.as_deref(),
+        "design_person_issues",
+        round,
+        payload,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(grant.issues)
 }
 
@@ -1252,13 +1505,20 @@ pub fn design_grant_waiting(events: &[Event]) -> bool {
     let design = events
         .iter()
         .filter(|e| e.stage.as_deref() == Some(DESIGN_REVIEW_STAGE));
-    let batches = design
-        .clone()
-        .filter(|e| e.kind == "design_correction")
-        .count() as u64;
+    // A design group member's issues wait on that member's own batches.
     design
+        .clone()
         .filter(|e| e.kind == "design_person_issues")
-        .any(|e| e.payload["batch"].as_u64().is_some_and(|b| b > batches))
+        .any(|issues| {
+            let member = issues.payload.get("member").and_then(|m| m.as_str());
+            let batches = design
+                .clone()
+                .filter(|e| e.kind == "design_correction" && of_member(e, member))
+                .count() as u64;
+            issues.payload["batch"]
+                .as_u64()
+                .is_some_and(|b| b > batches)
+        })
 }
 
 /// The names of the viewports a frontend run's page is captured at: the project's design settings'
@@ -1318,7 +1578,8 @@ pub fn check_design_person_issues(
             summary.stage.as_deref().unwrap_or("no step")
         ));
     }
-    let state = read_state(store, run_id).map_err(|e| e.to_string())?;
+    let member = last_design_member(&events);
+    let state = read_state(store, run_id, member.as_deref()).map_err(|e| e.to_string())?;
     // Issues given for a round that has not run yet (their resume did not start) are replaced, not added to.
     let ran: Vec<&Grant> = state
         .grants
@@ -1346,9 +1607,17 @@ pub fn carry_design(
     from_logs: &std::path::Path,
     to_logs: &std::path::Path,
 ) -> Result<(), StoreError> {
+    // A design group's member steps go on too: a member that passed is not redone.
     let carried = |event: &Event| {
-        event.stage.as_deref() == Some(DESIGN_REVIEW_STAGE)
-            && CARRIED_KINDS.contains(&event.kind.as_str())
+        (event.stage.as_deref() == Some(DESIGN_REVIEW_STAGE)
+            && CARRIED_KINDS.contains(&event.kind.as_str()))
+            || (event.stage.is_none()
+                && [
+                    GROUP_MEMBER_IMPLEMENTED,
+                    GROUP_MEMBER_PASSED,
+                    GROUP_FINISHED,
+                ]
+                .contains(&event.kind.as_str()))
     };
     let from_events = store.events(from_run_id)?;
     let from = from_logs.join(DESIGN_DIR);
@@ -1371,7 +1640,7 @@ pub fn carry_design(
             from.join(MANIFEST).display()
         )));
     }
-    if !store.events(&record.run_id)?.iter().any(|e| carried(e)) {
+    if !store.events(&record.run_id)?.iter().any(carried) {
         for event in from_events.into_iter().filter(|e| carried(e)) {
             store.append_event(&Event {
                 event_id: next_event_id(&record.run_id),
@@ -1397,6 +1666,15 @@ pub fn carry_design(
             "the frozen design package of {from_run_id} was not carried: {} is missing; start a new run instead",
             to.join(MANIFEST).display()
         )));
+    }
+    // A design group's members keep their own design folders (their scope and rounds).
+    let (from_members, to_members) = (from_logs.join(MEMBERS_DIR), to_logs.join(MEMBERS_DIR));
+    if regular(&from_members, true) && std::fs::symlink_metadata(&to_members).is_err() {
+        install_copy(&from_members, &to_members).map_err(|e| {
+            StoreError::Corrupt(format!(
+                "cannot carry the design group members of {from_run_id}: {e}"
+            ))
+        })?;
     }
     Ok(())
 }
@@ -1426,6 +1704,8 @@ fn remove_any(path: &std::path::Path) -> std::io::Result<()> {
 
 /// The run's design folder in its logs.
 const DESIGN_DIR: &str = "design";
+/// A design group's members' own design folders, under the run's logs.
+const MEMBERS_DIR: &str = "members";
 
 /// The frozen package's manifest in the design folder.
 const MANIFEST: &str = "manifest.json";
@@ -1460,14 +1740,38 @@ fn verified_issues(review: &DesignReviewOutcome) -> Vec<ReviewIssue> {
         .collect()
 }
 
-fn record(
+/// Records `kind` of the design review step for `member` of a design group (`None`: the run's one feature).
+fn record_member(
     store: &RunStore,
     run_id: &str,
+    member: Option<&str>,
     kind: &str,
     round: u32,
-    payload: serde_json::Value,
+    mut payload: serde_json::Value,
 ) -> Result<(), StoreError> {
+    if let (Some(member), Some(fields)) = (member, payload.as_object_mut()) {
+        fields.insert("member".to_string(), serde_json::json!(member));
+    }
     record_stage_event(store, run_id, DESIGN_REVIEW_STAGE, kind, round, payload)
+}
+
+/// The design group member whose design review step the run did last (`None`: the run's one feature).
+fn last_design_member(events: &[Event]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|e| e.stage.as_deref() == Some(DESIGN_REVIEW_STAGE))
+        .and_then(|e| {
+            e.payload
+                .get("member")
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        })
+}
+
+/// Whether `event` is of `member` of a design group (`None`: the run's one feature).
+fn of_member(event: &Event, member: Option<&str>) -> bool {
+    event.payload.get("member").and_then(|m| m.as_str()) == member
 }
 
 /// The stage name of a frontend run's package check.

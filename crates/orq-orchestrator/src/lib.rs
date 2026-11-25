@@ -93,17 +93,19 @@ pub use design_loop::{
     carry_design, check_design_person_issues, design_code_review_task, design_fix_task,
     design_round_label, design_run_viewports, design_scope_note, plan_correction_parts,
     plan_correction_parts_noted, record_design_package, record_design_person_issues,
-    run_design_code_review, run_design_correction, run_design_correction_part, run_design_loop,
-    CorrectionOutcome, CorrectionPart, DesignLoopOutcome, DesignLoopSteps, Refreeze,
-    DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE, DESIGN_FIX_TASK_LIMIT, DESIGN_PACKAGE_STAGE,
-    DESIGN_REVIEW_STAGE,
+    run_design_code_review, run_design_correction, run_design_correction_part, run_design_group,
+    run_design_group_review, run_design_loop, run_design_loop_member, CorrectionOutcome,
+    CorrectionPart, DesignGroupMember, DesignGroupSteps, DesignGroupStop, DesignLoopOutcome,
+    DesignLoopSteps, MemberAt, Refreeze, DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE,
+    DESIGN_FIX_TASK_LIMIT, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE, GROUP_CODE_REVIEW_STAGE,
+    GROUP_DESIGN_CODE_REVIEW_STAGE,
 };
 pub use design_package::{
-    design_components, design_scope, frozen_design_scope, refreeze_design_package,
-    refreeze_design_package_scoped, resume_design_package, resume_design_package_scoped,
-    start_design_package, start_design_package_scoped, AssignedViewport, DesignFilesNeeded,
-    DesignManifest, DesignPackageOutcome, DesignPackageRun, DesignScope, ManifestFile,
-    MissingPieces, NeededFile, PackageLimits,
+    design_components, design_scope, frozen_design_scope, member_design_logs,
+    refreeze_design_package, refreeze_design_package_scoped, resume_design_package,
+    resume_design_package_scoped, start_design_package, start_design_package_scoped,
+    AssignedViewport, DesignFilesNeeded, DesignManifest, DesignPackageOutcome, DesignPackageRun,
+    DesignScope, ManifestFile, MissingPieces, NeededFile, PackageLimits,
 };
 pub use design_review::{
     drop_refused_needs, person_issues, review_design, review_design_with_person, CheckStatus,
@@ -176,12 +178,11 @@ pub use report_evidence::{recorded_evidence, RecordedEvidence};
 pub use resume::{
     active_runs, carry_rebase, check_answer_reaches_session, check_group_resume,
     check_group_resume_fixing, check_group_resume_reviewing_again,
-    check_group_resume_with_design_issues, holds_run_slot, later_run_of,
-    newest_run_of, newest_runs_of, plan_group_resume, plan_group_resume_fixing,
-    plan_group_resume_reviewing_again, plan_group_resume_with, plan_resume, rebased_onto,
-    record_group, record_inherited_implement, resumable_members, resume_check, resume_takes_a_slot,
-    run_members, supersede_resumed, supersede_resumed_answered, supersede_resumed_with_session,
-    ResumePlan,
+    check_group_resume_with_design_issues, holds_run_slot, later_run_of, newest_run_of,
+    newest_runs_of, plan_group_resume, plan_group_resume_fixing, plan_group_resume_reviewing_again,
+    plan_group_resume_with, plan_resume, rebased_onto, record_group, record_inherited_implement,
+    resumable_members, resume_check, resume_takes_a_slot, run_members, supersede_resumed,
+    supersede_resumed_answered, supersede_resumed_with_session, ResumePlan,
 };
 pub use retention_facts::{collect_run_facts, collect_run_facts_for, parse_rfc3339};
 pub use review_draft::{
