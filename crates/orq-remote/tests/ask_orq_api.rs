@@ -53,12 +53,13 @@ fn setup(label: &str) -> Setup {
     let agent = base.join("fake-claude");
     // Each call records into a folder of its own, named so the calls sort in the order they started.
     let script = format!(
-        "#!/bin/sh\nd='{calls}'/$(date +%s%N)-$$\nmkdir -p \"$d\"\nprintf '%s\\0' \"$@\" > \"$d/args\"\npwd > \"$d/cwd\"\nwhile [ -e '{deaf}' ]; do sleep 0.05; done\ncat > \"$d/stdin\"\ncat '{reply}'\nwhile [ -e '{hold}' ]; do sleep 0.05; done\nif [ -e '{more}' ]; then cat '{more}'; fi\n",
+        "#!/bin/sh\nd='{calls}'/$(date +%s%N)-$$\nmkdir -p \"$d\"\nprintf '%s\\0' \"$@\" > \"$d/args\"\npwd > \"$d/cwd\"\nwhile [ -e '{deaf}' ]; do sleep 0.05; done\ncat > \"$d/stdin\"\nif [ -e '{crash}' ]; then echo 'not logged in' >&2; exit 3; fi\ncat '{reply}'\nwhile [ -e '{hold}' ]; do sleep 0.05; done\nif [ -e '{more}' ]; then cat '{more}'; fi\n",
         calls = base.join("calls").display(),
         reply = base.join("reply.jsonl").display(),
         hold = base.join("hold").display(),
         more = base.join("more.jsonl").display(),
         deaf = base.join("deaf").display(),
+        crash = base.join("crash").display(),
     );
     std::fs::write(&agent, script).unwrap();
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -810,6 +811,35 @@ fn a_reply_that_never_reads_its_message_is_still_stopped_at_the_time_limit() {
     std::fs::remove_file(s.base.join("deaf")).unwrap();
     assert_eq!(state, (json!("stopped"), json!("the reply ran out of time")), "{item}");
     assert!(gone, "the fake that would not read was killed");
+}
+
+#[test]
+fn a_reply_whose_agent_fails_or_cannot_start_is_recorded_as_failed_not_done() {
+    let s = setup("agent-fails");
+    git_repo(&s.scan, "alpha");
+    std::fs::write(s.base.join("crash"), "").unwrap();
+    let chat = create_chat(&s, "alpha", json!({}));
+    say(&s, "alpha", &chat, "why did it fail?");
+    let read = read_chat(&s, "alpha", &chat);
+    let item = &read["items"][0];
+    assert_eq!(item["state"], "failed", "an agent that exits with an error wrote no reply: {read}");
+    assert_eq!(item["reason"], "the reply ended with an error (exit status 3)", "{read}");
+    assert_eq!(read["items"].as_array().unwrap().len(), 1, "{read}");
+
+    let s = Setup {
+        provider: provider(&s.roots, &s.scan, &s.base.join("no-such-claude")),
+        ..s
+    };
+    let chat = create_chat(&s, "alpha", json!({}));
+    let (status, body) = message(&s, &chat, "hello?");
+    assert_eq!(status, 500, "{body}");
+    let read = read_chat(&s, "alpha", &chat);
+    assert_eq!(read["running"], false, "{read}");
+    assert_eq!(
+        (read["items"][0]["state"].as_str(), read["items"][0]["reason"].as_str()),
+        (Some("failed"), Some("the reply could not be started")),
+        "{read}"
+    );
 }
 
 #[test]

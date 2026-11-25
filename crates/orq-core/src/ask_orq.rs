@@ -1126,7 +1126,19 @@ fn start_turn(
         let deadline = Instant::now() + limit;
         for poll in 1u64.. {
             match child.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
+                Ok(Some(status)) => {
+                    match ended(status) {
+                        None => end_turn(&roots, &chat_id, n, "done", None),
+                        Some(reason) => end_turn(&roots, &chat_id, n, "failed", Some(&reason)),
+                    }
+                    return;
+                }
+                Err(_) => {
+                    end_turn(&roots, &chat_id, n, "failed", Some("the reply could not be watched"));
+                    kill_group(pid);
+                    let _ = child.wait();
+                    return;
+                }
                 Ok(None) if Instant::now() >= deadline => {
                     end_turn(
                         &roots,
@@ -1148,9 +1160,20 @@ fn start_turn(
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             }
         }
-        end_turn(&roots, &chat_id, n, "done", None);
     });
     Ok(pid)
+}
+
+/// Why a turn's process that exited did not finish its reply; `None` when it exited cleanly. Only the status is
+/// said: what the agent printed on stderr can quote anything.
+fn ended(status: std::process::ExitStatus) -> Option<String> {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(0), _) => None,
+        (Some(code), _) => Some(format!("the reply ended with an error (exit status {code})")),
+        (None, Some(signal)) => Some(format!("the reply was ended by signal {signal}")),
+        (None, None) => Some("the reply ended with an error".to_string()),
+    }
 }
 
 /// Kills the process group led by `pid`.
