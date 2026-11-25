@@ -265,7 +265,7 @@ pub fn route(
             .and_then(|fields| {
                 fields["text"]
                     .as_str()
-                    .map(|text| text.chars().take(TITLE_CHARS).collect())
+                    .map(preview)
             }),
         _ => open(roots)
             .ok()
@@ -457,12 +457,7 @@ fn create(
         }
         _ => return error(400, "the request body is not one this action takes"),
     }
-    let title: String = fields["title"]
-        .as_str()
-        .unwrap_or("")
-        .chars()
-        .take(TITLE_CHARS)
-        .collect();
+    let title = preview(fields["title"].as_str().unwrap_or(""));
     let chat = format!("chat-{}", &uuid()[..18]);
     let dir = chat_dir(roots, &chat);
     use std::os::unix::fs::DirBuilderExt;
@@ -636,7 +631,14 @@ fn input_summary(input: &Value) -> String {
         }
     });
     let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    crate::redact::redact(&cut(&line, 200))
+    // Redacted whole first: a key the cut ends inside would no longer be recognised.
+    cut(&crate::redact::redact(&line), 200)
+}
+
+/// A title or audit note from `text`: its first characters, redacted before it is cut so a key the cut ends inside
+/// is not shown in part.
+fn preview(text: &str) -> String {
+    crate::redact::redact(text).chars().take(TITLE_CHARS).collect()
 }
 
 /// `text` cut to at most `max` bytes, at a character boundary.
@@ -908,7 +910,7 @@ fn send(
         Ok(Claim::Gone) => return error(404, "not found"),
         Err(_) => return error(500, "the message could not be sent"),
     };
-    let title: String = text.chars().take(TITLE_CHARS).collect();
+    let title = preview(text);
     let _ = conn.execute("UPDATE ask_orq_chats SET last_message_at = ?2, title = CASE WHEN title = '' THEN ?3 ELSE title END WHERE id = ?1", params![chat.id, stamp, title]);
     let stdin = if n == 1 {
         format!("{}{text}", context_prefix(roots, provider, project, &chat))

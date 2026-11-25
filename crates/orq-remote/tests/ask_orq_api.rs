@@ -843,6 +843,42 @@ fn a_reply_whose_agent_fails_or_cannot_start_is_recorded_as_failed_not_done() {
 }
 
 #[test]
+fn a_key_cut_by_a_preview_limit_is_redacted_whole_before_it_is_cut() {
+    let s = setup("cut-after-redact");
+    git_repo(&s.scan, "alpha");
+    let key = "AKIAABCDEFGHIJKLMNOP";
+    // The key starts 70 characters in: an 80-character title or audit note would end in the middle of it, and
+    // a 200-byte tool input preview too.
+    let text = format!("{} {key} was it this one?", "x".repeat(69));
+    let command = format!("{} {key}", "y".repeat(189));
+    let reply = [
+        json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": command}}]}}),
+        json!({"type": "result", "subtype": "success", "is_error": false, "duration_ms": 1, "total_cost_usd": 0.0, "result": "done"}),
+    ]
+    .iter()
+    .map(|line| format!("{line}\n"))
+    .collect::<String>();
+    std::fs::write(s.base.join("reply.jsonl"), reply).unwrap();
+    let titled = create_chat(&s, "alpha", json!({"title": text}));
+    let chat = create_chat(&s, "alpha", json!({}));
+    say(&s, "alpha", &chat, &text);
+
+    let read = read_chat(&s, "alpha", &chat);
+    let titled = read_chat(&s, "alpha", &titled);
+    let audit = audit_lines(&s);
+    let seen = [
+        read["chat"]["title"].to_string(),
+        titled["chat"]["title"].to_string(),
+        read["items"][1]["input"].to_string(),
+        audit.last().unwrap()["reason"].to_string(),
+    ];
+    for shown in &seen {
+        assert!(!shown.contains("AKIAABCD"), "no part of the key is shown: {seen:?}");
+    }
+    assert!(read["chat"]["title"].as_str().unwrap().starts_with("xxxx"), "{read}");
+}
+
+#[test]
 fn a_chat_with_no_reply_being_written_is_deleted_with_its_turn_files() {
     let s = setup("delete");
     git_repo(&s.scan, "alpha");
