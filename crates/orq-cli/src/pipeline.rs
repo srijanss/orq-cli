@@ -2870,6 +2870,10 @@ fn stages(
                 if let orq_orchestrator::CorrectionOutcome::Stopped(reason) = outcome? {
                     return stopped(Ending::Failed, reason).map(Some);
                 }
+                // A review that left its fix uncommitted would rebase and deliver without it.
+                if let ImplementCheck::Blocked { reason } = check_implement_outcome(store, run_id)? {
+                    return stopped(Ending::Blocked, format!("the {stage} session left the branch unready: {reason}")).map(Some);
+                }
             }
             Ok(None)
         };

@@ -599,8 +599,11 @@ impl Group {
         args: &[&str],
     ) -> Output {
         let bin = self.home.join("bin");
+        // With `$HOME/leave-dirty`, the group's code review session leaves a change uncommitted.
         let claude = format!(
-            "#!/bin/sh\nprintf '%s\\n----\\n' \"$*\" >> \"$HOME/sessions\"\ndate +%s%N >> work.txt\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nprintf '%s\\n----\\n' \"$*\" >> \"$HOME/sessions\"\ndate +%s%N >> work.txt\n'{}' \"$@\"\ncode=$?\n\
+             if [ -f \"$HOME/leave-dirty\" ]; then case \"$*\" in *'as one change'*) date > left-uncommitted.txt ;; esac; fi\n\
+             exit $code\n",
             agent.path().display()
         );
         std::fs::write(bin.join("claude"), claude).unwrap();
@@ -905,6 +908,44 @@ fn a_design_group_whose_members_all_passed_runs_the_whole_branch_reviews_once_th
     assert_eq!(events.iter().filter(|e| e["type"] == "design_group.finished").count(), 1);
     let created = provider.calls().iter().filter(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])).count();
     assert_eq!(created, 1, "the group is delivered once: {all}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
+#[test]
+fn a_group_review_session_that_leaves_changes_uncommitted_blocks_the_group_before_delivery() {
+    let w = group("review-dirty");
+    w.prepare();
+    let agent = orq_test_support::FakeAgent::builder().commit("feat: a member").build();
+    let provider = orq_test_support::FakeProvider::builder()
+        .reply(&["pr", "list"], "[]\n")
+        .reply(&["pr", "create"], "https://github.example/o/r/pull/7\n")
+        .reply(&["pr", "view"], "{\"number\":7,\"url\":\"https://github.example/o/r/pull/7\"}\n")
+        .build();
+    let root = w.repo.root().to_str().unwrap().to_string();
+    let run_id = group_with_every_member_passed(&w, &agent, &provider);
+    std::fs::write(w.home.join("leave-dirty"), "").unwrap();
+
+    let resumed = w.orq_run(
+        &agent,
+        &provider,
+        &["run", "resume", &run_id, "--yes", "--no-ci-check", "--repo", &root],
+    );
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    assert!(!resumed.status.success(), "{all}");
+    assert!(
+        all.contains("blocked") && all.contains("group_code_review") && all.contains("uncommitted changes"),
+        "the run says the group's code review left changes uncommitted: {all}"
+    );
+    assert!(
+        !provider.calls().iter().any(|c| c.args.starts_with(&["pr".to_string(), "create".to_string()])),
+        "nothing is delivered: {all}"
+    );
+    let resumed_id = w.run_ids().into_iter().find(|id| *id != run_id).unwrap();
+    assert!(
+        !w.events(&resumed_id).iter().any(|e| e["type"] == "design_group.finished"),
+        "the group's reviews are not finished, so a resume runs them again"
+    );
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
