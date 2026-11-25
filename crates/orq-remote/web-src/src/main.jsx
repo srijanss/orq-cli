@@ -6,7 +6,7 @@ import { Fragment, cloneElement, useCallback, useEffect, useLayoutEffect, useMem
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { Shell, usePageRefresh, usePhone } from "./shell.jsx";
-import { Badge, BADGES } from "./badge.jsx";
+import { Badge, PILLS, StatusPill } from "./badge.jsx";
 import { Icon } from "./icons.jsx";
 import { Markdown } from "./markdown.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
@@ -216,31 +216,45 @@ function TokenPrompt({ message, onToken, passkeys = false, known = false, onPass
   );
 }
 
-// A risk the reference knows gets its coloured badge. A placeholder such as "-" means the review gave
+// A risk the reference knows gets its coloured pill. A placeholder such as "-" means the review gave
 // no rating, which a muted pill says plainly; any other word is shown as it came, in the same shape.
 // "resolved" means the review found risks and every one is fixed; its label names the worst of them.
+const RISK_KINDS = ["risk-high", "risk-medium", "risk-low"];
+
 function RiskBadge({ risk, fixed }) {
   if (risk === undefined || risk === null) return null;
   const word = String(risk).trim();
   const kind = "risk-" + word.toLowerCase();
   if (kind === "risk-resolved") {
     const worst = typeof fixed === "string" ? fixed.trim() : "";
-    return <Badge kind={kind} title={worst === "" ? "Risks fixed" : "Risks fixed (highest was " + worst + ")"} />;
+    return <StatusPill kind={kind} title={worst === "" ? "Risks fixed" : "Risks fixed (highest was " + worst + ")"} data-risk={kind} />;
   }
-  if (Object.hasOwn(BADGES, kind)) return <Badge kind={kind} />;
+  if (RISK_KINDS.includes(kind)) return <StatusPill kind={kind} data-risk={kind} />;
   const unrated = word === "" || /^(-+|none|n\/a|unknown)$/i.test(word);
-  return <span className="badge badge-risk-other">{unrated ? "No risk rating" : word + " risk"}</span>;
+  return unrated ? <StatusPill kind="risk-none" data-risk="risk-none" /> : <StatusPill label={word + " risk"} icon="alert" tone="neutral" data-risk="risk-other" />;
 }
 
-// The short pill reads "Stale" or "Unverified"; a screen reader hears the full marker instead.
+// The short pill reads "Current", "Stale" or "Unverified"; for the last two a screen reader hears the
+// full marker instead.
 function FreshnessPill({ freshness }) {
-  if (freshness !== "stale" && freshness !== "unverified") return null;
+  if (freshness !== "current" && freshness !== "stale" && freshness !== "unverified") return null;
+  const marker = freshness === "stale" ? STALE_MARKER : freshness === "unverified" ? UNVERIFIED_MARKER : null;
   return (
-    <span className={"pill pill-" + freshness}>
-      <span aria-hidden="true">{freshness === "stale" ? "Stale" : "Unverified"}</span>
-      <span className="sr-only">{freshness === "stale" ? STALE_MARKER : UNVERIFIED_MARKER}</span>
-    </span>
+    <StatusPill kind={freshness} data-freshness-pill={freshness}>
+      {marker === null ? undefined : (
+        <>
+          <span aria-hidden="true">{PILLS[freshness].label}</span>
+          <span className="sr-only">{marker}</span>
+        </>
+      )}
+    </StatusPill>
   );
+}
+
+// A review's status as a pill: the words for a status the page knows, else the status itself in
+// sentence case, neutral.
+function ReviewStatus({ status }) {
+  return <StatusPill kind={String(status)} data-review-status={String(status)} />;
 }
 
 function ReviewRow({ run, detailPrefix, selected = false, showProject = false }) {
@@ -255,7 +269,7 @@ function ReviewRow({ run, detailPrefix, selected = false, showProject = false })
         <Generated at={run.generated_at} />
       </span>
       <span className="review-tags">
-        <span className="review-status">{String(run.status)}</span>
+        <ReviewStatus status={run.status} />
         <RiskBadge risk={run.risk} fixed={run.fixed_risk} />
         <FreshnessPill freshness={freshness} />
       </span>
@@ -307,6 +321,10 @@ const REVIEW_FILTERS = [
   ["freshness", "Freshness", rowFreshness],
 ];
 
+// A filter option says what its pill says ("High risk", not "high"); a value the pills do not know is shown as itself.
+const pillWord = (kind, value) => (Object.hasOwn(PILLS, kind) ? PILLS[kind].label : value);
+const FILTER_WORDS = { status: (value) => pillWord(value, value), risk: (value) => pillWord("risk-" + value.trim().toLowerCase(), value), freshness: (value) => pillWord(value, value) };
+
 // Today's reviews or all of them, newest (or oldest) first, ten to a page; the filters only hide
 // rows, so a marker never leaves a row that is shown. A filter, range or sort change starts again
 // on the first page.
@@ -356,7 +374,7 @@ function ReviewList({ runs, detailPrefix = DETAIL_PREFIX, selected = null, onRow
               {key === "status" ? <option value={WAITING}>{label + ": Waiting"}</option> : null}
               <option value="">{label + ": All"}</option>
               {[...new Set(runs.map(read).filter((value) => value !== ""))].sort(order).map((value) => (
-                <option key={value} value={value}>{value}</option>
+                <option key={value} value={value}>{FILTER_WORDS[key](value)}</option>
               ))}
             </select>
           </label>
@@ -436,7 +454,7 @@ function RiskCard({ item }) {
   return (
     <li className={"risk-card" + (fixed ? " risk-card-fixed" : "")} data-risk-card>
       <div className="risk-card-head">
-        <span className={"badge badge-risk-" + (severity === "critical" ? "high" : severity)} data-risk-severity>{severity}</span>
+        <StatusPill label={severity === "" ? "Unknown" : severity[0].toUpperCase() + severity.slice(1)} icon="alert" tone={severity === "critical" ? "risk-high" : "risk-" + severity} data-risk-severity />
         <span className="risk-card-state" data-risk-state>{fixed ? "Fixed" : "Open"}</span>
         {typeof item.category === "string" && item.category !== "" ? <span className="risk-card-category" data-risk-category>{item.category}</span> : null}
         {place === null ? null : href !== null ? (
@@ -474,7 +492,7 @@ function Detail({ report, row = null, listPath = "/reviews", actions = null }) {
         <span className="review-tags">
           <FreshnessPill freshness={freshness} />
           {row !== null ? <RiskBadge risk={row.risk} fixed={row.fixed_risk} /> : null}
-          {row !== null ? <span className="review-status">{String(row.status)}</span> : null}
+          {row !== null ? <ReviewStatus status={row.status} /> : null}
         </span>
       </div>
       <p className="review-report-sub">
@@ -1884,7 +1902,7 @@ function PasskeyRow({ passkey, onChanged, onSignOut }) {
     const question = "Remove " + passkey.label + "? Devices signed in with it are signed out.";
     return (
       <li className="settings-row">
-        <strong>{passkey.label}</strong> {passkey.this_device === true && <span className="badge">This device</span>} <code>{passkey.id}</code>{" "}
+        <strong>{passkey.label}</strong> {passkey.this_device === true && <StatusPill label="This device" icon="monitor" tone="neutral" />} <code>{passkey.id}</code>{" "}
         {removing ? (
           <Confirm question={question} answer="Yes, remove" tone="danger" busy={sending} onConfirm={remove} onCancel={close} />
         ) : (
@@ -2347,7 +2365,7 @@ function AuditView({ lines }) {
           <li key={index} className="audit-entry" data-outcome={line.outcome}>
             <div className="audit-head">
               <strong className="audit-action">{line.action}</strong>
-              <span className={"badge " + (line.outcome === "allowed" ? "badge-status-completed" : line.outcome === "refused" ? "badge-status-failed" : "badge-risk-other")}>{line.outcome}</span>
+              {line.outcome === "allowed" ? <StatusPill label={line.outcome} icon="check" tone="status-completed" /> : line.outcome === "refused" ? <StatusPill label={line.outcome} icon="close" tone="status-failed" /> : <StatusPill label={String(line.outcome)} icon="flag" tone="neutral" />}
               <Moment at={auditTime(line)} />
             </div>
             <dl className="audit-meta">
@@ -3802,9 +3820,11 @@ function SettingsLink({ projectId }) {
 }
 
 
+// A feature's state in words ("In progress", not "in_progress"); a state the page does not know is
+// itself in sentence case, neutral.
 function FeatureState({ status }) {
-  const icon = { draft: "doc", pending: "clock", in_progress: "play", completed: "check", abandoned: "close" }[status] ?? "flag";
-  return <span className={"feature-state state-" + (FEATURE_GROUPS.includes(status) ? status : "other")}><Icon name={icon} size={14} />{status}</span>;
+  const known = FEATURE_GROUPS.includes(status);
+  return <StatusPill kind={known ? status : String(status ?? "")} tone={known ? undefined : "neutral"} icon={known ? undefined : "flag"} data-feature-state={known ? status : "other"} />;
 }
 
 // Each feature is a card that opens its own page. Search, state, stage and sort narrow the list;
@@ -4029,23 +4049,15 @@ function QueueMarked({ names, control, onFinished, place = null }) {
   );
 }
 
-const QUEUE_STATE_LABELS = { running: "Running", paused: "Paused", review: "Waiting for review", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting", skipped: "No longer needed" };
-// The badge each state wears (SPEC section 7); a state not named here, or "No longer needed", wears a neutral one.
-const QUEUE_STATE_BADGES = { running: "badge-status-running", paused: "badge-status-waiting", review: "badge-status-waiting", failed: "badge-status-failed", next: "badge-status-queued", queued: "badge-status-queued", waiting: "badge-status-waiting" };
+// The states a queue entry can be in (SPEC section 7); each wears the same status pill as a run in that
+// state, with its own icon, so Next differs from Queued by more than colour. "No longer needed" is neutral.
+const QUEUE_STATES = ["running", "paused", "review", "failed", "next", "queued", "waiting", "skipped"];
 
-// A queue entry's state as a badge that always shows its words; Next also carries the play icon, so it
-// differs from Queued by more than colour, and Paused (an entry whose run is paused) the pause icon. A
-// state the page does not know shows as itself, neutral.
+// A queue entry's state as a status pill that always shows its words. A state the page does not know
+// shows as itself, neutral.
 function QueueStateBadge({ state }) {
-  const tone = Object.hasOwn(QUEUE_STATE_BADGES, state) ? QUEUE_STATE_BADGES[state] : "badge-neutral";
-  const label = Object.hasOwn(QUEUE_STATE_LABELS, state) ? QUEUE_STATE_LABELS[state] : state;
-  return (
-    <span className={"badge queue-state " + tone} data-queue-state={state}>
-      {state === "next" ? <Icon name="play" size={12} /> : null}
-      {state === "paused" ? <Icon name="pause" size={12} /> : null}
-      {label}
-    </span>
-  );
+  const known = QUEUE_STATES.includes(state);
+  return <StatusPill kind={known ? state : undefined} label={known ? undefined : String(state)} className="queue-state" data-queue-state={state} />;
 }
 
 // What a queue entry shows: a feature's start by its name, a queued Resume, Review again or Accept by its label.
@@ -4676,7 +4688,7 @@ function KindFilter({ value, onChange, attribute }) {
 }
 
 function FrontendBadge({ kind }) {
-  return kindOf(kind) === "frontend" ? <span className="pill pill-on" data-frontend-badge>Frontend</span> : null;
+  return kindOf(kind) === "frontend" ? <StatusPill label="Frontend" icon="monitor" tone="status-running" data-frontend-badge /> : null;
 }
 
 function FeatureList({ features, showProject = false, control = null, scope = null }) {
@@ -4841,7 +4853,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
         <select data-feature-status aria-label="State" value={state} onChange={(event) => refilter(() => { setState(event.target.value); setPage(0); })}>
           <option value="all">State: All</option>
           {states.map((name) => (
-            <option key={name} value={name}>{name}</option>
+            <option key={name} value={name}>{pillWord(name, name)}</option>
           ))}
         </select>
         <KindFilter attribute="data-feature-kind" value={kind} onChange={(next) => refilter(() => { setKind(next); setPage(0); })} />
@@ -5358,14 +5370,15 @@ function endingOf(run) {
 function RunState({ state }) {
   const shown = shownState(state);
   const known = Object.hasOwn(RUN_STATES, shown);
-  return <span className={"run-state feature-state run-" + (known ? shown : "unknown")}><Icon name={known ? RUN_ICONS[shown] : "flag"} size={14} />{known ? RUN_STATES[shown] : "Unknown"}</span>;
+  // The run-<state> class is a hook for layout and tests only; the pill's look comes from its tone.
+  return <StatusPill kind={known ? shown : undefined} label={known ? RUN_STATES[shown] : "Unknown"} icon={known ? RUN_ICONS[shown] : "flag"} className={"run-state run-" + (known ? shown : "unknown")} />;
 }
 
 // The pill beside the Orchestrations title: how many of the listed runs are running now.
 function runningBadge(rows) {
   if (!Array.isArray(rows)) return null;
   const running = rows.filter((run) => run.state === "running").length;
-  return <span className="feature-state run-running running-badge" data-running-count><span className="dot" aria-hidden="true" />{running + " running"}</span>;
+  return <StatusPill kind="running" label={running + " running"} className="running-badge" data-running-count />;
 }
 
 // The pill beside the Features title: how many of the ledger's features are in progress, whatever
@@ -5373,7 +5386,7 @@ function runningBadge(rows) {
 function inProgressBadge(rows) {
   if (!Array.isArray(rows)) return null;
   const busy = rows.filter((feature) => feature.status === "in_progress").length;
-  return <span className="feature-state state-in_progress running-badge" data-in-progress-count><span className="dot" aria-hidden="true" />{busy + " in progress"}</span>;
+  return <StatusPill kind="in_progress" label={busy + " in progress"} className="running-badge" data-in-progress-count />;
 }
 
 function runHref(projectId, runId) {
@@ -5487,7 +5500,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                     {endingOf(run) === null ? null : <div className="run-ending muted" data-run-ending>{endingOf(run)}</div>}
                     <EndingFirst run={run} />
                     {run.unattended === true ? <div className="run-ending muted" data-run-unattended>Unattended (queue)</div> : null}
-                    {run.kind === "plan" ? <div className="run-ending feature-state state-draft" data-run-plan>Draft with orq</div> : null}
+                    {run.kind === "plan" ? <StatusPill kind="draft" label="Draft with orq" data-run-plan /> : null}
                     <DirtyCheckout run={run} />
                   </td>
                   <td>{run.stage ? <span className="run-stage">{run.stage}</span> : <span className="muted" aria-label="No stage">–</span>}</td>
@@ -5862,6 +5875,20 @@ function DesignImage({ images, source, path, label, kind, failure = null, onEnla
   );
 }
 
+// The tone and icon of each design verdict, severity and status; one the page does not know is queued-grey.
+const DESIGN_TONES = {
+  pass: ["status-completed", "check"], resolved: ["status-completed", "check"],
+  changes_required: ["status-waiting", "alert"], major: ["status-waiting", "alert"], open: ["status-waiting", "doc"],
+  blocked: ["status-failed", "close"], critical: ["status-failed", "alert"], regressed: ["status-failed", "close"],
+  minor: ["status-queued", "dots"],
+};
+
+function DesignPill({ kind, value, words, ...rest }) {
+  const known = Object.hasOwn(words, value) && words[value];
+  const [tone, icon] = known && Object.hasOwn(DESIGN_TONES, value) ? DESIGN_TONES[value] : ["status-queued", "flag"];
+  return <StatusPill label={known ? words[value] : "Unknown"} icon={icon} tone={tone} className={"design-" + kind + " design-" + kind + "-" + (known ? value : "unknown")} {...rest} />;
+}
+
 function DesignIssue({ issue }) {
   const severity = textOr(issue.severity);
   const status = textOr(issue.status);
@@ -5869,12 +5896,10 @@ function DesignIssue({ issue }) {
     <li className="design-issue" data-design-issue={textOr(issue.id)}>
       <div className="design-issue-head">
         {issue.from_person === true ? (
-          <span className="pill design-from-person" data-from-person="">
-            From you
-          </span>
+          <StatusPill label="From you" icon="pencil" tone="neutral" className="design-from-person" data-from-person="" />
         ) : null}
-        <span className={"pill design-severity design-severity-" + (DESIGN_SEVERITIES[severity] ? severity : "unknown")}>{DESIGN_SEVERITIES[severity] ?? "Unknown"}</span>
-        <span className={"pill design-status design-status-" + (DESIGN_STATUSES[status] ? status : "unknown")}>{DESIGN_STATUSES[status] ?? "Unknown"}</span>
+        <DesignPill kind="severity" value={severity} words={DESIGN_SEVERITIES} />
+        <DesignPill kind="status" value={status} words={DESIGN_STATUSES} />
         {typeof issue.viewport === "string" && issue.viewport !== "" ? <span className="muted">{issue.viewport}</span> : null}
       </div>
       <dl className="design-issue-detail">
@@ -5923,7 +5948,7 @@ function DesignReview({ design, source }) {
     <section className="design-review" aria-label="Design review" data-design-review>
       <div className="design-review-head">
         <h3>Design review</h3>
-        <span className={"pill design-verdict design-verdict-" + (DESIGN_VERDICTS[verdict] ? verdict : "unknown")} data-design-verdict>{DESIGN_VERDICTS[verdict] ?? "Unknown"}</span>
+        <DesignPill kind="verdict" value={verdict} words={DESIGN_VERDICTS} data-design-verdict />
         <span className="muted" data-design-round>{"Round " + round.round + (design.of === null ? "" : " of " + design.of)}</span>
       </div>
       {design.rounds.length < 2 ? null : (
@@ -6424,6 +6449,7 @@ function SetAsideNotes({ events }) {
 }
 
 const CLEANUP_STATES = { done: "Done", pending: "Not done yet", skipped: "Skipped", failed: "Failed" };
+const CLEANUP_PILLS = { done: ["check", "status-completed"], pending: ["clock", "status-pending"], skipped: ["close", "neutral"], failed: ["close", "status-failed"] };
 
 // What is left to tidy once a run's MR merged, on its page: each step with its state and, when it did not
 // finish, why. Clean up runs the steps that are left, after asking; the server takes it only from a passkey
@@ -6443,7 +6469,7 @@ function CleanupCard({ run, control }) {
       <ul className="cleanup-steps">
         {steps.map((step) => (
           <li key={step.step} className={"cleanup-step " + step.state} data-cleanup-step={step.step}>
-            <span>{labels[step.step]}</span> <span className="badge">{CLEANUP_STATES[step.state]}</span>
+            <span>{labels[step.step]}</span> <StatusPill label={CLEANUP_STATES[step.state]} icon={CLEANUP_PILLS[step.state][0]} tone={CLEANUP_PILLS[step.state][1]} />
             {typeof step.reason === "string" && step.reason !== "" ? <span className="muted">{" " + step.reason}</span> : null}
           </li>
         ))}

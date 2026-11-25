@@ -17,7 +17,7 @@ const SELECTORS: [&str; 7] = [
     "tr.feature.swiped",
     "tr.swipe-confirm .confirm [data-confirm]",
     "td.swipe-cell, th.swipe-cell",
-    "tr.feature.swiped > td > .feature-state-cell > .feature-state",
+    "tr.feature.swiped > td > .feature-state-cell > .status-pill[data-feature-state]",
 ];
 
 fn ledger() -> Value {

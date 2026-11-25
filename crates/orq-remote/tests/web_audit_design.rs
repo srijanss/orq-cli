@@ -11,8 +11,8 @@ use std::process::Command;
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const SELECTORS: [&str; 7] = [
     "ul.audit-lines > li.audit-entry .audit-head strong.audit-action",
-    ".audit-head .badge.badge-status-completed",
-    ".audit-head .badge.badge-status-failed",
+    ".audit-head .status-pill.tone-status-completed",
+    ".audit-head .status-pill.tone-status-failed",
     ".audit-head time",
     "dl.audit-meta > div > dt + dd",
     ".audit-entry > .audit-reason",

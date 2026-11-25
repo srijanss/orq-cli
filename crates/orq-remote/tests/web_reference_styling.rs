@@ -37,7 +37,7 @@ fn the_page_uses_the_tokens_and_cards_and_pills_are_rounded() {
     assert!(block(&css, ".sidebar {").contains("var(--sidebar)"));
     let card = block(&css, ".card {");
     assert!(card.contains("var(--surface)") && card.contains("border-radius") && card.contains("var(--border)"), "{card}");
-    assert!(block(&css, ".badge {").contains("border-radius: 999px"));
+    assert!(block(&css, ".status-pill {").contains("border-radius: 999px"));
     assert!(block(&css, ".ticket-id {").contains("monospace"));
 }
 

@@ -73,7 +73,8 @@ fn each_risk_is_a_card_with_its_parts_a_permalink_and_markdown() {
     assert_eq!(count(frame, ".review-section li"), 4, "the card plus the other sections' three lines, and not the risk line: {out}");
     assert!(!texts(frame).iter().any(|t| t == "high src/a.rs:1 first"), "{out}");
     let shown = texts(frame);
-    for expected in ["high", "Open", "bugs", "src/a.rs:7", "Bold", " claim", "code"] {
+    // The severity is a pill in words ("High"), like every other state.
+    for expected in ["High", "Open", "bugs", "src/a.rs:7", "Bold", " claim", "code"] {
         assert!(shown.iter().any(|t| t.contains(expected)), "{expected}: {shown:?}");
     }
     let link = frame["settled"]["links"].as_array().unwrap().iter().find(|l| l["text"].as_str().is_some_and(|t| t.contains("src/a.rs:7"))).unwrap_or_else(|| panic!("{out}"));

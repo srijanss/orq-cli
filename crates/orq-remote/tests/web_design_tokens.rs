@@ -65,10 +65,10 @@ fn every_token_has_a_badge_with_a_label_and_an_icon_that_uses_it() {
         let icon_at = rest.find("icon: \"").unwrap_or_else(|| panic!("{token}: no icon")) + 7;
         let icon = &rest[icon_at..icon_at + rest[icon_at..].find('"').unwrap()];
         assert!(!icon.trim().is_empty(), "{token}: empty icon");
-        let rule = block(&css, &format!(".badge-{token}"));
+        let rule = block(&css, &format!(".status-pill.tone-{token} "));
         assert!(rule.contains(&format!("var(--{token})")) && rule.contains(&format!("var(--{token}-bg)")), "{token}: rule must use its tokens: {rule}");
     }
-    assert!(source.contains("{icon}") && source.contains("{label}"), "a badge renders both its icon and its text");
+    assert!(source.contains("<Icon name={glyph}") && source.contains("{words}"), "a pill renders both its icon and its words");
 }
 
 /// Renders the given kinds with the real component; None when node or the web dependencies are missing.
@@ -92,9 +92,9 @@ fn each_badge_renders_its_icon_hidden_from_readers_its_text_and_its_class() {
         let entry = &out["html"][token];
         assert_eq!(entry["ok"], true, "{token}: {entry}");
         let html = entry["html"].as_str().unwrap();
-        assert!(html.contains(&format!("class=\"badge badge-{token}\"")), "{token}: {html}");
-        assert!(html.contains("<span aria-hidden=\"true\">") && !html.contains("<span aria-hidden=\"true\"></span>"), "{token}: {html}");
-        let words = html.split("</span><span>").nth(1).unwrap_or_else(|| panic!("{token}: the words follow the icon: {html}"));
+        assert!(html.contains(&format!("class=\"status-pill tone-{token}\"")), "{token}: {html}");
+        assert!(html.starts_with("<span") && html.contains("><svg class=\"icon\"") && html.contains("aria-hidden=\"true\""), "{token}: the icon comes first, hidden from readers: {html}");
+        let words = html.split("</svg><span>").nth(1).unwrap_or_else(|| panic!("{token}: the words follow the icon: {html}"));
         assert!(words.starts_with(|c: char| c.is_alphabetic()), "{token}: the words follow the icon: {html}");
     }
 }
@@ -107,6 +107,41 @@ fn an_unknown_or_omitted_kind_renders_a_plain_badge_instead_of_throwing() {
         let entry = &out["html"][key];
         assert_eq!(entry["ok"], true, "{key}: {entry}");
         let html = entry["html"].as_str().unwrap();
-        assert!(html.contains("class=\"badge\"") && html.contains("Unknown"), "{key}: {html}");
+        assert!(html.contains("class=\"status-pill tone-neutral\"") && html.contains("Unknown"), "{key}: {html}");
+    }
+}
+
+/// The words between the pill's icon and its end.
+fn pill_words(html: &str) -> &str {
+    let words = html.split("</svg><span>").nth(1).unwrap_or_else(|| panic!("the words follow the icon: {html}"));
+    &words[..words.find("</span>").unwrap()]
+}
+
+#[test]
+fn every_status_pill_kind_says_words_after_an_icon_never_its_enum_name() {
+    let Some(out) = render(&[]) else { return };
+    let kinds = out["pillKinds"].as_array().unwrap();
+    assert!(kinds.len() >= 20, "{out}");
+    for kind in kinds.iter().map(|k| k.as_str().unwrap()) {
+        let entry = &out["pills"][kind];
+        assert_eq!(entry["ok"], true, "{kind}: {entry}");
+        let html = entry["html"].as_str().unwrap();
+        assert!(html.starts_with("<span class=\"status-pill tone-"), "{kind}: {html}");
+        let words = pill_words(html);
+        assert!(!words.contains('_') && words.starts_with(|c: char| c.is_uppercase()), "{kind}: `{words}` is words, not an enum name");
+    }
+    assert_eq!(pill_words(out["pills"]["in_progress"]["html"].as_str().unwrap()), "In progress");
+}
+
+#[test]
+fn a_status_pill_kind_it_does_not_know_is_neutral_and_says_the_word_in_sentence_case() {
+    let kinds = [serde_json::json!("in_review"), serde_json::json!(null), serde_json::json!("constructor")];
+    let Some(out) = render(&kinds) else { return };
+    for (key, words) in [("in_review", "In review"), ("null", "Unknown"), ("constructor", "Constructor")] {
+        let entry = &out["pills"][key];
+        assert_eq!(entry["ok"], true, "{key}: {entry}");
+        let html = entry["html"].as_str().unwrap();
+        assert!(html.contains("class=\"status-pill tone-neutral\""), "{key}: {html}");
+        assert_eq!(pill_words(html), words, "{key}: {html}");
     }
 }

@@ -1,5 +1,5 @@
 //! The Queue pages follow the design system: each entry is a row with its position, its feature name, its
-//! state as a `.badge` (with its text, and Next with an icon so it differs from Queued by more than colour)
+//! state as a `.status-pill` (with its text, and Next with the play icon so it differs from Queued by more than colour)
 //! and its reason under the name; a paused queue shows a banner with the pause icon, "Paused" and the
 //! reason, and Resume. Rendered in jsdom for the markup and measured in a real headless Chromium for the
 //! layout, at desktop and phone widths, and in both themes for the badge colours.
@@ -62,25 +62,30 @@ fn project_json(id: &str) -> Value {
     json!({"id": id, "name": id, "available": true, "features": 6, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24, "queue": null})
 }
 
-const BADGES: [(&str, &str); 5] = [("running", "badge-status-running"), ("failed", "badge-status-failed"), ("waiting", "badge-status-waiting"), ("next", "badge-status-queued"), ("queued", "badge-status-queued")];
+const BADGES: [(&str, &str); 5] = [("running", "tone-status-running"), ("failed", "tone-status-failed"), ("waiting", "tone-status-waiting"), ("next", "tone-status-queued"), ("queued", "tone-status-queued")];
+
+/// The play icon's path: Next wears it, Queued does not, so the two differ by more than colour.
+const PLAY: &str = "path[d=\"M7 4v16l13-8L7 4Z\"]";
 
 fn badge_selectors(scope: &str) -> Vec<String> {
-    let mut all: Vec<String> = BADGES.iter().map(|(state, class)| format!("{scope} [data-queue-state=\"{state}\"].badge.{class}")).collect();
-    all.push(format!("{scope} [data-queue-state=\"next\"] svg"));
-    all.push(format!("{scope} [data-queue-state=\"queued\"] svg"));
-    all.push(format!("{scope} [data-queue-state=\"parked\"].badge"));
-    all.push(format!("{scope} [data-queue-state=\"parked\"][class*=\"badge-status\"]"));
+    let mut all: Vec<String> = BADGES.iter().map(|(state, class)| format!("{scope} [data-queue-state=\"{state}\"].status-pill.{class}")).collect();
+    all.push(format!("{scope} [data-queue-state=\"next\"] > svg:first-child {PLAY}"));
+    all.push(format!("{scope} [data-queue-state=\"queued\"] > svg:first-child"));
+    all.push(format!("{scope} [data-queue-state=\"queued\"] {PLAY}"));
+    all.push(format!("{scope} [data-queue-state=\"parked\"].status-pill"));
+    all.push(format!("{scope} [data-queue-state=\"parked\"].tone-neutral"));
     all
 }
 
 fn assert_badges(out: &Value, scope: &str) {
     for (state, class) in BADGES {
-        assert_eq!(count(out, &format!("{scope} [data-queue-state=\"{state}\"].badge.{class}")), 1, "{state} is a {class} badge: {out}");
+        assert_eq!(count(out, &format!("{scope} [data-queue-state=\"{state}\"].status-pill.{class}")), 1, "{state} is a {class} pill: {out}");
     }
-    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"next\"] svg")), 1, "Next carries an icon: {out}");
-    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"queued\"] svg")), 0, "Queued has no icon, so the two differ by more than colour: {out}");
-    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"parked\"].badge")), 1, "an unknown state is still a badge: {out}");
-    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"parked\"][class*=\"badge-status\"]")), 0, "an unknown state's badge is neutral: {out}");
+    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"next\"] > svg:first-child {PLAY}")), 1, "Next carries the play icon: {out}");
+    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"queued\"] > svg:first-child")), 1, "Queued carries an icon too: {out}");
+    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"queued\"] {PLAY}")), 0, "but not Next's, so the two differ by more than colour: {out}");
+    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"parked\"].status-pill")), 1, "an unknown state is still a pill: {out}");
+    assert_eq!(count(out, &format!("{scope} [data-queue-state=\"parked\"].tone-neutral")), 1, "an unknown state's pill is neutral: {out}");
     let texts = texts(out);
     for shown in ["Running", "Failed", "Waiting", "Next", "Queued", "parked"] {
         assert!(texts.iter().any(|t| t == shown), "the badge's text {shown} is shown: {texts:?}");
@@ -135,7 +140,7 @@ const TIMELINE: [(&str, &str, &str, Option<&str>); 6] =
 
 fn timeline_selectors(scope: &str) -> Vec<String> {
     let mut all: Vec<String> = TIMELINE.iter().map(|(feature, state, _, _)| format!("{scope} [data-queue-entry=\"{feature}\"] > .queue-marker[data-queue-marker=\"{state}\"]:first-child")).collect();
-    all.push(format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-feature:first-child + .queue-entry-meta > .badge[data-queue-state]:first-child"));
+    all.push(format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-feature:first-child + .queue-entry-meta > .status-pill[data-queue-state]:first-child"));
     all.push(format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-entry-meta + .queue-reason"));
     all
 }
@@ -144,7 +149,7 @@ fn assert_timeline(out: &Value, scope: &str) {
     for (feature, state, _, _) in TIMELINE {
         assert_eq!(count(out, &format!("{scope} [data-queue-entry=\"{feature}\"] > .queue-marker[data-queue-marker=\"{state}\"]:first-child")), 1, "{feature} starts with a marker of its state {state}: {out}");
     }
-    assert_eq!(count(out, &format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-feature:first-child + .queue-entry-meta > .badge[data-queue-state]:first-child")), 6, "each badge starts the line after the name: {out}");
+    assert_eq!(count(out, &format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-feature:first-child + .queue-entry-meta > .status-pill[data-queue-state]:first-child")), 6, "each badge starts the line after the name: {out}");
     assert_eq!(count(out, &format!("{scope} [data-queue-entry] > .queue-entry-text > .queue-entry-meta + .queue-reason")), 1, "the reason follows the badge's line: {out}");
     let texts = texts(out);
     for (at, (feature, _, label, reason)) in TIMELINE.iter().enumerate() {
@@ -347,7 +352,7 @@ const GROUP: &str = "[data-queue-group=\"demo\"]";
 const GROUP_HEAD: &str = "[data-queue-group=\"demo\"] > .queue-group-head";
 const GROUP_ROWS: &str = "[data-queue-group=\"demo\"] [data-queue-entry]";
 const GROUP_NAMES: &str = "[data-queue-group=\"demo\"] [data-queue-entry] .queue-feature";
-const GROUP_BADGES: &str = "[data-queue-group=\"demo\"] [data-queue-entry] .badge[data-queue-state]";
+const GROUP_BADGES: &str = "[data-queue-group=\"demo\"] [data-queue-entry] .status-pill[data-queue-state]";
 const GROUP_BANNER: &str = "[data-queue-group=\"demo\"] > [data-queue-paused]";
 
 #[test]
@@ -400,7 +405,7 @@ fn the_rail_above_the_running_entry_is_marked_passed_and_the_last_entry_has_no_r
 }
 
 const RAILS: &str = "[data-queue-entry] > .queue-rail";
-const BADGE_LINES: &str = "[data-queue-entry] .queue-entry-meta > .badge";
+const BADGE_LINES: &str = "[data-queue-entry] .queue-entry-meta > .status-pill";
 const TEXT_COLUMNS: &str = "[data-queue-entry] > .queue-entry-text";
 
 fn centre_x(rect: Rect) -> i64 {

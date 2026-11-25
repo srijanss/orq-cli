@@ -102,7 +102,9 @@ fn the_feature_count_sits_in_the_column_header_and_follows_search_and_filter() {
     let Some(out) = page("/projects/alpha/features", json!([ledger, projects()]), steps) else { return };
     let count_at = |i: usize| shown(&out["frames"][i]).iter().position(|t| t == "Feature ").map(|p| shown(&out["frames"][i])[p + 1].clone());
     let texts = shown(&out["frames"][1]);
-    assert!(!texts.iter().any(|t| t.trim() == "In progress" || t.trim() == "Draft"), "no count pills above the search: {texts:?}");
+    // Each row's state pill and the state filter's option say the word; no count pill above the search adds another.
+    let said = |word: &str| texts.iter().filter(|t| t.trim() == word).count();
+    assert_eq!((said("In progress"), said("Draft")), (2 + 1, 1 + 1), "no count pills above the search: {texts:?}");
     assert_eq!(count_at(1).as_deref(), Some("4"), "{texts:?}");
     assert_eq!(count_at(2).as_deref(), Some("2"), "{out}");
     assert_eq!(count_at(3).as_deref(), Some("1"), "{out}");
@@ -155,7 +157,8 @@ fn features_are_searched_by_name_and_filtered_by_state_which_offers_every_state(
     assert_eq!(names_in(&out["frames"][5]).len(), 3, "{out}");
     assert!(shown(&out["frames"][6]).iter().any(|t| t == "No features match the filters."), "{out}");
     let texts = shown(&out["frames"][1]);
-    for option in ["draft", "pending", "in_progress", "completed", "abandoned"] {
+    // The state filter offers every state in words, as its pill says it.
+    for option in ["Draft", "Pending", "In progress", "Completed", "Abandoned"] {
         assert!(texts.iter().any(|t| t == option), "{option} missing: {texts:?}");
     }
 }
