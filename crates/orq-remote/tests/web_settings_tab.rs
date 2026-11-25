@@ -57,7 +57,7 @@ fn a_setting_with_no_value_shows_a_dash_and_says_it_is_not_set() {
     assert!(t.iter().any(|x| x == "—"), "{t:?}");
     assert!(t.iter().any(|x| x.contains("not set")), "{t:?}");
     let Some(out) = run("/settings", json!([{"status": 200, "json": {"settings": {"implementer": null, "reviewer": null, "models": []}}}]), json!([{"submit": TOKEN}])) else { return };
-    assert_eq!(shown(&out["frames"][1]).iter().filter(|x| x.contains("not set")).count(), 6, "every field of both agents says so: {out}");
+    assert_eq!(shown(&out["frames"][1]).iter().filter(|x| x.contains("not set")).count(), 9, "every field of the Ask orq agent, the implementer and the reviewer says so: {out}");
 }
 
 #[test]

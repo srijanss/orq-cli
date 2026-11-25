@@ -340,7 +340,7 @@ a, button { -webkit-tap-highlight-color: transparent; }
 .ask-item.ask-user { align-self: flex-end; max-width: 85%; padding: 0.5rem 0.75rem; border-radius: 0.75rem; background: var(--status-running-bg); white-space: pre-wrap; }
 .ask-item pre, .ask-tool-body { max-width: 100%; overflow-x: auto; }
 .ask-tool-body { max-height: 16rem; overflow-y: auto; margin: 0.25rem 0 0; font-size: 0.8125rem; white-space: pre; }
-.ask-refused { border-left: 3px solid var(--status-failed, #c0392b); padding: 0.375rem 0.5rem; background: var(--status-failed-bg, transparent); border-radius: 0.375rem; display: flex; flex-direction: column; gap: 0.375rem; }
+.ask-refused { border-left: 3px solid var(--status-failed); padding: 0.375rem 0.5rem; background: var(--status-failed-bg); border-radius: 0.375rem; display: flex; flex-direction: column; gap: 0.375rem; }
 .ask-refused-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .ask-turn-end, .ask-working { font-size: 0.8125rem; color: var(--text-muted); }
 .ask-working { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }

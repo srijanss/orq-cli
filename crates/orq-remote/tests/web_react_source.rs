@@ -135,10 +135,22 @@ fn the_source_never_stores_anything_or_writes_html_from_text() {
             }
             assert!(!text.contains(banned), "{} uses {banned}", path.display());
         }
-        // Only the theme switch and the Dashboard's pins keep anything on the device: the theme's one choice
-        // under "orq.theme" and the pinned project ids under "orq.pinned".
+        // Only the theme switch, the Dashboard's pins and Ask orq's project picker keep anything on the device:
+        // the theme's one choice under "orq.theme", the pinned project ids under "orq.pinned" and the project
+        // picked outside a project under "orq.ask.project".
         let is_theme = path.file_name().map_or(false, |n| n == "theme.jsx");
         let is_pins = path.file_name().map_or(false, |n| n == "pins.js");
+        let text = if name == "main.jsx" {
+            assert!(text.contains("const ASK_PROJECT_KEY = \"orq.ask.project\";"), "Ask orq keeps its project under its own key");
+            let mut masked = text.clone();
+            for line in ["localStorage.getItem(ASK_PROJECT_KEY)", "localStorage.removeItem(ASK_PROJECT_KEY)", "localStorage.setItem(ASK_PROJECT_KEY, next)"] {
+                assert_eq!(masked.matches(line).count(), 1, "the picked project is kept once: {line}");
+                masked = masked.replace(line, "askProjectStore");
+            }
+            masked
+        } else {
+            text
+        };
         assert!(is_theme || is_pins || !text.contains("localStorage"), "{} uses localStorage", path.display());
         if is_theme {
             assert_eq!(text.matches("localStorage.").count(), 3, "theme.jsx only reads, writes and clears its one key");
