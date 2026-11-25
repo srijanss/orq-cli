@@ -1762,7 +1762,7 @@ function isAgent(agent) {
 
 function parseSettings(data) {
   const settings = data && data.settings;
-  const ok = settings && typeof settings === "object" && isAgent(settings.implementer) && isAgent(settings.reviewer) && Array.isArray(settings.models) && settings.models.every((model) => model !== null && typeof model === "object" && typeof model.name === "string" && isAgent(model));
+  const ok = settings && typeof settings === "object" && isAgent(settings.implementer) && isAgent(settings.reviewer) && isAgent(settings.ask_orq_agent ?? null) && Array.isArray(settings.models) && settings.models.every((model) => model !== null && typeof model === "object" && typeof model.name === "string" && isAgent(model));
   if (!(ok && settings.implementer !== undefined && settings.reviewer !== undefined)) return null;
   return { ...settings, server: parseServer(data.server) };
 }
@@ -2542,7 +2542,7 @@ function sentChoice(options, choice) {
 
 // Edit under an Implementer or Reviewer card: reads the options, offers a harness and a model from
 // them, and Save asks before it sends the choice with the version the settings were read at.
-function AgentEditor({ title, role, agent, version, token, onSignedOut, onChanged }) {
+function AgentEditor({ title, role, agent, version, token, onSignedOut, onChanged, harnesses = null, name = role }) {
   const [phase, setPhase] = useState("idle");
   const [options, setOptions] = useState([]);
   const [choice, setChoice] = useState(null);
@@ -2566,7 +2566,8 @@ function AgentEditor({ title, role, agent, version, token, onSignedOut, onChange
         onSignedOut();
         return;
       }
-      const listed = response.ok ? parseOptions(await response.json()) : null;
+      const parsed = response.ok ? parseOptions(await response.json()) : null;
+      const listed = parsed === null || harnesses === null ? parsed : parsed.filter((option) => harnesses.includes(option.harness));
       if (listed === null || listed.length === 0) {
         setNote("There are no harnesses to choose from.");
         setPhase("idle");
@@ -2613,7 +2614,7 @@ function AgentEditor({ title, role, agent, version, token, onSignedOut, onChange
   };
   const current = options.find((option) => choice !== null && option.harness === choice.harness);
   const levels = effortsOf(current);
-  const question = choice === null ? "" : "Save " + role + ": " + choice.harness + " " + choice.model + (levels.length > 0 ? ", effort " + (choice.effort || "not set") : "") + "?";
+  const question = choice === null ? "" : "Save " + name + ": " + choice.harness + " " + choice.model + (levels.length > 0 ? ", effort " + (choice.effort || "not set") : "") + "?";
   const editing = phase === "editing" || phase === "asking";
   const fields = editing ? {
     harness: <select data-agent-harness aria-label={title + " harness"} value={choice.harness} disabled={phase !== "editing"} onChange={(event) => pickHarness(event.target.value)}>{options.map((option) => <option key={option.harness} value={option.harness}>{option.harness}</option>)}</select>,
@@ -3031,6 +3032,17 @@ function SettingsView({ settings, reloads, token, onSignedOut, onChanged }) {
       </section>
       <PushCard key={"push " + reloads} token={token} />
       {settings.server !== null ? <ServerCard server={settings.server} on={on} token={token} onSignedOut={onSignedOut} onChanged={onChanged} /> : null}
+      {/* The agent Ask orq's chats run on, for every project: a Claude model only. */}
+      <section className="card settings-card" data-ask-orq-agent>
+        {on ? (
+          <AgentEditor key={settings.version} title="Ask orq agent" role="ask_orq_agent" name="the Ask orq agent" harnesses={["claude"]} agent={settings.ask_orq_agent ?? null} version={settings.version} token={token} onSignedOut={onSignedOut} onChanged={onChanged} />
+        ) : (
+          <>
+            <SettingsHead icon="cpu">Ask orq agent</SettingsHead>
+            <AgentFields agent={settings.ask_orq_agent ?? null} />
+          </>
+        )}
+      </section>
       <div className="settings-group-head" data-machine-defaults>
         <h2>Machine defaults</h2>
         <p>Each project can override these on its own Settings page.</p>
@@ -8106,9 +8118,10 @@ function useAskAddress(path) {
 function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }) {
   const [about, setAbout] = useState(null);
   const [drafting, setDrafting] = useState(false);
-  const [picked, pick] = useAskProject(projectId === null, token);
+  const [picked, pick] = useAskProject(projectId === null && token === SESSION, token);
   const project = projectId !== null ? projectId : picked.id;
-  const open = (chat !== "" || drafting) && project !== null;
+  const gate = askGate(useAskRead(API_SETTINGS, token, onSignedOut, 0).data);
+  const open = (chat !== "" || drafting) && project !== null && token === SESSION;
   const openChat = (id) => {
     setDrafting(false);
     onChat(id);
@@ -8129,16 +8142,38 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
           <Icon name="close" size={20} />
         </button>
       </div>
-      {projectId === null && !open ? <AskProjectPicker picked={picked} onPick={pick} /> : null}
-      {project === null ? null : drafting ? (
-        <AskDraft token={token} onSignedOut={onSignedOut} projectId={project} context={projectId === null ? { kind: "project" } : pageContext(path)} onAbout={setAbout} onOpened={openChat} />
+      {token !== SESSION ? (
+        // A chat's replies can quote the project's files, so only a passkey sign-in reads them.
+        <p className="ask-reason" data-ask-passkey>Ask orq needs a passkey sign-in. Sign in with your passkey on this device to read and send chats.</p>
+      ) : null}
+      {token === SESSION && projectId === null && !open ? <AskProjectPicker picked={picked} onPick={pick} /> : null}
+      {project === null || token !== SESSION ? null : drafting ? (
+        <AskDraft token={token} onSignedOut={onSignedOut} projectId={project} context={projectId === null ? { kind: "project" } : pageContext(path)} onAbout={setAbout} onOpened={openChat} gate={gate} />
       ) : open ? (
-        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} />
+        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} gate={gate} />
       ) : (
-        <AskChatList key={project} token={token} onSignedOut={onSignedOut} projectId={project} onOpen={openChat} onNew={() => setDrafting(true)} />
+        <AskChatList key={project} token={token} onSignedOut={onSignedOut} projectId={project} onOpen={openChat} onNew={() => setDrafting(true)} gate={gate} />
       )}
     </aside>
   );
+}
+
+// Why nothing can be asked here, in place of New chat and the message box, or null: no Ask orq agent set.
+function askGate(read) {
+  const settings = read !== null && read.settings !== null && typeof read.settings === "object" ? read.settings : null;
+  if (settings !== null && settings.remote_actions !== true) {
+    return <p className="ask-reason" data-ask-remote-off>Remote actions are off in Settings, so orq can't be asked from here.</p>;
+  }
+  if (settings !== null && settings.ask_orq_agent === null) {
+    return (
+      <p className="ask-reason" data-ask-no-agent>
+        Set the Ask orq agent in{" "}
+        <a href="/settings" data-ask-settings onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate("/settings"); } }}>Settings</a>
+        {" "}first.
+      </p>
+    );
+  }
+  return null;
 }
 
 // Outside a project the panel asks which one, and remembers the answer in this browser.
@@ -8247,7 +8282,7 @@ function suggestedMessage(context, state) {
 }
 
 // A chat not made yet: its context, a suggested first message, and Send, which makes the chat and opens it.
-function AskDraft({ token, onSignedOut, projectId, context, onAbout, onOpened }) {
+function AskDraft({ token, onSignedOut, projectId, context, onAbout, onOpened, gate = null }) {
   const runPath = context.kind === "run" ? "/api/projects/" + encodeURIComponent(projectId) + "/runs/" + encodeURIComponent(context.target) : null;
   const { data } = useAskRead(runPath, token, onSignedOut, 0);
   const run = data !== null && data.run !== null && typeof data.run === "object" ? data.run : null;
@@ -8301,7 +8336,7 @@ function AskDraft({ token, onSignedOut, projectId, context, onAbout, onOpened })
   return (
     <>
       <div className="ask-body" data-ask-draft />
-      <AskComposer key={suggestion} initial={suggestion} sending={sending} note={note} onSend={send} />
+      {gate !== null ? gate : <AskComposer key={suggestion} initial={suggestion} sending={sending} note={note} onSend={send} />}
     </>
   );
 }
@@ -8355,15 +8390,17 @@ function useAskRead(path, token, onSignedOut, key) {
   return state;
 }
 
-function AskChatList({ token, onSignedOut, projectId, onOpen, onNew }) {
+function AskChatList({ token, onSignedOut, projectId, onOpen, onNew, gate = null }) {
   const { data, failure } = useAskRead(chatsPath(projectId), token, onSignedOut, 0);
   const chats = data !== null && Array.isArray(data.chats) ? data.chats.filter(isChat) : null;
   return (
     <div className="ask-body">
-      <button type="button" className="primary-button ask-new-chat" data-ask-new onClick={onNew}>
-        <Icon name="plus" size={16} />
-        New chat
-      </button>
+      {gate !== null ? gate : (
+        <button type="button" className="primary-button ask-new-chat" data-ask-new onClick={onNew}>
+          <Icon name="plus" size={16} />
+          New chat
+        </button>
+      )}
       {failure !== null ? <p role="alert" className="ask-reason">{failure}</p> : null}
       {chats === null ? (failure === null ? <p className="muted" role="status">Loading the chats…</p> : null) : chats.length === 0 ? (
         <p className="muted">No chats yet.</p>
@@ -8498,7 +8535,7 @@ function withTurnEnds(items) {
   return drawn;
 }
 
-function AskChat({ token, onSignedOut, projectId, chatId, onAbout }) {
+function AskChat({ token, onSignedOut, projectId, chatId, onAbout, gate = null }) {
   const path = chatsPath(projectId, "/" + encodeURIComponent(chatId));
   const [reads, setReads] = useState(0);
   const { data, failure } = useAskRead(path, token, onSignedOut, reads);
@@ -8610,24 +8647,39 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout }) {
         ) : null}
         {stopNote !== "" ? <p role="alert" className="ask-reason">{stopNote}</p> : null}
       </div>
-      <AskComposer sending={sending} note={sendNote} onSend={send} busy={running ? "orq is working on a reply. Wait for it, or stop it." : null} />
+      {gate !== null ? gate : <AskComposer sending={sending} note={sendNote} onSend={send} busy={running ? "orq is working on a reply. Wait for it, or stop it." : null} />}
     </>
   );
 }
 
 // The message box: a text area and Send. `busy` is why it can't be used now, or null.
+// On desktop Enter sends and Shift+Enter is a new line; on a phone Enter is a new line and the button sends.
+// The box grows with its text up to 8 lines (its max-height), then scrolls.
 function AskComposer({ sending, note, onSend, busy = null, initial = "" }) {
   const [text, setText] = useState(initial);
+  const phone = usePhone();
+  const box = useRef(null);
+  useLayoutEffect(() => {
+    const area = box.current;
+    if (area === null) return;
+    area.style.height = "auto";
+    area.style.height = area.scrollHeight + (area.offsetHeight - area.clientHeight) + "px";
+  }, [text]);
   const submit = async () => {
-    if (text.trim() === "" || sending) return;
+    if (text.trim() === "" || sending || busy !== null) return;
     if (await onSend(text)) setText("");
+  };
+  const key = (event) => {
+    if (event.key !== "Enter" || event.shiftKey || phone || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    submit();
   };
   return (
     <div className="ask-composer-wrap">
       {note !== "" ? <p role="alert" className="ask-reason">{note}</p> : null}
       {busy !== null ? <p className="ask-reason" data-ask-box-reason>{busy}</p> : null}
       <form className="ask-composer" data-ask-composer onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <textarea data-ask-input aria-label="Message orq" rows={1} value={text} disabled={sending || busy !== null} onChange={(event) => setText(event.target.value)} />
+        <textarea ref={box} data-ask-input aria-label="Message orq" rows={1} value={text} disabled={sending || busy !== null} onKeyDown={key} onChange={(event) => setText(event.target.value)} />
         <button type="submit" className="primary-button" data-ask-send disabled={sending || busy !== null || text.trim() === ""}>Send</button>
       </form>
     </div>

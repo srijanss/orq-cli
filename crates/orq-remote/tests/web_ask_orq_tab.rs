@@ -365,6 +365,134 @@ fn outside_a_project_the_panel_asks_which_project_and_remembers_the_last_one() {
     assert_eq!(eval(&again, "draft")["about"], "About beta", "{again}");
 }
 
+#[test]
+fn the_panel_stays_open_with_its_chat_across_pages_and_the_page_beside_it_still_scrolls() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let routes = vec![route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))])];
+    // A long page, scrolled while the panel is open: the page moves, the panel stays in view.
+    let scroll = "var tall = document.createElement('div'); tall.style.height = '3000px'; document.querySelector('main.content').appendChild(tall); window.scrollTo(0, 600); var p = document.querySelector('[data-ask-panel]').getBoundingClientRect(); return {y: Math.round(window.scrollY), top: Math.round(p.top), bottom: Math.round(p.bottom)};";
+    let steps = vec![
+        json!({"wait": "[data-ask-item=assistant]"}),
+        json!({"click": ".sidebar nav a[href='/projects/alpha/queue']"}),
+        json!({"wait": "main.content h1", "text": "Queue"}),
+        json!({"eval": "after", "js": "var a = document.querySelector('[data-ask-item=assistant]'); return {reply: a ? a.textContent : null, title: document.querySelector('main.content h1').textContent};"}),
+        json!({"eval": "scroll", "js": scroll}),
+    ];
+    let Some(result) = open(1440, &at, routes, true, steps) else { return };
+    assert_eq!(eval(&result, "address"), &json!(format!("/projects/alpha/queue?ask={CHAT}")), "the address keeps the open chat: {result}");
+    let after = eval(&result, "after");
+    assert_eq!(after["title"], "Queue", "the page beside the panel works: {result}");
+    assert!(after["reply"].as_str().is_some_and(|r| r.contains("failed")), "the chat stays open: {result}");
+    assert_eq!(sent(&result, "GET", CHAT_PATH).len(), 1, "without reading the chat again: {result}");
+    let scroll = eval(&result, "scroll");
+    assert_eq!((scroll["y"].as_i64(), scroll["top"].as_i64(), scroll["bottom"].as_i64()), (Some(600), Some(0), Some(800)), "the page scrolls and the panel stays: {scroll}");
+}
+
+#[test]
+fn with_no_ask_orq_agent_the_panel_points_to_settings_and_settings_saves_the_agent() {
+    let none = route("GET", "/api/settings", vec![reply(settings(false, true))]);
+    let reason = "var r = document.querySelector('[data-ask-no-agent]'); var a = document.querySelector('[data-ask-settings]'); return {reason: r ? r.textContent : null, href: a ? a.getAttribute('href') : null, new: document.querySelectorAll('[data-ask-new]').length, box: document.querySelectorAll('[data-ask-composer]').length};";
+    let Some(listed) = open(1440, "/projects/alpha/reviews", vec![none.clone()], true, vec![json!({"click": ASK}), json!({"wait": "[data-ask-settings]"}), json!({"eval": "reason", "js": reason})]) else { return };
+    let shown = eval(&listed, "reason");
+    assert!(shown["reason"].as_str().is_some_and(|r| r.contains("Set the Ask orq agent in Settings")), "{listed}");
+    assert_eq!((&shown["href"], shown["new"].as_i64()), (&json!("/settings"), Some(0)), "a link instead of New chat: {listed}");
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let chat_routes = vec![none.clone(), route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))])];
+    let Some(opened) = open(1440, &at, chat_routes, true, vec![json!({"wait": "[data-ask-item=assistant]"}), json!({"wait": "[data-ask-settings]"}), json!({"eval": "reason", "js": reason})]) else { return };
+    assert_eq!(eval(&opened, "reason")["box"], 0, "the reason instead of the box: {opened}");
+    let Some(followed) = open(1440, "/projects/alpha/reviews", vec![none.clone()], true, vec![json!({"click": ASK}), json!({"click": "[data-ask-settings]"}), json!({"wait": "[data-agent-edit=ask_orq_agent]"})]) else { return };
+    assert_eq!(eval(&followed, "address"), "/settings?ask=", "{followed}");
+
+    let options = route("GET", "/api/settings/options", vec![reply(json!({"options": [{"harness": "claude", "models": ["claude-opus-5-5", "claude-sonnet-5-5"], "efforts": ["low", "high"]}, {"harness": "codex", "models": ["gpt-6.1"]}]}))]);
+    let saved = route("POST", "/api/settings/agents", vec![reply(settings(true, true))]);
+    let harnesses = "return Array.from(document.querySelectorAll('[data-agent-harness] option')).map(function (o) { return o.value; });";
+    let steps = vec![json!({"click": "[data-agent-edit=ask_orq_agent]"}), json!({"wait": "[data-agent-harness]"}), json!({"click": "[data-agent-save]"}), json!({"click": "[data-confirm]"}), json!({"wait": "[data-agent-edit=ask_orq_agent]"})];
+    let mut after = settings(true, true);
+    after["settings"]["version"] = json!("v-2");
+    let reread = route("GET", "/api/settings", vec![reply(settings(false, true)), reply(after)]);
+    let Some(set) = open(1440, "/settings", vec![reread, options, saved], true, steps) else { return };
+    assert!(text(&set).contains("Ask orq agent"), "{set}");
+    assert_eq!(sent(&set, "POST", "/api/settings/agents"), vec![json!({"ask_orq_agent": {"harness": "claude", "model": "claude-opus-5-5", "effort": null}, "version": "v-1"})], "{set}");
+    let steps = vec![json!({"click": "[data-agent-edit=ask_orq_agent]"}), json!({"wait": "[data-agent-harness]"}), json!({"eval": "harnesses", "js": harnesses})];
+    let Some(picking) = open(1440, "/settings", vec![route("GET", "/api/settings", vec![reply(settings(false, true))]), route("GET", "/api/settings/options", vec![reply(json!({"options": [{"harness": "claude", "models": ["claude-opus-5-5"]}, {"harness": "codex", "models": ["gpt-6.1"]}]}))])], true, steps) else { return };
+    assert_eq!(eval(&picking, "harnesses"), &json!(["claude"]), "only Claude models: {picking}");
+}
+
+#[test]
+fn a_token_only_session_sees_the_passkey_reason_and_with_remote_actions_off_the_box_is_the_reason() {
+    let reason = "var p = document.querySelector('[data-ask-passkey]'); var r = document.querySelector('[data-ask-remote-off]'); return {passkey: p ? p.textContent : null, off: r ? r.textContent : null, box: document.querySelectorAll('[data-ask-composer]').length, new: document.querySelectorAll('[data-ask-new]').length};";
+    let Some(token) = open(1440, "/projects/alpha/reviews", vec![], false, vec![json!({"click": ASK}), json!({"wait": "[data-ask-passkey]"}), json!({"eval": "reason", "js": reason})]) else { return };
+    let shown = eval(&token, "reason");
+    assert!(shown["passkey"].as_str().is_some_and(|p| p.contains("passkey")), "{token}");
+    assert_eq!((shown["box"].as_i64(), shown["new"].as_i64()), (Some(0), Some(0)), "{token}");
+    assert!(sent(&token, "GET", "/api/projects/alpha/chats").is_empty(), "the chats are not read without a passkey session: {token}");
+
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let routes = vec![route("GET", "/api/settings", vec![reply(settings(true, false))]), route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))])];
+    let Some(off) = open(1440, &at, routes, true, vec![json!({"wait": "[data-ask-item=assistant]"}), json!({"wait": "[data-ask-remote-off]"}), json!({"eval": "reason", "js": reason})]) else { return };
+    let shown = eval(&off, "reason");
+    assert!(shown["off"].as_str().is_some_and(|r| r.contains("Remote actions are off")), "{off}");
+    assert_eq!(shown["box"], 0, "the reason instead of the box: {off}");
+}
+
+#[test]
+fn at_390_and_1440_px_a_300_character_line_in_a_reply_and_a_code_block_never_scrolls_the_page_sideways() {
+    let long = "x".repeat(300);
+    let items = vec![
+        json!({"type": "user", "turn": 1, "text": long.clone(), "state": "done", "reason": null}),
+        json!({"type": "assistant", "text": format!("{long}\n\n```\n{long}\n```")}),
+        json!({"type": "result", "cost": 0.01, "duration_ms": 1000, "error": null}),
+    ];
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let routes = vec![route("GET", CHAT_PATH, vec![reply(conversation(items, vec![], false))])];
+    let fits = "var pre = document.querySelector('[data-ask-item=assistant] pre'); var c = document.querySelector('[data-ask-composer]'); var p = document.querySelector('[data-ask-panel]').getBoundingClientRect(); return {page: document.documentElement.scrollWidth, pre: pre ? {inner: pre.scrollWidth > pre.clientWidth, overflow: getComputedStyle(pre).overflowX, right: Math.round(pre.getBoundingClientRect().right)} : null, composer: getComputedStyle(c).position, panelRight: Math.round(p.right)};";
+    for width in [390, 1440] {
+        let Some(result) = open(width, &at, routes.clone(), true, vec![json!({"wait": "[data-ask-item=assistant] pre"}), json!({"eval": "fits", "js": fits})]) else { return };
+        let fits = eval(&result, "fits");
+        assert_eq!(fits["page"].as_i64(), Some(width as i64), "no sideways scroll at {width}: {result}");
+        assert_eq!((fits["pre"]["inner"].as_bool(), &fits["pre"]["overflow"]), (Some(true), &json!("auto")), "the code block scrolls inside at {width}: {fits}");
+        assert!(fits["pre"]["right"].as_i64() <= fits["panelRight"].as_i64(), "{fits}");
+        assert_eq!(fits["composer"], "static", "the box is in the normal flow at {width}: {fits}");
+    }
+}
+
+/// Presses Enter (with Shift when `shift`) in the message box after the next `type` into it, recording in
+/// `window.__pressed` whether the box took the key (its default was prevented).
+fn press_after_typing(shift: bool) -> String {
+    format!("window.__pressed = []; document.addEventListener('input', function (e) {{ if (!e.target.matches || !e.target.matches('[data-ask-input]') || window.__pressed.length > 0) return; var box = e.target; setTimeout(function () {{ window.__pressed.push(!box.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', shiftKey: {shift}, bubbles: true, cancelable: true}}))); }}, 50); }}, true);\n")
+}
+
+#[test]
+fn enter_sends_on_desktop_shift_enter_and_a_phones_enter_are_new_lines_and_the_box_grows_to_8_lines() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let messages = format!("{CHAT_PATH}/messages");
+    let routes = vec![route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))]), route("POST", &messages, vec![json!({"status": 202, "body": {"turn": 2}})])];
+    let typed = |text: &str| vec![json!({"wait": "[data-ask-input]"}), json!({"type": "[data-ask-input]", "value": text}), json!({"wait": "[data-ask-composer]"}), json!({"eval": "pressed", "js": "return window.__pressed;"})];
+    let Some(enter) = open_after(1440, &at, routes.clone(), true, typed("Hello"), &press_after_typing(false)) else { return };
+    assert_eq!(eval(&enter, "pressed"), &json!([true]), "{enter}");
+    assert_eq!(sent(&enter, "POST", &messages), vec![json!({"text": "Hello"})], "Enter sends on desktop: {enter}");
+    let Some(shifted) = open_after(1440, &at, routes.clone(), true, typed("Hello"), &press_after_typing(true)) else { return };
+    assert_eq!(eval(&shifted, "pressed"), &json!([false]), "Shift+Enter is a new line: {shifted}");
+    assert!(sent(&shifted, "POST", &messages).is_empty(), "{shifted}");
+    let Some(phone) = open_after(390, &at, routes.clone(), true, typed("Hello"), &press_after_typing(false)) else { return };
+    assert_eq!(eval(&phone, "pressed"), &json!([false]), "Enter is a new line on a phone: {phone}");
+    assert!(sent(&phone, "POST", &messages).is_empty(), "the button sends on a phone: {phone}");
+
+    let size = "var b = document.querySelector('[data-ask-input]'); var line = parseFloat(getComputedStyle(b).lineHeight); return {height: b.clientHeight, scroll: b.scrollHeight, line: line};";
+    let lines = |n: usize| (1..=n).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    let grown = |n: usize| vec![json!({"wait": "[data-ask-input]"}), json!({"type": "[data-ask-input]", "value": lines(n)}), json!({"wait": "[data-ask-input]"}), json!({"eval": "size", "js": size})];
+    let Some(one) = open(1440, &at, routes.clone(), true, vec![json!({"wait": "[data-ask-input]"}), json!({"eval": "size", "js": size})]) else { return };
+    let Some(three) = open(1440, &at, routes.clone(), true, grown(3)) else { return };
+    let Some(twenty) = open(1440, &at, routes, true, grown(20)) else { return };
+    let (one, three, twenty) = (eval(&one, "size"), eval(&three, "size"), eval(&twenty, "size"));
+    let line = three["line"].as_f64().unwrap();
+    assert!(three["height"].as_f64().unwrap() >= one["height"].as_f64().unwrap() + 1.5 * line, "the box grows with its lines: {one} {three}");
+    assert!(three["scroll"].as_i64() <= three["height"].as_i64(), "three lines show without scrolling: {three}");
+    let most = twenty["height"].as_f64().unwrap();
+    assert!(most >= 7.5 * line && most <= 9.5 * line + 24.0, "it stops at about 8 lines: {twenty}");
+    assert!(twenty["scroll"].as_i64() > twenty["height"].as_i64(), "and scrolls past them: {twenty}");
+}
+
 const PYTHON_RULE: &str = "Bash(python3 tools/check.py)";
 
 fn refused_turn() -> Vec<Value> {
