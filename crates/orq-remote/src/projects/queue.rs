@@ -1517,7 +1517,21 @@ mod tests {
             recorded_at: None,
             cycles_completed: None,
             parallelizable: None,
+            held_on: None,
+            held_by: None,
         }
+    }
+
+    #[test]
+    fn a_feature_awaiting_delivery_is_not_started_nor_a_met_dependency_of_another_runs_feature() {
+        let mut built = entry("a".into(), Vec::new());
+        built.status = orq_features::LedgerStatus::Known(orq_core::FeatureStatus::AwaitingDelivery);
+        built.held_on = Some("fix--a".into());
+        let ledger = vec![built, entry("d".into(), vec!["a".into()])];
+        let unlanded = std::collections::HashMap::new();
+
+        assert_eq!(super::start_wait(&ledger, &unlanded, "d"), Err("waiting for a".to_string()));
+        assert!(super::start_wait(&ledger, &unlanded, "a").unwrap_err().contains("awaiting_delivery"));
     }
 
     #[test]

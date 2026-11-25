@@ -105,6 +105,7 @@ fn status_text(status: FeatureStatus) -> &'static str {
         FeatureStatus::Draft => "draft",
         FeatureStatus::Pending => "pending",
         FeatureStatus::InProgress => "in_progress",
+        FeatureStatus::AwaitingDelivery => "awaiting_delivery",
         FeatureStatus::Completed => "completed",
         FeatureStatus::Abandoned => "abandoned",
     }

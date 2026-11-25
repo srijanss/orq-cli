@@ -454,6 +454,26 @@ fn run(args: &[OsString]) -> ExitCode {
 
 /// A refusal the run makes before it starts anything, worded as a refusal to resume `resuming` when
 /// the run continues one, with the same exit code either way.
+/// Whether the project's `.mcpctl.lock` pins outside-in-tdd-mcp below 0.5.0, the first version that
+/// counts a dependency `awaiting_delivery` on the session's branch as met. No lock, no pin, or a version
+/// that cannot be read is not refused for.
+fn tdd_server_below_awaiting_delivery(root: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(".mcpctl.lock")) else { return false };
+    let Ok(lock) = text.parse::<toml_edit::DocumentMut>() else { return false };
+    let Some(servers) = lock.get("mcp").and_then(|mcp| mcp.as_array_of_tables()) else { return false };
+    let version = servers
+        .iter()
+        .find(|server| server.get("name").and_then(|n| n.as_str()) == Some("outside-in-tdd-mcp"))
+        .and_then(|server| server.get("version").and_then(|v| v.as_str()));
+    let Some(version) = version else { return false };
+    let parts: Option<Vec<u64>> = version.trim().trim_start_matches('v').split(['-', '+']).next().unwrap_or("").split('.').map(|part| part.parse().ok()).collect();
+    match parts.as_deref() {
+        Some([major, minor, ..]) => (*major, *minor) < (0, 5),
+        Some([major]) => *major == 0,
+        _ => false,
+    }
+}
+
 fn refuse(resuming: Option<&str>, message: &str, code: u8) -> ExitCode {
     match resuming {
         Some(run_id) => eprintln!("orq: cannot resume {}: {message}", printable(run_id)),
@@ -563,6 +583,11 @@ fn run_as(args: &[OsString], resuming: Option<&str>) -> ExitCode {
             vec![feature.to_string()]
         }
     };
+    // A group member's session needs a TDD server that counts an earlier member awaiting delivery on the
+    // run's branch as a met dependency.
+    if features.len() > 1 && tdd_server_below_awaiting_delivery(&project.root) {
+        return refuse(resuming, "update outside-in-tdd-mcp to 0.5.0 (mcpctl) for group runs", EXIT_INELIGIBLE);
+    }
     let feature = features[0].as_str();
     let (profiles, reviewers) = match load_model_config(&project.root) {
         Ok(config) => config,
@@ -1258,6 +1283,9 @@ fn feature_set_status(args: &[OsString]) -> ExitCode {
         }
         _ => return usage_error(),
     };
+    if status == "awaiting_delivery" {
+        return fail("cannot set status \"awaiting_delivery\": only a run sets it, when a session of the run builds the feature");
+    }
     if status != "pending" && status != "completed" {
         return fail(format!("cannot set status {status:?}: only --status pending or completed is supported"));
     }
@@ -1382,6 +1410,7 @@ fn status_text(status: &orq_features::LedgerStatus) -> &str {
         orq_features::LedgerStatus::Known(Draft) => "draft",
         orq_features::LedgerStatus::Known(Pending) => "pending",
         orq_features::LedgerStatus::Known(InProgress) => "in_progress",
+        orq_features::LedgerStatus::Known(AwaitingDelivery) => "awaiting_delivery",
         orq_features::LedgerStatus::Known(Completed) => "completed",
         orq_features::LedgerStatus::Known(Abandoned) => "abandoned",
         orq_features::LedgerStatus::Unrecognised(text) => text,

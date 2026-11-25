@@ -36,6 +36,10 @@ pub enum FeatureStatus {
     Draft,
     Pending,
     InProgress,
+    /// Built by a session of a run and waiting for that run to deliver it (`awaiting_delivery`): the
+    /// entry's `heldOn` names the run's branch and `heldBy` the run. Only a run sets it; delivery makes
+    /// it `completed`, a discard or a run that built nothing `pending` again.
+    AwaitingDelivery,
     Completed,
     Abandoned,
 }

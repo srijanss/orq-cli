@@ -1,6 +1,6 @@
-//! A group whose later members depend on earlier ones runs every member: before a member's session the earlier
-//! members the run completed are released `completed` in the project ledger, so the session's `init_feature`
-//! finds its dependencies met; after the session they are held `in_progress` again until the run delivers.
+//! A group whose later members depend on earlier ones runs every member: a member a session of the run built is
+//! `awaiting_delivery` on the run's branch, which the session's `init_feature` takes as a met dependency, and it
+//! stays so until the run delivers.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -16,7 +16,7 @@ const DESIGN_MD: &str = "# Home\n\n### H01 Hero\n\nThe hero.\n";
 /// The design group `a,b,c`: b depends on a, c on b (and on `extra` when given); c is a frontend member (H01 of
 /// `designs/home/`) whose page never starts, so its design review is blocked and the group stops after c's gate.
 /// Each implement session is a fake claude that first checks, as the TDD server's `init_feature` does, that each
-/// of its feature's dependencies is `completed` in the ledger (writing `<feature> <dependency> <status>` to
+/// of its feature's dependencies is `completed` or `awaiting_delivery` in the ledger (writing `<feature> <dependency> <status>` to
 /// `$HOME/seen`, and refusing with `$HOME/refused` when one is not), then marks its feature `completed` and
 /// commits `<feature>.txt`.
 struct Group {
@@ -153,7 +153,7 @@ impl Group {
              for d in $deps; do\n\
                s=$(status_of \"$d\" \"$ledger\")\n\
                echo \"$f $d $s\" >> \"$HOME/seen\"\n\
-               if [ \"$s\" != completed ]; then echo \"Feature '$f' depends on feature(s) not yet completed: $d\" >> \"$HOME/refused\"; exit 3; fi\n\
+               if [ \"$s\" != completed ] && [ \"$s\" != awaiting_delivery ]; then echo \"Feature '$f' depends on feature(s) not yet completed: $d\" >> \"$HOME/refused\"; exit 3; fi\n\
              done\n\
              if [ \"$f\" = a ] && [ -f \"$HOME/reopen-x\" ]; then set_status x \"$ledger\" pending; fi\n\
              if [ \"$f\" = a ] && [ -f \"$HOME/corrupt-handoff\" ]; then for r in \"$HOME\"/state/orq/runs/*/; do echo 'not json' > \"$r/handoff.json\"; done; fi\n\
@@ -239,7 +239,7 @@ fn ledger_and_steps(events: &[serde_json::Value]) -> Vec<String> {
         .iter()
         .filter_map(|e| match e["type"].as_str().unwrap() {
             "design_group.member_step" => Some(format!("step {} {}", e["payload"]["member"].as_str().unwrap(), e["payload"]["step"].as_str().unwrap())),
-            kind if kind.starts_with("ledger.released") || kind.starts_with("ledger.held") => Some(format!("{kind} {}", e["payload"])),
+            kind if kind.starts_with("ledger.awaiting") => Some(format!("{kind} {}", e["payload"]["features"])),
             _ => None,
         })
         .collect()
@@ -264,25 +264,20 @@ fn a_chain_of_three_members_runs_each_member_with_its_dependencies_completed_and
     let all = format!("{}{}", text(&first.stdout), text(&first.stderr));
     assert!(all.contains("member 3 of 3: c: the design review is blocked"), "every member ran, c stops at its design review: {all}");
     assert!(w.lines_of("refused").is_empty(), "no session was refused: {:?}\n{all}", w.lines_of("refused"));
-    assert_eq!(w.lines_of("seen"), vec!["b a completed", "c b completed"], "{all}");
+    assert_eq!(w.lines_of("seen"), vec!["b a awaiting_delivery", "c b awaiting_delivery"], "{all}");
     for name in ["a", "b", "c"] {
-        assert_eq!(w.status_of(name), "in_progress", "{name} is held until delivery: {all}");
+        assert_eq!(w.status_of(name), "awaiting_delivery", "{name} awaits delivery: {all}");
     }
     let run_id = w.run_ids().pop().unwrap();
     let events = w.events(&run_id);
-    assert_eq!(
-        payloads(&events, "ledger.released_for_member"),
-        vec![serde_json::json!({"member": "b", "features": ["a"]}), serde_json::json!({"member": "c", "features": ["a", "b"]})],
-        "{:#?}",
-        ledger_and_steps(&events)
-    );
+    assert!(payloads(&events, "ledger.released_for_member").is_empty() && payloads(&events, "ledger.held_until_delivery").is_empty());
     let order = ledger_and_steps(&events);
-    let at = |line: &str| order.iter().position(|l| l == line).unwrap_or_else(|| panic!("{line} missing: {order:#?}"));
-    assert!(at("step a gate") < at("ledger.released_for_member {\"features\":[\"a\"],\"member\":\"b\"}"), "{order:#?}");
-    assert!(at("ledger.released_for_member {\"features\":[\"a\"],\"member\":\"b\"}") < at("step b gate"), "{order:#?}");
-    let held_a_during = |from: &str, to: &str| order[at(from)..at(to)].iter().any(|l| l.starts_with("ledger.held_until_delivery") && l.contains("\"a\""));
-    assert!(held_a_during("step b implement", "step b gate"), "a is held again after b's session: {order:#?}");
-    assert!(held_a_during("step c implement", "step c gate"), "and after c's: {order:#?}");
+    let awaited_during = |name: &str, from: &str, to: &str| {
+        let at = |line: &str| order.iter().position(|l| l == line).unwrap_or_else(|| panic!("{line} missing: {order:#?}"));
+        order[at(from)..at(to)].iter().any(|l| l.starts_with("ledger.awaiting_delivery") && l.contains(&format!("\"{name}\"")))
+    };
+    assert!(awaited_during("a", "step a implement", "step b implement"), "a awaits delivery after its session: {order:#?}");
+    assert!(awaited_during("b", "step b implement", "step c implement"), "and b after its: {order:#?}");
 
     w.pass_c(&run_id);
     let resumed = w.resume(&run_id, &agent, &provider);
@@ -296,7 +291,7 @@ fn a_chain_of_three_members_runs_each_member_with_its_dependencies_completed_and
 }
 
 #[test]
-fn a_run_failing_at_member_2s_gate_leaves_a_and_b_in_progress_and_its_resume_releases_them_before_member_3() {
+fn a_run_failing_at_member_2s_gate_leaves_a_and_b_awaiting_delivery_and_its_resume_goes_on_to_member_3() {
     // b's gate fails while `$HOME/fail-gate` exists; a's and c's pass.
     let w = group("gate", &["a"], Vec::new(), "member_gate = [\"sh\", \"-c\", \"test ! -f b.txt || test ! -f '{home}/fail-gate'\"]\n");
     std::fs::write(w.home.join("fail-gate"), "").unwrap();
@@ -307,8 +302,8 @@ fn a_run_failing_at_member_2s_gate_leaves_a_and_b_in_progress_and_its_resume_rel
 
     let all = format!("{}{}", text(&first.stdout), text(&first.stderr));
     assert!(all.contains("member 2 of 3: b") && all.contains("state: failed"), "the run fails at b's gate: {all}");
-    assert_eq!(w.status_of("a"), "in_progress", "{all}");
-    assert_eq!(w.status_of("b"), "in_progress", "{all}");
+    assert_eq!(w.status_of("a"), "awaiting_delivery", "{all}");
+    assert_eq!(w.status_of("b"), "awaiting_delivery", "{all}");
     let run_id = w.run_ids().pop().unwrap();
 
     std::fs::remove_file(w.home.join("fail-gate")).unwrap();
@@ -317,21 +312,15 @@ fn a_run_failing_at_member_2s_gate_leaves_a_and_b_in_progress_and_its_resume_rel
     let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
     assert!(all.contains("member 3 of 3: c: the design review is blocked"), "the resume goes on to c: {all}");
     assert!(w.lines_of("refused").is_empty(), "{:?}\n{all}", w.lines_of("refused"));
-    assert_eq!(w.lines_of("seen"), vec!["b a completed", "c b completed"], "{all}");
-    let resumed_id = w.run_ids().into_iter().find(|id| *id != run_id).unwrap();
-    assert_eq!(
-        payloads(&w.events(&resumed_id), "ledger.released_for_member"),
-        vec![serde_json::json!({"member": "c", "features": ["a", "b"]})],
-        "{all}"
-    );
+    assert_eq!(w.lines_of("seen"), vec!["b a awaiting_delivery", "c b awaiting_delivery"], "{all}");
     for name in ["a", "b", "c"] {
-        assert_eq!(w.status_of(name), "in_progress", "{name} is held until delivery: {all}");
+        assert_eq!(w.status_of(name), "awaiting_delivery", "{name} awaits delivery: {all}");
     }
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
 #[test]
-fn a_member_whose_dependency_outside_the_group_is_not_completed_is_still_refused_and_the_earlier_members_are_held_again() {
+fn a_member_whose_dependency_outside_the_group_is_not_completed_is_still_refused_and_the_earlier_members_still_await_delivery() {
     // b depends on a and on x, outside the group: completed when the run starts, set back to pending by a's
     // session, as another hand might.
     let w = group("outside", &["a", "x"], vec![LedgerEntry::new("x", "completed")], "");
@@ -342,21 +331,15 @@ fn a_member_whose_dependency_outside_the_group_is_not_completed_is_still_refused
 
     let all = format!("{}{}", text(&first.stdout), text(&first.stderr));
     assert!(all.contains("state: failed"), "{all}");
-    assert_eq!(w.lines_of("seen"), vec!["b a completed", "b x pending"], "{all}");
+    assert_eq!(w.lines_of("seen"), vec!["b a awaiting_delivery", "b x pending"], "{all}");
     assert_eq!(w.lines_of("refused"), vec!["Feature 'b' depends on feature(s) not yet completed: x"], "{all}");
-    assert_eq!(w.status_of("x"), "pending", "a feature outside the run is never released: {all}");
-    assert_eq!(w.status_of("a"), "in_progress", "a is held again after b's refused session: {all}");
-    let run_id = w.run_ids().pop().unwrap();
-    let events = w.events(&run_id);
-    assert_eq!(payloads(&events, "ledger.released_for_member"), vec![serde_json::json!({"member": "b", "features": ["a"]})]);
-    let order = ledger_and_steps(&events);
-    let b = order.iter().position(|l| l == "step b implement").unwrap();
-    assert!(order[b..].iter().any(|l| l == "ledger.held_until_delivery {\"features\":[\"a\"]}"), "{order:#?}");
+    assert_eq!(w.status_of("x"), "pending", "a feature outside the run is never touched: {all}");
+    assert_eq!(w.status_of("a"), "awaiting_delivery", "a still awaits delivery after b's refused session: {all}");
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
 #[test]
-fn a_member_session_that_cannot_be_prepared_leaves_the_earlier_members_held() {
+fn a_member_session_that_cannot_be_prepared_leaves_the_earlier_members_awaiting_delivery() {
     // a's session leaves the run's handoff unreadable, so b's session cannot be prepared.
     let w = group("unprepared", &["a"], Vec::new(), "");
     std::fs::write(w.home.join("corrupt-handoff"), "").unwrap();
@@ -367,7 +350,7 @@ fn a_member_session_that_cannot_be_prepared_leaves_the_earlier_members_held() {
     let all = format!("{}{}", text(&first.stdout), text(&first.stderr));
     assert!(all.contains("handoff.json"), "b's session fails on the handoff: {all}");
     assert!(w.lines_of("seen").is_empty(), "b's session never started: {all}");
-    assert_eq!(w.status_of("a"), "in_progress", "a is not left completed: {all}");
+    assert_eq!(w.status_of("a"), "awaiting_delivery", "a is not left completed: {all}");
     let _ = std::fs::remove_dir_all(&w.home);
 }
 

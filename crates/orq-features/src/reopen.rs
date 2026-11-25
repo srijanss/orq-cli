@@ -22,10 +22,54 @@ pub fn reopen_features(path: &Path, names: &[String]) -> Result<Vec<String>, Str
 }
 
 /// [`reopen_features`] for a discarded run: its work is gone with it, so of `names` those in
-/// `completed_too` also go back to `pending` when the ledger records them as `completed`. The caller
-/// leaves out a feature whose `completed` this run cannot have written.
+/// `completed_too` also go back to `pending` when the ledger records them as `completed` or
+/// `awaiting_delivery`. The caller leaves out a feature whose status this run cannot have written.
 pub fn reopen_discarded_features(path: &Path, names: &[String], completed_too: &[String]) -> Result<Vec<String>, String> {
-    reopen(path, names, &|status, name| is(status, FeatureStatus::InProgress) || (is(status, FeatureStatus::Completed) && completed_too.iter().any(|c| c == name)), FeatureStatus::Pending, &mut || {})
+    let built = |status: &LedgerStatus| is(status, FeatureStatus::Completed) || is(status, FeatureStatus::AwaitingDelivery);
+    reopen(path, names, &|status, name| is(status, FeatureStatus::InProgress) || (built(status) && completed_too.iter().any(|c| c == name)), FeatureStatus::Pending, &mut || {})
+}
+
+/// For features a session of the run on `branch` (run `run_id`) built: each of `names` the ledger at
+/// `path` records as `pending`, `in_progress` or `completed`, or as `awaiting_delivery` on `branch` held
+/// by another run (one this run resumes), becomes `awaiting_delivery` with `heldOn` `branch` and `heldBy`
+/// `run_id`. One already held by `run_id` on `branch`, one awaiting another branch, and any other
+/// status are left alone. Saved as [`reopen_features`] saves; returns the names that were set.
+pub fn await_delivery(path: &Path, names: &[String], branch: &str, run_id: &str) -> Result<Vec<String>, String> {
+    let held = |entry: &crate::FeatureEntry| match &entry.status {
+        LedgerStatus::Known(FeatureStatus::Pending | FeatureStatus::InProgress | FeatureStatus::Completed) => true,
+        LedgerStatus::Known(FeatureStatus::AwaitingDelivery) => {
+            entry.held_on.as_deref() == Some(branch) && entry.held_by.as_deref() != Some(run_id)
+        }
+        _ => false,
+    };
+    let branch_value = serde_json::Value::from(branch).to_string();
+    let run_value = serde_json::Value::from(run_id).to_string();
+    edit_entries(path, names, &held, &|text, held| {
+        let text = set_entry_statuses(text, held, FeatureStatus::AwaitingDelivery).map_err(|e| format!("{e:?}"))?;
+        held.iter().try_fold(text, |text, name| {
+            let text = with_field(&text, name, "heldOn", &branch_value)?;
+            with_field(&text, name, "heldBy", &run_value)
+        })
+    }, &mut || {})
+}
+
+/// For a run on `branch` that delivered, as one save: each of `features` (the run's own) the ledger at
+/// `path` records as `pending` or `in_progress`, and each of `added` (features its sessions started)
+/// it records as `in_progress`, and each of either awaiting delivery on `branch`, becomes `completed`
+/// with `recordedAt` set to `recorded_at`. Any other status, and any name the ledger does not have, is
+/// left alone. Returns the names that were completed, `features` first.
+pub fn deliver_run_features(path: &Path, features: &[String], added: &[String], branch: &str, recorded_at: &str) -> Result<Vec<String>, String> {
+    let names: Vec<String> = features.iter().chain(added.iter().filter(|name| !features.contains(name))).cloned().collect();
+    let deliverable = |entry: &crate::FeatureEntry| match &entry.status {
+        LedgerStatus::Known(FeatureStatus::AwaitingDelivery) => entry.held_on.as_deref() == Some(branch),
+        LedgerStatus::Known(FeatureStatus::InProgress) => true,
+        LedgerStatus::Known(FeatureStatus::Pending) => features.contains(&entry.feature_name),
+        _ => false,
+    };
+    edit_entries(path, &names, &deliverable, &|text, completed| {
+        let text = set_entry_statuses(text, completed, FeatureStatus::Completed).map_err(|e| format!("{e:?}"))?;
+        completed.iter().try_fold(text, |text, name| with_recorded_at(&text, name, recorded_at))
+    }, &mut || {})
 }
 
 /// For a run that ended without delivering but left commits to resume: each of `names` that the
@@ -33,14 +77,6 @@ pub fn reopen_discarded_features(path: &Path, names: &[String], completed_too: &
 /// before its run was done. Saved as [`reopen_features`] saves; returns the names that were reopened.
 pub fn reopen_unfinished_features(path: &Path, names: &[String]) -> Result<Vec<String>, String> {
     reopen(path, names, &|status, _| is(status, FeatureStatus::Completed), FeatureStatus::InProgress, &mut || {})
-}
-
-/// Before a group member's session: each of `names` that the ledger at `path` records as `in_progress`
-/// (held there until the run delivers) becomes `completed`, so the member's dependencies on them are met;
-/// `recordedAt` is left alone, delivery sets it. Saved as [`reopen_features`] saves; returns the names
-/// that were released.
-pub fn release_held_features(path: &Path, names: &[String]) -> Result<Vec<String>, String> {
-    reopen(path, names, &|status, _| is(status, FeatureStatus::InProgress), FeatureStatus::Completed, &mut || {})
 }
 
 /// [`reopen_features`], calling `before_save` between each load and its save: a seam for tests
@@ -58,9 +94,12 @@ pub fn reopen_features_before_save(path: &Path, names: &[String], before_save: &
 /// [`reopen_features`] saves; returns the names that were closed.
 pub fn close_features(path: &Path, names: &[String], to: FeatureStatus, recorded_at: &str) -> Result<Vec<String>, String> {
     let closable = |status: &LedgerStatus, _: &str| match to {
-        FeatureStatus::Completed => is(status, FeatureStatus::InProgress),
+        FeatureStatus::Completed => is(status, FeatureStatus::InProgress) || is(status, FeatureStatus::AwaitingDelivery),
         FeatureStatus::Abandoned => {
-            is(status, FeatureStatus::InProgress) || is(status, FeatureStatus::Pending) || is(status, FeatureStatus::Completed)
+            is(status, FeatureStatus::InProgress)
+                || is(status, FeatureStatus::Pending)
+                || is(status, FeatureStatus::Completed)
+                || is(status, FeatureStatus::AwaitingDelivery)
         }
         _ => false,
     };
@@ -74,12 +113,14 @@ pub fn close_features(path: &Path, names: &[String], to: FeatureStatus, recorded
     }, &mut || {})
 }
 
-/// For a run that delivered: each of `names` the ledger at `path` still records as `pending` or
-/// `in_progress` becomes `completed`, with `recordedAt` set to `recorded_at`. Any other status, and
-/// any name the ledger does not have, is left alone; saved as [`reopen_features`] saves. Returns the
-/// names that were completed.
+/// For a run that delivered: each of `names` the ledger at `path` still records as `pending`,
+/// `in_progress` or `awaiting_delivery` becomes `completed`, with `recordedAt` set to `recorded_at`. Any
+/// other status, and any name the ledger does not have, is left alone; saved as [`reopen_features`]
+/// saves. Returns the names that were completed.
 pub fn complete_run_features(path: &Path, names: &[String], recorded_at: &str) -> Result<Vec<String>, String> {
-    let open = |status: &LedgerStatus, _: &str| is(status, FeatureStatus::Pending) || is(status, FeatureStatus::InProgress);
+    let open = |status: &LedgerStatus, _: &str| {
+        is(status, FeatureStatus::Pending) || is(status, FeatureStatus::InProgress) || is(status, FeatureStatus::AwaitingDelivery)
+    };
     edit(path, names, &open, &|text, completed| {
         let text = set_entry_statuses(text, completed, FeatureStatus::Completed).map_err(|e| format!("{e:?}"))?;
         completed.iter().try_fold(text, |text, name| with_recorded_at(&text, name, recorded_at))
@@ -104,16 +145,21 @@ pub fn restore_completed_features(path: &Path, names: &[String], recorded_at: &s
 /// `text` with the `recordedAt` of the entry `name` set to `at`. A member added to an entry laid out one
 /// member per line goes on a line of its own, indented as the member before it.
 fn with_recorded_at(text: &str, name: &str, at: &str) -> Result<String, String> {
-    let value = serde_json::Value::from(at).to_string();
-    let edited = crate::edit::set_entry_fields(text, name, &[("recordedAt", value.clone())]).map_err(|e| format!("{e:?}"))?;
+    with_field(text, name, "recordedAt", &serde_json::Value::from(at).to_string())
+}
+
+/// `text` with the member `key` of the entry `name` set to the JSON `value`. A member added to an entry
+/// laid out one member per line goes on a line of its own, indented as the member before it.
+fn with_field(text: &str, name: &str, key: &str, value: &str) -> Result<String, String> {
+    let edited = crate::edit::set_entry_fields(text, name, &[(key, value.to_string())]).map_err(|e| format!("{e:?}"))?;
     let start = text.bytes().zip(edited.bytes()).position(|(a, b)| a != b).unwrap_or(text.len());
-    let inline = format!(",\"recordedAt\":{value}");
+    let inline = format!(",\"{key}\":{value}");
     if !edited[start..].starts_with(&inline) || !text[start..].starts_with('\n') {
         return Ok(edited);
     }
     let line = &text[text[..start].rfind('\n').map_or(0, |i| i + 1)..start];
     let indent = &line[..line.len() - line.trim_start().len()];
-    Ok(format!("{},\n{indent}\"recordedAt\": {value}{}", &text[..start], &text[start..]))
+    Ok(format!("{},\n{indent}\"{key}\": {value}{}", &text[..start], &text[start..]))
 }
 
 fn is(status: &LedgerStatus, wanted: FeatureStatus) -> bool {
@@ -140,6 +186,17 @@ fn edit(
     change: &dyn Fn(&str, &[String]) -> Result<String, String>,
     before_save: &mut dyn FnMut(),
 ) -> Result<Vec<String>, String> {
+    edit_entries(path, names, &|entry| editable(&entry.status, &entry.feature_name), change, before_save)
+}
+
+/// [`edit`], with `editable` given the whole entry.
+fn edit_entries(
+    path: &Path,
+    names: &[String],
+    editable: &dyn Fn(&crate::FeatureEntry) -> bool,
+    change: &dyn Fn(&str, &[String]) -> Result<String, String>,
+    before_save: &mut dyn FnMut(),
+) -> Result<Vec<String>, String> {
     for _ in 0..CONFLICT_RETRIES {
         let loaded = match LoadedLedger::load(path) {
             Ok(loaded) => loaded,
@@ -149,7 +206,7 @@ fn edit(
         let accepted: HashSet<&str> = loaded
             .entries()
             .iter()
-            .filter(|e| editable(&e.status, &e.feature_name))
+            .filter(|e| editable(e))
             .map(|e| e.feature_name.as_str())
             .collect();
         let edited: Vec<String> = names.iter().filter(|name| accepted.contains(name.as_str())).cloned().collect();

@@ -16,6 +16,10 @@ pub struct FeatureEntry {
     pub cycles_completed: Option<u64>,
     /// Optional scheduling hint; absent (`None`) means exclusive to consumers.
     pub parallelizable: Option<bool>,
+    /// The branch of the run an `awaiting_delivery` entry waits on (`heldOn`).
+    pub held_on: Option<String>,
+    /// The run an `awaiting_delivery` entry waits on (`heldBy`).
+    pub held_by: Option<String>,
 }
 
 /// A ledger status: one Orq knows, or the verbatim text of one it does not.
@@ -40,6 +44,7 @@ impl LedgerStatus {
             LedgerStatus::Known(FeatureStatus::Draft) => "draft",
             LedgerStatus::Known(FeatureStatus::Pending) => "pending",
             LedgerStatus::Known(FeatureStatus::InProgress) => "in_progress",
+            LedgerStatus::Known(FeatureStatus::AwaitingDelivery) => "awaiting_delivery",
             LedgerStatus::Known(FeatureStatus::Completed) => "completed",
             LedgerStatus::Known(FeatureStatus::Abandoned) => "abandoned",
             LedgerStatus::Unrecognised(text) => text,
@@ -51,6 +56,7 @@ impl LedgerStatus {
             "draft" => LedgerStatus::Known(FeatureStatus::Draft),
             "pending" => LedgerStatus::Known(FeatureStatus::Pending),
             "in_progress" => LedgerStatus::Known(FeatureStatus::InProgress),
+            "awaiting_delivery" => LedgerStatus::Known(FeatureStatus::AwaitingDelivery),
             "completed" => LedgerStatus::Known(FeatureStatus::Completed),
             "abandoned" => LedgerStatus::Known(FeatureStatus::Abandoned),
             _ => LedgerStatus::Unrecognised(text),
@@ -74,6 +80,11 @@ struct RawEntry {
     /// Kept as a raw value so `null` and wrong types can be told from absence.
     #[serde(default, deserialize_with = "present_value")]
     parallelizable: Option<serde_json::Value>,
+    /// Read only when it is a string: a ledger edited by hand is not refused for it.
+    #[serde(default, deserialize_with = "present_value")]
+    held_on: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "present_value")]
+    held_by: Option<serde_json::Value>,
 }
 
 fn present_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
@@ -134,6 +145,8 @@ impl From<RawEntry> for FeatureEntry {
             target_files: raw.target_files,
             recorded_at: raw.recorded_at,
             cycles_completed: raw.cycles_completed,
+            held_on: raw.held_on.and_then(|value| value.as_str().map(str::to_string)),
+            held_by: raw.held_by.and_then(|value| value.as_str().map(str::to_string)),
         }
     }
 }
@@ -285,7 +298,7 @@ mod promote;
 pub use promote::{implementing_run, in_implement_step, promote_feature, RunEvents, promote_feature_waiting, reopen_completed_feature, reopen_open_findings, PromoteError, ReopenedFinding, FINDING_REOPENED};
 
 mod reopen;
-pub use reopen::{close_features, complete_run_features, release_held_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features, restore_completed_features};
+pub use reopen::{await_delivery, close_features, complete_run_features, deliver_run_features, reopen_discarded_features, reopen_features, reopen_features_before_save, reopen_unfinished_features, restore_completed_features};
 
 mod validate;
 pub use validate::{archived_dependency_notes, drop_archived_dependencies, feature_name_problem, validate_changed_entries, validate_entries, validate_entries_with_archive, ExistingProblem, ValidationError};

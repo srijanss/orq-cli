@@ -50,7 +50,7 @@ impl std::fmt::Display for Ineligible {
                 Ok(())
             }
             Ineligible::NotResumable { status } => {
-                write!(f, "feature is {status}, only a pending, in_progress or completed feature can be resumed")
+                write!(f, "feature is {status}, only a pending, in_progress, awaiting_delivery or completed feature can be resumed")
             }
             Ineligible::TakenByLaterRun => {
                 write!(f, "a later run took the feature, so this run cannot pick it up again")
@@ -112,7 +112,7 @@ fn fresh(entry: &FeatureEntry) -> Result<(), Ineligible> {
 /// took it (`free`), since that run, not this one, is what its status speaks for.
 fn resumable(entry: &FeatureEntry, free: &[String]) -> Result<(), Ineligible> {
     match entry.status.known() {
-        Some(FeatureStatus::Pending | FeatureStatus::InProgress | FeatureStatus::Completed) => {
+        Some(FeatureStatus::Pending | FeatureStatus::InProgress | FeatureStatus::AwaitingDelivery | FeatureStatus::Completed) => {
             free.contains(&entry.feature_name).then_some(()).ok_or(Ineligible::TakenByLaterRun)
         }
         _ => Err(Ineligible::NotResumable { status: entry.status.as_str().to_string() }),

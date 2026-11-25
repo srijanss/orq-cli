@@ -122,13 +122,13 @@ fn failing_agent() -> FakeAgent {
 }
 
 #[test]
-fn a_failed_run_whose_agent_marked_its_feature_completed_leaves_it_in_progress() {
+fn a_failed_run_whose_agent_marked_its_feature_completed_leaves_it_awaiting_delivery() {
     let w = world("completed-then-failed");
 
     let output = run(&w, &failing_agent(), "completed", "first");
 
     assert!(text(&output.stdout).contains("failed"), "{}\n{}", text(&output.stdout), text(&output.stderr));
-    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress", "{}", text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "awaiting_delivery", "{}", text(&output.stderr));
 }
 
 #[test]
@@ -285,13 +285,13 @@ fn path_pausing(w: &World, agent: &FakeAgent, mark: &str, tag: &str) -> std::ffi
 }
 
 #[test]
-fn a_paused_run_whose_agent_marked_its_feature_completed_leaves_it_in_progress_and_is_resumed() {
+fn a_paused_run_whose_agent_marked_its_feature_completed_leaves_it_awaiting_delivery_and_is_resumed() {
     let w = world("paused-completed");
     let agent = FakeAgent::builder().write_file("feature.txt", "half\n").commit("wip").build();
     let path = path_pausing(&w, &agent, "completed", "first");
     let paused = orq(&w, path, &["run", "--feature", "COM-01", "--remote", "origin", "--target", "main", "--no-ci-check"]);
     assert!(text(&paused.stdout).contains("paused"), "{}\n{}", text(&paused.stdout), text(&paused.stderr));
-    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress", "{}", text(&paused.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "awaiting_delivery", "{}", text(&paused.stderr));
     let run_id = only_run(&w);
 
     let output = resume(&w, &run_id, &finishing_agent(), "completed", "second");

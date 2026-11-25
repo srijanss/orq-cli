@@ -1,5 +1,5 @@
 //! A feature the implement session marked `completed` is not done until its run delivers: while the
-//! gate (verify), its fix sessions and the review run, the ledger shows it `in_progress`.
+//! gate (verify), its fix sessions and the review run, the ledger shows it `awaiting_delivery`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -198,7 +198,7 @@ fn run(w: &World, provider: &FakeProvider, which: &[&str]) -> Output {
 }
 
 #[test]
-fn a_feature_the_session_completed_is_in_progress_while_verify_runs() {
+fn a_feature_the_session_completed_awaits_delivery_while_verify_runs() {
     let agent = committing_agent();
     let w = single("verify", &agent, plain_gate(0));
 
@@ -212,7 +212,7 @@ fn a_feature_the_session_completed_is_in_progress_while_verify_runs() {
     );
     assert_eq!(
         status_in(&w.seen, "COM-01"),
-        "in_progress",
+        "awaiting_delivery",
         "{}",
         text(&output.stderr)
     );
@@ -240,7 +240,7 @@ fn a_delivered_run_completes_the_feature_after_verify() {
 }
 
 #[test]
-fn a_run_whose_verify_fails_leaves_the_feature_in_progress() {
+fn a_run_whose_verify_fails_leaves_the_feature_awaiting_delivery() {
     let agent = committing_agent();
     let w = single("verify-fails", &agent, plain_gate(1));
 
@@ -254,7 +254,7 @@ fn a_run_whose_verify_fails_leaves_the_feature_in_progress() {
     );
     assert_eq!(
         status_of(w.repo.root(), "COM-01"),
-        "in_progress",
+        "awaiting_delivery",
         "{}",
         text(&output.stderr)
     );
@@ -288,12 +288,12 @@ fn a_group_feature_the_session_completed_still_counts_for_the_group() {
     );
     assert_eq!(
         status_in(&w.seen, "COM-01"),
-        "in_progress",
+        "awaiting_delivery",
         "held while verify ran"
     );
     assert_eq!(
         status_in(&w.seen, "COM-02"),
-        "in_progress",
+        "awaiting_delivery",
         "held while verify ran"
     );
     assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
@@ -301,14 +301,14 @@ fn a_group_feature_the_session_completed_still_counts_for_the_group() {
 }
 
 /// A gate fix session that marks the run's feature `completed` again does not finish it either:
-/// the gate that runs after it still sees it `in_progress`.
+/// the gate that runs after it sees it `awaiting_delivery` again.
 #[test]
-fn a_feature_a_gate_fix_session_completed_is_in_progress_when_the_gate_runs_again() {
+fn a_feature_a_gate_fix_session_completed_awaits_delivery_when_the_gate_runs_again() {
     let agent = committing_agent();
     let gate = Gate {
         body:
             "if [ -e \"$COUNT\" ]; then cp \"$LEDGER\" \"$SEEN\"; else touch \"$COUNT\"; exit 1; fi",
-        fix: "sed -i 's/\"in_progress\"/\"completed\"/' \"$LEDGER\"",
+        fix: "sed -i -E 's/\"(in_progress|awaiting_delivery)\"/\"completed\"/' \"$LEDGER\"",
     };
     let w = world(
         "gate-fix",
@@ -327,7 +327,7 @@ fn a_feature_a_gate_fix_session_completed_is_in_progress_when_the_gate_runs_agai
     );
     assert_eq!(
         status_in(&w.seen, "COM-01"),
-        "in_progress",
+        "awaiting_delivery",
         "{}",
         text(&output.stderr)
     );

@@ -113,14 +113,14 @@ fn reporting_agent() -> FakeAgent {
 }
 
 #[test]
-fn a_group_whose_session_completed_both_and_reported_a_problem_ends_failed_with_both_still_completed() {
+fn a_group_whose_session_completed_both_and_reported_a_problem_ends_failed_with_both_awaiting_delivery() {
     let w = world("failed-keeps");
 
     let output = run_group(&w, &reporting_agent(), "completed", "first");
 
     assert!(text(&output.stdout).contains("failed"), "{}\n{}", text(&output.stdout), text(&output.stderr));
-    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed", "{}", text(&output.stderr));
-    assert_eq!(status_of(w.repo.root(), "COM-02"), "completed", "{}", text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "awaiting_delivery", "{}", text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-02"), "awaiting_delivery", "{}", text(&output.stderr));
 }
 
 /// The payloads of every `kind` event any run recorded.
@@ -188,22 +188,22 @@ fn resuming_a_group_its_session_completed_hands_nothing_back_and_a_session_that_
 }
 
 #[test]
-fn a_feature_completed_and_then_changed_by_a_later_commit_is_reopened() {
+fn a_feature_awaiting_delivery_stays_so_when_a_resumed_run_commits_on_top_and_fails() {
     let w = world("changed-later");
     run_group(&w, &reporting_agent(), "completed", "first");
     let run_id = only_run(&w);
-    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "awaiting_delivery");
 
     let changing = FakeAgent::builder().write_file("more.txt", "more\n").commit("fix: more").exit_code(3).build();
     let output = resume(&w, &run_id, &changing, "", "second");
 
     assert!(text(&output.stdout).contains("failed"), "{}\n{}", text(&output.stdout), text(&output.stderr));
-    assert_eq!(status_of(w.repo.root(), "COM-01"), "in_progress", "{}", text(&output.stderr));
-    assert_eq!(status_of(w.repo.root(), "COM-02"), "in_progress");
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "awaiting_delivery", "{}", text(&output.stderr));
+    assert_eq!(status_of(w.repo.root(), "COM-02"), "awaiting_delivery");
 }
 
 #[test]
-fn a_completion_from_before_the_head_changed_does_not_finish_a_resumed_group() {
+fn a_group_awaiting_delivery_after_a_later_commit_is_finished_by_a_resume_whose_session_does_nothing() {
     let w = world("stale");
     run_group(&w, &reporting_agent(), "completed", "first");
     let first = only_run(&w);
@@ -214,13 +214,10 @@ fn a_completion_from_before_the_head_changed_does_not_finish_a_resumed_group() {
     let output = resume(&w, &second, &FakeAgent::builder().build(), "", "third");
 
     let stdout = text(&output.stdout);
-    assert!(stdout.contains("failed"), "{stdout}\n{}", text(&output.stderr));
-    assert!(!stdout.contains("review_ready"), "{stdout}");
-    let third = runs_of(&w).into_iter().find(|run| run != &first && run != &second).unwrap();
-    let events = orq_orchestrator::RunStore::new(&w.state.join("orq")).events(&third).unwrap();
-    let handed: Vec<String> = events.iter().filter(|e| e.kind == "ledger.handed_back").map(|e| e.payload.to_string()).collect();
-    assert!(handed.iter().any(|p| p.contains("COM-01") && p.contains("COM-02")), "{handed:?}");
-    assert_ne!(status_of(w.repo.root(), "COM-01"), "completed");
+    assert!(stdout.contains("state: review_ready"), "{stdout}\n{}", text(&output.stderr));
+    assert_eq!(payloads_of(&w, "ledger.handed_back"), Vec::<serde_json::Value>::new());
+    assert_eq!(status_of(w.repo.root(), "COM-01"), "completed");
+    assert_eq!(status_of(w.repo.root(), "COM-02"), "completed");
 }
 
 /// The ids of every run in the world's state.
