@@ -488,10 +488,12 @@ fn create(
     }
 }
 
+/// The only tools a chat's turns have.
+const CHAT_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+
 /// The chat's Claude settings: don't-ask mode, reading only.
 fn chat_settings() -> String {
-    json!({ "permissions": { "defaultMode": "dontAsk", "allow": ["Read", "Grep", "Glob"] } })
-        .to_string()
+    json!({ "permissions": { "defaultMode": "dontAsk", "allow": CHAT_TOOLS } }).to_string()
 }
 
 fn read_chat(roots: &StorageRoots, conn: &Connection, project: &str, chat: &str) -> Response {
@@ -1085,6 +1087,9 @@ fn turn_args(roots: &StorageRoots, place: &ChatPlace, chat: &Chat, n: i64) -> Ve
             .to_string(),
     ]);
     args.extend(["--permission-mode".to_string(), "dontAsk".to_string()]);
+    // The tools a chat has at all, so settings it inherits from the user or the project cannot widen them, and
+    // no MCP server from their configuration.
+    args.extend(["--tools".to_string(), CHAT_TOOLS.join(","), "--strict-mcp-config".to_string()]);
     args
 }
 

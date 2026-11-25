@@ -276,6 +276,22 @@ fn a_chat_is_created_and_each_message_is_a_claude_turn_in_the_main_checkout_whos
     assert_eq!(listed["chats"][0]["id"], chat.as_str());
 }
 
+#[test]
+fn a_turn_has_only_the_reading_tools_whatever_settings_and_servers_it_would_inherit() {
+    let s = setup("only-reading-tools");
+    git_repo(&s.scan, "alpha");
+    let chat = create_chat(&s, "alpha", json!({}));
+
+    say(&s, "alpha", &chat, "what is in the queue?");
+
+    let calls = calls(&s);
+    let (args, _, _) = &calls[0];
+    // A user's or project's settings allowing Bash or Write cannot widen what a chat may use.
+    assert_eq!(value_after(args, "--tools"), Some("Read,Grep,Glob"), "{args:?}");
+    // Nor can an MCP server from the project's or user's configuration.
+    assert!(args.contains(&"--strict-mcp-config".to_string()), "{args:?}");
+}
+
 fn project_id(repo: &Path) -> String {
     orq_git::project_id(&orq_git::resolve_project(repo).unwrap())
 }
