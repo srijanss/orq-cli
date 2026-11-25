@@ -67,7 +67,7 @@ fn edit_offers_the_options_and_save_asks_then_sends_the_choice_with_the_version(
     ]);
     let Some(out) = as_token(json!([settings(true, "sonnet"), options(), ok, settings(true, "gpt-5")]), steps) else { return };
     let frames = out["frames"].as_array().unwrap();
-    assert_eq!(count(&frames[1], "[data-agent-edit]"), 2, "both cards offer Edit: {out}");
+    assert_eq!(count(&frames[1], "[data-agent-edit]"), 3, "both cards and the Ask orq agent card offer Edit: {out}");
     assert_eq!(count(&frames[2], "[data-agent-harness]"), 1, "{out}");
     assert_eq!(count(&frames[2], "[data-agent-model]"), 1, "{out}");
     let reads: Vec<&Value> = out["requests"].as_array().unwrap().iter().filter(|r| r["url"] == "/api/settings/options").collect();
@@ -98,7 +98,7 @@ fn cancel_closes_the_editor_and_sends_nothing() {
     let Some(out) = as_token(json!([settings(true, "sonnet"), options()]), steps) else { return };
     assert!(posts(&out).is_empty(), "{out}");
     assert_eq!(count(last(&out), "[data-agent-harness]"), 0, "{out}");
-    assert_eq!(count(last(&out), "[data-agent-edit]"), 2, "{out}");
+    assert_eq!(count(last(&out), "[data-agent-edit]"), 3, "the implementer, reviewer and Ask orq agent cards: {out}");
 }
 
 #[test]

@@ -28,6 +28,35 @@ fn code_without_push() -> String {
         .replace("!!navigator.serviceWorker &&", "workerExists &&")
         .replace("navigator.serviceWorker.ready.then(", "workerReady.then(");
     assert!(!masked.contains("pushRequest(token, \""), "every push request names its method in one of the known forms");
+    ask_masked(&masked)
+}
+
+/// The code with Ask orq's own forms masked. Its address lines read and write only `?ask=<chat>`, away from the
+/// token. Its one stored value is the project picked outside a project, under its own key. Its one DELETE is sent
+/// through the action helper (a chat, or a rule allowed in it).
+fn ask_masked(code: &str) -> String {
+    const READ: &str = "const value = new URLSearchParams(window.location.search).get(ASK_PARAM);";
+    const PARAMS: &str = "const askParams = new URLSearchParams(window.location.search);";
+    const WRITE: &str = "if (next !== window.location.pathname + window.location.search + window.location.hash) window.history.replaceState(window.history.state, \"\", next);";
+    for line in [READ, PARAMS, WRITE] {
+        assert_eq!(code.matches(line).count(), 1, "Ask orq's address line appears once: {line}");
+    }
+    for name in ["function askFromAddress(", "function useAskAddress("] {
+        let body = code.split(name).nth(1).expect(name).split("\nfunction ").next().unwrap();
+        assert!(!body.to_lowercase().contains("token"), "{name} never sees the token");
+    }
+    const STORED: [&str; 3] = ["localStorage.getItem(ASK_PROJECT_KEY)", "localStorage.removeItem(ASK_PROJECT_KEY)", "localStorage.setItem(ASK_PROJECT_KEY, next)"];
+    for line in STORED {
+        assert_eq!(code.matches(line).count(), 1, "the picked project is kept once: {line}");
+    }
+    assert_eq!(code.matches("localStorage").count(), STORED.len(), "nothing else is kept in localStorage");
+    assert!(code.contains("const ASK_PROJECT_KEY = \"orq.ask.project\";"), "under its own key");
+    const DELETE: &str = "return sendAction(\"DELETE\", path, token, body);";
+    assert_eq!(code.matches(DELETE).count(), 1, "one DELETE, from deleteRequest");
+    let mut masked = code.replace(READ, "const value = askInAddress;").replace(PARAMS, "const askParams = askQuery;").replace(WRITE, "replaceAsk(next);").replace(DELETE, "return sendAction(askDelete, path, token, body);");
+    for line in STORED {
+        masked = masked.replace(line, &line.replace("localStorage", "askProjectStore"));
+    }
     masked
 }
 
@@ -68,7 +97,9 @@ fn the_token_never_reaches_a_url_a_log_or_the_history() {
     }
     // There are two fetches, a read and the confirmed action, and each takes the path it is given.
     assert_eq!(code.matches("fetch(").count(), 2);
-    assert!(code.contains("fetch(path, { method: \"GET\"") && code.contains("fetch(path, { method: \"POST\"") && code.contains("get(path, token"), "each fetch takes a path");
+    // The action fetch is sent with "POST" from actionRequest, or with Ask orq's masked DELETE.
+    assert!(code.contains("fetch(path, { method: \"GET\"") && code.contains("fetch(path, { method: method,") && code.contains("get(path, token"), "each fetch takes a path");
+    assert_eq!(code.matches("sendAction(").count(), 3, "sendAction is defined once and called by actionRequest and deleteRequest");
     // Every path is a fixed same-origin one, plus an encoded run id, with no query string.
     for call in code.split("<Loaded ").skip(1) {
         let target: String = call.split("path={").nth(1).unwrap().chars().take_while(|c| *c != '}').collect();
@@ -107,7 +138,7 @@ fn a_401_clears_the_token_and_asks_again_with_one_message_that_blames_neither_si
     for blamed in ["wrong", "invalid", "incorrect", "expired", "network", "offline", "unreachable", "timeout"] {
         assert!(!lower.contains(blamed), "the message says {blamed}: {message}");
     }
-    assert_eq!(code.matches("onSignedOut()").count(), 47, "used for a 401 on a page, on the project list, on the sidebar dropdown's list, on the combined features read, on the live stream, on an action, on a resume check, on the model switch's profiles read and its switch, on the launch picker's profiles read and its start, on a start of the marked features and its profiles read, on a promote of the marked features, on a settings change, on a passkey challenge, on the options read, on an agent save, on the feature editor's read and save, on the storage cleanup's preview and prune, and on the project settings' machine read, options read and save, and on the kept worktrees card's read, its delete of one and its delete of the merged ones, on a review action, and on queueing features, on the queue view's changes, its target pull retry and its read, and on the server restart and its cancel, on the Todo list's read and its changes, and on the Add feature popup's read of a project's features, on Draft with orq's options read, its start and on its Replace or Discard, and on the push of a target's commits' check and its push, and on the archive read, and on the design review's live read and its image reads, and on the design run page's post of a person's issues, never for a failed request");
+    assert_eq!(code.matches("onSignedOut()").count(), 54,"used for a 401 on a page, on the project list, on the sidebar dropdown's list, on the combined features read, on the live stream, on an action, on a resume check, on the model switch's profiles read and its switch, on the launch picker's profiles read and its start, on a start of the marked features and its profiles read, on a promote of the marked features, on a settings change, on a passkey challenge, on the options read, on an agent save, on the feature editor's read and save, on the storage cleanup's preview and prune, and on the project settings' machine read, options read and save, and on the kept worktrees card's read, its delete of one and its delete of the merged ones, on a review action, and on queueing features, on the queue view's changes, its target pull retry and its read, and on the server restart and its cancel, on the Todo list's read and its changes, and on the Add feature popup's read of a project's features, on Draft with orq's options read, its start and on its Replace or Discard, and on the push of a target's commits' check and its push, and on the archive read, and on the design review's live read and its image reads, and on the design run page's post of a person's issues, and on Ask orq's reads and its chat start, message, stop, allow, delete and rule removal, never for a failed request");
 }
 
 #[test]

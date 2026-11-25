@@ -3114,7 +3114,16 @@ function controlPath(control, tail) {
   return "/api/projects/" + encodeURIComponent(control.projectId) + "/" + tail;
 }
 
-async function actionRequest(path, token, body, method = "POST") {
+async function actionRequest(path, token, body) {
+  return sendAction("POST", path, token, body);
+}
+
+// Ask orq's two deletes (a chat, a rule allowed in it), sent like an action.
+async function deleteRequest(path, token, body) {
+  return sendAction("DELETE", path, token, body);
+}
+
+async function sendAction(method, path, token, body) {
   const headers = { "Content-Type": "application/json" };
   if (token === SESSION) {
     // Only a passkey session carries a CSRF token; a bearer token goes straight out.
@@ -3123,7 +3132,7 @@ async function actionRequest(path, token, body, method = "POST") {
   } else {
     headers.Authorization = "Bearer " + token;
   }
-  return fetch(path, { method, headers, body: JSON.stringify(body === undefined ? {} : body), cache: "no-store", referrerPolicy: "no-referrer" });
+  return fetch(path, { method: method, headers, body: JSON.stringify(body === undefined ? {} : body), cache: "no-store", referrerPolicy: "no-referrer" });
 }
 
 // With a check, the button first reads that path and asks question(reply), which says the question or null
@@ -8103,10 +8112,10 @@ function askFromAddress() {
 function useAskAddress(path) {
   const [ask, setAsk] = useState(askFromAddress);
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (ask === null) params.delete(ASK_PARAM);
-    else params.set(ASK_PARAM, ask);
-    const query = params.toString();
+    const askParams = new URLSearchParams(window.location.search);
+    if (ask === null) askParams.delete(ASK_PARAM);
+    else askParams.set(ASK_PARAM, ask);
+    const query = askParams.toString();
     const next = window.location.pathname + (query === "" ? "" : "?" + query) + window.location.hash;
     if (next !== window.location.pathname + window.location.search + window.location.hash) window.history.replaceState(window.history.state, "", next);
   }, [ask, path]);
@@ -8621,7 +8630,7 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
     setDeleting("sending");
     setDeleteNote("");
     try {
-      const response = await actionRequest(path, token, {}, "DELETE");
+      const response = await deleteRequest(path, token, {});
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -8640,7 +8649,7 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
     setRemoving({ rule, sending: true });
     setRuleNote("");
     try {
-      const response = await actionRequest(path + "/allow", token, { rule }, "DELETE");
+      const response = await deleteRequest(path + "/allow", token, { rule });
       if (response.status === 401) {
         onSignedOut();
         return;
@@ -8773,10 +8782,10 @@ function AskComposer({ sending, note, onSend, busy = null, initial = "" }) {
     <div className="ask-composer-wrap">
       {note !== "" ? <p role="alert" className="ask-reason">{note}</p> : null}
       {busy !== null ? <p className="ask-reason" data-ask-box-reason>{busy}</p> : null}
-      <form className="ask-composer" data-ask-composer onSubmit={(event) => { event.preventDefault(); submit(); }}>
+      <div className="ask-composer" data-ask-composer>
         <textarea ref={box} data-ask-input aria-label="Message orq" rows={1} value={text} disabled={sending || busy !== null} onKeyDown={key} onChange={(event) => setText(event.target.value)} />
-        <button type="submit" className="primary-button" data-ask-send disabled={sending || busy !== null || text.trim() === ""}>Send</button>
-      </form>
+        <button type="button" className="primary-button" data-ask-send disabled={sending || busy !== null || text.trim() === ""} onClick={submit}>Send</button>
+      </div>
     </div>
   );
 }

@@ -67,7 +67,7 @@ fn an_agent_is_edited_in_place_in_its_own_rows_and_save_asks_in_a_primary_confir
     let steps = vec![json!({"click": "[data-agent-edit=\"implementer\"]"}), json!({"click": "[data-agent-save]"})];
     let Some(out) = as_token(vec![settings(true), options()], steps) else { return };
     let frames = out["frames"].as_array().unwrap();
-    assert_eq!(count(&frames[1], SELECTORS[0]), 2, "both Edit buttons carry the pencil: {out}");
+    assert_eq!(count(&frames[1], SELECTORS[0]), 3, "every Edit button, the Ask orq agent's too, carries the pencil: {out}");
     assert_eq!(count(&frames[2], SELECTORS[1]), 1, "the harness is chosen in its own row: {out}");
     assert_eq!(count(&frames[2], SELECTORS[2]), 1, "the model is chosen in its own row: {out}");
     assert_eq!(count(&frames[2], SELECTORS[8]), 1, "{out}");

@@ -207,6 +207,10 @@ fn the_page_sends_only_gets_and_the_one_confirmed_action_post() {
         .replace("pushRequest(token, \"POST\"", "pushRequest(token, pushPost")
         .replace("pushRequest(token, \"GET\"", "pushRequest(token, pushGet");
     assert!(!code.contains("pushRequest(token, \""), "every push request names its method in one of the known forms");
+    // Ask orq's delete helper alone names DELETE, for a chat and a rule allowed in it (web_no_mutation_guard
+    // pins its two callers).
+    assert_eq!(code.matches("return sendAction(\"DELETE\", path, token, body);").count(), 1, "Ask orq's one delete site");
+    let code = code.replace("return sendAction(\"DELETE\", path, token, body);", "return sendAction(askDelete, path, token, body);");
     for banned in ["\"PUT\"", "\"DELETE\"", "\"PATCH\"", "FormData", "<form"] {
         assert!(!code.contains(banned), "{banned}");
     }

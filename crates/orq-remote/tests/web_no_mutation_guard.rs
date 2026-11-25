@@ -1,8 +1,9 @@
 //! The page offers exactly seventeen run and feature controls — start, start with chosen profiles, start marked, promote, promote marked, build a missing review report, pause, resume (also on a run waiting for design files), review again, add design issues, stop, discard, accept, merge an accepted merge-local run (through the accept route), queue a run's resume, review again or accept, set aside my changes and merge, clean up a merged run, and switch model — plus the feature editor, the storage cleanup, the kept worktrees' delete and the run queue's add, pause, resume, remove and reorder, each behind a confirmation,
 //! and a GitHub project's Push <target> of the sha it showed, never forced,
 //! and the Settings server card's restart when idle and its cancel, the Todo list's add, edit, delete and move,
-//! and a draft's queue wish, and the Archive completed action (a dry run, then the archive), and no other merge, nor any approve,
-//! restart or edit control or request.
+//! and a draft's queue wish, and the Archive completed action (a dry run, then the archive),
+//! and Ask orq's chat requests (make a chat, send a message, stop a reply, delete a chat, allow a refused call and
+//! remove an allowed rule), and no other merge, nor any approve, restart or edit control or request.
 
 fn code() -> String {
     std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/main.jsx")).unwrap()
@@ -160,5 +161,39 @@ fn the_page_has_only_the_start_start_with_promote_pause_resume_stop_discard_acce
     assert_eq!(code.matches("controlPath(control, ").count(), 27, "the definition, archive completed, the design files' Resume, the seven run actions with their own path, a merged run's clean up, the row's run path, queueing a run's action, the two checks, the profiles read, the model switch, add design issues, the launch picker, start marked, promote marked, the feature editor's read and save, queueing, the queue view's changes and its target pull retry are the only users");
     for banned in ["merge", "approve", "restart", "edit", "delete", "cancel"] {
         assert!(!rest.contains(&format!("\"/{banned}")) && !rest.contains(&format!("/{banned}\"")) && !rest.contains(&format!("/{banned}/")), "the page builds a {banned} request");
+    }
+}
+
+/// The calls `name`'s body makes to `actionRequest` (a POST) and `deleteRequest`, each up to its end, a delete
+/// written `DELETE <arguments>`.
+fn requests(code: &str, name: &str) -> Vec<String> {
+    let body = code.split(&format!("function {name}(")).nth(1).unwrap_or_else(|| panic!("{name}")).split("\nfunction ").next().unwrap();
+    let body = body.replace("deleteRequest(", "actionRequest(DELETE ");
+    body.split("actionRequest(").skip(1).map(|tail| tail.split(';').next().unwrap().to_string()).collect()
+}
+
+#[test]
+fn ask_orq_sends_only_the_chat_requests() {
+    let code = code();
+    // New chat makes the chat about the page, then sends its first message; nothing else.
+    assert_eq!(requests(&code, "AskDraft"), [
+        "chatsPath(projectId), token, { title: text, context })",
+        "chatsPath(projectId, \"/\" + encodeURIComponent(made.current) + \"/messages\"), token, { text })",
+    ]);
+    // An open chat stops its reply, deletes itself, removes or allows a rule and sends a message, all under its own path.
+    assert!(code.contains("const path = chatsPath(projectId, \"/\" + encodeURIComponent(chatId));"), "the chat's own path");
+    assert_eq!(requests(&code, "AskChat"), [
+        "path + \"/stop\", token, {})",
+        "DELETE path, token, {})",
+        "DELETE path + \"/allow\", token, { rule })",
+        "path + \"/allow\", token, { rule, scope, assertion: confirmed.assertion })",
+        "path + \"/messages\", token, { text })",
+    ]);
+    // Only an open chat deletes: itself, or a rule allowed in it.
+    assert_eq!(code.matches("deleteRequest(").count(), 3, "the helper and AskChat's two deletes");
+    // The chats' routes are built in one place, under the project's chats.
+    assert_eq!(code.matches("\"/chats\"").count(), 1, "chatsPath alone builds the chats route");
+    for name in ["AskPanel", "AskChatList", "AskComposer", "AskItem", "AskRefused", "useAskProject"] {
+        assert!(requests(&code, name).is_empty(), "{name} sends nothing");
     }
 }
