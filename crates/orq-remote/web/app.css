@@ -232,7 +232,8 @@ input, select, textarea { max-width: 100%; }
 a { color: var(--accent); }
 /* One layout for every button: its icon and label in one centred row, 0.375rem apart. Primary, secondary and
    danger buttons only change the colours. */
-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0 0.875rem; font: inherit; font-size: 0.9375rem; font-weight: 600; cursor: pointer; }input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.75rem; box-sizing: border-box; font: inherit; }
+button { display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0 0.875rem; font: inherit; font-size: 0.9375rem; font-weight: 600; cursor: pointer; }
+input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: 44px; padding: 0 0.75rem; box-sizing: border-box; font: inherit; }
 /* A text area is an input that grows: the same tokens, about four lines tall, resized only in height. */
 textarea { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; min-height: calc(4 * 1.5em + 1rem); padding: 0.5rem 0.75rem; box-sizing: border-box; font: inherit; line-height: 1.5; resize: vertical; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 0.75rem 1rem; }
