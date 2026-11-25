@@ -546,6 +546,27 @@ pub fn design_fix_task(
     task
 }
 
+/// What a design fix task and the design code review of a feature with a design `scope` are told, so
+/// they keep to the components the design review judged: `None` when the feature builds the whole page.
+pub fn design_scope_note(scope: &crate::design_package::DesignScope) -> Option<String> {
+    let components = scope.components.as_ref()?;
+    let mut note = format!(
+        "\nDesign scope: this feature builds only the components {} of the shared design package \
+         designs/{}/ (their ### sections of its DESIGN.md, in the worktree's .orq-design/); the rest of \
+         the package is context, and components not built yet are another feature's work, so leave them alone.",
+        components.join(", "),
+        scope.package
+    );
+    if !scope.done.is_empty() {
+        note.push_str(&format!(
+            " The components already done ({}) must not regress.",
+            scope.done.join(", ")
+        ));
+    }
+    note.push('\n');
+    Some(note)
+}
+
 /// The line a fix task gets when some of its `issues` are the person's (basis `person`): they come first,
 /// and where one contradicts a line of the design package, the person's issue wins for this run.
 fn person_note(issues: &[ReviewIssue]) -> &'static str {

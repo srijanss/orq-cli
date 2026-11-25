@@ -1589,6 +1589,29 @@ fn feature_specs(ledger: &Path, features: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The design scope `feature`'s ledger description names (`Design package:` and `Design components:` lines).
+/// `None` without the lines (the package is the feature's own folder, the whole page), or without a description.
+fn ledger_design_scope(ledger: &Path, feature: &str) -> Result<Option<orq_orchestrator::DesignScope>, String> {
+    let specs = feature_specs(ledger, &[feature.to_string()]);
+    let description = specs.first().map(|(_, spec)| spec.as_str());
+    orq_orchestrator::design_scope(feature, description)
+}
+
+/// `task` with the run's frozen design scope appended, so a fix or code review session is told the same
+/// components as the design review.
+fn with_design_scope(task: &str, logs: &Path) -> String {
+    match orq_orchestrator::frozen_design_scope(logs).as_ref().and_then(orq_orchestrator::design_scope_note) {
+        Some(note) => format!("{task}{note}"),
+        None => task.to_string(),
+    }
+}
+
+/// The name of the run's package folder under `designs/`: the shared package its frozen scope records, else
+/// `feature`'s own.
+fn package_name(logs: &Path, feature: &str) -> String {
+    orq_orchestrator::frozen_design_scope(logs).map_or_else(|| feature.to_string(), |scope| scope.package)
+}
+
 /// A file whose change is normal whatever the features declare: an existing test under a `tests/`
 /// directory, a lockfile, or the TDD workflow's own records (`.tdd-*`, such as its ledger and log).
 fn exempt(file: &str) -> bool {
@@ -2548,7 +2571,7 @@ fn stages(
         // Each part of a correction round is a fix session of its own, with the part's task (the whole
         // round's task when the round is one part).
         let correct = |batch: u32, part: &orq_orchestrator::CorrectionPart| {
-            let task = &part.task;
+            let task = &with_design_scope(&part.task, logs);
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
             let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-fix.done"));
             let args = adapter_for(&options.implementer.harness)
@@ -2590,6 +2613,7 @@ fn stages(
             let Some(task) = orq_orchestrator::design_code_review_task(&skill, from, &reviewer_options, batch) else {
                 return Ok(orq_orchestrator::CorrectionOutcome::Stopped(format!("design correction round {batch} recorded no head to review its fix commits from")));
             };
+            let task = with_design_scope(&task, logs);
             let allowed_commands = recheck_permissions(store, record, settings, logs)?;
             let marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("design-code-review.done"));
             let args = adapter_for(&options.implementer.harness)
@@ -2632,7 +2656,7 @@ fn stages(
             };
             refreeze_package(&run, requested)
         };
-        let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, feature: &options.features[0], review: &review, correct: &correct, review_code: &review_code, refreeze: &refreeze };
+        let mut steps = PipelineDesignSteps { worktree, max_correction_rounds: max, feature: &options.features[0], run_logs: logs, review: &review, correct: &correct, review_code: &review_code, refreeze: &refreeze };
         match design_loop_ending(orq_orchestrator::run_design_loop(store, run_id, max, &mut steps)?) {
             None => Ok(None),
             Some((ending, text)) => stopped(ending, text).map(Some),
@@ -2941,7 +2965,11 @@ fn design_package(
         orq_orchestrator::record_design_package(store, run_id, "design.files_needed", serde_json::json!({"feature": needed.feature, "files": files}))?;
         stopped(Ending::DesignFilesNeeded, needed.message()).map(Some)
     };
-    match orq_orchestrator::resume_design_package(&run) {
+    let scope = match ledger_design_scope(&orq_features::ledger_path(options.project), &options.features[0]) {
+        Ok(scope) => scope,
+        Err(reason) => return stopped(Ending::Failed, format!("the design package cannot be used: {reason}")).map(Some),
+    };
+    match orq_orchestrator::resume_design_package_scoped(&run, scope.as_ref()) {
         orq_orchestrator::DesignPackageOutcome::Frozen(manifest) => {
             // Infer mode: the design preparer writes what the package lacks before the implementer.
             if design.mode == orq_orchestrator::DesignMode::Infer {
@@ -3019,7 +3047,8 @@ fn design_loop_ending(outcome: orq_orchestrator::DesignLoopOutcome) -> Option<(E
 /// Checks the package anew for a run its design review paused for files, which goes on only once each
 /// file asked for (`requested`) is there, and freezes it.
 fn refreeze_package(run: &orq_orchestrator::DesignPackageRun, requested: &orq_orchestrator::DesignFilesNeeded) -> orq_orchestrator::Refreeze {
-    refreeze_of(orq_orchestrator::refreeze_design_package(run, requested))
+    // The scope the run's package was frozen with stays the one checked anew.
+    refreeze_of(orq_orchestrator::refreeze_design_package_scoped(run, requested, None))
 }
 
 /// What the package checked anew on resume means for the design loop.
@@ -3040,6 +3069,8 @@ struct PipelineDesignSteps<'a> {
     max_correction_rounds: u32,
     /// The feature whose package folder the design comes from.
     feature: &'a str,
+    /// The run's logs, where a shared package's frozen scope is recorded.
+    run_logs: &'a Path,
     /// A review of round `n`, given the person's issues the run holds so far.
     review: &'a dyn Fn(u32, &[orq_orchestrator::PersonGrant]) -> orq_orchestrator::DesignReviewOutcome,
     correct: &'a dyn Fn(u32, &orq_orchestrator::CorrectionPart) -> Result<orq_orchestrator::CorrectionOutcome, StoreError>,
@@ -3090,8 +3121,9 @@ impl orq_orchestrator::DesignLoopSteps for PipelineDesignSteps<'_> {
         (self.review_code)(batch, from)
     }
 
+    /// The package folder's name: the shared package the run was frozen with, else the feature's own.
     fn package_feature(&mut self) -> Option<String> {
-        Some(self.feature.to_string())
+        Some(package_name(self.run_logs, self.feature))
     }
 
     fn refreeze(&mut self, requested: &orq_orchestrator::DesignFilesNeeded) -> Result<orq_orchestrator::Refreeze, StoreError> {
@@ -3478,6 +3510,52 @@ mod tests {
         // An unreadable ledger gives no specs rather than failing the run.
         assert!(super::feature_specs(&dir.join("missing.json"), &features).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_features_design_scope_comes_from_its_ledger_description() {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-design-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join(".tdd-features.json");
+        std::fs::write(
+            &ledger,
+            r#"[{"featureName":"home-process","description":"Build it.\nDesign package: home\nDesign components: H02, H03\nDesign components done: H01","status":"pending"},{"featureName":"plain","description":"no design lines","status":"pending"},{"featureName":"bad","description":"Design package: two words","status":"pending"}]"#,
+        )
+        .unwrap();
+        let scope = super::ledger_design_scope(&ledger, "home-process").unwrap().unwrap();
+        assert_eq!(scope.package, "home");
+        assert_eq!(scope.components, Some(vec!["H02".to_string(), "H03".to_string()]));
+        assert_eq!(scope.done, vec!["H01".to_string()]);
+        // Without the lines, or without a description, nothing changes.
+        assert_eq!(super::ledger_design_scope(&ledger, "plain").unwrap(), None);
+        assert_eq!(super::ledger_design_scope(&ledger, "gone").unwrap(), None);
+        // A line that cannot be read stops the run with the reason.
+        assert!(super::ledger_design_scope(&ledger, "bad").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_features_design_scope_comes_from_its_ledger_description_and_reaches_the_fix_tasks_and_package_folder() {
+        let logs = orq_test_support::process_temp_dir().join(format!("orq-design-scope-logs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&logs);
+        std::fs::create_dir_all(&logs).unwrap();
+        // Without a frozen scope the task and the folder are as before.
+        assert_eq!(super::with_design_scope("fix it", &logs), "fix it");
+        assert_eq!(super::package_name(&logs, "home-process"), "home-process");
+        let scope = orq_orchestrator::DesignScope {
+            feature: "home-process".to_string(),
+            package: "home".to_string(),
+            components: Some(vec!["H02".to_string()]),
+            done: vec!["H01".to_string()],
+        };
+        std::fs::create_dir_all(logs.join("design")).unwrap();
+        std::fs::write(logs.join("design/scope.json"), serde_json::to_string(&scope).unwrap()).unwrap();
+        let task = super::with_design_scope("fix it", &logs);
+        assert!(task.starts_with("fix it"), "{task}");
+        assert!(task.contains("H02") && task.contains("designs/home/") && task.contains("H01"), "{task}");
+        assert_eq!(super::package_name(&logs, "home-process"), "home");
+        let _ = std::fs::remove_dir_all(&logs);
     }
 
     fn record_in(worktree: std::path::PathBuf) -> orq_orchestrator::RunRecord {

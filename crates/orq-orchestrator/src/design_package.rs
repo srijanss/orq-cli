@@ -15,6 +15,8 @@ const DESIGNS_DIR: &str = "designs";
 const RUN_DESIGN_DIR: &str = "design";
 const PACKAGE_DIR: &str = "package";
 const MANIFEST_FILE: &str = "manifest.json";
+/// Under the run's design folder: the feature and the scope its package was frozen for.
+const SCOPE_FILE: &str = "scope.json";
 /// The implementer's read-only copy, in the worktree.
 const WORKTREE_COPY_DIR: &str = ".orq-design";
 
@@ -139,9 +141,187 @@ impl DesignFilesNeeded {
     }
 }
 
+/// A feature's part of a package shared by several features, from its ledger description's
+/// `Design package: <name>`, `Design components: <ids>|all` and `Design components done: <ids>` lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignScope {
+    /// The feature the package is frozen for.
+    pub feature: String,
+    /// The package folder's name: `designs/<package>/`.
+    pub package: String,
+    /// The ids of the components the feature builds; `None` for the whole page (`all`).
+    pub components: Option<Vec<String>>,
+    /// The ids of the components already done: checked for regressions only.
+    pub done: Vec<String>,
+}
+
+const PACKAGE_LINE: &str = "Design package:";
+const COMPONENTS_LINE: &str = "Design components:";
+const DONE_LINE: &str = "Design components done:";
+
+/// A plain word: ASCII letters, digits, `-` and `_`, not empty.
+fn plain_word(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// The ids a components line lists, comma-separated, each a plain word.
+fn component_ids(line: &str, value: &str) -> Result<Vec<String>, String> {
+    let ids: Vec<String> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
+        return Err(format!("the line {line:?} names no component"));
+    }
+    if let Some(id) = ids.iter().find(|id| !plain_word(id)) {
+        return Err(format!(
+            "the line {line:?} names {id:?}, which is not a component id (a plain word)"
+        ));
+    }
+    Ok(ids)
+}
+
+/// The feature's design scope, read from its ledger `description`: `None` when it has none of the
+/// design lines, so the package is `designs/<feature>/` and the whole page is reviewed. A line that
+/// can't be read is refused, naming it.
+pub fn design_scope(
+    feature: &str,
+    description: Option<&str>,
+) -> Result<Option<DesignScope>, String> {
+    let mut package: Option<String> = None;
+    let mut components: Option<Option<Vec<String>>> = None;
+    let mut done: Vec<String> = Vec::new();
+    let mut found = false;
+    for line in description.unwrap_or_default().lines().map(str::trim) {
+        if let Some(value) = line.strip_prefix(PACKAGE_LINE).map(str::trim) {
+            found = true;
+            if !plain_word(value) {
+                return Err(format!(
+                    "the line {line:?} does not name a design package by a plain word (letters, digits, - and _)"
+                ));
+            }
+            if package.as_deref().is_some_and(|named| named != value) {
+                return Err(format!(
+                    "the description names two design packages, {} and {value}",
+                    package.unwrap_or_default()
+                ));
+            }
+            package = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix(DONE_LINE).map(str::trim) {
+            found = true;
+            for id in component_ids(line, value)? {
+                if !done.contains(&id) {
+                    done.push(id);
+                }
+            }
+        } else if let Some(value) = line.strip_prefix(COMPONENTS_LINE).map(str::trim) {
+            found = true;
+            let ids = if value == "all" {
+                None
+            } else {
+                Some(component_ids(line, value)?)
+            };
+            if components.as_ref().is_some_and(|named| named != &ids) {
+                return Err("the description has two different Design components lines".to_string());
+            }
+            components = Some(ids);
+        }
+    }
+    Ok(found.then(|| DesignScope {
+        feature: feature.to_string(),
+        package: package.unwrap_or_else(|| feature.to_string()),
+        components: components.flatten(),
+        done,
+    }))
+}
+
+/// The scope the run's package was frozen for, from the run's `design/scope.json`; `None` when it was
+/// frozen for the feature's own whole page, or not yet.
+pub fn frozen_design_scope(run_logs: &Path) -> Option<DesignScope> {
+    let bytes = std::fs::read(run_logs.join(RUN_DESIGN_DIR).join(SCOPE_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The components of a DESIGN.md: each `###` heading's leading word, with its section (the heading
+/// and what follows it up to the next heading of level 3 or above), in the document's order.
+pub fn design_components(design: &str) -> Vec<(String, String)> {
+    let level = |line: &str| {
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        (hashes > 0 && line[hashes..].starts_with([' ', '\t'])).then_some(hashes)
+    };
+    let mut components: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for line in design.lines() {
+        match level(line) {
+            Some(hashes) if hashes <= 3 => {
+                components.extend(current.take());
+                if hashes == 3 {
+                    if let Some(id) = line[3..].split_whitespace().next() {
+                        current = Some((id.to_string(), format!("{line}\n")));
+                    }
+                }
+            }
+            _ => {
+                if let Some((_, section)) = current.as_mut() {
+                    section.push_str(line);
+                    section.push('\n');
+                }
+            }
+        }
+    }
+    components.extend(current);
+    components
+}
+
+/// The problem with `scope` for the package's DESIGN.md: an id it names that DESIGN.md has no `###`
+/// component for, named with the ids DESIGN.md has.
+fn scope_problem(scope: &DesignScope, design_text: Option<&str>) -> Option<String> {
+    let has: Vec<String> = design_components(design_text.unwrap_or_default())
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let named = scope.components.iter().flatten().chain(&scope.done);
+    let unknown: Vec<&String> = named.filter(|id| !has.contains(id)).collect();
+    if unknown.is_empty() {
+        return None;
+    }
+    let ids: Vec<&str> = unknown.iter().map(|id| id.as_str()).collect();
+    let listed = if has.is_empty() {
+        "none".to_string()
+    } else {
+        has.join(", ")
+    };
+    Some(format!(
+        "{} names the component {}, which {DESIGN_DOC} of {DESIGNS_DIR}/{} has no ### section for (it has {listed})",
+        scope.feature,
+        ids.join(", "),
+        scope.package
+    ))
+}
+
+/// The package's folder name: the scope's package, or the run's feature.
+fn package_name<'a>(run: &'a DesignPackageRun, scope: Option<&'a DesignScope>) -> &'a str {
+    scope.map_or(run.feature, |scope| scope.package.as_str())
+}
+
 /// Checks the feature's package in the main checkout and freezes it for the run.
 pub fn start_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
-    let dir = match package_folder(run) {
+    start_design_package_scoped(run, None)
+}
+
+/// [`start_design_package`] for a feature with a design `scope`: the package is `designs/<package>/`,
+/// every component id the scope names must be one of DESIGN.md's, and the frozen copy records the scope.
+pub fn start_design_package_scoped(
+    run: &DesignPackageRun,
+    scope: Option<&DesignScope>,
+) -> DesignPackageOutcome {
+    let name = package_name(run, scope);
+    let dir = match package_folder(run, name) {
         Ok(dir) => dir,
         Err(problems) => return DesignPackageOutcome::Refused(problems),
     };
@@ -160,21 +340,23 @@ pub fn start_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
     let has_reference = scanned
         .as_ref()
         .is_some_and(|s| s.manifest.files.iter().any(|file| file.kind == "reference"));
-    let request = files_needed(run, &missing, has_reference);
+    let request = files_needed(run, name, &missing, has_reference);
     let Some(scanned) = scanned.filter(|_| has_reference && request.files.is_empty()) else {
         // The person is shown where the files go.
         for sub in ["references", "assets"] {
             if let Err(e) = std::fs::create_dir_all(dir.join(sub)) {
                 return DesignPackageOutcome::Refused(vec![format!(
-                    "{DESIGNS_DIR}/{}/{sub} could not be created ({:?})",
-                    run.feature,
+                    "{DESIGNS_DIR}/{name}/{sub} could not be created ({:?})",
                     e.kind()
                 )]);
             }
         }
         return DesignPackageOutcome::FilesNeeded(request);
     };
-    match freeze(run, &scanned) {
+    if let Some(problem) = scope.and_then(|scope| scope_problem(scope, scanned.design_text())) {
+        return DesignPackageOutcome::Refused(vec![problem]);
+    }
+    match freeze(run, &scanned, scope) {
         Ok(()) => DesignPackageOutcome::Frozen(scanned.manifest),
         Err(problem) => DesignPackageOutcome::Refused(vec![problem]),
     }
@@ -187,6 +369,18 @@ pub fn refreeze_design_package(
     run: &DesignPackageRun,
     requested: &DesignFilesNeeded,
 ) -> DesignPackageOutcome {
+    refreeze_design_package_scoped(run, requested, None)
+}
+
+/// [`refreeze_design_package`] for a feature with a design `scope`; the scope the package was frozen
+/// for before, when there is one, is kept.
+pub fn refreeze_design_package_scoped(
+    run: &DesignPackageRun,
+    requested: &DesignFilesNeeded,
+    scope: Option<&DesignScope>,
+) -> DesignPackageOutcome {
+    let frozen = frozen_design_scope(run.run_logs);
+    let scope = frozen.as_ref().or(scope);
     let missing: Vec<NeededFile> = requested
         .files
         .iter()
@@ -202,17 +396,28 @@ pub fn refreeze_design_package(
             files: missing,
         });
     }
-    start_design_package(run)
+    start_design_package_scoped(run, scope)
 }
 
 /// Checks the package again when a paused run resumes. A run that froze its package goes on only
 /// while the main checkout's package is still the one frozen; a run still waiting for design files
 /// checks the folder again as if it were starting.
 pub fn resume_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
+    resume_design_package_scoped(run, None)
+}
+
+/// [`resume_design_package`] for a feature with a design `scope`. A package frozen for the run keeps the
+/// scope it was frozen for: `scope` is used only when the package is checked as if starting.
+pub fn resume_design_package_scoped(
+    run: &DesignPackageRun,
+    scope: Option<&DesignScope>,
+) -> DesignPackageOutcome {
     let saved = run.run_logs.join(RUN_DESIGN_DIR).join(MANIFEST_FILE);
     let text = match std::fs::read(&saved) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return start_design_package(run),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return start_design_package_scoped(run, scope)
+        }
         Err(e) => {
             return DesignPackageOutcome::Refused(vec![format!(
                 "the run's design manifest could not be read ({:?})",
@@ -228,9 +433,11 @@ pub fn resume_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
             )])
         }
     };
-    let current = package_folder(run).and_then(|dir| {
+    let frozen_scope = frozen_design_scope(run.run_logs);
+    let name = package_name(run, frozen_scope.as_ref());
+    let current = package_folder(run, name).and_then(|dir| {
         if std::fs::symlink_metadata(&dir).is_err() {
-            return Err(vec![format!("{DESIGNS_DIR}/{} is gone", run.feature)]);
+            return Err(vec![format!("{DESIGNS_DIR}/{name} is gone")]);
         }
         scan(&dir, run)
     });
@@ -246,9 +453,8 @@ pub fn resume_design_package(run: &DesignPackageRun) -> DesignPackageOutcome {
         Err(problems) => problems.join("; "),
     };
     DesignPackageOutcome::Changed(format!(
-        "the design package changed since this run started: {DESIGNS_DIR}/{} is not the package \
-         frozen for the run ({now}). Put the package back as it was, or start a new run to use the new one.",
-        run.feature
+        "the design package changed since this run started: {DESIGNS_DIR}/{name} is not the package \
+         frozen for the run ({now}). Put the package back as it was, or start a new run to use the new one."
     ))
 }
 
@@ -296,10 +502,11 @@ fn missing_pieces(
 /// reviewed by the rules alone, so only a package with no reference at all is asked for one.
 fn files_needed(
     run: &DesignPackageRun,
+    name: &str,
     missing: &MissingPieces,
     has_reference: bool,
 ) -> DesignFilesNeeded {
-    let at = |path: &str| format!("{DESIGNS_DIR}/{}/{path}", run.feature);
+    let at = |path: &str| format!("{DESIGNS_DIR}/{name}/{path}");
     let mut files = Vec::new();
     let viewports: &[String] = if run.settings.mode == DesignMode::Infer && has_reference {
         &[]
@@ -347,25 +554,33 @@ struct Scanned {
     contents: Vec<(String, Vec<u8>)>,
 }
 
-/// `designs/<feature>` in the main checkout, refused when it or `designs` is a symlink.
-fn package_folder(run: &DesignPackageRun) -> Result<PathBuf, Vec<String>> {
-    let plain = !run.feature.is_empty()
-        && !run.feature.starts_with('.')
-        && run
-            .feature
+impl Scanned {
+    /// The package's DESIGN.md, as text.
+    fn design_text(&self) -> Option<&str> {
+        self.contents
+            .iter()
+            .find(|(path, _)| path == DESIGN_DOC)
+            .and_then(|(_, bytes)| std::str::from_utf8(bytes).ok())
+    }
+}
+
+/// `designs/<name>` in the main checkout, refused when it or `designs` is a symlink.
+fn package_folder(run: &DesignPackageRun, name: &str) -> Result<PathBuf, Vec<String>> {
+    let plain = !name.is_empty()
+        && !name.starts_with('.')
+        && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     if !plain {
         return Err(vec![format!(
-            "{:?} is not a usable design package name: designs/<feature> must stay inside the designs folder",
-            run.feature
+            "{name:?} is not a usable design package name: designs/<feature> must stay inside the designs folder"
         )]);
     }
     let designs = run.main_checkout.join(DESIGNS_DIR);
-    let dir = designs.join(run.feature);
+    let dir = designs.join(name);
     for (path, shown) in [
         (&designs, DESIGNS_DIR.to_string()),
-        (&dir, format!("{DESIGNS_DIR}/{}", run.feature)),
+        (&dir, format!("{DESIGNS_DIR}/{name}")),
     ] {
         if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
             return Err(vec![format!(
@@ -1489,7 +1704,11 @@ fn package_hash(files: &[ManifestFile]) -> String {
 
 /// Writes the package into the run's logs and the worktree's copy, then the manifest. The
 /// manifest is what marks the package frozen, so it is published last, once every copy is whole.
-fn freeze(run: &DesignPackageRun, scanned: &Scanned) -> Result<(), String> {
+fn freeze(
+    run: &DesignPackageRun,
+    scanned: &Scanned,
+    scope: Option<&DesignScope>,
+) -> Result<(), String> {
     let design = run.run_logs.join(RUN_DESIGN_DIR);
     let manifest = design.join(MANIFEST_FILE);
     match std::fs::remove_file(&manifest) {
@@ -1504,6 +1723,26 @@ fn freeze(run: &DesignPackageRun, scanned: &Scanned) -> Result<(), String> {
     write_tree(&design.join(PACKAGE_DIR), scanned, false)
         .map_err(|e| format!("the design package could not be frozen: {e}"))?;
     copy_to_worktree(run, scanned)?;
+    // The feature and its scope, recorded with the frozen copy; a package frozen for its own feature's
+    // whole page records none.
+    let scope_file = design.join(SCOPE_FILE);
+    match scope {
+        Some(scope) => {
+            let json = serde_json::to_vec_pretty(scope)
+                .map_err(|e| format!("the design scope could not be written ({e})"))?;
+            std::fs::write(&scope_file, json)
+                .map_err(|e| format!("the design scope could not be written ({:?})", e.kind()))?;
+        }
+        None => match std::fs::remove_file(&scope_file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "the old design scope could not be removed ({:?})",
+                    e.kind()
+                ))
+            }
+            _ => {}
+        },
+    }
     let json = serde_json::to_vec_pretty(&scanned.manifest)
         .map_err(|e| format!("the design manifest could not be written ({e})"))?;
     // Written whole under another name, then renamed into place.

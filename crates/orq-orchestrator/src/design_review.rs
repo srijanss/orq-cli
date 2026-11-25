@@ -414,6 +414,74 @@ struct ReviewContext {
     /// The viewports with no reference (infer mode): judged by DESIGN.md, UX.md and RESPONSIVE.md
     /// alone, so an issue for one stands only on a rule.
     rules_only: Vec<String>,
+    /// The components the feature builds, when its package is shared and it builds only some.
+    scope: Option<ReviewScope>,
+}
+
+/// A design review scoped to some of the package's components.
+struct ReviewScope {
+    /// The ids of the components the feature builds.
+    components: Vec<String>,
+    /// Their sections of DESIGN.md, as written.
+    sections: Vec<String>,
+    /// The ids of the components already done: checked for regressions only.
+    done: Vec<String>,
+    /// Every component id DESIGN.md has.
+    known: Vec<String>,
+}
+
+impl ReviewScope {
+    /// The scope the run's package was frozen for, with DESIGN.md's sections; `None` for the whole page.
+    fn read(run_logs: &Path, design_dir: &Path) -> Option<ReviewScope> {
+        let scope = crate::design_package::frozen_design_scope(run_logs)?;
+        let components = scope.components?;
+        let design = std::fs::read_to_string(design_dir.join(PACKAGE_DIR).join("DESIGN.md"))
+            .unwrap_or_default();
+        let all = crate::design_package::design_components(&design);
+        let sections = components
+            .iter()
+            .filter_map(|id| all.iter().find(|(known, _)| known == id))
+            .map(|(_, section)| section.clone())
+            .collect();
+        Some(ReviewScope {
+            components,
+            sections,
+            done: scope.done,
+            known: all.into_iter().map(|(id, _)| id).collect(),
+        })
+    }
+
+    /// Why `issue` is outside the scope, if it is: it names a component the feature does not build
+    /// and that is not a regression of a done one, or names none and is no regression.
+    fn outside(&self, issue: &ReviewIssue) -> Option<String> {
+        let named = issue
+            .section
+            .split_whitespace()
+            .next()
+            .map(|word| word.trim_end_matches([':', ',', '.', ';']))
+            .filter(|word| self.known.iter().any(|id| id == word));
+        let regression = issue.status != IssueStatus::Open;
+        match named {
+            Some(id) if self.components.iter().any(|c| c == id) => None,
+            Some(id) if self.done.iter().any(|d| d == id) && regression => None,
+            Some(id) if self.done.iter().any(|d| d == id) => Some(format!(
+                "the issue {:?} is for the done component {id} but is not a regression",
+                issue.id
+            )),
+            Some(id) => Some(format!(
+                "the issue {:?} is for the component {id}, outside this feature's components ({})",
+                issue.id,
+                self.components.join(", ")
+            )),
+            None if regression => None,
+            None => Some(format!(
+                "the issue {:?} names no component of this feature ({}) in its section {:?}",
+                issue.id,
+                self.components.join(", "),
+                issue.section
+            )),
+        }
+    }
 }
 
 /// The binding documents (DESIGN.md, UX.md, RESPONSIVE.md) and token files of the frozen package
@@ -654,6 +722,7 @@ fn reviewed_round(
         token_issues: token_issues.iter().map(|issue| issue.id.clone()).collect(),
         person,
         rules_only: rules_only.clone(),
+        scope: ReviewScope::read(run.run_logs, design_dir),
     };
     let named = |mut result: RoundResult| {
         result.rules_only = rules_only.clone();
@@ -892,6 +961,7 @@ impl PairReview {
                 token_issues: Vec::new(),
                 person: Vec::new(),
                 rules_only: Vec::new(),
+                scope: None,
             },
         })
     }
@@ -954,6 +1024,9 @@ fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext)
             context.rules_only.join(", ")
         ));
     }
+    if let Some(scope) = &context.scope {
+        prompt.push_str(&scope_prompt(scope));
+    }
     let measurements = format!("round-{}/{MEASUREMENTS_FILE}", context.round);
     if context.design_dir.join(&measurements).is_file() {
         prompt.push_str(&format!("Measured CSS and DOM: {measurements}\n"));
@@ -998,6 +1071,38 @@ fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext)
         skill, schema
     ));
     prompt
+}
+
+/// What a scoped review is told: its components' sections of DESIGN.md as the scope, the rest of the
+/// package as context, the components already done, and which issues orq keeps.
+fn scope_prompt(scope: &ReviewScope) -> String {
+    let ids = scope.components.join(", ");
+    let mut text = format!(
+        "\nScope: components {ids}. This feature builds only these components of a page built component \
+         by component; their sections of DESIGN.md, quoted:\n<<<\n{}>>>\nThe rest of the design package \
+         is context for them, not this feature's work: components not built yet are expected to be missing.\n",
+        scope.sections.concat()
+    );
+    if !scope.done.is_empty() {
+        text.push_str(&format!(
+            "Design components done: {} (built by earlier features: report an issue for one only when \
+             it regressed, with status \"regressed\").\n",
+            scope.done.join(", ")
+        ));
+    }
+    text.push_str(&format!(
+        "Report issues only for {ids}{}. Every issue's \"section\" starts with its component id (as \
+         \"{} …\"). Parts of the page outside every ### component (protected or existing) are checked for \
+         regressions only, as an issue with status \"regressed\" whose section names no component. Orq \
+         drops any other issue as invalid data.\n",
+        if scope.done.is_empty() {
+            ""
+        } else {
+            ", and regressions of the done components"
+        },
+        scope.components.first().map_or("H01", String::as_str),
+    ));
+    text
 }
 
 /// A one-shot, read-only session of the agent's harness, the images attached (pi) or named for
@@ -1158,6 +1263,21 @@ fn check_review(
         }
         !invalid
     });
+    // A scoped review reports only its components, and regressions: any other issue is invalid data.
+    if let Some(scope) = &context.scope {
+        review.issues.retain(|issue| {
+            if context.person.iter().any(|given| given.id == issue.id) {
+                return true;
+            }
+            match scope.outside(issue) {
+                Some(why) => {
+                    dropped.push(why);
+                    false
+                }
+                None => true,
+            }
+        });
+    }
     for (field, given, expected) in [
         ("run_id", &review.run_id, &context.run_id),
         (

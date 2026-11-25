@@ -91,15 +91,17 @@ pub use design_infer::{
 };
 pub use design_loop::{
     carry_design, check_design_person_issues, design_code_review_task, design_fix_task,
-    design_round_label, design_run_viewports, plan_correction_parts, record_design_package,
-    record_design_person_issues, run_design_code_review, run_design_correction,
-    run_design_correction_part, run_design_loop, CorrectionOutcome, CorrectionPart,
-    DesignLoopOutcome, DesignLoopSteps, Refreeze, DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE,
-    DESIGN_FIX_TASK_LIMIT, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE,
+    design_round_label, design_run_viewports, design_scope_note, plan_correction_parts,
+    record_design_package, record_design_person_issues, run_design_code_review,
+    run_design_correction, run_design_correction_part, run_design_loop, CorrectionOutcome,
+    CorrectionPart, DesignLoopOutcome, DesignLoopSteps, Refreeze, DESIGN_CODE_REVIEW_STAGE,
+    DESIGN_FIX_STAGE, DESIGN_FIX_TASK_LIMIT, DESIGN_PACKAGE_STAGE, DESIGN_REVIEW_STAGE,
 };
 pub use design_package::{
-    refreeze_design_package, resume_design_package, start_design_package, AssignedViewport,
-    DesignFilesNeeded, DesignManifest, DesignPackageOutcome, DesignPackageRun, ManifestFile,
+    design_components, design_scope, frozen_design_scope, refreeze_design_package,
+    refreeze_design_package_scoped, resume_design_package, resume_design_package_scoped,
+    start_design_package, start_design_package_scoped, AssignedViewport, DesignFilesNeeded,
+    DesignManifest, DesignPackageOutcome, DesignPackageRun, DesignScope, ManifestFile,
     MissingPieces, NeededFile, PackageLimits,
 };
 pub use design_review::{
