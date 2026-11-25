@@ -321,8 +321,9 @@ fn run(args: &[OsString]) -> ExitCode {
     };
     // Audited before the address is announced, so whoever waits for it finds the line.
     let restarted = note_restarted(&state_roots, &listen_key);
-    println!("orq remote: listening on http://{}", server.addr());
+    // Its file is written before the address is printed, so `orq serve restart` run by whoever waited finds it.
     let announced = announce_server(&state_roots, &server.addr().to_string());
+    println!("orq remote: listening on http://{}", server.addr());
     start_database_snapshots(state_roots.data.clone());
     if let Some(auth) = &auth {
         println!("passkeys: sign in at {} (serve it over HTTPS, for example `tailscale serve --bg {}`)", auth.host().origin(), server.addr().port());
