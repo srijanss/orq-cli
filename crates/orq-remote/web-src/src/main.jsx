@@ -3459,11 +3459,22 @@ function takesDesignIssues(run) {
   return (run.state === "needs_review" || run.state === "failed") && DESIGN_STEPS.includes(run.stage) && issuesDesignOf(run) !== null;
 }
 
+// A run that needs review whose worktree has no escalated review: the server refuses to review it again.
+function cannotReviewAgain(run) {
+  return run.state === "needs_review" && run.review_again_possible === false;
+}
+
+// Under the run page's header of a run its design review stopped: what carries it on.
+function DesignStoppedNote({ run, control }) {
+  if (control === null || !cannotReviewAgain(run) || !takesDesignIssues(run)) return null;
+  return <p className="run-design-stopped muted" data-design-stopped-note="">The design review stopped this run. Add the issues it should fix and run another round, or accept or discard it.</p>;
+}
+
 // Add design issues on the run page: a form of one or more issues, each a section (the report's section names
 // suggested), a viewport (the run's or All), what was expected, what is wrong, how to fix it (optional) and a
 // severity. Run another round posts them; the server checks them as `orq run resume --design-issues` does and
 // resumes the run with them. A refusal shows its reason in the form, which stays open to be corrected.
-function DesignIssuesAction({ run, control }) {
+function DesignIssuesAction({ run, control, primary = false }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
   const [issues, setIssues] = useState(() => [blankPersonIssue()]);
@@ -3514,7 +3525,7 @@ function DesignIssuesAction({ run, control }) {
   );
   return (
     <div className="run-action">
-      {phase === "idle" ? <button type="button" data-design-issues="" onClick={open}><Icon name="plus" size={16} />Add design issues</button> : null}
+      {phase === "idle" ? <button type="button" className={toneClass(primary ? "primary" : undefined)} data-design-issues="" onClick={open}><Icon name="plus" size={16} />Add design issues</button> : null}
       {phase === "asking" || sending ? (
         <div className="confirm design-issues-form" role="group" aria-label="Your design issues" data-design-issues-form="">
           {member === null ? null : <p className="design-issues-member" data-design-issues-member="">{"For " + member}</p>}
@@ -6211,7 +6222,9 @@ function RowActions({ run, control, menu = false }) {
   if (run.state === "accepting") return <span className="run-actions muted" data-accept-busy>{"Accept, Review again, Resume and Discard wait: an accept is running"}</span>;
   const pause = run.state === "running" ? <RunAction kind="pause" label="Pause" icon="pause" question={"Pause " + run.run_id + "?"} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/pause")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Pause requested."} /> : null;
   const runPath = (tail) => controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/" + tail);
-  const resume = RESUMABLE.includes(run.state) ? <RunAction kind="resume" tone="primary" icon="rotate" answers={run.state !== "needs_review"} decision={decisionOf(run)} label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next, reply, answered) => resumedNote(next, run.state === "needs_review" ? null : answered)} /> : null;
+  // A run that needs review with no escalated review cannot be reviewed again: it takes design issues, or an accept or discard.
+  const noReviewAgain = cannotReviewAgain(run);
+  const resume = RESUMABLE.includes(run.state) && !noReviewAgain ? <RunAction kind="resume" tone="primary" icon="rotate" answers={run.state !== "needs_review"} decision={decisionOf(run)} label={run.state === "needs_review" ? "Review again" : "Resume"} question={(reply) => (typeof reply.next === "string" ? "Resume " + run.run_id + " from " + reply.next + "?" : null)} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume")} check={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/resume-check")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next, reply, answered) => resumedNote(next, run.state === "needs_review" ? null : answered)} /> : null;
   const stop = run.state === "running" || run.state === "pause_requested" ? <RunAction kind="stop" label="Stop" tone="danger" icon="stop" question={"Stop " + run.run_id + "?" + (run.kind === "plan" ? " Claude stops drafting." : " Its process ends and it can be resumed later.")} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/stop")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Stopped."} /> : null;
   // A Draft with orq run has no worktree or branch to pause, resume, accept or discard: it can only be stopped.
   if (run.kind === "plan") return stop === null ? null : <span className="run-actions">{stop}</span>;
@@ -6227,14 +6240,16 @@ function RowActions({ run, control, menu = false }) {
   // A failed run whose commits after its last review no review saw may be reviewed again from there.
   const reviewAgain = run.state === "failed" && run.reviewable_again === true ? <RunAction kind="review-again" label="Review again" icon="rotate" question={"Review " + run.run_id + " again? A session reviews the commits after its last review and fixes what that review finds."} path={runPath("review-again")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Reviewing again." : "Reviewing again as run " + next + ".")} /> : null;
   const queued = (kind, action, label, title, answers = false) => <RunAction kind={kind} label={label} icon="clock" answers={answers} question={"Queue " + title + " " + run.run_id + "? It starts when the project's limits and queue hours allow."} path={controlPath(control, "queue/add")} body={{ action, run: run.run_id }} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={() => "Queued " + title + " " + run.run_id + "."} />;
-  const queueResume = !RESUMABLE.includes(run.state) ? null : run.state === "needs_review" ? queued("queue-run-review-again", "review_again", "Queue review again", "Review again") : queued("queue-run-resume", "resume", "Queue resume", "Resume", true);
+  const queueResume = !RESUMABLE.includes(run.state) || noReviewAgain ? null : run.state === "needs_review" ? queued("queue-run-review-again", "review_again", "Queue review again", "Review again") : queued("queue-run-resume", "resume", "Queue resume", "Resume", true);
   const queueAccept = acceptable(run) ? queued("queue-run-accept", "accept", "Queue accept", "Accept") : null;
   const model = run.state === "paused" ? <ModelAction run={run} control={control} /> : null;
   // Only the run page carries the design review, so only there does a design run take a person's issues.
-  const designIssues = takesDesignIssues(run) ? <DesignIssuesAction run={run} control={control} /> : null;
+  const designIssues = takesDesignIssues(run) ? <DesignIssuesAction run={run} control={control} primary={noReviewAgain} /> : null;
   const setAside = dirtyFiles(run) === null ? null : <RunAction kind="merge-set-aside" label="Set aside my changes and merge" icon="check" question={SET_ASIDE_QUESTION} path={controlPath(control, "runs/" + encodeURIComponent(run.run_id) + "/merge-set-aside")} token={control.token} onSignedOut={control.onSignedOut} onDone={control.onDone} done={(next) => (next === "" ? "Merging." : "Merging as run " + next + ".")} />;
-  if (pause === null && resume === null && stop === null && discard === null && accept === null && mergeAccepted === null && model === null && setAside === null) return null;
-  const all = [pause, resume, reviewAgain, designIssues, setAside, mergeAccepted, model, stop, accept, queueResume, queueAccept, discard].filter((action) => action !== null);
+  if (pause === null && resume === null && stop === null && discard === null && accept === null && mergeAccepted === null && model === null && setAside === null && designIssues === null) return null;
+  // The design issues are the way on for a run its design review stopped, so they come first there.
+  const lead = noReviewAgain ? [designIssues, pause, resume, reviewAgain] : [pause, resume, reviewAgain, designIssues];
+  const all = [...lead, setAside, mergeAccepted, model, stop, accept, queueResume, queueAccept, discard].filter((action) => action !== null);
   if (menu && all[0].type === RunAction) all[0] = cloneElement(all[0], { float: true });
   if (!menu || all.length === 1) return <span className="run-actions">{all}</span>;
   return <span className="run-actions">{all[0]}<MoreMenu label={"More actions for " + run.run_id}>{all.slice(1)}</MoreMenu></span>;
@@ -7130,6 +7145,7 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           <DirtyCheckout run={run} />
           <AcceptNotes run={run} runPath={runPath} />
           <MissingReport run={run} control={control} />
+          <DesignStoppedNote run={run} control={control} />
           <RowActions run={run} control={control} />
           <CleanupCard run={run} control={control} />
           {run.delivery === "merge_local" && follow !== null && projectId !== null ?<Unpushed unpushed={run.unpushed ?? null} push={{ token: follow.token, projectId, onSignedOut: follow.onSignedOut }} /> : null}

@@ -1156,6 +1156,12 @@ pub fn action_label(action: &QueueAction) -> String {
     format!("{verb} {}", action.run)
 }
 
+/// Whether a run that needs review, `record`, may be reviewed again: its worktree has an escalated
+/// review. A ledger that cannot be read says no.
+pub(super) fn review_again_possible(record: &orq_orchestrator::RunRecord) -> bool {
+    orq_orchestrator::escalated_review(&record.worktree, &record.base_sha).ok().flatten().is_some()
+}
+
 /// Whether queued `action` still applies to its run in `runs`, of project `git`: why not, if it
 /// does not (the run was resumed, accepted, discarded or merged, or its feature started again).
 fn action_applies(runs: &RunStore, git: &orq_git::Project, action: &QueueAction) -> Result<(), String> {
@@ -1171,6 +1177,10 @@ fn action_applies(runs: &RunStore, git: &orq_git::Project, action: &QueueAction)
     }
     if let Ok(Some((later, _))) = orq_orchestrator::later_run_of(runs, run) {
         return Err(format!("its feature {} was started again as {later}", record.feature_id));
+    }
+    // A run its design review stopped goes on with a person's design issues, not another code review.
+    if action.kind == QueueKind::ReviewAgain && orq_orchestrator::design_review_stopped(&events) && !review_again_possible(&record) {
+        return Err(orq_orchestrator::DESIGN_STOPPED_REASON.to_string());
     }
     let applies = match action.kind {
         QueueKind::Resume => matches!(summary.phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::Paused | RunPhase::NeedsReview | RunPhase::DesignFilesNeeded),

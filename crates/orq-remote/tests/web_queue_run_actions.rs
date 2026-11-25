@@ -38,8 +38,13 @@ fn projects() -> Value {
     json!({"status": 200, "json": {"projects": [{"id": "alpha", "name": "alpha", "available": true, "features": 1, "active_runs": 0, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24}]}})
 }
 
+/// A run in `state`; one that needs review has an escalated review to review again.
 fn one(id: &str, state: &str) -> Value {
-    json!({"run_id": id, "feature": "f-".to_string() + id, "state": state, "stage": null, "started_at": null, "updated_at": null, "target_branch": "main"})
+    let mut run = json!({"run_id": id, "feature": "f-".to_string() + id, "state": state, "stage": null, "started_at": null, "updated_at": null, "target_branch": "main"});
+    if state == "needs_review" {
+        run["review_again_possible"] = json!(true);
+    }
+    run
 }
 
 fn detail(run: Value, extra: Vec<Value>, steps: Vec<Value>) -> Option<Value> {
@@ -188,6 +193,62 @@ fn the_header_resume_of_a_run_waiting_for_design_files_checks_then_posts_to_the_
     let gets: Vec<String> = out["requests"].as_array().unwrap().iter().filter(|r| r["method"] != "POST").filter_map(|r| r["url"].as_str()).map(String::from).collect();
     assert!(gets.iter().any(|u| u == "/api/projects/alpha/runs/r-files/resume-check"), "{gets:?}");
     assert_eq!(posts(&out), vec![("/api/projects/alpha/runs/r-files/resume".to_string(), json!({}))]);
+}
+
+const DESIGN_SELECTORS: [&str; 6] = [
+    "[data-review-again]",
+    "[data-resume]",
+    "[data-queue-run-review-again]",
+    "[data-design-issues]",
+    ".run-actions > .run-action:first-child > [data-design-issues].primary-button",
+    "[data-design-stopped-note]",
+];
+
+const DESIGN_STOPPED_NOTE: &str = "The design review stopped this run. Add the issues it should fix and run another round, or accept or discard it.";
+
+/// A design group run that ended needing review at its design review, stopped at its second member.
+fn design_stopped(review_again_possible: bool) -> Value {
+    let mut run = one("r-design", "needs_review");
+    run["stage"] = json!("design_review");
+    run["review_again_possible"] = json!(review_again_possible);
+    let design = json!({"of": 3, "rounds": [{"round": 1, "viewports": [{"name": "desktop"}], "issues": [{"section": "header"}]}]});
+    run["design_group"] = json!({"at": 2, "of": 3, "stopped": "home-header", "members": [
+        {"feature": "home-hero", "state": "completed", "round": 1, "step": "design_review", "components": [], "design": design.clone()},
+        {"feature": "home-header", "state": "needs_review", "round": 1, "step": "design_review", "components": [], "design": design},
+    ]});
+    run
+}
+
+fn design_page(shown: Value) -> Option<Value> {
+    let id = shown["run_id"].as_str().unwrap().to_string();
+    let body = json!({"run": shown, "events": [], "next_cursor": null, "remote_actions": true});
+    let responses = vec![json!({"status": 200, "json": body}), projects(), json!({"status": 200, "stream": [], "end": "hold"})];
+    run(json!({"url": format!("/projects/alpha/orchestrations/{id}"), "responses": responses, "steps": [{"submit": TOKEN}], "selectors": DESIGN_SELECTORS}))
+}
+
+#[test]
+fn a_run_its_design_review_stopped_offers_add_design_issues_first_and_no_review_again() {
+    let Some(out) = design_page(design_stopped(false)) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-review-again]"), 0, "{out}");
+    assert_eq!(count(frame, "[data-resume]"), 0, "no Review again in the header: {out}");
+    assert_eq!(count(frame, "[data-queue-run-review-again]"), 0, "no Queue review again: {out}");
+    assert_eq!(count(frame, ".run-actions > .run-action:first-child > [data-design-issues].primary-button"), 1, "Add design issues is the first, primary action: {out}");
+    assert_eq!(count(frame, "[data-design-stopped-note]"), 1, "{out}");
+    assert!(shows(frame, DESIGN_STOPPED_NOTE), "{:?}", texts(frame));
+
+    let list = json!({"status": 200, "json": {"runs": [design_stopped(false)], "next_cursor": null, "total": 1, "running": 0, "remote_actions": true}});
+    let Some(out) = run(json!({"url": "/projects/alpha/orchestrations", "responses": [list, projects()], "steps": [{"submit": TOKEN}], "selectors": DESIGN_SELECTORS})) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-resume]"), 0, "its row offers no Review again: {out}");
+    assert_eq!(count(frame, "[data-queue-run-review-again]"), 0, "nor Queue review again: {out}");
+
+    let Some(out) = design_page(design_stopped(true)) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, "[data-resume]"), 1, "with an escalated review Review again stays: {out}");
+    assert_eq!(count(frame, "[data-queue-run-review-again]"), 1, "{out}");
+    assert_eq!(count(frame, "[data-design-stopped-note]"), 0, "{out}");
+    assert!(shows(frame, "Review again"), "{:?}", texts(frame));
 }
 
 #[test]

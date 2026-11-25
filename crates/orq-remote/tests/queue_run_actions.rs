@@ -468,6 +468,46 @@ fn a_failed_run_s_page_says_it_can_be_reviewed_again_only_once_something_came_af
     assert_eq!(reviewable(&s), None, "only a failed run");
 }
 
+/// Writes a review ledger in `worktree` whose third round, from `start` to `head`, left a high finding open: an escalated review.
+fn escalated_up_to(worktree: &Path, start: &str, head: &str) {
+    let scope = format!("review:{start}");
+    let finding = json!({"id": "leak", "severity": "high", "file": "src/lib.rs", "line": 7, "category": "bugs", "claim": "a leak", "suggestion": "fix it", "status": "open", "reviewer": "pi", "model": "m"});
+    let round = json!({"start": start, "head": head, "reviewer": "pi", "model": "m", "findings": [finding.clone()], "round": 3, "recordedAt": "2026-11-18T10:00:00+00:00"});
+    std::fs::write(worktree.join(".tdd-review-rounds.json"), json!({ &scope: [round] }).to_string()).unwrap();
+    std::fs::write(worktree.join(".tdd-review-findings.json"), json!({ &scope: [finding] }).to_string()).unwrap();
+}
+
+#[test]
+fn a_needs_review_run_says_whether_it_can_be_reviewed_again_and_one_its_design_review_stopped_cannot_be_queued_to() {
+    let s = setup("qra-review-again-possible", |_| {});
+    worktree_run(&s, "run-esc", "COM-01", "needs_review");
+    let worktree = s.repo.join(".claude/worktrees/run-esc");
+    escalated_up_to(&worktree, &git(&s.repo, &["rev-parse", "main"]), &git(&worktree, &["rev-parse", "HEAD"]));
+    // A design run that ended needing review in its design review step, with no code review escalated.
+    let design = s.repo.join(".claude/worktrees/run-design");
+    git(&s.repo, &["worktree", "add", "-q", "-b", "orq/run-design", design.to_str().unwrap()]);
+    seed_run(&s.roots.state, &s.repo, "run-design", "COM-02");
+    let store = RunStore::new(&s.roots.state);
+    let record = store.load("run-design").unwrap();
+    store
+        .append_event(&Event { schema_version: 1, event_id: "run-design-d".into(), run_id: "run-design".into(), project_id: record.project_id, feature_id: record.feature_id, kind: "stage.started".into(), stage: Some("design_review".into()), attempt: 1, occurred_at: "2026-11-18T10:00:30Z".into(), payload: json!({}) })
+        .unwrap();
+    end_run(&s, "run-design", "needs_review");
+
+    let page = |run: &str| send(&s, "GET", &format!("/api/projects/alpha/runs/{run}"), b"").1["run"]["review_again_possible"].clone();
+    assert_eq!(page("run-esc"), json!(true));
+    assert_eq!(page("run-design"), json!(false));
+    let (status, list) = send(&s, "GET", "/api/projects/alpha/runs", b"");
+    assert_eq!(status, 200, "{list}");
+    let listed = |run: &str| list["runs"].as_array().unwrap().iter().find(|row| row["run_id"] == run).unwrap()["review_again_possible"].clone();
+    assert_eq!(listed("run-esc"), json!(true), "{list}");
+    assert_eq!(listed("run-design"), json!(false), "{list}");
+
+    let queued = send(&s, "POST", "/api/projects/alpha/queue", json!({"action": "review_again", "run": "run-design"}).to_string().as_bytes());
+    assert_eq!(queued, (409, json!({"error": "Review again run-design cannot be queued: its design review stopped it: add design issues to run another round, or accept or discard it"})));
+    add(&s, json!({"action": "review_again", "run": "run-esc"}));
+}
+
 #[test]
 fn a_queued_resume_of_a_paused_run_starts_on_the_slot_the_paused_run_still_holds() {
     let s = setup("qra-paused", |_| {});

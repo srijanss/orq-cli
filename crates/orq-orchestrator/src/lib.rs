@@ -182,11 +182,11 @@ pub use report_evidence::{recorded_evidence, RecordedEvidence};
 pub use resume::{
     active_runs, carry_rebase, check_answer_reaches_session, check_group_resume,
     check_group_resume_fixing, check_group_resume_reviewing_again,
-    check_group_resume_with_design_issues, holds_run_slot, later_run_of, newest_run_of,
+    check_group_resume_with_design_issues, design_review_stopped, holds_run_slot, later_run_of, newest_run_of,
     newest_runs_of, plan_group_resume, plan_group_resume_fixing, plan_group_resume_reviewing_again,
     plan_group_resume_with, plan_resume, rebased_onto, record_group, record_inherited_implement,
     resumable_members, resume_check, resume_takes_a_slot, run_members, supersede_resumed,
-    supersede_resumed_answered, supersede_resumed_with_session, ResumePlan,
+    supersede_resumed_answered, supersede_resumed_with_session, ResumePlan, DESIGN_STOPPED_REASON,
 };
 pub use retention_facts::{collect_run_facts, collect_run_facts_for, parse_rfc3339};
 pub use review_draft::{

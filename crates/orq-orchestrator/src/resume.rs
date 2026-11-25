@@ -414,6 +414,31 @@ pub fn plan_group_resume_with(
     plan(store, repo, project_id, members, alive, false, false, false)
 }
 
+/// Why a run that needs review, with `events`, cannot be reviewed again without an escalated review:
+/// one its design review stopped goes on only with a person's design issues.
+fn no_review_again(run_id: &str, events: &[Event]) -> String {
+    if design_review_stopped(events) {
+        format!("{run_id}: {DESIGN_STOPPED_REASON}")
+    } else {
+        format!("{run_id}: its worktree has no escalated review to review again; accept or discard it")
+    }
+}
+
+/// Why a run its design review stopped is not reviewed again.
+pub const DESIGN_STOPPED_REASON: &str =
+    "its design review stopped it: add design issues to run another round, or accept or discard it";
+
+/// Whether a run with `events` ended needing review in one of its design review steps.
+pub fn design_review_stopped(events: &[Event]) -> bool {
+    use crate::design_loop::{DESIGN_CODE_REVIEW_STAGE, DESIGN_FIX_STAGE, DESIGN_REVIEW_STAGE};
+    let summary = summarize_run(events);
+    summary.phase == RunPhase::NeedsReview
+        && matches!(
+            summary.stage.as_deref(),
+            Some(DESIGN_REVIEW_STAGE | DESIGN_FIX_STAGE | DESIGN_CODE_REVIEW_STAGE)
+        )
+}
+
 fn plan(
     store: &RunStore,
     repo: &Path,
@@ -577,12 +602,7 @@ fn plan(
         RunPhase::NeedsReview => Some(
             crate::review_escalation::escalated_review(&from.worktree, &from.base_sha)
                 .map_err(|e| format!("{}: cannot read the review ledger: {e}", from.run_id))?
-                .ok_or_else(|| {
-                    format!(
-                        "{}: its worktree has no escalated review to review again; accept or discard it",
-                        from.run_id
-                    )
-                })?,
+                .ok_or_else(|| no_review_again(&from.run_id, &events))?,
         ),
         // A failed run is reviewed again only when asked, from its last review, and only when
         // something came after it: otherwise there is nothing new to review.

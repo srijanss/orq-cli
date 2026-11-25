@@ -70,6 +70,17 @@ fn event(record: &RunRecord, n: u32, kind: &str, stage: Option<&str>, payload: V
 /// A run whose implement step completed (its work committed and reviewed with one open finding at
 /// the escalation) and that then ended `ending` for `reason`.
 fn world(tag: &str, ending: &str, reason: &str, review_stopped: bool) -> World {
+    world_at(tag, ending, reason, review_stopped, None)
+}
+
+/// [`world`], with the run in step `last_stage` (when given) after its implement step when it ended.
+fn world_at(
+    tag: &str,
+    ending: &str,
+    reason: &str,
+    review_stopped: bool,
+    last_stage: Option<&str>,
+) -> World {
     let root = orq_test_support::process_temp_dir().join(format!(
         "orq-resume-escalation-{}-{tag}",
         std::process::id()
@@ -152,10 +163,15 @@ fn world(tag: &str, ending: &str, reason: &str, review_stopped: bool) -> World {
             json!({}),
         ))
         .unwrap();
+    if let Some(stage) = last_stage {
+        store
+            .append_event(&event(&record, 4, "stage.started", Some(stage), json!({})))
+            .unwrap();
+    }
     store
         .append_event(&event(
             &record,
-            4,
+            5,
             "run.completed",
             None,
             json!({ "ending": ending, "reason": reason }),
@@ -199,6 +215,28 @@ fn resume_after_escalation_a_run_blocked_by_its_escalated_review_is_resumed_with
     // An answer reaches the session, so it is not refused.
     check_answer_reaches_session(&plan, Some("rename the helper"))
         .expect("the answer reaches the session");
+}
+
+#[test]
+fn resume_after_escalation_a_run_its_design_review_stopped_without_issues_is_refused_with_how_it_goes_on(
+) {
+    let w = world_at(
+        "design-stopped",
+        "needs_review",
+        "the design review is blocked",
+        false,
+        Some("design_review"),
+    );
+
+    let refused = plan_resume(&w.store, &w.repo, "repo-1", "F").map(|_| ()).unwrap_err();
+
+    assert_eq!(
+        refused,
+        "run-1: its design review stopped it: add design issues to run another round, or accept or discard it"
+    );
+    let plain = world("needs-review", "needs_review", "the review escalated", false);
+    let refused = plan_resume(&plain.store, &plain.repo, "repo-1", "F").map(|_| ()).unwrap_err();
+    assert!(refused.contains("no escalated review to review again"), "{refused}");
 }
 
 #[test]

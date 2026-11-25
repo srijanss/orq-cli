@@ -56,6 +56,8 @@ struct LogSummary {
     plan: bool,
     /// Which member of how many a design group run is at.
     group_at: Option<(u64, u64)>,
+    /// For a run that needs review: whether its worktree has an escalated review to review again.
+    review_again_possible: Option<bool>,
     stage: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -84,6 +86,9 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             Err(error) => return Err(format!("run {} is unreadable: {error:?}", record.run_id)),
         };
         let summary = orq_orchestrator::summarize_run(&events);
+        let planning = plan::is_plan(&events);
+        // Read with the log: a run that needs review changes its ledger only by a resume, which its log records.
+        let review_again_possible = (!planning &&summary.phase == orq_orchestrator::RunPhase::NeedsReview).then(|| queue::review_again_possible(&record));
         let learned = LogSummary {
             len: stat.map_or(0, |(len, _)| len),
             modified: stat.and_then(|(_, modified)| modified),
@@ -94,8 +99,9 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             resumed_from: resumed_from(&events),
             dirty_files: dirty_files(&events, summary.phase),
             unattended: orq_orchestrator::was_unattended(&events),
-            plan: plan::is_plan(&events),
+            plan: planning,
             group_at: design_group_at(&events).map(|(_, index, of, _)| (index, of)),
+            review_again_possible,
             stage: summary.stage,
             started: events.first().map(|event| event.occurred_at.clone()),
             updated: events.last().map(|event| event.occurred_at.clone()),
@@ -782,6 +788,9 @@ fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     // Said only of a design group run: which member of how many it is at ("3 of 7").
     if let Some((at, of)) = log.group_at {
         row["design_group"] = serde_json::json!({"at": at, "of": of});
+    }
+    if let Some(possible) = log.review_again_possible {
+        row["review_again_possible"] = possible.into();
     }
     (sort_key, record.run_id.clone(), row, record)
 }
@@ -2798,6 +2807,10 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             && orq_orchestrator::last_review(&record.worktree, &record.base_sha).ok().flatten().is_some_and(|review| !review.unreviewed_commits.is_empty());
         if reviewable_again {
             shown["reviewable_again"] = serde_json::json!(true);
+        }
+        // A run that needs review is reviewed again only from an escalated review (the page's Review again).
+        if !planning && summary.phase == orq_orchestrator::RunPhase::NeedsReview {
+            shown["review_again_possible"] = serde_json::json!(queue::review_again_possible(&record));
         }
         if cleanup::merged_review(&self.roots, run).is_some() {
             shown["cleanup"] = cleanup::card(&events);
