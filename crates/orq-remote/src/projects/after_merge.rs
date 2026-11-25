@@ -232,10 +232,16 @@ fn unsettled_runs(state: &Path) -> HashMap<String, Vec<Unsettled>> {
     found
 }
 
-/// Whether the project at `root` gives a merge a go: it declares `[after_merge]`, or a `[release]` that
-/// releases on merge (or one that is wrong, which the go reports).
+/// Whether the project at `root` gives a merge a go: it declares `[after_merge]` commands, or a `[release]`
+/// that releases on merge (or either is wrong, which the go reports). An `[after_merge]` with no commands
+/// needs none.
 fn gives_a_go(root: &Path) -> bool {
-    declared(root).is_some()
+    let commands = match declared(root) {
+        Some(Ok(declared)) => !declared.commands.is_empty(),
+        Some(Err(_)) => true,
+        None => false,
+    };
+    commands
         || match declared_release(root) {
             Some(Ok(settings)) => settings.release_on_merge == ReleaseOnMerge::Auto,
             Some(Err(_)) => true,

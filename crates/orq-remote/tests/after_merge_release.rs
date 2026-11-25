@@ -373,6 +373,17 @@ fn the_settings_server_card_says_the_releases_a_pending_restart_waits_for() {
 }
 
 #[test]
+fn a_merge_in_a_project_whose_after_merge_has_no_commands_is_never_unsettled() {
+    // Nothing to run and no release: the merge needs no go, so a pending restart never waits for it.
+    let s = setup("unsettled-empty", "[after_merge]\ncommands = []\n");
+    merged_unseen(&s, "run-1-COM-01", "feat: the thing");
+    assert_eq!(provider(&s).merges_unsettled(), 0);
+    round(&s);
+    settle_time();
+    assert_eq!(provider(&s).merges_unsettled(), 0);
+}
+
+#[test]
 fn a_merge_in_a_project_with_no_after_merge_or_release_is_never_unsettled() {
     let s = setup("unsettled-none", "");
     merged_unseen(&s, "run-1-COM-01", "feat: the thing");
