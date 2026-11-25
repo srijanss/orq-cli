@@ -138,3 +138,18 @@ fn a_resume_with_an_answer_a_review_again_and_an_accept_of_existing_runs_are_que
 
     assert_eq!(s.ok(repo.root(), &["remove", "accept:run-b"]), "Removed Accept run-b.\n");
 }
+
+#[test]
+fn a_queued_feature_whose_run_waits_for_design_files_is_listed_paused_with_its_run_and_why() {
+    let s = Sandbox::new("paused-run");
+    let repo = GitFixture::new();
+    write_ledger(repo.root(), &[LedgerEntry::new("landing-page", "pending")]);
+    assert_eq!(s.ok(repo.root(), &["add", "landing-page"]), "Queued landing-page.\n");
+    seed_run(&s, repo.root(), "run-d", "landing-page", Some("design_files_needed"));
+    let git = orq_git::resolve_project(repo.root()).unwrap();
+    let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
+    let store = orq_core::store::Store::open(&s.home.join("data").join("orq").join("orq.db")).unwrap();
+    store.queue_started(&root, "landing-page", "run-d").unwrap();
+
+    assert_eq!(s.ok(repo.root(), &["list"]), "landing-page  paused (run-d): Waiting for design files: add the files the run page lists, then resume\n");
+}

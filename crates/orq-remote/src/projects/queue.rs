@@ -663,7 +663,8 @@ impl StoreProjects {
         });
         let store = if self.roots.database().exists() { Some(Store::open(&self.roots.database()).map_err(|error| error.to_string())?) } else { None };
         let unlanded = unlanded_dependencies(store.as_ref(), &RunStore::new(&self.roots.state), &git, &queue, &ledger)?;
-        let mut answer = queue_json_with(&queue, &ledger, &review, &unlanded, &LimitWaits::of(&self.roots, &git).entries());
+        let paused = paused_runs(&RunStore::new(&self.roots.state), &queue);
+        let mut answer = queue_json_with(&queue, &ledger, &review, &paused, &unlanded, &LimitWaits::of(&self.roots, &git).entries());
         if let Some(warning) = PullWarning::of(&self.roots, &git).read() {
             answer["target_pull_warning"] = json!(warning);
         }
@@ -849,7 +850,7 @@ pub fn project_queue_json(store: &Store, runs: &RunStore, git: &orq_git::Project
     let ledger = read_ledger(&orq_features::ledger_path(git))?;
     let wait = store.project_settings(root).map_or(true, |stored| stored.settings.queue_wait_for_review);
     let unlanded = unlanded_dependencies(Some(store), runs, git, &queue, &ledger)?;
-    Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait), &unlanded, &[]))
+    Ok(queue_json_with(&queue, &ledger, &in_review(store, runs, &queue, git, wait), &paused_runs(runs, &queue), &unlanded, &[]))
 }
 
 /// For the features queued to start, why each dependency that has a run in `runs` has not landed yet
@@ -1004,16 +1005,49 @@ fn in_review(store: &Store, runs: &RunStore, queue: &RunQueue, git: &orq_git::Pr
 }
 
 /// The queue as the page and `orq queue list` show it: entries in the order they will start, each
-/// with its state (`running`, `failed`, `next`, `queued` or `waiting`) and why it waits.
+/// with its state (`running`, `paused`, `review`, `failed`, `next`, `queued`, `waiting` or `skipped`) and
+/// why it waits or is paused.
 pub fn queue_json(queue: &RunQueue, ledger: &[FeatureEntry]) -> Value {
-    queue_json_with(queue, ledger, &std::collections::HashMap::new(), &std::collections::HashMap::new(), &[])
+    queue_json_with(queue, ledger, &std::collections::HashMap::new(), &std::collections::HashMap::new(), &std::collections::HashMap::new(), &[])
+}
+
+/// The entries of `queue` with a run that has not failed whose run, followed through the runs it was
+/// resumed as, is paused: each feature to why, as the queue shows it. A run that is running, being
+/// accepted, waiting for review or ended is not named.
+fn paused_runs(runs: &RunStore, queue: &RunQueue) -> std::collections::HashMap<String, &'static str> {
+    queue
+        .entries
+        .iter()
+        .filter(|entry| !entry.failed && entry.skipped.is_none())
+        .filter_map(|entry| Some((entry.feature.clone(), paused_reason(runs, entry.run.as_deref()?)?)))
+        .collect()
+}
+
+/// Why run `run`, followed through the runs it was resumed as, is paused; `None` when it is not.
+fn paused_reason(runs: &RunStore, run: &str) -> Option<&'static str> {
+    let mut run = run.to_string();
+    for _ in 0..CONTINUATIONS_FOLLOWED {
+        let summary = orq_orchestrator::summarize_run(&runs.events(&run).ok()?);
+        if let Some(next) = summary.resumed_as {
+            run = next;
+            continue;
+        }
+        return match summary.phase {
+            RunPhase::Paused => Some("Paused: resume it from the run page"),
+            RunPhase::PauseRequested => Some("Pausing"),
+            RunPhase::DesignFilesNeeded => Some("Waiting for design files: add the files the run page lists, then resume"),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// [`queue_json`], with the entries whose run waits for a person's review (`review`: feature to its
 /// open MR's address, if any) shown waiting for review, those whose dependency's work has not
 /// landed (`unlanded`: dependency to why) shown waiting for it, and those whose start was refused
-/// for a run limit (`limit_waits`) shown waiting for a slot.
-fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::collections::HashMap<String, Option<String>>, unlanded: &std::collections::HashMap<String, String>, limit_waits: &[String]) -> Value {
+/// for a run limit (`limit_waits`) shown waiting for a slot, and those whose run is paused
+/// (`paused`: feature to why, see [`paused_runs`]) shown paused.
+fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::collections::HashMap<String, Option<String>>, paused: &std::collections::HashMap<String, &'static str>, unlanded: &std::collections::HashMap<String, String>, limit_waits: &[String]) -> Value {
     let mut next_given = false;
     let mut waiting_for_review = None;
     let entries: Vec<Value> = ordered(&queue.entries, ledger)
@@ -1027,6 +1061,7 @@ fn queue_json_with(queue: &RunQueue, ledger: &[FeatureEntry], review: &std::coll
                 _ if entry.skipped.is_some() => ("skipped", entry.skipped.as_ref().map(|why| format!("No longer needed: {why}"))),
                 (Some(_), true) => ("failed", None),
                 (Some(_), false) if review.contains_key(&entry.feature) => ("review", None),
+                (Some(_), false) if paused.contains_key(&entry.feature) => ("paused", paused.get(&entry.feature).map(|why| why.to_string())),
                 (Some(_), false) => ("running", None),
                 (None, _) => match eligible() {
                     // Still the one to start next, once a slot frees.

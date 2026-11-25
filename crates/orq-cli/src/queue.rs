@@ -97,8 +97,10 @@ fn list(store: &Store, runs: &orq_orchestrator::RunStore, git: &orq_git::Project
         // A run action shows as what it does; a feature's start as the feature, as before.
         let feature = printable(entry["label"].as_str().filter(|_| entry["kind"] != "start").or(entry["feature"].as_str()).unwrap_or_default());
         let state = entry["state"].as_str().unwrap_or_default();
+        // A paused entry names its run and why it is paused.
         let detail = match (entry["reason"].as_str(), entry["run"].as_str()) {
-            (Some(reason), _) => format!(": {}", printable(reason)),
+            (Some(reason), Some(run)) => format!(" ({}): {}", printable(run), printable(reason)),
+            (Some(reason), None) => format!(": {}", printable(reason)),
             (None, Some(run)) => format!(" ({})", printable(run)),
             (None, None) => String::new(),
         };

@@ -4029,18 +4029,20 @@ function QueueMarked({ names, control, onFinished, place = null }) {
   );
 }
 
-const QUEUE_STATE_LABELS = { running: "Running", review: "Waiting for review", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting", skipped: "No longer needed" };
+const QUEUE_STATE_LABELS = { running: "Running", paused: "Paused", review: "Waiting for review", failed: "Failed", next: "Next", queued: "Queued", waiting: "Waiting", skipped: "No longer needed" };
 // The badge each state wears (SPEC section 7); a state not named here, or "No longer needed", wears a neutral one.
-const QUEUE_STATE_BADGES = { running: "badge-status-running", review: "badge-status-waiting", failed: "badge-status-failed", next: "badge-status-queued", queued: "badge-status-queued", waiting: "badge-status-waiting" };
+const QUEUE_STATE_BADGES = { running: "badge-status-running", paused: "badge-status-waiting", review: "badge-status-waiting", failed: "badge-status-failed", next: "badge-status-queued", queued: "badge-status-queued", waiting: "badge-status-waiting" };
 
 // A queue entry's state as a badge that always shows its words; Next also carries the play icon, so it
-// differs from Queued by more than colour. A state the page does not know shows as itself, neutral.
+// differs from Queued by more than colour, and Paused (an entry whose run is paused) the pause icon. A
+// state the page does not know shows as itself, neutral.
 function QueueStateBadge({ state }) {
   const tone = Object.hasOwn(QUEUE_STATE_BADGES, state) ? QUEUE_STATE_BADGES[state] : "badge-neutral";
   const label = Object.hasOwn(QUEUE_STATE_LABELS, state) ? QUEUE_STATE_LABELS[state] : state;
   return (
     <span className={"badge queue-state " + tone} data-queue-state={state}>
       {state === "next" ? <Icon name="play" size={12} /> : null}
+      {state === "paused" ? <Icon name="pause" size={12} /> : null}
       {label}
     </span>
   );
@@ -4090,10 +4092,11 @@ function QueueEntryRow({ entry, position, projectId, controls, rail }) {
   );
 }
 
-// The rail part below each entry, in order: "passed" from the top down to the last running entry, so the
-// rail shows where the queue is, "ahead" after it, and null below the last entry, where the rail stops.
+// The rail part below each entry, in order: "passed" from the top down to the last entry whose run started
+// (running or paused), so the rail shows where the queue is, "ahead" after it, and null below the last
+// entry, where the rail stops.
 function queueRails(entries) {
-  const running = entries.map((entry) => entry.state).lastIndexOf("running");
+  const running = entries.map((entry) => entry.state === "running" || entry.state === "paused").lastIndexOf(true);
   return entries.map((entry, index) => (index === entries.length - 1 ? null : index < running ? "passed" : "ahead"));
 }
 
