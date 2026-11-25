@@ -2698,6 +2698,9 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
                 if event.kind == "gate.flaky_tests" {
                     listed["flaky_tests"] = flaky_tests_shown(&event.payload);
                 }
+                if let Some(scope) = gate_scope_shown(event) {
+                    listed["gate_scope"] = scope;
+                }
                 if event.kind == "session.undeclared_files" {
                     listed["undeclared_files"] = undeclared_files_shown(&event.payload);
                 }
@@ -2848,6 +2851,24 @@ fn set_aside_shown(run: &str, payload: &serde_json::Value) -> serde_json::Value 
         shown["note"] = note.into();
     }
     shown
+}
+
+/// What the run page shows of a gate's start: whether it was a design group member's gate or the full one,
+/// and for a member's its name and the apps whose tests it ran, when it was scoped to some.
+fn gate_scope_shown(event: &orq_orchestrator::Event) -> Option<serde_json::Value> {
+    if event.kind != "stage.started" || event.stage.as_deref() != Some("verify") {
+        return None;
+    }
+    let payload = &event.payload;
+    let scope = payload["scope"].as_str()?;
+    let mut shown = serde_json::json!({"scope": scope});
+    if let Some(member) = payload["member"].as_str() {
+        shown["member"] = serde_json::json!(member);
+    }
+    if let Some(apps) = payload["apps"].as_array() {
+        shown["apps"] = apps.iter().filter_map(|app| app.as_str()).map(|app| serde_json::json!(app)).collect();
+    }
+    Some(shown)
 }
 
 /// What the run page shows of a `gate.flaky_tests` event: each test that passed only on a retry, by name

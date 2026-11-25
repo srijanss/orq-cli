@@ -4,8 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use orq_orchestrator::{
-    rerun_gate, run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then,
-    FixSessionSpec, Gate, GateFixOutcome, RunRecord, RunStore,
+    rerun_gate, rerun_gate_scoped, run_gate_with_fixes, run_gate_with_fixes_env,
+    run_gate_with_fixes_scoped, run_gate_with_fixes_then, FixSessionSpec, Gate, GateFixOutcome,
+    GateScope, RunRecord, RunStore,
 };
 
 struct World {
@@ -990,4 +991,61 @@ fn a_re_run_after_an_unrelated_report_records_a_flake_when_it_passes_and_a_faile
             "{tag}: the gate ran again"
         );
     }
+}
+
+/// Every run of a scoped gate says on its start what it covers: a design group member's gate names the member
+/// and the apps it tested, the run's final gate says it is the full gate; a re-run says it too.
+#[test]
+fn each_start_of_a_scoped_gate_says_its_scope_and_so_does_its_re_run() {
+    let w = world("scoped");
+    let member = GateScope::Member {
+        member: "std".to_string(),
+        apps: Some(vec!["shop".to_string()]),
+    };
+
+    let outcome = run_gate_with_fixes_scoped(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        2,
+        &[],
+        &member,
+        |_, _| Ok(spec(&w, "touch fixed")),
+        || {},
+    )
+    .unwrap();
+    assert_eq!(outcome, GateFixOutcome::Passed { fix_attempts: 1 });
+    let rerun = rerun_gate_scoped(
+        &w.store,
+        "run-1",
+        &gate_needing_fixed(),
+        true,
+        &w.gate_log,
+        &[],
+        1,
+        0,
+        "flaky",
+        &GateScope::Full,
+    )
+    .unwrap();
+    assert!(rerun);
+
+    let starts: Vec<serde_json::Value> = w
+        .store
+        .events("run-1")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "stage.started" && e.stage.as_deref() == Some("verify"))
+        .map(|e| e.payload)
+        .collect();
+    assert_eq!(starts.len(), 3, "{:?}", kinds(&w));
+    for start in &starts[..2] {
+        assert_eq!(start["scope"], "member");
+        assert_eq!(start["member"], "std");
+        assert_eq!(start["apps"], serde_json::json!(["shop"]));
+    }
+    assert_eq!(starts[2]["scope"], "full");
+    assert!(starts[2].get("member").is_none() && starts[2].get("apps").is_none());
 }

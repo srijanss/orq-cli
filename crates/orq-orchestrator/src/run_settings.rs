@@ -29,6 +29,9 @@ pub struct RunSettings {
     pub base_branch: Option<String>,
     /// The gate command; `None` leaves the project's own detection in charge.
     pub gate: Option<Vec<String>>,
+    /// The gate run after each design group member instead of `gate`; `None` runs `gate` (or the
+    /// detected gate, scoped to what the group changed).
+    pub member_gate: Option<Vec<String>>,
     /// The old script's settings file that `gate` was taken from, when it was.
     pub gate_from_script: Option<String>,
     /// Extra setup steps, run before the detected install step.
@@ -213,6 +216,7 @@ struct Layer {
     forge: Option<String>,
     base_branch: Option<String>,
     gate: Option<Vec<String>>,
+    member_gate: Option<Vec<String>>,
     setup: Option<Vec<Vec<String>>>,
     ci_timeout: Option<Duration>,
     mr_assignee: Option<String>,
@@ -247,6 +251,7 @@ impl Layer {
             forge: self.forge.or(lower.forge),
             base_branch: self.base_branch.or(lower.base_branch),
             gate: self.gate.or(lower.gate),
+            member_gate: self.member_gate.or(lower.member_gate),
             setup: self.setup.or(lower.setup),
             ci_timeout: self.ci_timeout.or(lower.ci_timeout),
             mr_assignee: self.mr_assignee.or(lower.mr_assignee),
@@ -301,6 +306,7 @@ pub fn load_run_settings(
         forge: merged.forge,
         base_branch: merged.base_branch,
         gate: merged.gate.or(script_command),
+        member_gate: merged.member_gate,
         gate_from_script,
         setup: merged.setup.unwrap_or_default(),
         ci_timeout: merged.ci_timeout,
@@ -527,6 +533,7 @@ fn read_layer(path: &Path, label: &str) -> Result<Layer, SettingsError> {
                 )
             }
             "gate" => layer.gate = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
+            "member_gate" => layer.member_gate = Some(argv(&json_of(value)).map_err(|r| bad(&r))?),
             "setup" => layer.setup = Some(steps(&json_of(value)).map_err(|r| bad(&r))?),
             "ci_timeout_secs" => {
                 layer.ci_timeout = Some(
@@ -920,6 +927,9 @@ fn env_layer(env: &dyn Fn(&str) -> Option<String>) -> Result<Layer, SettingsErro
     }
     if let Some(v) = get("ORQ_GATE") {
         layer.gate = Some(argv(&json("ORQ_GATE", &v)?).map_err(|r| invalid("ORQ_GATE", r))?);
+    }
+    if let Some(v) = get("ORQ_MEMBER_GATE") {
+        layer.member_gate = Some(argv(&json("ORQ_MEMBER_GATE", &v)?).map_err(|r| invalid("ORQ_MEMBER_GATE", r))?);
     }
     if let Some(v) = get("ORQ_SETUP") {
         layer.setup = Some(steps(&json("ORQ_SETUP", &v)?).map_err(|r| invalid("ORQ_SETUP", r))?);

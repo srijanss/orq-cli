@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use orq_orchestrator::{
-    choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions,
+    choose_gate, choose_gate_scoped, choose_gate_with, scoped_test_apps, Gate, GateError,
+    GateOptions,
 };
 
 fn worktree(tag: &str) -> PathBuf {
@@ -713,6 +714,48 @@ fn a_scope_changes_neither_a_configured_gate_nor_a_project_that_is_not_django() 
         choose_gate_scoped(&plain, None, Some(&changed)),
         Ok(run(&[&["uv", "run", "pytest"]]))
     );
+}
+
+#[test]
+fn a_django_and_node_project_scoped_to_one_app_runs_that_apps_tests_and_keeps_migrations_and_the_node_steps() {
+    let dir = django("django-node-scoped");
+    touch(&dir, "src/blog/tests/test_posts.py", "");
+    touch(&dir, "package.json", PACKAGE);
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    let changed = ["src/shop/views.py".to_string()];
+
+    assert_eq!(
+        choose_gate_scoped(&dir, None, Some(&changed)),
+        Ok(run(&[
+            MIGRATIONS,
+            &["uv", "run", "pytest", "src/shop"],
+            &["npm", "run", "typecheck"],
+            &["npm", "run", "test"],
+        ]))
+    );
+}
+
+#[test]
+fn the_apps_a_scoped_django_gate_tests_are_named_and_a_gate_that_is_not_scoped_names_none() {
+    let dir = django("django-scoped-apps");
+    touch(&dir, "src/billing/tests.py", "");
+    let names = |apps: &[&str]| Some(apps.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+    let scoped = |changed: &[&str]| {
+        let changed: Vec<String> = changed.iter().map(|p| p.to_string()).collect();
+        scoped_test_apps(&dir, None, &changed)
+    };
+
+    assert_eq!(scoped(&["src/shop/views.py", "src/billing/models.py", "src/shop/urls.py"]), names(&["billing", "shop"]));
+    assert_eq!(scoped(&["README.md"]), names(&[]), "only documentation: no app's tests run");
+    assert_eq!(scoped(&["src/blog/models.py"]), None, "an app without tests runs the whole suite");
+    assert_eq!(scoped(&["uv.lock", "src/shop/views.py"]), None);
+    let configured = ["make".to_string(), "check".to_string()];
+    assert_eq!(scoped_test_apps(&dir, Some(&configured), &["src/shop/views.py".to_string()]), None, "a configured gate is never scoped");
+    let plain = worktree("plain-scoped-apps");
+    touch(&plain, "uv.lock", "");
+    touch(&plain, "pytest.ini", "");
+    touch(&plain, "src/shop/tests/test_a.py", "");
+    assert_eq!(scoped_test_apps(&plain, None, &["src/shop/views.py".to_string()]), None, "nor is a project that is not Django");
 }
 
 #[test]

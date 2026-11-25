@@ -6862,6 +6862,18 @@ function StepFailedTests({ place, tests, more }) {
   );
 }
 
+// What a design group member's gate ran, from its start's gate_scope: the apps whose tests it ran (when it
+// was scoped to some) and the member it ran after. Null for the full gate over the whole branch.
+function memberGateNote(events) {
+  const start = events.find((event) => event.kind === "stage.started" && event.gate_scope && event.gate_scope.scope === "member");
+  if (start === undefined) return null;
+  const { member, apps } = start.gate_scope;
+  const after = typeof member === "string" && member !== "" ? " (after " + member + ")" : "";
+  if (!Array.isArray(apps)) return "Member gate" + after;
+  const named = apps.filter((app) => typeof app === "string" && app !== "");
+  return "Member gate: " + (named.length === 0 ? "no app" : named.join(", ")) + " tests" + after;
+}
+
 // The design review step's note for each correction round split into parts, as the server words it.
 function designSplits(events) {
   return events.filter((event) => event.kind === "design_correction_split" && typeof event.design_round === "string").map((event) => event.design_round);
@@ -6883,6 +6895,7 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
         const reverted = formatReverted(step.events);
         const outside = undeclared.length + reverted.length;
         const flakyList = flakyTests(step.events);
+        const memberGate = memberGateNote(step.events);
         const place = runId + "\n" + step.events[0].event_id;
         const name = step.round > 0 || step.designRound ? step.title : step.attempt > 1 ? step.stage + " · attempt " + step.attempt : step.stage;
         const failure = kind === "failed" ? latestFailure(step.events) : null;
@@ -6894,6 +6907,7 @@ function RunSteps({ runId, events, rounds, running, ended = false, failedRun = f
             <span className="sr-only">{STEP_STATES[kind]}</span>
             <span className="run-step-time" aria-hidden={kind === "current" ? "true" : undefined}>{kind === "current" ? "In progress" + (took === null ? "" : " (" + took + ")") : took}</span>
             {note === null ? null : <p className="run-cleanup-note field-hint muted">{note}</p>}
+            {memberGate === null ? null : <p className="run-step-note field-hint muted" data-step-gate-scope>{memberGate}</p>}
             {designSplits(step.events).map((split, n) => (
               <p key={"split" + n} className="run-step-note field-hint muted" data-step-design-split>{split}</p>
             ))}

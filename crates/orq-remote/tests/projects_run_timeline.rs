@@ -151,6 +151,33 @@ fn review_events_carry_their_run_wide_round_even_on_a_later_page() {
 }
 
 #[test]
+fn a_gate_start_carries_its_scope_member_and_apps_and_nothing_else() {
+    let s = setup("timeline-gate-scope");
+    let alpha = git_repo(&s.scan, "alpha");
+    let project = project_id(&alpha);
+    add_run(&s, "r1", &project, "main", &[("run.started", None, "2026-11-01T10:00:00Z")]);
+    let store = RunStore::new(&s.roots.state);
+    let starts = [
+        json!({"steps": [["secret", "step"]], "log_offset": 0, "scope": "member", "member": "std", "apps": ["landingpage"]}),
+        json!({"steps": [["secret", "step"]], "scope": "member", "member": "fa"}),
+        json!({"steps": [["secret", "step"]], "scope": "full"}),
+    ];
+    for (n, payload) in starts.into_iter().enumerate() {
+        store.append_event(&Event { schema_version: 1, event_id: format!("r1-gate{n}"), run_id: "r1".into(), project_id: project.clone(), feature_id: "f-r1".into(), kind: "stage.started".into(), stage: Some("verify".into()), attempt: 1, occurred_at: format!("2026-11-01T10:0{}:00Z", n + 1), payload }).unwrap();
+    }
+
+    let (status, body) = get(&s, "/api/projects/alpha/runs/r1");
+
+    assert_eq!(status, 200, "{body}");
+    let events = body["events"].as_array().unwrap();
+    assert!(events[0].get("gate_scope").is_none(), "{body}");
+    assert_eq!(events[1]["gate_scope"], json!({"scope": "member", "member": "std", "apps": ["landingpage"]}), "{body}");
+    assert_eq!(events[2]["gate_scope"], json!({"scope": "member", "member": "fa"}), "{body}");
+    assert_eq!(events[3]["gate_scope"], json!({"scope": "full"}), "{body}");
+    assert!(!body.to_string().contains("secret"), "{body}");
+}
+
+#[test]
 fn an_mcp_setup_event_carries_its_servers_versions_sources_and_notes_and_nothing_else() {
     let s = setup("timeline-mcp");
     let alpha = git_repo(&s.scan, "alpha");

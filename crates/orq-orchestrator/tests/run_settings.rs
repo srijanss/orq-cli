@@ -273,6 +273,35 @@ fn the_people_for_a_review_request_come_from_the_files_and_the_environment() {
 }
 
 #[test]
+fn the_member_gate_comes_from_the_files_or_the_environment_in_the_gates_argv_form() {
+    let r = repo("membergate");
+    assert_eq!(load_run_settings(&r, &no_env).unwrap().member_gate, None);
+    shared(&r, "gate = [\"just\", \"ci\"]\nmember_gate = [\"just\", \"quick\"]\n");
+    let s = load_run_settings(&r, &no_env).unwrap();
+    assert_eq!(
+        (s.gate, s.member_gate),
+        (
+            Some(vec!["just".to_string(), "ci".to_string()]),
+            Some(vec!["just".to_string(), "quick".to_string()])
+        )
+    );
+
+    let env = |key: &str| (key == "ORQ_MEMBER_GATE").then(|| "[\"make\",\"fast\"]".to_string());
+    let s = load_run_settings(&r, &env).unwrap();
+    assert_eq!(
+        s.member_gate,
+        Some(vec!["make".to_string(), "fast".to_string()])
+    );
+
+    assert!(invalid("member_gate = \"just quick\"\n", "membergatestring").contains("member_gate"));
+    let env = |key: &str| (key == "ORQ_MEMBER_GATE").then(|| "make fast".to_string());
+    match load_run_settings(&r, &env) {
+        Err(SettingsError::Invalid { source, .. }) => assert_eq!(source, "ORQ_MEMBER_GATE"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn the_notification_command_and_mode_are_settings() {
     let r = repo("notify");
     shared(

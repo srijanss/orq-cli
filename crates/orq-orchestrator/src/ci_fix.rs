@@ -173,6 +173,7 @@ pub fn run_ci_fix_loop(
             config.gate_log,
             fix_attempts,
             config.env,
+            None,
         )? {
             GateOutcome::Passed | GateOutcome::Skipped { .. } => {}
             GateOutcome::Failed { step, exit_code } => {

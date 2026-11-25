@@ -123,13 +123,17 @@ pub use discard::{
 };
 pub use fix_features::{carry_fix_features, fix_features, record_fix_features_added};
 pub use format_revert::{undo_formatting_outside, FORMAT_REVERTED, FORMAT_REVERT_MESSAGE};
-pub use gate::{choose_gate, choose_gate_scoped, choose_gate_with, Gate, GateError, GateOptions};
+pub use gate::{
+    choose_gate, choose_gate_scoped, choose_gate_with, scoped_test_apps, Gate, GateError,
+    GateOptions,
+};
 pub use gate_fix::{
-    rerun_gate, run_gate_with_fixes, run_gate_with_fixes_env, run_gate_with_fixes_then,
-    FixSessionSpec, GateFixOutcome, UNRELATED_FAILURE_FILE,
+    rerun_gate, rerun_gate_scoped, run_gate_with_fixes, run_gate_with_fixes_env,
+    run_gate_with_fixes_scoped, run_gate_with_fixes_then, FixSessionSpec, GateFixOutcome,
+    UNRELATED_FAILURE_FILE,
 };
 pub use gate_stage::{
-    run_gate_stage, run_gate_stage_with_env, run_gate_stage_with_limit, GateOutcome,
+    run_gate_stage, run_gate_stage_with_env, run_gate_stage_with_limit, GateOutcome, GateScope,
 };
 pub use handoff::{
     handoff_prompt, read_handoff, write_handoff, DiffFile, GateResult, Handoff, HandoffDiff,

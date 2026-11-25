@@ -10,7 +10,7 @@ use orq_features::ResolvedModel;
 use orq_git::{detect_provider, local_target_base, ProviderHosts};
 use orq_orchestrator::{
     check_implement_outcome, choose_gate, cleanup_worktree, create_review_request_with, draft_review_description,
-    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_ci_fix_loop, run_gate_with_fixes_then, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
+    plan_setup, push_run_branch, rebase_onto_target, record_launch, run_ci_fix_loop, run_implement_stage, run_setup_with_env, wait_for_ci_logged,
     CiFixConfig, CiFixOutcome, CiFixSteps, CiOutcome, CiWaitConfig, DraftSession, FixSessionSpec, GateFixOutcome, ImplementCheck, ImplementSession, PushOutcome,
     RebaseOutcome, ReviewRequestOutcome, RoleProfile, RunLimit, RunRecord, RunStore, StoreError,
 };
@@ -2521,12 +2521,26 @@ fn stages(
     let ran_gate: std::cell::RefCell<Option<orq_orchestrator::Gate>> = std::cell::RefCell::new(None);
     // Runs the gate, with its fix sessions, on the run's branch as it is now: `Some` with how the run
     // stops when the branch does not pass.
-    let check = || -> Result<Option<Report>, StoreError> {
+    // A design group member's gate (`member` named) is scoped to what the group has changed so far, with
+    // logs of its own; the run's gate over the whole branch is the full one.
+    let check_for = |member: Option<&str>| -> Result<Option<Report>, StoreError> {
         let stopped_now = |ending: Ending, detail: String| stopped(ending, detail).map(Some);
-        let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
-        *ran_gate.borrow_mut() = Some(gate.clone());
-        let gate_log = logs.join("gate.log");
-        let fix_log = logs.join("gate-fix.log");
+        let (gate, scope, suffix) = match member {
+            Some(member) => {
+                let configured = settings.member_gate.as_deref().or(settings.gate.as_deref());
+                let changed = changed_files(record, &store.events(run_id)?).map_err(StoreError::Corrupt)?;
+                let gate = orq_orchestrator::choose_gate_scoped(worktree, configured, Some(&changed)).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+                let apps = orq_orchestrator::scoped_test_apps(worktree, configured, &changed);
+                (gate, orq_orchestrator::GateScope::Member { member: member.to_string(), apps }, format!("-{member}"))
+            }
+            None => {
+                let gate = choose_gate(worktree, settings.gate.as_deref()).map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
+                *ran_gate.borrow_mut() = Some(gate.clone());
+                (gate, orq_orchestrator::GateScope::Full, String::new())
+            }
+        };
+        let gate_log = logs.join(format!("gate{suffix}.log"));
+        let fix_log = logs.join(format!("gate-fix{suffix}.log"));
         // The session reads a copy of the gate log in its worktree, and says there that the failure is not
         // the run's; it is told the report's place in its environment too.
         let session_files = worktree.join(orq_orchestrator::SESSION_FILES_DIR);
@@ -2537,17 +2551,17 @@ fn stages(
         // the user's own checkout: it is only checked, never edited by an agent.
         let fix_attempts = if options.publish { 0 } else { GATE_FIX_ATTEMPTS };
         // Someone watching the run gets the session on the terminal, closed once it says it is finished.
-        let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join("gate-fix.done"));
+        let fix_marker = (options.interactive && settings.auto_exit != Some(false)).then(|| logs.join(format!("gate-fix{suffix}.done")));
         let task = format!(
             "The local gate failed after your changes. Its log is at {}. Read it, fix the cause in this worktree and commit the fix. \
              If the failure has nothing to do with your changes (a flaky test, a test already broken on the target branch, a broken environment), do not fix it: \
              write a line saying what fails and why it is not caused by your changes to {} and stop.",
-            session_files.join("gate.log").display(),
+            session_files.join(format!("gate{suffix}.log")).display(),
             unrelated_report.display()
         );
         let gate_env = gate_env(store, record, database_env)?;
         let gate_outcome =
-            run_gate_with_fixes_then(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, |_, _| {
+            orq_orchestrator::run_gate_with_fixes_scoped(store, run_id, &gate, options.gate, &gate_log, fix_attempts, &gate_env, &scope, |_, _| {
                 fix_features.before("gate_fix");
                 orq_orchestrator::copy_session_files(worktree, &[gate_log.as_path()]).map_err(StoreError::Corrupt)?;
                 // A script the run has changed since is no longer allowed to the fix session, nor listed to it.
@@ -2592,7 +2606,7 @@ fn stages(
             // Left alone on purpose: the person decides whether it is fixed first, in its own change.
             // Mostly a flaky test: the gate runs once more, unchanged. A pass carries the run on, noted as a flake.
             GateFixOutcome::Unrelated { fix_attempts, step, summary } => {
-                if !orq_orchestrator::rerun_gate(store, run_id, &gate, options.gate, &gate_log, &gate_env, fix_attempts, step, &summary)? {
+                if !orq_orchestrator::rerun_gate_scoped(store, run_id, &gate, options.gate, &gate_log, &gate_env, fix_attempts, step, &summary, &scope)? {
                     return stopped_now(
                         Ending::Blocked,
                         format!("the gate fails for a reason unrelated to this run: {summary}; the re-run failed too. Get that fixed separately and merged into the target branch, then resume this run"),
@@ -2612,6 +2626,7 @@ fn stages(
         }
         Ok(None)
     };
+    let check = || check_for(None);
     // A rebase stopped on a conflict: a session of the implementer resolves it and finishes the
     // rebase; `Some` with how the run stops when it does not. A published branch is the user's own
     // checkout, never edited by an agent.
@@ -2810,7 +2825,7 @@ fn stages(
         };
         let gate_member = |at: &orq_orchestrator::MemberAt<'_>| -> StageStop {
             eprintln!("orq: {}, gate", member_progress(at));
-            check()
+            check_for(Some(&at.member.feature))
         };
         let design_member = |at: &orq_orchestrator::MemberAt<'_>, done: &[String]| -> StageStop {
             // A member's rounds are kept in a folder of its own, its scope naming its components and the earlier

@@ -79,6 +79,28 @@ pub fn choose_gate_scoped(
     )
 }
 
+/// The Django apps whose tests [`choose_gate_scoped`] runs for `changed`, by name and sorted (none when only
+/// documentation changed). `None` when that gate is not scoped to apps: a configured gate, a project that is
+/// not Django, or a change that can affect any app, for which the whole suite runs.
+pub fn scoped_test_apps(
+    worktree: &Path,
+    configured: Option<&[String]>,
+    changed: &[String],
+) -> Option<Vec<String>> {
+    let django = worktree.join("src/manage.py").is_file() && worktree.join("uv.lock").is_file();
+    if configured.is_some_and(|argv| !argv.is_empty()) || !django {
+        return None;
+    }
+    // Targets are sorted, so an app's directory and its tests.py are side by side.
+    let mut apps: Vec<String> = changed_tested_apps(worktree, changed)?
+        .iter()
+        .filter_map(|target| target.strip_prefix("src/"))
+        .map(|target| target.trim_end_matches("/tests.py").to_string())
+        .collect();
+    apps.dedup();
+    Some(apps)
+}
+
 /// Like [`choose_gate`], with the optional steps `options` asks for. A configured gate ignores them.
 pub fn choose_gate_with(
     worktree: &Path,

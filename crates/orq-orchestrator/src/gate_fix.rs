@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::gate::Gate;
-use crate::gate_stage::{record_event, run_gate_attempt, GateOutcome};
+use crate::gate_stage::{record_event, run_gate_attempt, GateOutcome, GateScope};
 use crate::implement::{run_session_stage, ImplementSession};
 use crate::store::{RunStore, StoreError};
 
@@ -170,6 +170,61 @@ pub fn run_gate_with_fixes_then(
     gate_log: &Path,
     max_attempts: u32,
     env: &[(String, String)],
+    fixer: impl FnMut(u32, &Path) -> Result<FixSessionSpec, StoreError>,
+    after_session: impl FnMut(),
+) -> Result<GateFixOutcome, StoreError> {
+    run_gate_with_fixes_in(
+        store,
+        run_id,
+        gate,
+        enabled,
+        gate_log,
+        max_attempts,
+        env,
+        None,
+        fixer,
+        after_session,
+    )
+}
+
+/// Like [`run_gate_with_fixes_then`], each start of the gate saying `scope`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_gate_with_fixes_scoped(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    gate_log: &Path,
+    max_attempts: u32,
+    env: &[(String, String)],
+    scope: &GateScope,
+    fixer: impl FnMut(u32, &Path) -> Result<FixSessionSpec, StoreError>,
+    after_session: impl FnMut(),
+) -> Result<GateFixOutcome, StoreError> {
+    run_gate_with_fixes_in(
+        store,
+        run_id,
+        gate,
+        enabled,
+        gate_log,
+        max_attempts,
+        env,
+        Some(scope),
+        fixer,
+        after_session,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_gate_with_fixes_in(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    gate_log: &Path,
+    max_attempts: u32,
+    env: &[(String, String)],
+    scope: Option<&GateScope>,
     mut fixer: impl FnMut(u32, &Path) -> Result<FixSessionSpec, StoreError>,
     mut after_session: impl FnMut(),
 ) -> Result<GateFixOutcome, StoreError> {
@@ -183,6 +238,7 @@ pub fn run_gate_with_fixes_then(
             gate_log,
             fix_attempts + 1,
             env,
+            scope,
         )? {
             GateOutcome::Passed => return Ok(GateFixOutcome::Passed { fix_attempts }),
             GateOutcome::Skipped { reason } => return Ok(GateFixOutcome::Skipped { reason }),
@@ -257,8 +313,63 @@ pub fn rerun_gate(
     step: usize,
     summary: &str,
 ) -> Result<bool, StoreError> {
+    rerun_gate_in(
+        store,
+        run_id,
+        gate,
+        enabled,
+        gate_log,
+        env,
+        fix_attempts,
+        step,
+        summary,
+        None,
+    )
+}
+
+/// Like [`rerun_gate`], the gate's start saying `scope`.
+#[allow(clippy::too_many_arguments)]
+pub fn rerun_gate_scoped(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    gate_log: &Path,
+    env: &[(String, String)],
+    fix_attempts: u32,
+    step: usize,
+    summary: &str,
+    scope: &GateScope,
+) -> Result<bool, StoreError> {
+    rerun_gate_in(
+        store,
+        run_id,
+        gate,
+        enabled,
+        gate_log,
+        env,
+        fix_attempts,
+        step,
+        summary,
+        Some(scope),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rerun_gate_in(
+    store: &RunStore,
+    run_id: &str,
+    gate: &Gate,
+    enabled: bool,
+    gate_log: &Path,
+    env: &[(String, String)],
+    fix_attempts: u32,
+    step: usize,
+    summary: &str,
+    scope: Option<&GateScope>,
+) -> Result<bool, StoreError> {
     let attempt = fix_attempts + 1;
-    let outcome = run_gate_attempt(store, run_id, gate, enabled, gate_log, attempt, env)?;
+    let outcome = run_gate_attempt(store, run_id, gate, enabled, gate_log, attempt, env, scope)?;
     let record = store.load(run_id)?;
     match outcome {
         GateOutcome::Passed | GateOutcome::Skipped { .. } => {

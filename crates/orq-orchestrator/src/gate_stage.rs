@@ -31,6 +31,34 @@ pub enum GateOutcome {
     },
 }
 
+/// What a run of the gate covers, said on each of its `stage.started` events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateScope {
+    /// The run's whole gate, before delivery: `scope: "full"`.
+    Full,
+    /// The gate after a design group member: `scope: "member"` with the member and, for a gate scoped to
+    /// Django apps, the apps whose tests it ran.
+    Member {
+        member: String,
+        apps: Option<Vec<String>>,
+    },
+}
+
+impl GateScope {
+    fn add_to(&self, payload: &mut serde_json::Value) {
+        match self {
+            GateScope::Full => payload["scope"] = "full".into(),
+            GateScope::Member { member, apps } => {
+                payload["scope"] = "member".into();
+                payload["member"] = member.as_str().into();
+                if let Some(apps) = apps {
+                    payload["apps"] = serde_json::json!(apps);
+                }
+            }
+        }
+    }
+}
+
 pub fn run_gate_stage(
     store: &RunStore,
     run_id: &str,
@@ -50,7 +78,7 @@ pub fn run_gate_stage_with_env(
     log_path: &Path,
     env: &[(String, String)],
 ) -> Result<GateOutcome, StoreError> {
-    run_gate_attempt(store, run_id, gate, enabled, log_path, 1, env)
+    run_gate_attempt(store, run_id, gate, enabled, log_path, 1, env, None)
 }
 
 /// `run_gate_stage_with_env`, with each step stopped, and the gate failed, once it has run for `limit`.
@@ -63,13 +91,14 @@ pub fn run_gate_stage_with_limit(
     env: &[(String, String)],
     limit: std::time::Duration,
 ) -> Result<GateOutcome, StoreError> {
-    run_gate_attempt_limited(store, run_id, gate, enabled, log_path, 1, env, limit)
+    run_gate_attempt_limited(store, run_id, gate, enabled, log_path, 1, env, limit, None)
 }
 
 /// No gate step is left running longer than this: a step that hangs fails the gate instead of the run.
 pub const STEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-/// One run of the gate, its events numbered `attempt`.
+/// One run of the gate, its events numbered `attempt`, its start saying `scope` when given.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_gate_attempt(
     store: &RunStore,
     run_id: &str,
@@ -78,9 +107,10 @@ pub(crate) fn run_gate_attempt(
     log_path: &Path,
     attempt: u32,
     env: &[(String, String)],
+    scope: Option<&GateScope>,
 ) -> Result<GateOutcome, StoreError> {
     run_gate_attempt_limited(
-        store, run_id, gate, enabled, log_path, attempt, env, STEP_LIMIT,
+        store, run_id, gate, enabled, log_path, attempt, env, STEP_LIMIT, scope,
     )
 }
 
@@ -94,6 +124,7 @@ fn run_gate_attempt_limited(
     attempt: u32,
     env: &[(String, String)],
     limit: std::time::Duration,
+    scope: Option<&GateScope>,
 ) -> Result<GateOutcome, StoreError> {
     let record = store.load(run_id)?;
     // The commit the gate tests, so its result is that commit's and not a later push's.
@@ -129,6 +160,9 @@ fn run_gate_attempt_limited(
     if let Some((lines, bytes)) = log_line {
         started["log_line"] = lines.into();
         started["log_offset"] = bytes.into();
+    }
+    if let Some(scope) = scope {
+        scope.add_to(&mut started);
     }
     record_event(store, &record, "stage.started", attempt, started)?;
 
