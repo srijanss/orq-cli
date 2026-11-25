@@ -86,12 +86,13 @@ impl Project {
 
     /// A fake `pi` whose `--list-models` lists `openai/gpt-6.1-sol` with images and `openai/text-only` without.
     fn fake_pi(&self) {
+        self.pi_script("#!/bin/sh\nif [ \"$1\" = --list-models ]; then printf 'provider  model  context  max-out  thinking  images\\nopenai  gpt-6.1-sol  400K  128K  yes  yes\\nopenai  text-only  400K  128K  yes  no\\n'; exit 0; fi\nexit 1\n");
+    }
+
+    /// A fake `pi` that is `script`.
+    fn pi_script(&self, script: &str) {
         let pi = self.home.join("bin/pi");
-        std::fs::write(
-            &pi,
-            "#!/bin/sh\nif [ \"$1\" = --list-models ]; then printf 'provider  model  context  max-out  thinking  images\\nopenai  gpt-6.1-sol  400K  128K  yes  yes\\nopenai  text-only  400K  128K  yes  no\\n'; exit 0; fi\nexit 1\n",
-        )
-        .unwrap();
+        std::fs::write(&pi, script).unwrap();
         std::fs::set_permissions(&pi, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     }
 
@@ -178,4 +179,34 @@ fn a_frontend_run_with_a_design_table_and_a_design_reviewer_passes_the_check() {
     assert!(output.status.success(), "{}", text(&output.stderr));
     let output = p.run(&["--group", "std,page", "--check"]);
     assert!(output.status.success(), "{}", text(&output.stderr));
+}
+
+#[test]
+fn a_pi_design_reviewer_whose_models_cannot_be_listed_or_are_not_listed_is_refused() {
+    let p = project("pi-listing", true);
+    p.design_reviewer("openai/gpt-6.1-sol");
+    p.mark_frontend("page");
+    for (script, reason) in [
+        // The listing fails, or says nothing that is a model list.
+        ("#!/bin/sh\necho broken >&2\nexit 1\n", "pi's models could not be listed"),
+        ("#!/bin/sh\nprintf 'no models here\\n'\n", "pi doesn't list openai/gpt-6.1-sol"),
+        // The model the design reviewer names is not among them.
+        ("#!/bin/sh\nprintf 'provider  model  context  max-out  thinking  images\\nopenai  other  400K  128K  yes  yes\\n'\n", "pi doesn't list openai/gpt-6.1-sol"),
+    ] {
+        p.pi_script(script);
+        let output = p.run(&["--feature", "page", "--check"]);
+        assert_refused(&p, &output, "page", reason);
+    }
+}
+
+#[test]
+fn a_pi_listing_that_never_ends_is_bounded_and_refused() {
+    let p = project("pi-hangs", true);
+    p.design_reviewer("openai/gpt-6.1-sol");
+    p.mark_frontend("page");
+    p.pi_script("#!/bin/sh\nexec sleep 60\n");
+    let started = std::time::Instant::now();
+    let output = p.run(&["--feature", "page", "--check"]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "took {:?}", started.elapsed());
+    assert_refused(&p, &output, "page", "pi's models could not be listed");
 }
