@@ -1597,6 +1597,16 @@ fn ledger_design_scope(ledger: &Path, feature: &str) -> Result<Option<orq_orches
     orq_orchestrator::design_scope(feature, description)
 }
 
+/// The design scope a run's package step passes on: the ledger's, read only while the run has no frozen
+/// package. A run whose package is frozen (resumed) keeps the scope it was frozen with, whatever the ledger
+/// says now, so `None` is passed and the frozen scope wins.
+fn run_design_scope(ledger: &Path, logs: &Path, feature: &str) -> Result<Option<orq_orchestrator::DesignScope>, String> {
+    if logs.join("design/manifest.json").exists() {
+        return Ok(None);
+    }
+    ledger_design_scope(ledger, feature)
+}
+
 /// `task` with the run's frozen design scope appended, so a fix or code review session is told the same
 /// components as the design review.
 fn with_design_scope(task: &str, logs: &Path) -> String {
@@ -2965,7 +2975,7 @@ fn design_package(
         orq_orchestrator::record_design_package(store, run_id, "design.files_needed", serde_json::json!({"feature": needed.feature, "files": files}))?;
         stopped(Ending::DesignFilesNeeded, needed.message()).map(Some)
     };
-    let scope = match ledger_design_scope(&orq_features::ledger_path(options.project), &options.features[0]) {
+    let scope = match run_design_scope(&orq_features::ledger_path(options.project), logs, &options.features[0]) {
         Ok(scope) => scope,
         Err(reason) => return stopped(Ending::Failed, format!("the design package cannot be used: {reason}")).map(Some),
     };
@@ -3532,6 +3542,22 @@ mod tests {
         assert_eq!(super::ledger_design_scope(&ledger, "gone").unwrap(), None);
         // A line that cannot be read stops the run with the reason.
         assert!(super::ledger_design_scope(&ledger, "bad").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_resumed_runs_design_scope_is_the_frozen_one_whatever_the_ledger_now_says() {
+        let dir = orq_test_support::process_temp_dir().join(format!("orq-design-scope-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("logs/design")).unwrap();
+        let ledger = dir.join(".tdd-features.json");
+        std::fs::write(&ledger, r#"[{"featureName":"home-process","description":"Design package: two words","status":"pending"}]"#).unwrap();
+        let logs = dir.join("logs");
+        // A run starting its package reads the ledger, and a line that cannot be read stops it.
+        assert!(super::run_design_scope(&ledger, &logs, "home-process").is_err());
+        // A run whose package is frozen keeps the frozen scope: the ledger is not read again.
+        std::fs::write(logs.join("design/manifest.json"), "{}").unwrap();
+        assert_eq!(super::run_design_scope(&ledger, &logs, "home-process"), Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
