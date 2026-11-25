@@ -11,7 +11,7 @@ use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 const HEAD: &str = "2222222222222222222222222222222222222222";
-const SELECTORS: [&str; 25] = [
+const SELECTORS: [&str; 26] = [
     "details[data-unpushed-details]",
     "details[data-unpushed-details][open]",
     ".unpushed-warning",
@@ -37,6 +37,7 @@ const SELECTORS: [&str; 25] = [
     "[data-modal-close]:disabled",
     "[data-push-modal] [data-cancel]",
     "[data-push-modal] [role=dialog]",
+    "[data-push-checking]",
 ];
 
 fn harness(scenario: Value) -> Option<Value> {
@@ -483,4 +484,42 @@ fn a_commits_run_link_closes_the_popup_and_goes_to_the_run() {
     let gone = last(&out);
     assert_eq!(gone["settled"]["path"], "/projects/alpha/orchestrations/run-1-PUSH-01", "{out}");
     assert_eq!(count(gone, "[data-push-modal]"), 0, "{out}");
+}
+
+/// The push-target GET held until a `{"release": 1}` step.
+fn held_state() -> Value {
+    let mut held = state(None, true);
+    held["hold"] = json!("fetch");
+    held
+}
+
+#[test]
+fn pressing_push_main_shows_a_spinner_in_the_button_while_it_is_checked() {
+    let in_button = "[data-push-target] [data-push-checking]";
+    let visible = ".push-target > [role=status]:not(.sr-only)";
+    let mut selectors = SELECTORS.to_vec();
+    selectors.extend([in_button, visible]);
+    let auth = json!({"passkeys": true, "signed_in": true, "csrf": "c-1"});
+    let steps = json!([{"click": "[data-push-target]"}]);
+    let Some(out) = harness(json!({"url": "/dashboard", "responses": [projects(unpushed("github")), held_state()], "auth": auth, "steps": steps, "selectors": selectors})) else { return };
+
+    assert_eq!(count(&frames(&out)[0], "[data-push-checking]"), 0, "{out}");
+    let checking = last(&out);
+    assert_eq!((count(checking, in_button), count(checking, "[data-push-checking]"), count(checking, "[data-push-target]:disabled")), (1, 1, 1), "{out}");
+    assert!(buttons(checking).iter().any(|b| b == "Push main"), "{:?}", buttons(checking));
+    assert_eq!(count(checking, visible), 0, "{out}");
+    assert!(shows(checking, "Checking…"), "{:?}", texts(checking));
+    assert_eq!(count(checking, "[data-push-modal]"), 0, "{out}");
+}
+
+#[test]
+fn the_checking_spinner_clears_when_the_check_answers() {
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"release": 1})];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), held_state()], steps) else { return };
+
+    let all = frames(&out);
+    assert_eq!(count(&all[all.len() - 2], "[data-push-checking]"), 1, "{out}");
+    let asking = last(&out);
+    assert_eq!((count(asking, "[data-push-checking]"), count(asking, "[data-push-modal] [data-push-confirm]")), (0, 1), "{out}");
+    assert!(!shows(asking, "Checking…"), "{:?}", texts(asking));
 }

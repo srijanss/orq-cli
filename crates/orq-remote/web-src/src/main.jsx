@@ -1013,9 +1013,9 @@ function PushTarget({ target, push, onPushed }) {
   // The confirmation is a popup over the page, so the card or line the button sits in keeps its size.
   return (
     <div className="push-target">
-      <button type="button" className="primary-button" ref={button} data-push-target disabled={!session || phase !== "idle"} onClick={ask}><Icon name="arrowUp" size={16} />{"Push " + target}</button>
+      <button type="button" className="primary-button" ref={button} data-push-target disabled={!session || phase !== "idle"} onClick={ask}>{phase === "checking" ? <span className="spinner" aria-hidden="true" data-push-checking /> : <Icon name="arrowUp" size={16} />}{"Push " + target}</button>
       {session ? null : <p className="muted" data-push-needs-passkey>Pushing needs a passkey sign-in.</p>}
-      {phase === "checking" ? <span role="status">Checking…</span> : null}
+      {phase === "checking" ? <span role="status" className="sr-only">Checking…</span> : null}
       {open ? (
         <div className="feature-modal" data-push-modal onClick={(event) => { if (event.target === event.currentTarget && !busy) cancel(); }}>
           <div className="feature-modal-box" ref={box} tabIndex={-1} role="dialog" aria-modal="true" aria-label={"Push " + target}>
