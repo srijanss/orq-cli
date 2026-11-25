@@ -186,9 +186,8 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
             return follow(shared, peer, credentials, base, cursor, method == "HEAD").await;
         }
         if let Some(base) = chat_stream_target(&path) {
-            let after = last_event_id.as_deref().and_then(|id| id.parse::<usize>().ok());
             let credentials = Credentials { forwarded: is_forwarded(&headers), authorization, cookie };
-            return follow_chat(shared, peer, credentials, base, after, method == "HEAD").await;
+            return follow_chat(shared, peer, credentials, base, method == "HEAD").await;
         }
     }
     let session = cookie.clone();
@@ -473,8 +472,9 @@ fn chat_stream_target(path: &str) -> Option<String> {
 /// Answers a chat stream: the handler's own refusal when it refuses (a chat needs a passkey session, so the
 /// request's cookie goes with every look), otherwise server-sent events: each item of the chat as `item` with
 /// its index as the id, again when it changes (a tool's result arriving), and `state` when a reply starts or
-/// ends. `after` is the last item index the page already has.
-async fn follow_chat(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials, base: String, after: Option<usize>, head: bool) -> Response {
+/// ends. A stream taken up again starts from the first item whatever the page last had, since any item may have
+/// changed meanwhile; the page replaces items by index.
+async fn follow_chat(shared: Arc<Shared>, peer: SocketAddr, credentials: Credentials, base: String, head: bool) -> Response {
     struct Chat {
         shared: Arc<Shared>,
         peer: SocketAddr,
@@ -522,10 +522,6 @@ async fn follow_chat(shared: Arc<Shared>, peer: SocketAddr, credentials: Credent
     }
     state.queue.push_back(": connected\n\n".to_string());
     if let Ok(page) = serde_json::from_slice::<serde_json::Value>(&body) {
-        // The items the page already has count as sent, as they are now.
-        if let Some(after) = after {
-            state.sent = page["items"].as_array().into_iter().flatten().take(after + 1).map(|item| item.to_string()).collect();
-        }
         absorb(&mut state, &page);
     }
     let stream = futures_util::stream::unfold(state, |mut state| async move {

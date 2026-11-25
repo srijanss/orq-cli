@@ -1066,3 +1066,49 @@ fn the_stream_sends_a_chats_items_as_the_reply_is_written_and_only_to_a_passkey_
         "the end of the reply is sent: {rest}"
     );
 }
+
+/// A server for `s` with passkeys, and a signed-in session's cookie.
+fn serve(s: &Setup) -> (orq_remote::Server, String) {
+    let state = std::sync::Arc::new(orq_remote::ServerState {
+        roots: s.roots.clone(),
+        config: RemoteConfig { token: "tok".into() },
+        project_id: "server-project".into(),
+        project_name: "server".into(),
+    });
+    let host = orq_core::passkey_register::PasskeyHost::from_setting(web_push_session::RP).unwrap();
+    let auth = std::sync::Arc::new(orq_core::passkey_routes::PasskeyAuth::new(host).with_loopback_token(false));
+    let server = orq_remote::Server::start_with_auth(
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        state,
+        std::sync::Arc::new(provider(&s.roots, &s.scan, &s.base.join("fake-claude"))),
+        auth,
+    )
+    .unwrap();
+    let session = web_push_session::sign_in(server.addr(), "tok");
+    (server, session.cookie)
+}
+
+#[test]
+fn a_stream_taken_up_again_sends_every_item_again_since_any_may_have_changed_meanwhile() {
+    use std::io::Write;
+    let s = setup("stream-again");
+    git_repo(&s.scan, "alpha");
+    let chat = create_chat(&s, "alpha", json!({}));
+    say(&s, "alpha", &chat, "why did it fail?");
+    let (server, cookie) = serve(&s);
+
+    // The page had every item, but the tool's (index 2) only while it was still running.
+    let mut stream = std::net::TcpStream::connect(server.addr()).unwrap();
+    stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    write!(
+        stream,
+        "GET /api/projects/alpha/chats/{chat}/stream HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\nLast-Event-ID: 3\r\n\r\n"
+    )
+    .unwrap();
+    let got = read_for(&mut stream, Duration::from_millis(1500));
+    assert!(got.contains(" 200 "), "{got}");
+    assert!(
+        got.contains("id: 2\nevent: item") && got.contains("\"status\":\"ok\"") && got.contains("line one"),
+        "the tool's finished state reaches the page: {got}"
+    );
+}
