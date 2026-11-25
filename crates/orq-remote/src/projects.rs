@@ -667,7 +667,7 @@ fn needed_why(what: &str, path: &str) -> &'static str {
 /// (`designs/<package>/`), and each file's description, path in it, why it is needed and, for a reference, its viewport.
 fn design_files_needed(events: &[orq_orchestrator::Event], logs_dir: &Path) -> Option<serde_json::Value> {
     let payload = &events.iter().rev().find(|event| event.kind == "design.files_needed")?.payload;
-    let package = needed_package(&payload["feature"], logs_dir);
+    let package = needed_package(&payload["feature"], &payload["files"], logs_dir);
     let files: Vec<serde_json::Value> = payload["files"]
         .as_array()?
         .iter()
@@ -691,16 +691,32 @@ fn design_package_of(root: &Path, feature: &str, description: Option<&str>) -> O
 }
 
 /// The package a run waiting for files of `feature` reads: its frozen scope's (a group member's own, else the
-/// run's), else the feature's name.
-fn needed_package(feature: &serde_json::Value, logs_dir: &Path) -> serde_json::Value {
+/// run's); for a run stopped before its package was frozen, the one `designs/<package>/` folder its `files` are
+/// all asked in; else the feature's name.
+fn needed_package(feature: &serde_json::Value, files: &serde_json::Value, logs_dir: &Path) -> serde_json::Value {
     let member = feature.as_str().filter(|name| !name.is_empty() && !name.contains(['/', '\\']) && *name != "." && *name != "..");
     let scope = member
         .and_then(|name| orq_orchestrator::frozen_design_scope(&logs_dir.join(GROUP_MEMBERS_DIR).join(name)))
         .or_else(|| orq_orchestrator::frozen_design_scope(logs_dir));
-    match scope {
-        Some(scope) => shown_text(&serde_json::json!(scope.package)),
+    if let Some(scope) = scope {
+        return shown_text(&serde_json::json!(scope.package));
+    }
+    match asked_in_package(files) {
+        Some(package) => shown_text(&serde_json::json!(package)),
         None => shown_text(feature),
     }
+}
+
+/// The package folder every one of `files` is asked in, `designs/<package>/...`; `None` when there are none or
+/// they name more than one.
+fn asked_in_package(files: &serde_json::Value) -> Option<String> {
+    let mut packages = files.as_array()?.iter().map(|file| {
+        let mut parts = file["path"].as_str()?.split('/');
+        (parts.next() == Some("designs")).then_some(())?;
+        parts.next().filter(|package| !package.is_empty() && *package != "." && *package != "..").map(str::to_string)
+    });
+    let first = packages.next()??;
+    packages.all(|package| package.as_deref() == Some(first.as_str())).then_some(first)
 }
 
 /// Records as failed every accept a server that stopped left without a result: nothing runs its tests anymore.

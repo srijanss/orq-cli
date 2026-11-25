@@ -484,6 +484,32 @@ fn a_run_waiting_for_design_files_names_its_package_folder_from_its_frozen_scope
     );
 }
 
+/// A run of `login`, a feature in the shared package egiftit-homepage, that stopped before its package was frozen:
+/// no scope.json, only the files it asked for in the shared folder.
+#[test]
+fn a_shared_package_run_that_stops_before_its_package_is_frozen_names_the_folder_its_files_are_asked_in() {
+    let s = setup("design-files-needed-unfrozen");
+    let alpha = git_repo(&s.scan, "alpha");
+    let files = json!([
+        {"what": "the desktop reference, 1440x900", "path": "designs/egiftit-homepage/references/desktop.png"},
+        {"what": "DESIGN.md", "path": "designs/egiftit-homepage/DESIGN.md"},
+    ]);
+    add_run(
+        &s,
+        "r-1",
+        &project_key(&alpha),
+        &[
+            ("stage.started", "design_package", 1, json!({})),
+            ("design.files_needed", "design_package", 1, json!({"feature": "login", "files": files})),
+            ("run.completed", "design_package", 1, json!({"ending": "design_files_needed"})),
+        ],
+    );
+    assert!(!design_dir(&s, "r-1").join("scope.json").exists());
+
+    let body = page(&s, "/api/projects/alpha/runs/r-1");
+    assert_eq!(body["run"]["design_files_needed"]["package"], json!("egiftit-homepage"), "{body}");
+}
+
 #[test]
 fn the_run_page_carries_each_design_round_with_its_viewports_issues_suggestions_and_unassessed_checks(
 ) {
