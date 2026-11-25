@@ -3417,8 +3417,20 @@ const PERSON_SEVERITIES = [["major", "Major"], ["minor", "Minor"], ["critical", 
 let personIssueKey = 0;
 const blankPersonIssue = () => ({ key: ++personIssueKey, section: "", viewport: "all", expected: "", actual: "", fix: "", severity: "major" });
 
+// The design rounds a person's issues are for, and the design group member that has them (null for a run of one
+// feature): a design group's issues go to the member it stopped at, the one its resume continues with.
+function issuesDesignOf(run) {
+  const group = designGroupOf(run);
+  if (group === null) {
+    const design = designOf(run);
+    return design === null ? null : { design, member: null };
+  }
+  const stopped = group.members.find((member) => member.feature === group.stopped);
+  return stopped === undefined || stopped.design === null ? null : { design: stopped.design, member: stopped.feature };
+}
+
 function takesDesignIssues(run) {
-  return (run.state === "needs_review" || run.state === "failed") && DESIGN_STEPS.includes(run.stage) && designOf(run) !== null;
+  return (run.state === "needs_review" || run.state === "failed") && DESIGN_STEPS.includes(run.stage) && issuesDesignOf(run) !== null;
 }
 
 // Add design issues on the run page: a form of one or more issues, each a section (the report's section names
@@ -3429,7 +3441,7 @@ function DesignIssuesAction({ run, control }) {
   const [phase, setPhase] = useState("idle");
   const [note, setNote] = useState("");
   const [issues, setIssues] = useState(() => [blankPersonIssue()]);
-  const design = designOf(run);
+  const { design, member } = issuesDesignOf(run);
   const named = (list, of) => [...new Set(list.filter((item) => item !== null && typeof item === "object" && typeof item[of] === "string" && item[of] !== "").map((item) => item[of]))];
   const viewports = named(design.rounds.flatMap((round) => listOf(round.viewports)), "name").filter((name) => name !== "all");
   const sections = named(design.rounds.flatMap((round) => listOf(round.issues)), "section");
@@ -3455,7 +3467,7 @@ function DesignIssuesAction({ run, control }) {
       const body = await jsonOrNull(response);
       if (response.ok) {
         const next = body !== null && typeof body.run === "string" && body.run !== "" ? body.run : run.run_id;
-        setNote("Correcting your issues as run " + next + ".");
+        setNote("Correcting your issues" + (member === null ? "" : " for " + member) + " as run " + next + ".");
         setPhase("done");
         control.onDone();
         return;
@@ -3479,6 +3491,7 @@ function DesignIssuesAction({ run, control }) {
       {phase === "idle" ? <button type="button" data-design-issues="" onClick={open}><Icon name="plus" size={16} />Add design issues</button> : null}
       {phase === "asking" || sending ? (
         <div className="confirm design-issues-form" role="group" aria-label="Your design issues" data-design-issues-form="">
+          {member === null ? null : <p className="design-issues-member" data-design-issues-member="">{"For " + member}</p>}
           <datalist id={listId} data-issue-sections="">{sections.map((section) => <option key={section} value={section} />)}</datalist>
           {issues.map((issue, at) => (
             <fieldset key={issue.key} className="confirm-fields person-issue" data-person-issue={at}>
@@ -5496,6 +5509,7 @@ function OrchestrationList({ runs, control = null, projectId = null, showProject
                     {RUN_ID.test(run.run_id) ? <button type="button" className="feature-link run-open" data-open={run.run_id} onClick={() => navigate(runHref(projectOf(run), run.run_id))}>{run.feature}</button> : <span className="run-open">{run.feature}</span>}
                     <FrontendBadge kind={run.feature_kind} />
                     <span className="run-id">{run.run_id + (run.target_branch ? " into " + run.target_branch : "") + (showProject ? " · " + run.projectName : "")}</span>
+                    <GroupAt run={run} />
                     {run.kind === "plan" || projectOf(run) === null ? null : <FeatureLink className="run-feature-link" projectId={projectOf(run)} name={run.feature}>Feature</FeatureLink>}
                   </td>
                   <td>
@@ -5734,6 +5748,78 @@ function designOf(run) {
   return rounds.length === 0 ? null : { of: Number.isInteger(design.of) ? design.of : null, rounds };
 }
 
+// A design group run's members as the server shapes them, in the group's order, each with its own design rounds
+// (null without one), or null for a run that is no design group.
+function designGroupOf(run) {
+  const group = run.design_group;
+  if (group === null || typeof group !== "object") return null;
+  const members = listOf(group.members)
+    .filter((member) => member !== null && typeof member === "object" && typeof member.feature === "string" && member.feature !== "")
+    .map((member) => ({
+      feature: member.feature,
+      state: textOr(member.state),
+      round: Number.isInteger(member.round) ? member.round : null,
+      components: listOf(member.components).filter((id) => typeof id === "string" && id !== ""),
+      design: designOf({ design: member.design }),
+    }));
+  if (members.length === 0) return null;
+  return { at: Number.isInteger(group.at) ? group.at : null, of: Number.isInteger(group.of) ? group.of : members.length, stopped: typeof group.stopped === "string" && group.stopped !== "" ? group.stopped : null, members };
+}
+
+// Which member of how many a design group run is at, on its row of the runs list: "3 of 7".
+function GroupAt({ run }) {
+  const group = run.design_group;
+  if (group === null || typeof group !== "object" || !Number.isInteger(group.at) || !Number.isInteger(group.of)) return null;
+  return <span className="run-group muted" data-run-group="" title="Design group member">{group.at + " of " + group.of}</span>;
+}
+
+// What a design group member is doing, in words, and the tone of its pill.
+function memberStateOf(member) {
+  const round = member.round === null ? "" : " " + member.round;
+  switch (member.state) {
+    case "waiting": return ["Waiting", "status-queued", "dots"];
+    case "implementing": return ["Implementing", "status-running", "play"];
+    case "gate": return ["Gate", "status-running", "play"];
+    case "design": return [member.round === null ? "Design review" : "Design round" + round, "status-running", "play"];
+    case "passed": return ["Passed", "status-completed", "check"];
+    case "stopped": return [member.round === null ? "Stopped" : "Stopped in design round" + round, "status-failed", "close"];
+    default: return ["Unknown", "status-queued", "flag"];
+  }
+}
+
+// A design group run's members in order, each with its state and the components it covers, then each member's
+// design rounds under it; the newest member with rounds is open, the others fold away.
+function DesignGroup({ group, source }) {
+  const withRounds = group.members.filter((member) => member.design !== null);
+  const newest = withRounds.length === 0 ? null : withRounds[withRounds.length - 1].feature;
+  return (
+    <section className="design-group" aria-label="Design group" data-design-group>
+      <div className="design-review-head">
+        <h3>Design group</h3>
+        {group.at === null ? null : <span className="muted" data-design-group-at>{"Member " + group.at + " of " + group.of}</span>}
+      </div>
+      <ol className="design-group-members">
+        {group.members.map((member) => {
+          const [label, tone, icon] = memberStateOf(member);
+          return (
+            <li key={member.feature} className="design-group-member" data-group-member={member.feature} data-member-state={member.state}>
+              <span className="design-group-member-name">{member.feature}</span>
+              <StatusPill label={label} icon={icon} tone={tone} />
+              {member.components.length === 0 ? null : <span className="muted design-group-components" data-member-components>{member.components.join(", ")}</span>}
+            </li>
+          );
+        })}
+      </ol>
+      {withRounds.map((member) => (
+        <details key={member.feature} className="design-group-member-design" data-member-design={member.feature} open={member.feature === newest}>
+          <summary>{member.feature}</summary>
+          <DesignReview design={member.design} source={source} />
+        </details>
+      ))}
+    </section>
+  );
+}
+
 // The run's design review, read again from the run page each time a design review event arrives live, so a
 // round that ends while the page is open shows without a reload. `onFresh` takes each batch of live events. A
 // read that fails is tried again every few seconds, a few times, so the last design event of a run still shows.
@@ -5772,18 +5858,20 @@ function useLiveDesign(run, follow) {
           return;
         }
         const design = designOf(body.run);
-        if (design !== null) setRead(design);
+        const group = designGroupOf(body.run);
+        if (design !== null || group !== null) setRead({ design, group });
       } catch (failure) {
         again();
       }
     })();
   };
   const onFresh = (fresh) => {
-    if (follow === null || !fresh.some((event) => event.stage === "design_review")) return;
+    // A design group member's step moves its members on as a design review event moves its rounds.
+    if (follow === null || !fresh.some((event) => event.stage === "design_review" || (typeof event.kind === "string" && event.kind.startsWith("design_group.")))) return;
     stop();
     ask(DESIGN_REFRESH_TRIES);
   };
-  return { design: read ?? designOf(run), onFresh };
+  return read === null ? { design: designOf(run), group: designGroupOf(run), onFresh } : { ...read, onFresh };
 }
 
 // Issues grouped by section, sections in the order the review first names them.
@@ -6924,7 +7012,8 @@ function PlanProposal({ plan, projectId, apiRun, control }) {
 function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null, startTab = "timeline", projectId = null }) {
   const { run, events, next_cursor: next } = timeline;
   const delivery = deliveryOf(run);
-  const { design, onFresh } = useLiveDesign(run, follow);
+  const { design, group, onFresh } = useLiveDesign(run, follow);
+  const designSource = follow === null ? null : { base: follow.base, token: follow.token, onSignedOut: follow.onSignedOut };
   const [tab, setTab] = useState(startTab);
   const [logsOpened, setLogsOpened] = useState(startTab === "logs");
   const rounds = timeline.review_rounds;
@@ -6982,7 +7071,8 @@ function RunTimeline({ timeline, listPath, runPath, follow, logs, control = null
           )}
         </div>
       </div>
-      {run.design_files_needed !== null && typeof run.design_files_needed === "object" ? <DesignFilesNeeded run={run} control={control} /> : design === null ? null : <DesignReview design={design} source={follow === null ? null : { base: follow.base, token: follow.token, onSignedOut: follow.onSignedOut }} />}
+      {run.design_files_needed !== null && typeof run.design_files_needed === "object" ? <DesignFilesNeeded run={run} control={control} /> : null}
+      {group !== null ? <DesignGroup group={group} source={designSource} /> : run.design_files_needed !== null && typeof run.design_files_needed === "object" ? null : design === null ? null : <DesignReview design={design} source={designSource} />}
       <div className="feature-tabs" role="tablist" aria-label="Run details">
         {RUN_TABS.map(([id, label]) => (
           <button key={id} type="button" role="tab" id={"run-tab-" + id} aria-selected={tab === id ? "true" : "false"} aria-controls={"run-panel-" + id} data-run-tab={id} onClick={() => choose(id)}>{label}</button>

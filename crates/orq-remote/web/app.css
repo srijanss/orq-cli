@@ -785,6 +785,7 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 /* The Run cell is a flex column, which would stretch the Frontend badge across it; it keeps the width of its text. */
 .run-table [data-frontend-badge], .run-table [data-run-plan] { align-self: flex-start; }
 .run-table .run-id { color: var(--text-muted); font-size: 0.8125rem; overflow-wrap: anywhere; }
+.run-table .run-group { align-self: flex-start; font-size: 0.8125rem; }
 .run-table .run-feature-link { align-self: flex-start; color: var(--text-muted); font-size: 0.8125rem; }
 .run-table .run-feature-link:hover, .run-table .run-feature-link:focus-visible { color: var(--text); }
 .run-ending, .run-resume-links { overflow-wrap: anywhere; }
@@ -1044,6 +1045,14 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .design-review h5 { margin: 0.75rem 0 0.25rem; }
 .design-review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
 .design-rounds { margin-top: 0.5rem; }
+.design-group { margin: 0 0 1rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 0.75rem; background: var(--surface); min-width: 0; overflow-wrap: anywhere; }
+.design-group h3 { margin: 0; }
+.design-group-members { margin: 0.5rem 0 0.75rem; padding-left: 1.5rem; display: grid; gap: 0.375rem; }
+.design-group-member { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.design-group-member-name { font-weight: 600; }
+.design-group-member-design { margin-top: 0.5rem; }
+.design-group-member-design > summary { cursor: pointer; font-weight: 600; padding: 0.25rem 0; }
+.design-group-member-design > .design-review { margin: 0.5rem 0 0; }
 .design-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.75rem; margin-bottom: 0.75rem; }
 .design-image { margin: 0; min-width: 0; }
 .design-image figcaption { font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem; }

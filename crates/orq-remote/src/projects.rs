@@ -54,6 +54,8 @@ struct LogSummary {
     unattended: bool,
     /// Whether the run is a planning run (Draft with Claude) rather than a feature run.
     plan: bool,
+    /// Which member of how many a design group run is at.
+    group_at: Option<(u64, u64)>,
     stage: Option<String>,
     started: Option<String>,
     updated: Option<String>,
@@ -93,6 +95,7 @@ fn run_row(store: &orq_orchestrator::RunStore, state: &Path, cache: &mut LogCach
             dirty_files: dirty_files(&events, summary.phase),
             unattended: orq_orchestrator::was_unattended(&events),
             plan: plan::is_plan(&events),
+            group_at: design_group_at(&events).map(|(_, index, of, _)| (index, of)),
             stage: summary.stage,
             started: events.first().map(|event| event.occurred_at.clone()),
             updated: events.last().map(|event| event.occurred_at.clone()),
@@ -386,13 +389,13 @@ fn design_references(manifest: Option<&serde_json::Value>) -> Vec<(String, u64, 
 }
 
 /// How many design reviews the run allows at most, as its latest design review event says.
-fn design_reviews_of(events: &[orq_orchestrator::Event]) -> Option<u64> {
-    events.iter().filter(|event| event.stage.as_deref() == Some("design_review")).filter_map(|event| event.payload.get("reviews_of").or_else(|| event.payload.get("of")).and_then(serde_json::Value::as_u64)).last()
+fn design_reviews_of<'a>(events: impl IntoIterator<Item = &'a orq_orchestrator::Event>) -> Option<u64> {
+    events.into_iter().filter(|event| event.stage.as_deref() == Some("design_review")).filter_map(|event| event.payload.get("reviews_of").or_else(|| event.payload.get("of")).and_then(serde_json::Value::as_u64)).last()
 }
 
 /// The highest design review round the run's events name.
-fn design_last_round(events: &[orq_orchestrator::Event]) -> u64 {
-    events.iter().filter(|event| event.stage.as_deref() == Some("design_review")).filter_map(|event| event.payload.get("round").and_then(serde_json::Value::as_u64)).max().unwrap_or(0)
+fn design_last_round<'a>(events: impl IntoIterator<Item = &'a orq_orchestrator::Event>) -> u64 {
+    events.into_iter().filter(|event| event.stage.as_deref() == Some("design_review")).filter_map(|event| event.payload.get("round").and_then(serde_json::Value::as_u64)).max().unwrap_or(0)
 }
 
 fn shown_text(value: &serde_json::Value) -> serde_json::Value {
@@ -404,7 +407,7 @@ fn shown_texts(value: &serde_json::Value) -> Vec<serde_json::Value> {
 }
 
 /// One design review round as the run page shows it, `None` when it left neither captures nor a review.
-fn design_round_shown(dir: &Path, round: u64, references: &[(String, u64, u64, String)]) -> Option<serde_json::Value> {
+fn design_round_shown(dir: &Path, round: u64, references: &[(String, u64, u64, String)], prefix: &str) -> Option<serde_json::Value> {
     use serde_json::json;
     let round_dir = dir.join(format!("round-{round}"));
     let (capture, record) = (design_record(&round_dir.join("capture.json")), design_record(&round_dir.join("review.json")));
@@ -426,7 +429,7 @@ fn design_round_shown(dir: &Path, round: u64, references: &[(String, u64, u64, S
                 .iter()
                 .filter(|page| page["viewport"] == name.as_str())
                 .map(|page| {
-                    let image = page["image"].as_str().filter(|image| plain_design_path(image)).map(|image| format!("round-{round}/{image}"));
+                    let image = page["image"].as_str().filter(|image| plain_design_path(image)).map(|image| format!("{prefix}round-{round}/{image}"));
                     json!({"route": shown_text(&page["route"]), "image": image, "failure": shown_text(&page["failure"])})
                 })
                 .collect();
@@ -470,17 +473,94 @@ fn design_round_shown(dir: &Path, round: u64, references: &[(String, u64, u64, S
 /// round. Image paths are relative to the run's design folder, the only ones the design image route serves.
 /// `None` for a run without a design review round.
 fn design_shown(events: &[orq_orchestrator::Event], logs_dir: &Path) -> Option<serde_json::Value> {
-    let last = design_last_round(events);
+    design_rounds_shown(events, &logs_dir.join("design"), "")
+}
+
+/// The design rounds `events` name, read from design folder `dir`, as the run page shows them; every image path
+/// starts with `prefix`, the folder's place under the run's design image route. `None` without a round.
+fn design_rounds_shown<'a>(events: impl IntoIterator<Item = &'a orq_orchestrator::Event> + Clone, dir: &Path, prefix: &str) -> Option<serde_json::Value> {
+    let last = design_last_round(events.clone());
     if last == 0 {
         return None;
     }
-    let dir = logs_dir.join("design");
-    let references = design_references(design_record(&dir.join("manifest.json")).as_ref());
-    let rounds: Vec<serde_json::Value> = (1..=last).filter_map(|round| design_round_shown(&dir, round, &references)).collect();
+    let mut references = design_references(design_record(&dir.join("manifest.json")).as_ref());
+    for reference in &mut references {
+        reference.3.insert_str(0, prefix);
+    }
+    let rounds: Vec<serde_json::Value> = (1..=last).filter_map(|round| design_round_shown(dir, round, &references, prefix)).collect();
     if rounds.is_empty() {
         return None;
     }
     Some(serde_json::json!({"of": design_reviews_of(events), "rounds": rounds}))
+}
+
+/// The folder of a design group's members' own logs in the run's logs, and a member's design folder in it.
+const GROUP_MEMBERS_DIR: &str = "members";
+
+/// The events of design group member `member`: those whose payload names it.
+fn member_events<'a>(events: &'a [orq_orchestrator::Event], member: &'a str) -> impl Iterator<Item = &'a orq_orchestrator::Event> + Clone + 'a {
+    events.iter().filter(move |event| event.payload.get("member").and_then(serde_json::Value::as_str) == Some(member))
+}
+
+/// The members of a design group run, in order, as its `run.grouped` names them. `None` for any other run,
+/// a group run whose members have no design loop among them.
+fn design_group_members(events: &[orq_orchestrator::Event]) -> Option<Vec<String>> {
+    if !events.iter().any(|event| event.kind.starts_with("design_group.")) {
+        return None;
+    }
+    let grouped = events.iter().rev().find(|event| event.kind == "run.grouped")?;
+    let members: Vec<String> = grouped.payload["features"].as_array()?.iter().filter_map(|feature| feature.as_str().filter(|name| plain_design_path(name) && !name.contains('/')).map(str::to_string)).collect();
+    (!members.is_empty()).then_some(members)
+}
+
+/// The member a design group run is at, as its latest step says: (member, which one, of how many, step).
+fn design_group_at(events: &[orq_orchestrator::Event]) -> Option<(&str, u64, u64, &str)> {
+    let step = events.iter().rev().find(|event| event.kind == "design_group.member_step")?;
+    let payload = &step.payload;
+    Some((payload["member"].as_str()?, payload["index"].as_u64()?, payload["of"].as_u64()?, payload["step"].as_str().unwrap_or_default()))
+}
+
+/// A design group run's members as the run page shows them: which one it is at of how many, the member it
+/// stopped with, and each member's state, components (its frozen scope's, else its ledger description's) and
+/// own design rounds. `None` for any other run.
+fn design_group_shown(events: &[orq_orchestrator::Event], phase: orq_orchestrator::RunPhase, logs_dir: &Path, ledger: impl FnOnce() -> Vec<orq_features::FeatureEntry>) -> Option<serde_json::Value> {
+    use orq_orchestrator::RunPhase;
+    use serde_json::json;
+    let members = design_group_members(events)?;
+    let at = design_group_at(events);
+    let halted = matches!(phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview | RunPhase::Paused | RunPhase::DesignFilesNeeded);
+    let mut ledger = Some(ledger);
+    let mut entries: Option<Vec<orq_features::FeatureEntry>> = None;
+    let mut stopped = None;
+    let shown: Vec<serde_json::Value> = members
+        .iter()
+        .map(|member| {
+            let passed = events.iter().any(|event| event.kind == "design_group.member_passed" && event.payload["member"] == member.as_str());
+            let current = at.filter(|(name, ..)| name == member).map(|(.., step)| step);
+            let state = match current {
+                _ if passed => "passed",
+                Some(_) if halted => {
+                    stopped = Some(member.clone());
+                    "stopped"
+                }
+                Some("implement") => "implementing",
+                Some("gate") => "gate",
+                Some(_) => "design",
+                None => "waiting",
+            };
+            let round = design_last_round(member_events(events, member));
+            let member_logs = logs_dir.join(GROUP_MEMBERS_DIR).join(member);
+            let scope = orq_orchestrator::frozen_design_scope(&member_logs).or_else(|| {
+                let entries = entries.get_or_insert_with(|| ledger.take().map(|read| read()).unwrap_or_default());
+                let entry = entries.iter().find(|entry| &entry.feature_name == member)?;
+                orq_orchestrator::design_scope(member, entry.description.as_deref()).ok().flatten()
+            });
+            let components = scope.and_then(|scope| scope.components).unwrap_or_default();
+            let design = design_rounds_shown(member_events(events, member), &member_logs.join("design"), &format!("{GROUP_MEMBERS_DIR}/{member}/"));
+            json!({"feature": member, "state": state, "round": (round > 0).then_some(round), "components": components, "design": design})
+        })
+        .collect();
+    Some(json!({"at": at.map(|(_, index, ..)| index), "of": at.map_or(members.len() as u64, |(_, _, of, _)| of), "stopped": stopped, "members": shown}))
 }
 
 /// The most bytes a design image may have to be served.
@@ -489,7 +569,7 @@ const DESIGN_IMAGE_CAP: u64 = 16 * 1024 * 1024;
 /// Whether the run's own design records list the image at `path`, relative to its design folder: a package
 /// reference or approved asset its manifest names, or a capture of a round its events name, as that round's
 /// capture record names it. Only the one record the path points into is read.
-fn design_image_listed(events: &[orq_orchestrator::Event], dir: &Path, path: &str) -> bool {
+fn design_image_listed<'a>(events: impl IntoIterator<Item = &'a orq_orchestrator::Event>, dir: &Path, path: &str) -> bool {
     if let Some(file) = path.strip_prefix("package/") {
         let manifest = design_record(&dir.join("manifest.json"));
         let files = manifest.as_ref().and_then(|manifest| manifest["files"].as_array());
@@ -532,7 +612,7 @@ fn base64(bytes: &[u8]) -> String {
 /// the file itself must be real (no link), the file an image under the cap. `None` otherwise. Each step is
 /// opened from the folder already open, never following a link, and the file is checked once open, so a
 /// link swapped in between a check and the read is refused all the same.
-fn design_image(logs_root: &Path, run: &str, path: &str) -> Result<Option<serde_json::Value>, String> {
+fn design_image(logs_root: &Path, run: &str, design_dir: &[&str], path: &str) -> Result<Option<serde_json::Value>, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -543,7 +623,8 @@ fn design_image(logs_root: &Path, run: &str, path: &str) -> Result<Option<serde_
         (fd >= 0).then(|| unsafe { std::fs::File::from_raw_fd(fd) })
     };
     let Ok(mut dir) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(logs_root) else { return Ok(None) };
-    let mut steps: Vec<&str> = vec![run, "design"];
+    let mut steps: Vec<&str> = vec![run];
+    steps.extend(design_dir);
     steps.extend(path.split('/'));
     let Some((name, folders)) = steps.split_last() else { return Ok(None) };
     for folder in folders {
@@ -646,6 +727,10 @@ fn row_of(record: orq_orchestrator::RunRecord, log: &LogSummary) -> ListedRun {
     // Said only of a planning run (Draft with Claude); any other run is a feature run.
     if log.plan {
         row["kind"] = "plan".into();
+    }
+    // Said only of a design group run: which member of how many it is at ("3 of 7").
+    if let Some((at, of)) = log.group_at {
+        row["design_group"] = serde_json::json!({"at": at, "of": of});
     }
     (sort_key, record.run_id.clone(), row, record)
 }
@@ -2477,10 +2562,25 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             Err(error) => return Err(format!("run {run} is unreadable: {error:?}")),
         };
         let logs_dir = self.roots.state.join("logs").join(run);
-        if !plain_design_path(path) || !design_image_listed(&events, &logs_dir.join("design"), path) {
+        if !plain_design_path(path) {
             return Ok(None);
         }
-        design_image(&self.roots.state.join("logs"), run, path)
+        // A design group member's image is in its own design folder, listed by its own records.
+        if let Some(rest) = path.strip_prefix(GROUP_MEMBERS_DIR).and_then(|rest| rest.strip_prefix('/')) {
+            let Some((member, image)) = rest.split_once('/') else { return Ok(None) };
+            if !design_group_members(&events).is_some_and(|members| members.iter().any(|known| known == member)) {
+                return Ok(None);
+            }
+            let dir = logs_dir.join(GROUP_MEMBERS_DIR).join(member).join("design");
+            if !design_image_listed(member_events(&events, member), &dir, image) {
+                return Ok(None);
+            }
+            return design_image(&self.roots.state.join("logs"), run, &[GROUP_MEMBERS_DIR, member, "design"], image);
+        }
+        if !design_image_listed(&events, &logs_dir.join("design"), path) {
+            return Ok(None);
+        }
+        design_image(&self.roots.state.join("logs"), run, &["design"], path)
     }
 
     fn run_timeline(&self, id: &str, run: &str, after: Option<&str>) -> Result<Option<serde_json::Value>, String> {
@@ -2586,7 +2686,11 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         add_missing_report(&mut shown, &self.roots, run);
         // Read once, for the run's first page: a followed run asks for its later pages every second.
         if after.is_none() {
-            if let Some(design) = design_shown(&events, &logs_dir) {
+            // A design group run's rounds are its members': each member's are shown under it, never as the run's.
+            let ledger = || orq_git::resolve_project(&project.path).ok().and_then(|git| read_ledger(&orq_features::ledger_path(&git)).ok()).unwrap_or_default();
+            if let Some(group) = design_group_shown(&events, summary.phase, &logs_dir, ledger) {
+                shown["design_group"] = group;
+            } else if let Some(design) = design_shown(&events, &logs_dir) {
                 shown["design"] = design;
             }
         }
