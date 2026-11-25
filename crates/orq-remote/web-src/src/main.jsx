@@ -1777,6 +1777,8 @@ function parseServer(server) {
     newer: server.newer_installed === true,
     pending: server.restart_pending === true,
     waiting: typeof server.waiting_for === "number" ? server.waiting_for : 0,
+    // The merges whose release and [after_merge] go the restart also waits for.
+    releases: typeof server.waiting_for_releases === "number" ? server.waiting_for_releases : 0,
     supervision: typeof server.supervision === "string" ? server.supervision : null,
     // Under systemd, each harness its PATH lacks: runs started from here would fail.
     harnessWarnings: Array.isArray(server.harness_warnings) ? server.harness_warnings.filter((w) => typeof w === "string") : [],
@@ -1816,6 +1818,9 @@ function ServerCard({ server, on, token, onSignedOut, onChanged }) {
     setNote(text);
   };
   const runs = (count) => count + (count === 1 ? " run" : " runs");
+  const releases = (count) => count + (count === 1 ? " release" : " releases");
+  // "1 run, 1 release"; the runs are left out only when releases alone hold the restart.
+  const waitingFor = [server.waiting > 0 || server.releases === 0 ? runs(server.waiting) : null, server.releases > 0 ? releases(server.releases) : null].filter((part) => part !== null).join(", ");
   return (
     <section className="card settings-card" data-server>
       <SettingsHead icon="cpu">Server</SettingsHead>
@@ -1828,7 +1833,7 @@ function ServerCard({ server, on, token, onSignedOut, onChanged }) {
       {server.newer ? <p className="settings-block" role="status" data-newer-installed>A newer orq is installed</p> : null}
       {server.pending ? (
         <div className="settings-row" data-restart-pending>
-          <span role="status">{"Restart pending: waiting for " + runs(server.waiting)}</span>
+          <span role="status">{"Restart pending: waiting for " + waitingFor}</span>
           <button type="button" data-restart-cancel disabled={sending} onClick={() => send(API_SERVER_RESTART + "/cancel")}>Cancel</button>
         </div>
       ) : on && token === SESSION ? (

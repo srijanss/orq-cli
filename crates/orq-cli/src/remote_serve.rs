@@ -284,7 +284,7 @@ fn run(args: &[OsString]) -> ExitCode {
         let user_config = orq_features::settings_path(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref());
         std::sync::Arc::new(crate::remote_launch::CliLauncher::new(exe, user_config))
     });
-    let mut control = restart_control(&roots);
+    let mut control = restart_control(&roots, scan_root.clone());
     if own_unit().is_some() {
         // Under the unit, this server's PATH is the one runs get: say which harness it cannot find.
         // Asked afresh each time Settings loads, so installing the harness or changing the models shows at once.
@@ -562,8 +562,10 @@ fn installed_binary() -> PathBuf {
 }
 
 /// This server's controls: it waits for the runs under `roots`, and restarts into [`restart_target`].
-fn restart_control(roots: &orq_core::storage::StorageRoots) -> RestartControl {
+fn restart_control(roots: &orq_core::storage::StorageRoots, scan_root: PathBuf) -> RestartControl {
     let state = roots.state.clone();
+    // Its own view of the projects, only to count the merges whose release and go have not been recorded.
+    let projects = orq_remote::projects::StoreProjects::new(roots.clone(), scan_root);
     let installed = installed_binary();
     let target_installed = installed.clone();
     RestartControl::new(
@@ -577,6 +579,7 @@ fn restart_control(roots: &orq_core::storage::StorageRoots) -> RestartControl {
         }),
     )
     .managed_by_systemd(own_unit().is_some())
+    .waits_for_merges(Box::new(move || projects.merges_unsettled()))
 }
 
 /// The runs a restart waits for, by id.
@@ -585,6 +588,8 @@ type ActiveRuns = Box<dyn Fn() -> Vec<String> + Send + Sync>;
 type RestartTarget = Box<dyn Fn() -> Result<PathBuf, String> + Send + Sync>;
 /// What runs started by the server would fail on now.
 type HarnessWarnings = Box<dyn Fn() -> Vec<String> + Send + Sync>;
+/// How many merged runs still wait for their release and `[after_merge]` go to be recorded.
+type UnsettledMerges = Box<dyn Fn() -> usize + Send + Sync>;
 
 /// The server's own controls: its build and the installed one's, and a restart that waits until no
 /// run is active (or one asked for now, which waits for nothing).
@@ -601,6 +606,8 @@ pub(crate) struct RestartControl {
     managed: bool,
     /// What runs started by this server will fail on: a harness missing from its PATH.
     harness_warnings: HarnessWarnings,
+    /// The merges an idle restart also waits for: a restart before their go is recorded would lose it.
+    merges: UnsettledMerges,
 }
 
 impl RestartControl {
@@ -615,7 +622,14 @@ impl RestartControl {
             now: Default::default(),
             managed: false,
             harness_warnings: Box::new(Vec::new),
+            merges: Box::new(|| 0),
         }
+    }
+
+    /// Says how to count the merges an idle restart also waits for.
+    pub(crate) fn waits_for_merges(mut self, merges: UnsettledMerges) -> Self {
+        self.merges = merges;
+        self
     }
 
     /// Says how to find what runs started by this server will fail on.
@@ -649,10 +663,11 @@ impl RestartControl {
         self.now.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Whether the server should restart now: asked to now, or asked to when idle and no run is active.
+    /// Whether the server should restart now: asked to now, or asked to when idle, no run is active and
+    /// every merge's release and go is recorded.
     pub(crate) fn due(&self) -> bool {
         use std::sync::atomic::Ordering::SeqCst;
-        self.now.load(SeqCst) || (self.pending.load(SeqCst) && (self.active)().is_empty())
+        self.now.load(SeqCst) || (self.pending.load(SeqCst) && (self.active)().is_empty() && (self.merges)() == 0)
     }
 
     /// The binary the restart starts.
@@ -672,6 +687,7 @@ impl orq_core::remote_inbox::ServerControl for RestartControl {
             "installed": installed,
             "restart_pending": pending,
             "waiting_for": waiting_for,
+            "waiting_for_releases": if pending { (self.merges)() } else { 0 },
             "managed_by_systemd": self.managed,
             "supervision": if self.managed { "Managed by systemd (restarts automatically)" } else { "Not managed: stops on reboot" },
             "harness_warnings": (self.harness_warnings)(),
@@ -1543,11 +1559,115 @@ mod restart_active_tests {
         let roots = orq_core::storage::StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
         std::fs::create_dir_all(roots.state.join("runs/run-bad")).unwrap();
         std::fs::write(roots.state.join("runs/run-bad/run.json"), "{ not json").unwrap();
-        let control = restart_control(&roots);
+        let control = restart_control(&roots, base.join("code"));
         control.pending.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(!control.due(), "a run it cannot read may be active");
         assert!(control.restart_pending());
         assert_eq!(control.status()["waiting_for"], 1, "{}", control.status());
+    }
+}
+
+#[cfg(test)]
+mod restart_merge_tests {
+    use super::*;
+    use orq_core::project_settings::Delivery;
+    use orq_orchestrator::{Event, RunRecord, RunStore};
+    use std::time::{Duration, Instant};
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).current_dir(dir).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Storage roots and a scan root holding project `alpha` on `main`, whose `.orq/run.toml` is `run_toml`.
+    fn project(tag: &str, run_toml: Option<&str>) -> (orq_core::storage::StorageRoots, PathBuf, PathBuf) {
+        let base = orq_test_support::process_temp_dir().join(format!("orq-restart-merge-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let roots = orq_core::storage::StorageRoots { data: base.join("data"), config: base.join("config"), state: base.join("state"), cache: base.join("cache") };
+        roots.create_all().unwrap();
+        orq_core::store::Store::open(&roots.database()).unwrap();
+        let scan = base.join("code");
+        let repo = scan.join("alpha");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = std::fs::canonicalize(repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join(".gitignore"), ".orq/\n").unwrap();
+        git(&repo, &["add", ".gitignore"]);
+        git(&repo, &["commit", "-q", "-m", "start"]);
+        if let Some(text) = run_toml {
+            std::fs::create_dir_all(repo.join(".orq")).unwrap();
+            std::fs::write(repo.join(".orq/run.toml"), text).unwrap();
+        }
+        (roots, scan, repo)
+    }
+
+    fn event(store: &RunStore, run: &str, kind: &str, payload: serde_json::Value) {
+        let record = store.load(run).unwrap();
+        let n = store.events(run).unwrap().len();
+        let event = Event { schema_version: 1, event_id: format!("{run}-{n}"), run_id: run.into(), project_id: record.project_id, feature_id: record.feature_id, kind: kind.into(), stage: Some("merge".into()), attempt: 1, occurred_at: format!("2026-11-25T15:42:0{n}Z"), payload };
+        store.append_event(&event).unwrap();
+    }
+
+    /// A merge-local run of the project at `repo`, still going.
+    fn going(state: &std::path::Path, repo: &std::path::Path, run: &str) {
+        let store = RunStore::new(state);
+        let record = RunRecord {
+            delivery: Delivery::MergeLocal,
+            run_id: run.into(),
+            project_id: orq_git::project_id(&orq_git::resolve_project(repo).unwrap()),
+            feature_id: "F-1".into(),
+            remote: "origin".into(),
+            provider: "github".into(),
+            target_branch: "main".into(),
+            base_sha: git(repo, &["rev-parse", "HEAD"]),
+            branch: format!("orq/{run}"),
+            worktree: repo.join(".claude/worktrees").join(run),
+            repository: String::new(),
+            profiles: Default::default(),
+        };
+        store.start_run(&record).unwrap();
+        event(&store, run, "stage.started", serde_json::json!({}));
+    }
+
+    /// The run's merge lands at the checkout's HEAD and the run ends merged.
+    fn merged(state: &std::path::Path, repo: &std::path::Path, run: &str) {
+        let store = RunStore::new(state);
+        event(&store, run, "merge.completed", serde_json::json!({"head_sha": git(repo, &["rev-parse", "HEAD"]), "target_branch": "main"}));
+        event(&store, run, "run.completed", serde_json::json!({"ending": "merged"}));
+    }
+
+    #[test]
+    fn an_idle_restart_waits_for_the_last_runs_merge_to_get_its_after_merge_go() {
+        use orq_core::remote_inbox::ServerControl;
+        let (roots, scan, repo) = project("go", Some("[after_merge]\ncommands = [[\"true\"]]\n"));
+        let control = restart_control(&roots, scan.clone());
+        going(&roots.state, &repo, "run-1");
+        control.pending.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(!control.due(), "a run is active");
+        merged(&roots.state, &repo, "run-1");
+        assert!(!control.due(), "the merge has not had its go");
+        assert_eq!(control.status()["waiting_for"], 0, "{}", control.status());
+        assert_eq!(control.status()["waiting_for_releases"], 1, "{}", control.status());
+        orq_remote::projects::StoreProjects::new(roots.clone(), scan).queue_round(&orq_remote::projects::QueueRound { minute_of_day: 720, restart_pending: true });
+        let until = Instant::now() + Duration::from_secs(10);
+        while !control.due() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(control.due(), "the go recorded its commands");
+        let events = RunStore::new(&roots.state).events("run-1").unwrap();
+        assert!(events.iter().any(|event| event.kind == "after_merge.commands"));
+    }
+
+    #[test]
+    fn an_idle_restart_in_a_project_with_no_after_merge_is_due_when_the_run_ends() {
+        let (roots, scan, repo) = project("none", None);
+        let control = restart_control(&roots, scan);
+        going(&roots.state, &repo, "run-1");
+        control.pending.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(!control.due(), "a run is active");
+        merged(&roots.state, &repo, "run-1");
+        assert!(control.due());
     }
 }
 

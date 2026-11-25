@@ -1,8 +1,9 @@
 //! The commands a project's `.orq/run.toml` `[after_merge] commands` runs once the queue settles a
 //! merge-local run's merge, in the project's main checkout, one after the other, stopping at the first
-//! failure. A merge gets at most one go: none for a merge the server did not watch land (it started
-//! after the merge, or before the project had `[after_merge]`), none for a run that already recorded
-//! `after_merge.started` or `after_merge.commands`. The commands run on a thread of their own per
+//! failure. A merge gets at most one go: none for a run that already recorded `after_merge.started` or
+//! `after_merge.commands`. A merge the server did not watch land (it restarted as the run ended) gets
+//! its go from the next round, unless it left the target branch or a release commit already follows it,
+//! which is recorded as not ran with the reason. The commands run on a thread of their own per
 //! project, so a round only starts a go and returns; merges landing during one go fold into one more.
 //! Every argv, error and reason the run records is redacted.
 
@@ -33,6 +34,8 @@ static SEEN: LazyLock<Mutex<HashSet<(PathBuf, String)>>> = LazyLock::new(Mutex::
 static SCANNED: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
 /// Each project's go in progress, by main checkout.
 static GOES: LazyLock<Mutex<HashMap<PathBuf, Go>>> = LazyLock::new(Mutex::default);
+/// The runs, as (state root, run id), a go holds: waiting for it or in it, until it recorded them.
+static IN_FLIGHT: LazyLock<Mutex<HashSet<(PathBuf, String)>>> = LazyLock::new(Mutex::default);
 
 #[derive(Default)]
 struct Go {
@@ -102,22 +105,23 @@ pub(super) fn settled(state: &Path, runs: &RunStore, root: &Path, run: &str, env
     if !locked(&SEEN).remove(&(state.to_path_buf(), run.to_string())) {
         return;
     }
+    if let Some(job) = job_for(state, runs, root, run, true, env) {
+        enqueue(root, vec![job]);
+    }
+}
+
+/// The go `run`'s merge gets in the project at `root`, recording what is wrong or already done on the run;
+/// `None` when it needs none. Its release is made only `with_release`.
+fn job_for(state: &Path, runs: &RunStore, root: &Path, run: &str, with_release: bool, env: &dyn Fn() -> Env) -> Option<Job> {
     let (Ok(record), Ok(events)) = (runs.load(run), runs.events(run)) else {
-        return;
+        return None;
     };
     if record.delivery != Delivery::MergeLocal {
-        return;
+        return None;
     }
     let had = |kinds: &[&str]| events.iter().any(|event| kinds.contains(&event.kind.as_str()));
-    let Some(merged) = events
-        .iter()
-        .rev()
-        .filter(|event| event.kind == "merge.completed")
-        .find_map(|event| event.payload["head_sha"].as_str().map(str::to_string))
-    else {
-        return;
-    };
-    let release = if had(&[RELEASE_CREATED, RELEASE_REFUSED]) {
+    let merged = events.iter().rev().filter(|event| event.kind == "merge.completed").find_map(|event| event.payload["head_sha"].as_str().map(str::to_string))?;
+    let release = if !with_release || had(&[RELEASE_CREATED, RELEASE_REFUSED]) {
         None
     } else {
         match declared_release(root) {
@@ -144,7 +148,7 @@ pub(super) fn settled(state: &Path, runs: &RunStore, root: &Path, run: &str, env
         }
     };
     if commands.is_empty() && release.is_none() {
-        return;
+        return None;
     }
     if !commands.is_empty() {
         append(
@@ -154,7 +158,7 @@ pub(super) fn settled(state: &Path, runs: &RunStore, root: &Path, run: &str, env
             json!({"merged": merged, "commands": commands.len()}),
         );
     }
-    let job = Job {
+    Some(Job {
         state: state.to_path_buf(),
         run: run.to_string(),
         project: record.project_id.clone(),
@@ -164,15 +168,163 @@ pub(super) fn settled(state: &Path, runs: &RunStore, root: &Path, run: &str, env
         merged,
         commands,
         release,
-    };
+    })
+}
+
+/// Puts `jobs` in the project at `root`'s next go together, starting the project's goes if none runs.
+fn enqueue(root: &Path, jobs: Vec<Job>) {
+    if jobs.is_empty() {
+        return;
+    }
     let mut goes = locked(&GOES);
     let go = goes.entry(root.to_path_buf()).or_default();
-    go.releasing += usize::from(job.release.is_some());
-    go.pending.push(job);
+    for job in jobs {
+        locked(&IN_FLIGHT).insert((job.state.clone(), job.run.clone()));
+        go.releasing += usize::from(job.release.is_some());
+        go.pending.push(job);
+    }
     if !go.running {
         go.running = true;
         let root = root.to_path_buf();
         std::thread::spawn(move || drain(&root));
+    }
+}
+
+/// A merge-local run that ended merged and whose merge no go has looked at yet.
+struct Unsettled {
+    run: String,
+    branch: String,
+    merged: String,
+    /// When its merge landed, to put several in the order they landed.
+    at: String,
+}
+
+/// The merges under `state` that ended merged with nothing recorded of their release or `[after_merge]`
+/// and that no go holds now, by project id.
+fn unsettled_runs(state: &Path) -> HashMap<String, Vec<Unsettled>> {
+    let runs = RunStore::new(state);
+    let mut found: HashMap<String, Vec<Unsettled>> = HashMap::new();
+    let Ok(ids) = runs.run_ids() else { return found };
+    for run in ids {
+        if locked(&IN_FLIGHT).contains(&(state.to_path_buf(), run.clone())) {
+            continue;
+        }
+        let (Ok(record), Ok(events)) = (runs.load(&run), runs.events(&run)) else {
+            continue;
+        };
+        if record.delivery != Delivery::MergeLocal {
+            continue;
+        }
+        let ended_merged = events.iter().rev().find(|event| event.kind == "run.completed").is_some_and(|event| event.payload["ending"] == "merged");
+        if !ended_merged || events.iter().any(|event| [STARTED, COMMANDS, RELEASE_CREATED, RELEASE_REFUSED].contains(&event.kind.as_str())) {
+            continue;
+        }
+        let Some((merged, at)) = events
+            .iter()
+            .rev()
+            .filter(|event| event.kind == "merge.completed")
+            .find_map(|event| Some((event.payload["head_sha"].as_str()?.to_string(), event.occurred_at.clone())))
+        else {
+            continue;
+        };
+        found.entry(record.project_id).or_default().push(Unsettled { run, branch: record.target_branch, merged, at });
+    }
+    found
+}
+
+/// Whether the project at `root` gives a merge a go: it declares `[after_merge]`, or a `[release]` that
+/// releases on merge (or one that is wrong, which the go reports).
+fn gives_a_go(root: &Path) -> bool {
+    declared(root).is_some()
+        || match declared_release(root) {
+            Some(Ok(settings)) => settings.release_on_merge == ReleaseOnMerge::Auto,
+            Some(Err(_)) => true,
+            None => false,
+        }
+}
+
+/// The main checkout of each project under the server's scan root, by project id.
+fn project_roots(projects: &super::super::StoreProjects) -> HashMap<String, PathBuf> {
+    let mut roots = HashMap::new();
+    for project in super::super::discover(&projects.scan_root) {
+        let Ok(git) = orq_git::resolve_project(&project.path) else {
+            continue;
+        };
+        let root = orq_git::main_checkout_root(&git).unwrap_or_else(|| git.root.clone());
+        roots.insert(orq_git::project_id(&git), root);
+    }
+    roots
+}
+
+/// The version of the first `chore(release)` commit after `merged` on `branch` in `root`, if there is one.
+fn released_by(root: &Path, branch: &str, merged: &str) -> Option<String> {
+    let range = format!("{merged}..refs/heads/{branch}");
+    let subjects = git(root, &["log", "--reverse", "--format=%s", &range])?;
+    let subject = subjects.lines().find(|subject| subject.starts_with("chore(release)"))?;
+    subject.split_whitespace().last().map(str::to_string)
+}
+
+impl super::super::StoreProjects {
+    /// How many merges an idle restart still waits for: the ones a go holds, and the ones that ended merged
+    /// in a project that gives a merge a go and that no go has looked at yet.
+    pub fn merges_unsettled(&self) -> usize {
+        let state = &self.roots.state;
+        let held = locked(&IN_FLIGHT).iter().filter(|(root, _)| root == state).count();
+        let unsettled = unsettled_runs(state);
+        if unsettled.is_empty() {
+            return held;
+        }
+        let roots = project_roots(self);
+        let waiting: usize = unsettled.iter().filter(|(project, _)| roots.get(*project).is_some_and(|root| gives_a_go(root))).map(|(_, merges)| merges.len()).sum();
+        held + waiting
+    }
+
+    /// Gives each merge no round settled (the server restarted as its run ended) the go it missed: one go
+    /// per project, the newest merge's release with it; a merge no longer on its target, or a release
+    /// commit already follows, is recorded as not ran with the reason.
+    pub(super) fn settle_unsettled(&self) {
+        let state = &self.roots.state;
+        let unsettled = unsettled_runs(state);
+        if unsettled.is_empty() {
+            return;
+        }
+        let roots = project_roots(self);
+        let runs = RunStore::new(state);
+        for (project, mut merges) in unsettled {
+            let Some(root) = roots.get(&project) else {
+                continue;
+            };
+            if !gives_a_go(root) {
+                continue;
+            }
+            merges.sort_by(|a, b| a.at.cmp(&b.at));
+            let mut kept = Vec::new();
+            for merge in merges {
+                // A merge this server watched land gets its go as the round would have given it.
+                if locked(&SEEN).remove(&(state.clone(), merge.run.clone())) {
+                    kept.push(merge.run);
+                    continue;
+                }
+                let on_target = git(root, &["merge-base", "--is-ancestor", &merge.merged, &format!("refs/heads/{}", merge.branch)]).is_some();
+                let reason = if !on_target {
+                    Some(format!("not on {}", merge.branch))
+                } else {
+                    released_by(root, &merge.branch, &merge.merged).map(|version| format!("released by {version}"))
+                };
+                match reason {
+                    Some(reason) => append(&runs, &merge.run, COMMANDS, json!({"ran": false, "ok": false, "merged": merge.merged, "reason": redact(&reason), "commands": []})),
+                    None => kept.push(merge.run),
+                }
+            }
+            let settings = match orq_git::resolve_project(root) {
+                Ok(git) => self.settings_of_git(&git).unwrap_or_default(),
+                Err(_) => Default::default(),
+            };
+            let env = || self.release_env(root, &settings);
+            let newest = kept.len().saturating_sub(1);
+            let jobs = kept.iter().enumerate().filter_map(|(at, run)| job_for(state, &runs, root, run, at == newest, &env)).collect();
+            enqueue(root, jobs);
+        }
     }
 }
 
@@ -211,6 +363,10 @@ fn drain(root: &Path) {
             std::mem::take(&mut go.pending)
         };
         go_once(root, &batch);
+        let mut in_flight = locked(&IN_FLIGHT);
+        for job in &batch {
+            in_flight.remove(&(job.state.clone(), job.run.clone()));
+        }
     }
 }
 

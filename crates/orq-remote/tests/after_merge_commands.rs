@@ -354,9 +354,9 @@ fn a_command_that_cannot_start_is_a_failure_and_stops_the_rest() {
 }
 
 #[test]
-fn a_merge_the_server_did_not_watch_land_gets_no_go() {
-    // A run the queue already followed when the server started, merged meanwhile: the first round
-    // that looks at it finds it settled.
+fn a_merge_the_server_did_not_watch_land_gets_its_go_once() {
+    // A run the queue already followed when the server started, merged meanwhile (the old server
+    // restarted the moment it ended): the first round that looks at it gives it its go, once.
     let s = setup("unwatched", None);
     write_run_toml(&s, &run_toml(&s.marks, &["one"]));
     seed_run(&s.roots.state, &s.repo, "run-old-COM-01", "COM-01");
@@ -364,10 +364,12 @@ fn a_merge_the_server_did_not_watch_land_gets_no_go() {
     let head = git(&s.repo, &["rev-parse", "HEAD"]);
     merge(&s, "run-old-COM-01", &head);
     round(&s);
+    let done = wait_for(&s, "run-old-COM-01", "after_merge.commands").expect("recorded");
+    assert_eq!(done.payload["ran"], true, "{}", done.payload);
+    round(&s);
     settle_time();
-    assert!(order(&s).is_empty());
-    assert!(events_of(&s, "run-old-COM-01", "after_merge.started").is_empty());
-    assert!(events_of(&s, "run-old-COM-01", "after_merge.commands").is_empty());
+    assert_eq!(order(&s), ["one"]);
+    assert_eq!(events_of(&s, "run-old-COM-01", "after_merge.commands").len(), 1);
 }
 
 #[test]
@@ -383,7 +385,27 @@ fn a_run_that_merges_before_the_round_after_its_launch_still_gets_its_go() {
 }
 
 #[test]
-fn a_project_that_gained_after_merge_after_the_run_began_gets_no_go() {
+fn a_watched_merge_is_unsettled_from_when_its_run_ends_until_its_go_recorded_the_commands() {
+    let s = setup("unsettled-watched", None);
+    write_run_toml(&s, &run_toml(&s.marks, &["one"]));
+    round(&s);
+    round(&s);
+    assert_eq!(provider(&s).merges_unsettled(), 0, "a run still going is not a merge yet");
+    let head = git(&s.repo, &["rev-parse", "HEAD"]);
+    merge(&s, "run-1-COM-01", &head);
+    assert_eq!(provider(&s).merges_unsettled(), 1);
+    round(&s);
+    wait_for(&s, "run-1-COM-01", "after_merge.commands").expect("recorded");
+    let until = Instant::now() + Duration::from_secs(5);
+    while provider(&s).merges_unsettled() != 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(provider(&s).merges_unsettled(), 0);
+}
+
+#[test]
+fn a_project_that_gained_after_merge_after_the_run_began_gets_its_go_once_it_merged() {
+    // The merge is unreleased in a project that declares `[after_merge]` by then: it gets its go.
     let s = setup("added-later", None);
     round(&s);
     round(&s);
@@ -391,9 +413,11 @@ fn a_project_that_gained_after_merge_after_the_run_began_gets_no_go() {
     let head = git(&s.repo, &["rev-parse", "HEAD"]);
     merge(&s, "run-1-COM-01", &head);
     round(&s);
+    wait_for(&s, "run-1-COM-01", "after_merge.commands").expect("recorded");
+    round(&s);
     settle_time();
-    assert!(order(&s).is_empty());
-    assert!(events_of(&s, "run-1-COM-01", "after_merge.commands").is_empty());
+    assert_eq!(order(&s), ["one"]);
+    assert_eq!(events_of(&s, "run-1-COM-01", "after_merge.commands").len(), 1);
 }
 
 #[test]

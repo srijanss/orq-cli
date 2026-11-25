@@ -69,6 +69,8 @@ impl StoreProjects {
             return;
         }
         after_merge::close_interrupted(&RunStore::new(&self.roots.state), &self.roots.state);
+        // A merge no round settled (the server restarted as its run ended) gets its go now.
+        self.settle_unsettled();
         let store = match Store::open(&database) {
             Ok(store) => store,
             Err(error) => return eprintln!("orq: the run queues cannot be read: {error}"),
