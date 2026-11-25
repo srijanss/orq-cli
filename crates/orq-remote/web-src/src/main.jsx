@@ -8612,11 +8612,16 @@ function usePinnedToEnd(changes) {
   return ref;
 }
 
-// `items` with `item` at `index` (gaps before it filled with null), as a new list.
+// Puts `item` at `index` in `list` itself, filling any gap before it with null.
+function place(list, index, item) {
+  while (list.length < index) list.push(null);
+  list[index] = item;
+}
+
+// `items` with `item` at `index`, as a new list.
 function placed(items, index, item) {
   const next = [...items];
-  while (next.length < index) next.push(null);
-  next[index] = item;
+  place(next, index, item);
   return next;
 }
 
@@ -8657,9 +8662,10 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate 
   useEffect(() => {
     if (data === null) return;
     const stream = heard.current;
-    let next = Array.isArray(data.items) ? data.items : [];
+    // One copy of the read, with every newer streamed item put into it.
+    const next = Array.isArray(data.items) ? [...data.items] : [];
     stream.items.forEach(({ item, at }, index) => {
-      if (at > stream.readAt) next = placed(next, index, item);
+      if (at > stream.readAt) place(next, index, item);
     });
     setItems(next);
     working(stream.runningAt > stream.readAt ? stream.running : data.running === true);

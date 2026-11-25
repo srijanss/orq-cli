@@ -655,6 +655,21 @@ fn a_chat_read_that_answers_after_the_stream_moved_on_does_not_take_back_what_th
 }
 
 #[test]
+fn several_items_the_stream_sent_before_a_late_read_answered_all_stay_over_the_reads_older_ones() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let said = |text: &str| json!({"type": "assistant", "text": text});
+    let asked = json!({"type": "user", "turn": 1, "text": "What is it doing now?", "state": "done", "reason": null});
+    // The stream replaces items 1 and 3 and adds item 5 (past the read's end) before the older read answers.
+    let stream = json!({"status": 200, "hold": true, "stream": [event(": connected\n\n", 0), item_event(1, said("one, new"), 0), item_event(3, said("three, new"), 0), item_event(5, said("five, new"), 0)]});
+    let late = json!({"status": 200, "after": 800, "body": conversation(vec![asked, said("one, old"), said("two"), said("three, old")], vec![], false)});
+    let routes = vec![route("GET", CHAT_PATH, vec![late]), route("GET", &format!("{CHAT_PATH}/stream"), vec![stream])];
+    let look = "setTimeout(function () { window.__late = Array.from(document.querySelectorAll('[data-ask-item=assistant]')).map(function (a) { return a.textContent; }); document.body.setAttribute('data-late', ''); }, 1800);\n";
+    let steps = vec![json!({"wait": "[data-ask-delete]"}), json!({"wait": "body[data-late]"}), json!({"eval": "late", "js": "return window.__late;"})];
+    let Some(result) = open_after(1440, &at, routes, true, steps, look) else { return };
+    assert_eq!(eval(&result, "late"), &json!(["one, new", "two", "three, new", "five, new"]), "{result}");
+}
+
+#[test]
 fn a_refused_stream_signs_out_on_a_401_and_otherwise_says_the_live_updates_stopped_and_why() {
     let at = format!("/projects/alpha/reviews?ask={CHAT}");
     let read = route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))]);
