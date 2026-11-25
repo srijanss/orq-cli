@@ -3114,7 +3114,7 @@ function controlPath(control, tail) {
   return "/api/projects/" + encodeURIComponent(control.projectId) + "/" + tail;
 }
 
-async function actionRequest(path, token, body) {
+async function actionRequest(path, token, body, method = "POST") {
   const headers = { "Content-Type": "application/json" };
   if (token === SESSION) {
     // Only a passkey session carries a CSRF token; a bearer token goes straight out.
@@ -3123,7 +3123,7 @@ async function actionRequest(path, token, body) {
   } else {
     headers.Authorization = "Bearer " + token;
   }
-  return fetch(path, { method: "POST", headers, body: JSON.stringify(body === undefined ? {} : body), cache: "no-store", referrerPolicy: "no-referrer" });
+  return fetch(path, { method, headers, body: JSON.stringify(body === undefined ? {} : body), cache: "no-store", referrerPolicy: "no-referrer" });
 }
 
 // With a check, the button first reads that path and asks question(reply), which says the question or null
@@ -8150,7 +8150,7 @@ function AskPanel({ token, onSignedOut, path, projectId, chat, onChat, onClose }
       {project === null || token !== SESSION ? null : drafting ? (
         <AskDraft token={token} onSignedOut={onSignedOut} projectId={project} context={projectId === null ? { kind: "project" } : pageContext(path)} onAbout={setAbout} onOpened={openChat} gate={gate} />
       ) : open ? (
-        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} gate={gate} />
+        <AskChat key={chat} token={token} onSignedOut={onSignedOut} projectId={project} chatId={chat} onAbout={setAbout} onGone={() => openChat("")} gate={gate} />
       ) : (
         <AskChatList key={project} token={token} onSignedOut={onSignedOut} projectId={project} onOpen={openChat} onNew={() => setDrafting(true)} gate={gate} />
       )}
@@ -8535,7 +8535,33 @@ function withTurnEnds(items) {
   return drawn;
 }
 
-function AskChat({ token, onSignedOut, projectId, chatId, onAbout, gate = null }) {
+// Keeps the conversation scrolled to its newest item each time `changes` change, unless the person scrolled up.
+// The scroller is the conversation beside the page, or the whole sheet on a phone (where it does not scroll).
+function usePinnedToEnd(changes) {
+  const ref = useRef(null);
+  const pinned = useRef(true);
+  const scroller = () => {
+    const conversation = ref.current;
+    if (conversation === null) return null;
+    return getComputedStyle(conversation).overflowY === "visible" ? conversation.closest("[data-ask-panel]") : conversation;
+  };
+  useEffect(() => {
+    const element = scroller();
+    if (element === null) return undefined;
+    const look = () => {
+      pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 24;
+    };
+    element.addEventListener("scroll", look, { passive: true });
+    return () => element.removeEventListener("scroll", look);
+  }, []);
+  useLayoutEffect(() => {
+    const element = scroller();
+    if (element !== null && pinned.current) element.scrollTop = element.scrollHeight;
+  }, changes);
+  return ref;
+}
+
+function AskChat({ token, onSignedOut, projectId, chatId, onAbout, onGone, gate = null }) {
   const path = chatsPath(projectId, "/" + encodeURIComponent(chatId));
   const [reads, setReads] = useState(0);
   const { data, failure } = useAskRead(path, token, onSignedOut, reads);
@@ -8548,6 +8574,12 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, gate = null }
   const [since, setSince] = useState(() => Date.now());
   const [stopping, setStopping] = useState("idle");
   const [stopNote, setStopNote] = useState("");
+  const [deleting, setDeleting] = useState("idle");
+  const [deleteNote, setDeleteNote] = useState("");
+  // The rule being removed: { rule, sending } while its question is open, else null; ruleNote is why one wasn't.
+  const [removing, setRemoving] = useState(null);
+  const [ruleNote, setRuleNote] = useState("");
+  const rules = data !== null && Array.isArray(data.rules) ? data.rules.filter((r) => r !== null && typeof r.rule === "string") : [];
   const chat = data !== null && isChat(data.chat) ? data.chat : null;
   const working = (next) => {
     setRunning((was) => {
@@ -8584,6 +8616,41 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, gate = null }
       setStopNote("The server could not be reached.");
     }
     setStopping("idle");
+  };
+  const remove = async () => {
+    setDeleting("sending");
+    setDeleteNote("");
+    try {
+      const response = await actionRequest(path, token, {}, "DELETE");
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (response.ok) {
+        onGone();
+        return;
+      }
+      setDeleteNote(await reasonOf(response, "The chat could not be deleted."));
+    } catch (unreachable) {
+      setDeleteNote("The server could not be reached.");
+    }
+    setDeleting("idle");
+  };
+  const disallow = async (rule) => {
+    setRemoving({ rule, sending: true });
+    setRuleNote("");
+    try {
+      const response = await actionRequest(path + "/allow", token, { rule }, "DELETE");
+      if (response.status === 401) {
+        onSignedOut();
+        return;
+      }
+      if (!response.ok) setRuleNote(await reasonOf(response, "The rule could not be removed."));
+      else setReads((n) => n + 1);
+    } catch (unreachable) {
+      setRuleNote("The server could not be reached.");
+    }
+    setRemoving(null);
   };
   const allow = async (rule, scope) => {
     setNotes((all) => ({ ...all, [rule]: "" }));
@@ -8629,9 +8696,10 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, gate = null }
     }
   };
   const actions = { allow, allowed, notes, retry: (rule) => send("Allowed: " + rule + ". Try again."), sending };
+  const conversation = usePinnedToEnd([items, running]);
   return (
     <>
-      <div className="ask-body" data-ask-conversation>
+      <div className="ask-body" data-ask-conversation ref={conversation}>
         {failure !== null ? <p role="alert" className="ask-reason">{failure}</p> : null}
         {withTurnEnds(items).map((item, at) => (
           <AskItem key={at} item={item} place={chatId + "\n" + item.at} actions={actions} />
@@ -8646,6 +8714,33 @@ function AskChat({ token, onSignedOut, projectId, chatId, onAbout, gate = null }
           <Confirm question="Stop orq's reply?" detail="What it has done so far stays." answer="Yes, stop" tone="danger" busy={stopping === "sending"} onConfirm={stop} onCancel={() => setStopping("idle")} />
         ) : null}
         {stopNote !== "" ? <p role="alert" className="ask-reason">{stopNote}</p> : null}
+        {chat !== null ? (
+          <div className="ask-chat-actions">
+            {rules.length > 0 ? (
+              <div className="ask-rules" data-ask-rules>
+                <h3>Allowed in this chat</h3>
+                <ul>
+                  {rules.map(({ rule, scope }) => (
+                    <li key={rule} data-ask-rule={rule}>
+                      <code>{rule}</code>
+                      {scope === "ledger" ? <span className="ask-chat-meta"> · ledger edits</span> : null}
+                      {removing === null ? <button type="button" className="secondary-button" data-ask-remove-rule onClick={() => setRemoving({ rule, sending: false })}>Remove</button> : null}
+                      {removing !== null && removing.rule === rule ? (
+                        <Confirm question={"Remove " + rule + "?"} detail="orq will be refused it again in this chat." answer="Yes, remove" tone="danger" busy={removing.sending} onConfirm={() => disallow(rule)} onCancel={() => setRemoving(null)} />
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                {ruleNote !== "" ? <p role="alert" className="ask-reason">{ruleNote}</p> : null}
+              </div>
+            ) : null}
+            {deleting === "idle" ? <button type="button" className="danger-button" data-ask-delete onClick={() => setDeleting("asking")}>Delete chat</button> : null}
+            {deleting !== "idle" ? (
+              <Confirm question="Delete this chat?" detail="Its messages and the rules allowed in it go too." answer="Yes, delete" tone="danger" busy={deleting === "sending"} onConfirm={remove} onCancel={() => setDeleting("idle")} />
+            ) : null}
+            {deleteNote !== "" ? <p role="alert" className="ask-reason">{deleteNote}</p> : null}
+          </div>
+        ) : null}
       </div>
       {gate !== null ? gate : <AskComposer sending={sending} note={sendNote} onSend={send} busy={running ? "orq is working on a reply. Wait for it, or stop it." : null} />}
     </>

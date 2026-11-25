@@ -123,7 +123,6 @@ fn open_after(width: u32, path: &str, routes: Vec<Value>, session: bool, steps: 
     steps.push(json!({"eval": "sent", "js": "return window.__sent;"}));
     steps.push(json!({"eval": "address", "js": "return location.pathname + location.search;"}));
     let result = web_chromium::measure_with(&chromium, width, path, &[], Value::Array(steps), &init).result;
-    std::fs::write(format!("/tmp/askdbg-{}.json", std::thread::current().name().unwrap_or("x").rsplit("::").next().unwrap_or("x")), result.to_string()).ok(); // DEBUG
     assert!(result.get("error").is_none(), "{result}");
     Some(result)
 }
@@ -493,6 +492,28 @@ fn enter_sends_on_desktop_shift_enter_and_a_phones_enter_are_new_lines_and_the_b
     assert!(twenty["scroll"].as_i64() > twenty["height"].as_i64(), "and scrolls past them: {twenty}");
 }
 
+#[test]
+fn the_conversation_stays_pinned_to_its_newest_item_unless_the_person_scrolled_up() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let mut items = vec![json!({"type": "user", "turn": 1, "text": "Tell me everything", "state": "running", "reason": null})];
+    items.extend((0..40).map(|i| json!({"type": "assistant", "text": format!("Paragraph {i} of the answer, long enough to take a line or two in the panel.")})));
+    let late = json!({"type": "assistant", "text": "The late part"});
+    let stream = json!({"status": 200, "hold": true, "stream": [event(": connected\n\n", 0), item_event(41, late, 1500)]});
+    let routes = vec![route("GET", CHAT_PATH, vec![reply(conversation(items, vec![], true))]), route("GET", &format!("{CHAT_PATH}/stream"), vec![stream])];
+    // The scroller is the conversation beside the page, and the whole sheet on a phone.
+    let place = "var c = document.querySelector('[data-ask-conversation]'); var s = getComputedStyle(c).overflowY === 'visible' ? document.querySelector('[data-ask-panel]') : c; return {top: Math.round(s.scrollTop), bottom: Math.round(s.scrollHeight - s.scrollTop - s.clientHeight), tall: s.scrollHeight > s.clientHeight + 100};";
+    let steps = vec![json!({"wait": "[data-ask-item=assistant]", "text": "The late part"}), json!({"eval": "place", "js": place})];
+    for width in [1440, 390] {
+        let Some(pinned) = open(width, &at, routes.clone(), true, steps.clone()) else { return };
+        let place = eval(&pinned, "place");
+        assert_eq!(place["tall"], true, "{pinned}");
+        assert!(place["bottom"].as_i64().unwrap() <= 2, "the newest item is in view at {width}: {place}");
+    }
+    let scroll_up = "window.__up = setInterval(function () { var c = document.querySelector('[data-ask-conversation]'); if (!c || c.scrollHeight <= c.clientHeight + 100 || c.scrollTop === 0) return; c.scrollTop = 0; c.dispatchEvent(new Event('scroll')); clearInterval(window.__up); }, 100);\n";
+    let Some(up) = open_after(1440, &at, routes, true, steps, scroll_up) else { return };
+    assert_eq!(eval(&up, "place")["top"], 0, "a person who scrolled up stays where they are: {up}");
+}
+
 const PYTHON_RULE: &str = "Bash(python3 tools/check.py)";
 
 fn refused_turn() -> Vec<Value> {
@@ -531,4 +552,48 @@ fn a_refused_call_offers_allow_buttons_that_ask_for_the_passkey_and_then_offers_
     assert_eq!((&allow[0]["rule"], &allow[0]["scope"]), (&json!(PYTHON_RULE), &json!("chat")), "{allowed}");
     assert!(allow[0]["assertion"]["signature"].is_string(), "with the passkey's answer: {allowed}");
     assert_eq!(sent(&allowed, "POST", &format!("{CHAT_PATH}/messages")), vec![json!({"text": format!("Allowed: {PYTHON_RULE}. Try again.")})], "{allowed}");
+}
+
+#[test]
+fn deleting_a_chat_asks_first_says_why_when_refused_and_otherwise_goes_back_to_the_list() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let read = route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), vec![], false))]);
+    let Some(asking) = open(1440, &at, vec![read.clone()], true, vec![json!({"click": "[data-ask-delete]"}), json!({"wait": "[data-ask-panel] [data-confirm]"})]) else { return };
+    assert!(sent(&asking, "DELETE", CHAT_PATH).is_empty(), "nothing is deleted before the answer: {asking}");
+
+    let refused = route("DELETE", CHAT_PATH, vec![json!({"status": 409, "body": {"error": "a reply is running in this chat"}})]);
+    let steps = vec![json!({"click": "[data-ask-delete]"}), json!({"click": "[data-ask-panel] [data-confirm]"}), json!({"wait": "[data-ask-panel] [role=alert]"}), json!({"eval": "alert", "js": "return document.querySelector('[data-ask-panel] [role=alert]').textContent;"})];
+    let Some(kept) = open(1440, &at, vec![read.clone(), refused], true, steps) else { return };
+    assert_eq!(eval(&kept, "alert"), "a reply is running in this chat", "the server's reason: {kept}");
+    assert!(eval(&kept, "address").as_str().unwrap().ends_with(&format!("?ask={CHAT}")), "the chat stays open: {kept}");
+
+    let deleted = route("DELETE", CHAT_PATH, vec![reply(json!({"deleted": CHAT}))]);
+    let steps = vec![json!({"click": "[data-ask-delete]"}), json!({"click": "[data-ask-panel] [data-confirm]"}), json!({"wait": "[data-ask-new]"})];
+    let Some(gone) = open(1440, &at, vec![read, deleted], true, steps) else { return };
+    assert_eq!(sent(&gone, "DELETE", CHAT_PATH), vec![json!({})], "{gone}");
+    assert_eq!(eval(&gone, "address"), "/projects/alpha/reviews?ask=", "back to the list, the panel still open: {gone}");
+}
+
+#[test]
+fn the_rules_allowed_in_a_chat_are_listed_and_removing_one_asks_first_then_reads_the_chat_again() {
+    let at = format!("/projects/alpha/reviews?ask={CHAT}");
+    let rules = vec![json!({"rule": PYTHON_RULE, "scope": "chat"}), json!({"rule": LEDGER_RULE, "scope": "ledger"})];
+    let read = route("GET", CHAT_PATH, vec![reply(conversation(finished_turn(), rules.clone(), false)), reply(conversation(finished_turn(), vec![rules[1].clone()], false))]);
+    let listed = "return Array.from(document.querySelectorAll('[data-ask-rule]')).map(function (r) { return r.getAttribute('data-ask-rule'); });";
+    let steps = vec![json!({"wait": "[data-ask-rule]"}), json!({"eval": "rules", "js": listed}), json!({"click": "[data-ask-remove-rule]"}), json!({"wait": "[data-ask-panel] [data-confirm]"})];
+    let Some(asking) = open(1440, &at, vec![read.clone()], true, steps) else { return };
+    assert_eq!(eval(&asking, "rules"), &json!([PYTHON_RULE, LEDGER_RULE]), "{asking}");
+    assert!(text(&asking).contains("Allowed in this chat"), "{asking}");
+    assert!(sent(&asking, "DELETE", &format!("{CHAT_PATH}/allow")).is_empty(), "nothing is removed before the answer: {asking}");
+
+    let refused = route("DELETE", &format!("{CHAT_PATH}/allow"), vec![json!({"status": 404, "body": {"error": "that rule is not allowed in this chat"}})]);
+    let steps = vec![json!({"click": "[data-ask-remove-rule]"}), json!({"click": "[data-ask-panel] [data-confirm]"}), json!({"wait": "[data-ask-panel] [role=alert]"}), json!({"eval": "alert", "js": "return document.querySelector('[data-ask-panel] [role=alert]').textContent;"})];
+    let Some(kept) = open(1440, &at, vec![read.clone(), refused], true, steps) else { return };
+    assert_eq!(eval(&kept, "alert"), "that rule is not allowed in this chat", "{kept}");
+
+    let removed = route("DELETE", &format!("{CHAT_PATH}/allow"), vec![reply(json!({"removed": PYTHON_RULE}))]);
+    let steps = vec![json!({"click": "[data-ask-remove-rule]"}), json!({"click": "[data-ask-panel] [data-confirm]"}), json!({"wait": format!("[data-ask-rules]:not(:has([data-ask-rule='{PYTHON_RULE}']))")}), json!({"eval": "rules", "js": listed})];
+    let Some(gone) = open(1440, &at, vec![read, removed], true, steps) else { return };
+    assert_eq!(sent(&gone, "DELETE", &format!("{CHAT_PATH}/allow")), vec![json!({"rule": PYTHON_RULE})], "{gone}");
+    assert_eq!(eval(&gone, "rules"), &json!([LEDGER_RULE]), "the chat is read again without the rule: {gone}");
 }
