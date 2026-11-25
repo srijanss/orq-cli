@@ -668,6 +668,242 @@ fn a_rule_allowed_once_is_kept_for_the_next_turn_that_starts_when_a_reply_could_
     assert_eq!(read_chat(&s, &chat)["rules"], json!([]));
 }
 
+/// A software passkey, enough to enrol, sign in and answer a confirmation challenge over the socket.
+mod device {
+    use orq_core::passkey_challenge::encode_b64url;
+    use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+    use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+
+    pub const RP: &str = "box.tail1234.ts.net";
+
+    fn head(major: u8, n: u64) -> Vec<u8> {
+        let m = major << 5;
+        match n {
+            0..=23 => vec![m | n as u8],
+            24..=255 => vec![m | 24, n as u8],
+            _ => vec![m | 25, (n >> 8) as u8, n as u8],
+        }
+    }
+    fn int(n: i64) -> Vec<u8> {
+        if n >= 0 {
+            head(0, n as u64)
+        } else {
+            head(1, (-1 - n) as u64)
+        }
+    }
+    fn bytes(b: &[u8]) -> Vec<u8> {
+        [head(2, b.len() as u64), b.to_vec()].concat()
+    }
+    fn text(t: &str) -> Vec<u8> {
+        [head(3, t.len() as u64), t.as_bytes().to_vec()].concat()
+    }
+    fn map(entries: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
+        let mut out = head(5, entries.len() as u64);
+        for (k, v) in entries {
+            out.extend(k);
+            out.extend(v);
+        }
+        out
+    }
+
+    pub struct Device {
+        signer: SigningKey,
+        id: Vec<u8>,
+        count: u32,
+    }
+
+    impl Device {
+        pub fn new(seed: u8) -> Device {
+            Device {
+                signer: SigningKey::from_bytes((&[seed; 32]).into()).unwrap(),
+                id: vec![seed; 32],
+                count: 0,
+            }
+        }
+
+        fn client_data(kind: &str, options: &Value) -> String {
+            json!({"type": kind, "challenge": options["challenge"], "origin": format!("https://{RP}"), "crossOrigin": false}).to_string()
+        }
+
+        pub fn register_body(&self, options: &Value) -> Value {
+            let point = self.signer.verifying_key().to_encoded_point(false);
+            let cose = map(vec![
+                (int(1), int(2)),
+                (int(3), int(-7)),
+                (int(-1), int(1)),
+                (int(-2), bytes(point.x().unwrap())),
+                (int(-3), bytes(point.y().unwrap())),
+            ]);
+            let mut auth = Sha256::digest(RP.as_bytes()).to_vec();
+            auth.push(0x45);
+            auth.extend(0u32.to_be_bytes());
+            auth.extend([0u8; 16]);
+            auth.extend((self.id.len() as u16).to_be_bytes());
+            auth.extend(&self.id);
+            auth.extend(cose);
+            let attestation = map(vec![
+                (text("fmt"), text("none")),
+                (text("attStmt"), map(vec![])),
+                (text("authData"), bytes(&auth)),
+            ]);
+            let client = Self::client_data("webauthn.create", options);
+            json!({"clientDataJSON": encode_b64url(client.as_bytes()), "attestationObject": encode_b64url(&attestation), "label": "phone"})
+        }
+
+        pub fn assertion(&mut self, options: &Value) -> Value {
+            self.count += 1;
+            let mut auth = Sha256::digest(RP.as_bytes()).to_vec();
+            auth.push(0x05);
+            auth.extend(self.count.to_be_bytes());
+            let client = Self::client_data("webauthn.get", options);
+            let mut signed = auth.clone();
+            signed.extend(Sha256::digest(client.as_bytes()));
+            let signature: Signature = self.signer.sign(&signed);
+            json!({
+                "id": encode_b64url(&self.id),
+                "clientDataJSON": encode_b64url(client.as_bytes()),
+                "authenticatorData": encode_b64url(&auth),
+                "signature": encode_b64url(signature.to_der().as_bytes()),
+            })
+        }
+    }
+}
+
+/// One HTTP request to the server at `addr`; the status code and the JSON body.
+fn http(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> (u16, String, Value) {
+    use std::io::{Read, Write};
+    let body = if body.is_null() {
+        String::new()
+    } else {
+        body.to_string()
+    };
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let extra: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{extra}Content-Length: {}\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body.as_bytes()).unwrap();
+    let mut bytes = Vec::new();
+    let _ = stream.read_to_end(&mut bytes);
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+    let body = serde_json::from_str(body).unwrap_or(Value::Null);
+    (status, head.to_string(), body)
+}
+
+#[test]
+fn over_the_socket_an_allow_takes_a_fresh_chat_allow_passkey_check_and_no_other() {
+    use device::{Device, RP};
+    use orq_core::passkey_register::PasskeyHost;
+    use orq_core::passkey_routes::PasskeyAuth;
+    use orq_remote::{Server, ServerState};
+    use std::sync::Arc;
+
+    let s = setup("socket");
+    let alpha = git_repo(&s.scan, "alpha");
+    let token = "ask-orq-permissions-socket-token-0123456789";
+    let options: Arc<orq_remote::projects::AgentOptionsSource> =
+        Arc::new(|| vec![("claude".to_string(), vec!["opus".to_string()])]);
+    let provider = StoreProjects::new(s.roots.clone(), s.scan.clone())
+        .with_agent_options(options)
+        .with_chat_agent(s.base.join("fake-claude"));
+    let state = Arc::new(ServerState {
+        roots: s.roots.clone(),
+        config: RemoteConfig {
+            token: token.to_string(),
+        },
+        project_id: "server-project".into(),
+        project_name: "server".into(),
+    });
+    let auth = Arc::new(PasskeyAuth::new(PasskeyHost::from_setting(RP).unwrap()));
+    let server = Server::start_with_auth(
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        state,
+        Arc::new(provider),
+        auth,
+    )
+    .unwrap();
+    let addr = server.addr();
+
+    // Enrol a passkey with the token, sign in with it, and act as the signed-in page.
+    let bearer = format!("Bearer {token}");
+    let mut phone = Device::new(42);
+    let (_, _, options) = http(addr, "POST", "/auth/register/begin", &[("Authorization", &bearer)], &json!({}));
+    let (status, _, _) = http(addr, "POST", "/auth/register/finish", &[("Authorization", &bearer)], &phone.register_body(&options));
+    assert_eq!(status, 200);
+    let (_, _, options) = http(addr, "POST", "/auth/login/begin", &[], &json!({}));
+    let (status, head, _) = http(addr, "POST", "/auth/login/finish", &[], &phone.assertion(&options));
+    assert_eq!(status, 200);
+    let cookie = head
+        .lines()
+        .find(|line| line.to_lowercase().starts_with("set-cookie:"))
+        .and_then(|line| line.split_once(':'))
+        .map(|(_, value)| value.trim().split(';').next().unwrap().to_string())
+        .expect("a session cookie");
+    let proxy = ("X-Forwarded-For", "100.64.0.9");
+    let (_, _, status_body) = http(addr, "GET", "/auth/status", &[("Cookie", &cookie), proxy], &Value::Null);
+    let csrf = status_body["csrf"].as_str().unwrap().to_string();
+    let origin = format!("https://{RP}");
+    let page = [
+        ("Cookie", cookie.as_str()),
+        proxy,
+        ("Origin", origin.as_str()),
+        ("X-CSRF-Token", csrf.as_str()),
+    ];
+
+    let (status, _, created) = http(addr, "POST", "/api/projects/alpha/chats", &page, &json!({}));
+    assert_eq!(status, 200, "{created}");
+    let chat = created["chat"]["id"].as_str().unwrap().to_string();
+    reply_with(
+        &s,
+        refused_reply(&[("t1", "Bash", json!({"command": "orq queue add feat-x"}))]),
+    );
+    let (status, _, body) = http(addr, "POST", &format!("/api/projects/alpha/chats/{chat}/messages"), &page, &json!({"text": "queue feat-x"}));
+    assert_eq!(status, 202, "{body}");
+    let chat_path = format!("/api/projects/alpha/chats/{chat}");
+    wait_for(|| http(addr, "GET", &chat_path, &page, &Value::Null).2["running"] == false);
+    let allow_path = format!("{chat_path}/allow");
+    let rules = || http(addr, "GET", &chat_path, &page, &Value::Null).2["rules"].clone();
+    let challenge = |purpose: &str| {
+        let (status, _, options) = http(addr, "POST", "/auth/confirm/begin", &page, &json!({"purpose": purpose}));
+        assert_eq!(status, 200, "{purpose}: {options}");
+        options
+    };
+
+    // An answer to a challenge for turning remote actions on can't allow a rule.
+    let other = phone.assertion(&challenge("remote_actions.on"));
+    let rule = "Bash(orq queue add:*)";
+    let (status, _, body) = http(addr, "POST", &allow_path, &page, &json!({"rule": rule, "scope": "chat", "assertion": other}));
+    assert_eq!(status, 401, "{body}");
+    assert_eq!(rules(), json!([]));
+
+    // An answer to a chat.allow challenge allows it, once.
+    let answer = phone.assertion(&challenge("chat.allow"));
+    let (status, _, body) = http(addr, "POST", &allow_path, &page, &json!({"rule": rule, "scope": "chat", "assertion": answer}));
+    assert_eq!(status, 200, "{body}");
+    let ledger = format!("Edit(/{})", alpha.join(".tdd-features.json").display());
+    let (status, _, body) = http(addr, "POST", &allow_path, &page, &json!({"rule": ledger, "scope": "chat", "assertion": answer}));
+    assert_eq!(status, 401, "a spent answer: {body}");
+    assert_eq!(rules(), json!([{"rule": rule, "scope": "chat"}]));
+}
+
 #[test]
 fn the_server_confirms_an_allow_with_a_passkey_check_of_its_own_purpose() {
     use orq_core::remote_inbox::step_up_purpose;
