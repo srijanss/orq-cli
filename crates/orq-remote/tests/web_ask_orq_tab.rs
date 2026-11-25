@@ -367,6 +367,60 @@ fn a_new_chat_keeps_the_page_it_was_begun_on_and_the_persons_words_while_they_mo
 }
 
 #[test]
+fn a_chat_made_whose_first_message_fails_keeps_the_words_and_the_retry_goes_to_that_chat_without_making_another() {
+    let run_page = format!("/projects/alpha/orchestrations/{RUN}");
+    let made = chat(NEW_CHAT, "Why did it stop", json!({"kind": "run", "target": RUN}), false);
+    let messages = format!("/api/projects/alpha/chats/{NEW_CHAT}/messages");
+    let routes = || {
+        vec![
+            two_projects(),
+            run_route("failed"),
+            route("GET", "/api/projects/beta/chats", vec![reply(json!({"chats": []}))]),
+            route("POST", "/api/projects/alpha/chats", vec![reply(json!({"chat": made}))]),
+            route("POST", &messages, vec![json!({"status": 500, "body": {"error": "The machine is busy."}}), json!({"status": 202, "body": {"turn": 1}})]),
+            route("GET", &format!("/api/projects/alpha/chats/{NEW_CHAT}"), vec![reply(json!({"chat": made, "items": [], "rules": [], "running": false}))]),
+        ]
+    };
+    let failed = "var n = document.querySelector('.ask-composer-wrap [role=alert]'); var i = document.querySelector('[data-ask-input]'); return {note: n ? n.textContent : null, message: i ? i.value : null};";
+    let first = vec![
+        json!({"click": ASK}),
+        json!({"click": "[data-ask-new]"}),
+        json!({"wait": "[data-ask-input]"}),
+        json!({"type": "[data-ask-input]", "value": "Why did it stop?"}),
+        json!({"click": "[data-ask-send]"}),
+        json!({"wait": ".ask-composer-wrap [role=alert]", "text": "The machine is busy."}),
+        json!({"eval": "failed", "js": failed}),
+    ];
+    // Evals run once the steps are done, so the failure is looked at in a run that stops there.
+    let Some(failure) = open(1440, &run_page, routes(), true, first.clone()) else { return };
+    assert_eq!(eval(&failure, "failed"), &json!({"note": "The machine is busy.", "message": "Why did it stop?"}), "the reason shows and the words stay: {failure}");
+    let mut steps = first;
+    steps.extend([json!({"click": "[data-ask-send]"}), json!({"wait": "[data-ask-conversation]"})]);
+    let Some(retried) = open(1440, &run_page, routes(), true, steps) else { return };
+    assert_eq!(sent(&retried, "POST", "/api/projects/alpha/chats").len(), 1, "one chat is made: {retried}");
+    assert_eq!(sent(&retried, "POST", &messages), vec![json!({"text": "Why did it stop?"}), json!({"text": "Why did it stop?"})], "the retry goes to the chat made: {retried}");
+    assert!(eval(&retried, "address").as_str().unwrap().ends_with(&format!("?ask={NEW_CHAT}")), "{retried}");
+
+    // Moving to another project's page leaves the draft in alpha: nothing is made or sent in beta.
+    let leave = move_when(".ask-composer-wrap [role=alert]", "/projects/beta/reviews");
+    let steps = vec![
+        json!({"click": ASK}),
+        json!({"click": "[data-ask-new]"}),
+        json!({"wait": "[data-ask-input]"}),
+        json!({"type": "[data-ask-input]", "value": "Why did it stop?"}),
+        json!({"click": "[data-ask-send]"}),
+        json!({"wait": "main.content h1", "text": "Reviews"}),
+        json!({"wait": "[data-ask-new]"}),
+        json!({"eval": "left", "js": "return {inputs: document.querySelectorAll('[data-ask-input]').length, alerts: document.querySelectorAll('.ask-composer-wrap [role=alert]').length};"}),
+    ];
+    let Some(moved) = open_after(1440, &run_page, routes(), true, steps, &leave) else { return };
+    assert_eq!(eval(&moved, "address"), "/projects/beta/reviews?ask=", "{moved}");
+    assert_eq!(eval(&moved, "left"), &json!({"inputs": 0, "alerts": 0}), "beta's chat list, not alpha's draft: {moved}");
+    let posts: Vec<Value> = eval(&moved, "sent").as_array().unwrap().iter().filter(|r| r["method"] == "POST" && r["path"].as_str().unwrap().starts_with("/api/projects/beta")).cloned().collect();
+    assert!(posts.is_empty(), "nothing is made or sent in beta: {moved}");
+}
+
+#[test]
 fn outside_a_project_the_panel_asks_which_project_and_remembers_the_last_one() {
     let two = route("GET", "/api/projects", vec![reply(json!({"projects": [project(), {"id": "beta", "name": "beta", "available": true, "features": 0, "active_runs": 0, "max_active_runs": null, "start_blocked": null, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24}]}))]);
     let beta_chats = route("GET", "/api/projects/beta/chats", vec![reply(json!({"chats": []}))]);
