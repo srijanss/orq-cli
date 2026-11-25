@@ -906,10 +906,12 @@ function useTabInside(box, active = true) {
       const first = stops[0];
       const last = stops[stops.length - 1];
       const at = document.activeElement;
-      if (event.shiftKey && (at === first || !box.current.contains(at))) {
+      // The popup itself holding the focus (a send moved it there) is an edge both ways.
+      const edge = at === box.current || !box.current.contains(at);
+      if (event.shiftKey && (at === first || edge)) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && (at === last || !box.current.contains(at))) {
+      } else if (!event.shiftKey && (at === last || edge)) {
         event.preventDefault();
         first.focus();
       }

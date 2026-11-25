@@ -470,6 +470,36 @@ fn while_a_push_with_no_run_links_is_sending_tab_stays_on_the_popup() {
 }
 
 #[test]
+fn shift_tab_on_the_popup_while_a_push_with_a_run_link_is_sending_goes_to_the_run_link() {
+    let held = json!({"status": 200, "hold": "fetch", "json": {"from": "0000000000000000000000000000000000000000", "to": HEAD, "count": 2, "runs": []}});
+    let steps = vec![json!({"click": "[data-push-target]"}), json!({"click": "[data-push-send]"}), json!({"keydown": "Tab", "shift": true})];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true), held], steps) else { return };
+    let all = frames(&out);
+    assert_eq!((count(&all[2], "[data-push-sending]"), count(&all[2], "[data-push-commit-run]")), (1, 1), "{out}");
+    assert!(focused(&all[2], "[data-push-modal] [role=dialog]"), "sending moves the focus to the popup: {:?}", all[2]["settled"]["focusMatches"]);
+    assert!(focused(&all[3], "[data-push-commit-run]"), "Shift+Tab from the popup goes to its last stop: {:?}", all[3]["settled"]["focusMatches"]);
+}
+
+#[test]
+fn after_a_failed_push_tab_and_shift_tab_on_the_popup_go_to_its_first_and_last_stops() {
+    let rejected = json!({"status": 500, "hold": "fetch", "json": {"error": "rejected"}});
+    let steps = vec![
+        json!({"click": "[data-push-target]"}),
+        json!({"click": "[data-push-send]"}),
+        json!({"release": 2}),
+        json!({"keydown": "Tab", "shift": true}),
+        json!({"focus": "[data-push-modal] [role=dialog]"}),
+        json!({"keydown": "Tab"}),
+    ];
+    let Some(out) = as_session("/dashboard", vec![projects(unpushed("github")), state(None, true), rejected], steps) else { return };
+    let all = frames(&out);
+    assert_eq!((count(&all[3], "[data-push-sending]"), count(&all[3], "[data-push-send]:disabled"), count(&all[3], "[data-push-modal] [data-push-error]")), (0, 0, 1), "{out}");
+    assert!(focused(&all[3], "[data-push-modal] [role=dialog]"), "the focus stays on the popup after the failure: {:?}", all[3]["settled"]["focusMatches"]);
+    assert!(focused(&all[4], "[data-push-modal] [data-cancel]"), "Shift+Tab from the popup goes to Cancel: {:?}", all[4]["settled"]["focusMatches"]);
+    assert!(focused(&all[6], "[data-modal-close]"), "Tab from the popup goes to Close: {:?}", all[6]["settled"]["focusMatches"]);
+}
+
+#[test]
 fn only_the_commit_list_scrolls_inside_the_popup() {
     let css = std::fs::read_to_string(format!("{}/web/app.css", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let rule = css.split(".push-confirm .push-commits {").nth(1).expect("a .push-confirm .push-commits rule");
