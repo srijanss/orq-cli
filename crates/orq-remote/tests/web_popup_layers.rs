@@ -282,3 +282,21 @@ fn the_page_project_picker_list_is_wide_tall_enough_and_shows_the_chosen_project
         assert!(facts["scrollTop"].as_f64().unwrap() > 0.0, "{width}: scrolled to the chosen last project: {result}");
     }
 }
+
+#[test]
+fn on_a_phone_the_page_picker_list_stays_inside_the_window_with_a_long_project_name() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    let long = "a-project-with-a-very-long-name-that-would-run-past-the-right-edge-of-a-phone";
+    let mut named = projects(2);
+    named["projects"][1]["name"] = json!(long);
+    let mut all = replies(2);
+    all[0] = web_chromium::get("/api/projects", named);
+    let (open, list) = ("[data-project-select]", ".project-picker .project-list");
+    let steps = json!([{"wait": open}, {"click": open}, {"wait": format!("{list}:not([hidden])")}, {"boxes": list}, {"eval": "window", "js": "return {width: document.documentElement.clientWidth};"}]);
+    let measured = web_chromium::measure_with(&chromium, 390, "/projects/p01/features", &all, steps, "try { localStorage.setItem(\"orq.theme\", \"dark\"); } catch (e) {}");
+    let result = measured.result;
+    assert!(result.get("error").is_none(), "{result} (unanswered {:?})", measured.unanswered);
+    let l = rect(&result, list);
+    let width = result["evals"]["window"]["width"].as_f64().unwrap();
+    assert!(l.left >= 0.0 && l.right <= width + 0.5, "the list ({} to {}) stays inside the {width}px window: {result}", l.left, l.right);
+}

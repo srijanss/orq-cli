@@ -653,6 +653,8 @@ select:hover { border-color: var(--text-muted); }
 /* The chooser holds the button, so its list lines up under the button and is at least as wide. */
 .project-picker .project-chooser { display: flex; position: relative; flex: 0 1 18rem; min-width: 0; }
 .project-picker .project-switcher { flex: 1; padding: 0 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--surface); }
+/* On a phone the list starts after the label, so it keeps to the chooser's width and long names end in an ellipsis. */
+@media (max-width: 700px) { .project-picker .dropdown-list { width: 100%; max-width: 100%; } }
 .project-settings-link { display: inline-flex; align-items: center; flex: none; padding: 0.25rem; color: var(--text-muted); }
 .project-settings-link:hover { color: var(--text); }
 .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; margin-top: 0.75rem; }
