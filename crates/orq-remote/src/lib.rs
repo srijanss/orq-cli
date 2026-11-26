@@ -9,6 +9,7 @@
 pub mod discard;
 pub mod projects;
 pub mod review_refresh;
+pub mod run_stats;
 pub mod web_push;
 
 use std::net::{SocketAddr, TcpListener};
@@ -580,9 +581,9 @@ fn is_application_path(path: &str) -> bool {
     let plain = |segment: &str| !segment.is_empty() && segment != "." && segment != "..";
     let segments: Vec<&str> = path.strip_prefix('/').map(|rest| rest.split('/').collect()).unwrap_or_default();
     match segments.as_slice() {
-        ["dashboard"] | ["todos"] | ["reviews"] | ["settings"] | ["settings", "audit"] | ["projects"] | ["features"] | ["orchestrations"] => true,
+        ["dashboard"] | ["todos"] | ["reviews"] | ["settings"] | ["settings", "audit"] | ["projects"] | ["features"] | ["orchestrations"] | ["stats"] => true,
         ["projects", project] => plain(project),
-        ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews", "queue"].contains(section),
+        ["projects", project, section] => plain(project) && ["features", "orchestrations", "reviews", "queue", "stats"].contains(section),
         ["projects", project, "reviews", run] | ["projects", project, "features", run] => plain(project) && plain(run),
         // A run, its next pages of events, and its logs (a file, then the page after a line).
         ["projects", project, "orchestrations", run] | ["projects", project, "orchestrations", run, "logs"] => plain(project) && plain(run),

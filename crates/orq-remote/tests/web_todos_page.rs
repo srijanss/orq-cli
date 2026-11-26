@@ -99,7 +99,7 @@ fn the_sidebar_offers_todos_after_dashboard() {
     let Some(out) = shell(json!({"path": "/todos"})) else { return };
     let links = links(&out);
     let pairs: Vec<(&str, &str)> = links.iter().map(|(text, href, _)| (text.as_str(), href.as_str())).collect();
-    assert_eq!(pairs, [("Dashboard", "/dashboard"), ("Todos", "/todos"), ("Features", "/features"), ("Orchestrations", "/orchestrations"), ("Queue", "/queue"), ("Reviews", "/reviews"), ("Settings", "/settings")], "{out}");
+    assert_eq!(pairs, [("Dashboard", "/dashboard"), ("Todos", "/todos"), ("Features", "/features"), ("Orchestrations", "/orchestrations"), ("Queue", "/queue"), ("Reviews", "/reviews"), ("Stats", "/stats"), ("Settings", "/settings")], "{out}");
     let current: Vec<&str> = links.iter().filter(|(_, _, current)| current.as_deref() == Some("page")).map(|(text, _, _)| text.as_str()).collect();
     assert_eq!(current, ["Todos"], "{out}");
 }
@@ -119,7 +119,7 @@ fn the_phone_bar_shows_todos_first_in_its_second_row() {
     let Some(out) = shell(json!({"path": "/todos", "phone": true, "probe": [second]})) else { return };
     let frame = &out["frames"][0];
     let texts: Vec<&str> = frame["probes"][second].as_array().unwrap().iter().map(|item| item["text"].as_str().unwrap()).collect();
-    assert_eq!(texts, ["Todos", "Reviews"], "{out}");
+    assert_eq!(texts, ["Todos", "Reviews", "Stats"], "{out}");
     assert_eq!(frame["probes"][second][0]["current"], "page", "{out}");
 }
 

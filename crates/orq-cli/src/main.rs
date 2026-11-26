@@ -5529,6 +5529,8 @@ fn record_and_send_need(args: &[OsString]) -> Result<(), String> {
     std::io::stdin().take(MAX_INPUT_BYTES).read_to_string(&mut input).map_err(|err| format!("cannot read the hook's input: {err}"))?;
     let root = pipeline::state_root().ok_or("cannot locate the Orq state directory")?;
     let store = orq_orchestrator::RunStore::new(&root);
+    // The session's transcript is where its usage is summed when it ends; a hook that cannot note it is let go.
+    let _ = orq_orchestrator::remember_transcript(&store, run_id, &input);
     if orq_orchestrator::question_was_answered(&input) {
         return orq_orchestrator::record_input_given(&store, run_id).map_err(|err| format!("cannot record the answer on {run_id}: {err}"));
     }

@@ -2,7 +2,7 @@
 //! theme switch, the centred brand and the page's Refresh (signing out is on Settings), and a fixed bottom tab bar holding the destinations,
 //! coloured like the reference sidebar with the current tab as the same light pill. The bar has two rows of icon tabs on
 //! the same five columns: Home, Features, Orchestrations, Queue and Settings always show, under a short grip handle;
-//! Todos, Reviews and Ask orq (a toggle for the Ask orq sheet, not a link) are a second row the handle slides in and out
+//! Todos, Reviews, Stats and Ask orq (a toggle for the Ask orq sheet, not a link) are a second row the handle slides in and out
 //! by a tap or a drag. It starts open where its marked tab must be in sight, and is remembered per browser.
 
 mod web_deps;
@@ -90,7 +90,7 @@ fn closed_the_bar_shows_the_first_row_and_the_handle_and_hides_the_second_row() 
     assert_eq!(handle(frame)["expanded"], "false", "{out}");
     assert!(!row2_open(frame), "the second row is hidden: {out}");
     assert_eq!(probed(frame, ROW2)[0]["height"], "0px", "{out}");
-    assert_eq!(unfocusable(frame), 3, "its tabs are out of the tab order: {out}");
+    assert_eq!(unfocusable(frame), 4, "its tabs are out of the tab order: {out}");
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn tapping_the_handle_opens_the_second_row_and_tapping_again_closes_it() {
     let open = &out["frames"][1];
     assert!(row2_open(open), "{out}");
     assert_eq!(handle(open)["expanded"], "true", "{out}");
-    assert_eq!(texts(open, SECOND), ["Todos", "Reviews", "Ask orq"], "{out}");
+    assert_eq!(texts(open, SECOND), ["Todos", "Reviews", "Stats", "Ask orq"], "{out}");
     assert_eq!(probed(open, ROW2)[0]["height"], "300px", "{out}");
     assert_eq!(unfocusable(open), 0, "its tabs are in the tab order: {out}");
     let closed = &out["frames"][2];
@@ -170,11 +170,11 @@ fn going_back_to_a_page_in_the_second_row_opens_it() {
 }
 
 #[test]
-fn the_first_row_is_home_features_orchestrations_queue_and_settings_and_the_second_is_todos_reviews_and_ask_orq() {
+fn the_first_row_is_home_features_orchestrations_queue_and_settings_and_the_second_is_todos_reviews_stats_and_ask_orq() {
     let Some(out) = on_phone("/projects/demo/features", json!([])) else { return };
     let frame = &out["frames"][0];
     assert_eq!(texts(frame, FIRST), ["Dashboard", "Features", "Orchestrations", "Queue", "Settings"], "{out}");
-    assert_eq!(texts(frame, SECOND), ["Todos", "Reviews", "Ask orq"], "{out}");
+    assert_eq!(texts(frame, SECOND), ["Todos", "Reviews", "Stats", "Ask orq"], "{out}");
     assert!(probed(frame, TABS).iter().all(|item| item["icon"].is_string() && item["iconSize"] == "28"), "every tab has its icon: {out}");
     assert_eq!(current(frame, TABS), ["Features"], "{out}");
 }
@@ -214,7 +214,7 @@ fn without_a_project_the_rows_hold_the_same_sections() {
     let Some(out) = shell(json!({"path": "/dashboard", "phone": true, "probe": [FIRST, SECOND]})) else { return };
     let frame = &out["frames"][0];
     assert_eq!(texts(frame, FIRST), ["Dashboard", "Features", "Orchestrations", "Queue", "Settings"], "{out}");
-    assert_eq!(texts(frame, SECOND), ["Todos", "Reviews", "Ask orq"], "{out}");
+    assert_eq!(texts(frame, SECOND), ["Todos", "Reviews", "Stats", "Ask orq"], "{out}");
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn the_tab_bar_has_no_backdrop_or_more_tab() {
 fn the_bar_holds_each_section_once_as_icons_with_hidden_names() {
     let Some(out) = on_phone("/projects/demo/features", json!([])) else { return };
     let frame = &out["frames"][0];
-    assert_eq!(texts(frame, TABS), ["Dashboard", "Features", "Orchestrations", "Queue", "Settings", "Todos", "Reviews", "Ask orq"], "each section once: {out}");
+    assert_eq!(texts(frame, TABS), ["Dashboard", "Features", "Orchestrations", "Queue", "Settings", "Todos", "Reviews", "Stats", "Ask orq"], "each section once: {out}");
     assert_eq!(texts(frame, LABELS), texts(frame, TABS), "every name is a visually hidden label: {out}");
     assert_eq!(probed(frame, TABS).len(), probed(frame, FIRST).len() + probed(frame, SECOND).len(), "every tab is in a row: {out}");
 }
@@ -358,12 +358,12 @@ fn in_a_browser_the_second_row_sits_under_the_first_on_its_columns() {
         let boxes = result["boxes"].to_string();
         let same = |a: i64, b: i64, what: &str| assert!(a == b, "{boxes}\n=> {width}: {what}: {a} != {b}");
         same(result["boxes"][FIRST].as_array().unwrap().len() as i64, 5, "five tabs in the first row");
-        same(result["boxes"][SECOND].as_array().unwrap().len() as i64, 3, "Todos, Reviews and Ask orq in the second row");
+        same(result["boxes"][SECOND].as_array().unwrap().len() as i64, 4, "Todos, Reviews, Stats and Ask orq in the second row");
         for at in 0..5 {
             same(edge(&result, FIRST, at, "top"), edge(&result, FIRST, 0, "top"), "the first row is one row");
             same(edge(&result, FIRST, at, "bottom") - edge(&result, FIRST, at, "top"), 48, "the tabs keep 48px");
         }
-        for at in 0..3 {
+        for at in 0..4 {
             same(edge(&result, SECOND, at, "left"), edge(&result, FIRST, at, "left"), "the second row's tab is on the first row's column");
             same(edge(&result, SECOND, at, "right"), edge(&result, FIRST, at, "right"), "and as wide");
             same(edge(&result, SECOND, at, "bottom") - edge(&result, SECOND, at, "top"), 48, "the tabs keep 48px");

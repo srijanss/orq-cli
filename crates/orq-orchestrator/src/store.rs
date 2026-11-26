@@ -715,4 +715,45 @@ impl RunStore {
         }
         Ok(())
     }
+
+    /// Keeps that a run was discarded, for the Stats page: its events go with it.
+    pub fn record_discarded(&self, discarded: &DiscardedRun) -> Result<(), StoreError> {
+        fs::create_dir_all(&self.root)?;
+        let mut line =
+            serde_json::to_string(discarded).map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        line.push('\n');
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join(DISCARDED_FILE))?;
+        file.write_all(line.as_bytes())?;
+        Ok(())
+    }
+
+    /// Every run [`record_discarded`](Self::record_discarded) kept, oldest first; a line that cannot be
+    /// read is left out.
+    pub fn discarded_runs(&self) -> Result<Vec<DiscardedRun>, StoreError> {
+        let text = match fs::read_to_string(self.root.join(DISCARDED_FILE)) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err.into()),
+        };
+        Ok(text
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect())
+    }
+}
+
+/// The file in the store's root listing the discarded runs.
+const DISCARDED_FILE: &str = "discarded.jsonl";
+
+/// A run that was discarded: what the Stats page still counts once its records are gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscardedRun {
+    pub run_id: String,
+    pub project_id: String,
+    /// When its first event happened (RFC 3339).
+    pub started_at: String,
+    pub discarded_at: String,
 }

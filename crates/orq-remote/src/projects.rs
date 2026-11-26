@@ -1095,6 +1095,8 @@ pub struct StoreProjects {
     storage: Option<std::sync::Arc<dyn StorageCleanup + Send + Sync>>,
     run_logs: std::sync::Mutex<LogCache>,
     merged: std::sync::Mutex<MergedCache>,
+    /// What the last Stats refresh learned of every run, and when: reused for [`STATS_FRESH_FOR`].
+    stats: std::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<Vec<crate::run_stats::RunFacts>>)>>,
     log_snapshot: std::sync::Mutex<Option<LogSnapshot>>,
     accept_tests: AcceptTests,
     accepting: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -1169,6 +1171,19 @@ pub fn missing_report(roots: &orq_core::storage::StorageRoots, store: &orq_core:
     Some(MissingReport { head_sha: head_sha.to_string(), reason: reason.to_string() })
 }
 
+/// When the review of `run_id` stopped waiting by a merge or a closure, in seconds since the epoch: the
+/// time its ended lifecycle was last checked. `None` while it waits, or when that cannot be read.
+fn review_ended_at(reviews: &orq_core::store::Store, run_id: &str) -> Option<u64> {
+    use orq_core::review_lifecycle::{Gate, ProviderState};
+    let lifecycles = reviews.lifecycles_for_run(run_id).ok()?;
+    let ended = lifecycles.iter().rev().find(|lifecycle| lifecycle.state != ProviderState::Open || lifecycle.gate == Gate::Resolved)?;
+    let checked = reviews.lifecycle_checked_at(run_id, &ended.reported_head_sha).ok()??;
+    u64::try_from(checked).ok()
+}
+
+/// How long one Stats refresh's facts are reused before the runs' events are read again.
+pub const STATS_FRESH_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Runs the tests of a run's worktree when it is accepted; the error is what failed.
 pub type AcceptTests = std::sync::Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 
@@ -1202,6 +1217,7 @@ impl StoreProjects {
             storage: None,
             run_logs: Default::default(),
             merged: Default::default(),
+            stats: Default::default(),
             log_snapshot: Default::default(),
             accept_tests: std::sync::Arc::new(|worktree: &Path| orq_orchestrator::run_worktree_tests(worktree, None)),
             accepting: Default::default(),
@@ -1216,6 +1232,55 @@ impl StoreProjects {
             chat_agent: None,
             chat_time_limit: None,
         }
+    }
+
+    /// What every run of `projects` says for the Stats page, read from their events at most once per
+    /// [`STATS_FRESH_FOR`]: within it the last refresh's facts are reused, whatever window is asked.
+    fn stats_facts(&self, projects: &[Project]) -> Result<std::sync::Arc<Vec<crate::run_stats::RunFacts>>, String> {
+        use orq_orchestrator::StoreError;
+        // A poisoned lock only means an earlier request panicked; what it holds is still valid.
+        let mut cached = self.stats.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, facts)) = cached.as_ref().filter(|(at, _)| at.elapsed() < STATS_FRESH_FOR) {
+            return Ok(facts.clone());
+        }
+        let names: std::collections::HashMap<String, String> = projects
+            .iter()
+            .filter_map(|project| Some((orq_git::project_id(&orq_git::resolve_project(&project.path).ok()?), project.id.clone())))
+            .collect();
+        let store = orq_orchestrator::RunStore::new(&self.roots.state);
+        let mut facts = Vec::new();
+        for run_id in store.run_ids().map_err(|error| format!("{error:?}"))? {
+            let record = match store.load(&run_id) {
+                Ok(record) => record,
+                Err(StoreError::NotFound(_)) | Err(StoreError::InvalidRunId(_)) => continue,
+                Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
+            };
+            let Some(project) = names.get(&record.project_id) else { continue };
+            let events = match store.events(&run_id) {
+                Ok(events) => events,
+                Err(StoreError::NotFound(_)) => continue,
+                Err(error) => return Err(format!("run {run_id} is unreadable: {error:?}")),
+            };
+            facts.extend(crate::run_stats::facts(&run_id, project, &events));
+        }
+        // A discard that could not remove the run after listing it leaves the run, counted as it is.
+        let present: std::collections::HashSet<String> = facts.iter().map(|run| run.run_id.clone()).collect();
+        for run in store.discarded_runs().map_err(|error| format!("the discarded runs are unreadable: {error:?}"))? {
+            let Some(project) = names.get(&run.project_id) else { continue };
+            if !present.contains(&run.run_id) {
+                facts.extend(crate::run_stats::discarded(&run, project));
+            }
+        }
+        // A review merged or closed at its provider has no event: its lifecycle, as last checked, says when.
+        let waiting = facts.iter().any(|run| run.review_ready.is_some() && run.review_done.is_none());
+        if let Some(reviews) = waiting.then(|| orq_core::store::Store::open(&self.roots.database()).ok()).flatten() {
+            for run in facts.iter_mut().filter(|run| run.review_ready.is_some() && run.review_done.is_none()) {
+                run.review_done = review_ended_at(&reviews, &run.run_id).map(|at| at.max(run.review_ready.unwrap_or(0)));
+            }
+        }
+        let facts = std::sync::Arc::new(facts);
+        *cached = Some((std::time::Instant::now(), facts.clone()));
+        Ok(facts)
     }
 
     /// Has each Ask orq turn start `agent` instead of the `claude` on PATH.
@@ -2516,6 +2581,16 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             Err(ArchiveError::Ledger(why)) => Ok(ArchiveOutcome::Refused(orq_core::redact::redact(&format!("the ledger cannot be archived: {why}")))),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    fn stats(&self, id: Option<&str>, days: u64) -> Result<Option<serde_json::Value>, String> {
+        let projects = discover(&self.scan_root);
+        if id.is_some_and(|id| !projects.iter().any(|project| project.id == id)) {
+            return Ok(None);
+        }
+        let facts = self.stats_facts(&projects)?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+        Ok(Some(crate::run_stats::compute(&facts, id, days, now)))
     }
 
     fn runs(&self, id: &str) -> Result<Option<serde_json::Value>, String> {

@@ -53,6 +53,7 @@ mod run_status;
 mod session_files;
 mod session_references;
 mod session_settings;
+mod session_usage;
 mod setup;
 mod start_limits;
 mod stop;
@@ -231,6 +232,7 @@ pub use session_settings::{
     refresh_run_permissions, remove_needs_input_hook, setup_mcp_servers, write_needs_input_hook,
     write_run_permissions, write_session_settings, RunPermissions,
 };
+pub use session_usage::{remember_transcript, usage_from_result, SessionUsage};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use start_limits::{
     disk_refusal, free_disk, limit_refusal, machine_disk_refusal, machine_limit_refusal,
@@ -240,7 +242,7 @@ pub use start_limits::{
 pub use stop::{
     owner_state, owner_state_in, run_ending_lock, stop_run, terminate_process, OwnerState,
 };
-pub use store::{Claim, Event, RoleProfile, RunLimits, RunRecord, RunStore, StoreError};
+pub use store::{Claim, DiscardedRun, Event, RoleProfile, RunLimits, RunRecord, RunStore, StoreError};
 pub use target_push::{
     push_target, target_push_state, PushCommit, TargetPush, TargetPushOutcome, TargetPushState,
     TARGET_FETCH_LIMIT,

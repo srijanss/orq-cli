@@ -5175,7 +5175,7 @@ function useEveryProject({ token, projects, reloads, onSignedOut, part, parse, t
       current = false;
       controller.abort();
     };
-  }, [token, key, reloads]);
+  }, [token, key, reloads, part]);
   return state;
 }
 
@@ -6443,7 +6443,7 @@ function AllOrchestrations({ token, projects, reloads, onSignedOut, onRefresh, o
     const control = parsed.actions ? { token, projectId: project.id, onSignedOut, onDone: onRefresh } : null;
     return parsed.rows.map((run) => ({ ...run, projectId: project.id, projectName: project.name, control }));
   };
-  const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "runs", parse: parseOrchestrations, toRows });
+  const state = useEveryProject({ token, projects, reloads, onSignedOut, part: "runs" + runsFilter(), parse: parseOrchestrations, toRows });
   const when = (run) => whenOf(run.updated_at ?? null);
   const rows = useMemo(() => [...state.rows].sort((a, b) => when(b) - when(a)), [state.rows]);
   useEffect(() => {
@@ -6473,9 +6473,228 @@ function AllOrchestrationsPage({ token, reloads, onRefresh, onSignedOut }) {
     <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions across every project" badge={runningBadge(rows)} onRefresh={onRefresh} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => (
       <>
         <ProjectSelect projects={projects} projectId={null} section="orchestrations" />
+        <RunsFilterNote />
         <AllOrchestrations token={token} projects={projects} reloads={reloads} onSignedOut={onSignedOut} onRefresh={onRefresh} onRows={setRows} />
       </>
     )} onSignedOut={onSignedOut} />
+  );
+}
+
+// The Stats page: how runs went over the last 7, 30 or 90 days, for every project or the chosen one.
+const STATS_WINDOWS = [7, 30, 90];
+
+// The window the address asks for (?days=), 7 when it names none the page offers.
+function statsDays() {
+  const asked = Number(new URLSearchParams(window.location.search).get("days"));
+  return STATS_WINDOWS.includes(asked) ? asked : 7;
+}
+
+// A figure as the server sends it ({count, runs, link}), or null when it is not one.
+function statsFigure(value) {
+  if (value === null || typeof value !== "object" || !Number.isFinite(value.count)) return null;
+  return { count: value.count, link: typeof value.link === "string" && value.link.startsWith("/") ? value.link : null };
+}
+
+function parseStats(data) {
+  if (data === null || typeof data !== "object" || data.outcomes === null || typeof data.outcomes !== "object") return null;
+  const list = (value) => (Array.isArray(value) ? value.filter((row) => row !== null && typeof row === "object" && statsFigure(row) !== null) : []);
+  const tokens = data.tokens !== null && typeof data.tokens === "object" ? data.tokens : {};
+  return {
+    outcomes: data.outcomes,
+    first_try: data.first_try ?? null,
+    failures_by_stage: list(data.failures_by_stage),
+    stage_times: list(data.stage_times),
+    gate_fix_attempts: list(data.gate_fix_attempts),
+    review_wait: data.review_wait ?? null,
+    review_waiting: data.review_waiting ?? null,
+    tokens: { by_project: list(tokens.by_project), by_model: list(tokens.by_model), no_data: tokens.no_data ?? null },
+  };
+}
+
+// "implement_and_review" as "Implement and review".
+function stageLabel(stage) {
+  const words = String(stage ?? "").replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function durationLabel(secs) {
+  if (!Number.isFinite(secs)) return "–";
+  if (secs < 60) return Math.round(secs) + "s";
+  if (secs < 3600) return Math.round(secs / 60) + "m";
+  const hours = Math.floor(secs / 3600);
+  const minutes = Math.round((secs % 3600) / 60);
+  return minutes === 0 ? hours + "h" : hours + "h " + minutes + "m";
+}
+
+function tokensLabel(count) {
+  if (!Number.isFinite(count)) return "0";
+  if (count >= 1e6) return (count / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (count >= 1e3) return (count / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(count);
+}
+
+// A number that opens the Runs list filtered to the runs it counts; a figure of no runs is plain text.
+function FigureLink({ figure, children = null, className = "stat-figure" }) {
+  const shown = children ?? String(figure?.count ?? 0);
+  const parsed = statsFigure(figure);
+  if (parsed === null || parsed.count === 0 || parsed.link === null) return <span className={className}>{shown}</span>;
+  return (
+    <a className={className + " stat-figure-link"} href={parsed.link} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(parsed.link); } }}>
+      {shown}
+    </a>
+  );
+}
+
+// One row of a chart: its label, a bar as long as its share of the largest, and its figure.
+function StatBar({ label, value, max, figure, shown = null }) {
+  const width = max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0;
+  return (
+    <li className="stat-bar-row">
+      <span className="stat-bar-label">{label}</span>
+      <span className="stat-bar" aria-hidden="true"><span className="stat-bar-fill" style={{ width: width + "%" }} /></span>
+      <FigureLink figure={figure}>{shown}</FigureLink>
+    </li>
+  );
+}
+
+function StatsCard({ title, children, wide = false }) {
+  return (
+    <section className={"card stats-card" + (wide ? " stats-card-wide" : "")}>
+      <h2 className="stats-card-title">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function TokenTable({ rows, name }) {
+  if (rows.length === 0) return <p className="muted">No session recorded its usage.</p>;
+  const max = Math.max(...rows.map((row) => row.input_tokens + row.output_tokens));
+  return (
+    <ul className="stat-bars">
+      {rows.map((row) => (
+        <li key={row[name]} className="stat-bar-row stat-token-row">
+          <span className="stat-bar-label">{row[name]}</span>
+          <span className="stat-bar" aria-hidden="true"><span className="stat-bar-fill" style={{ width: (max > 0 ? Math.max(2, Math.round(((row.input_tokens + row.output_tokens) / max) * 100)) : 0) + "%" }} /></span>
+          <span className="stat-token-figures">
+            <FigureLink figure={row}>{tokensLabel(row.input_tokens) + " in · " + tokensLabel(row.output_tokens) + " out"}</FigureLink>
+            <span className="muted">{tokensLabel(row.cache_read_tokens) + " cache read · " + tokensLabel(row.cache_write_tokens) + " cache write"}</span>
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function StatsView({ stats }) {
+  const { outcomes, first_try: firstTry, review_wait: wait } = stats;
+  const delivered = firstTry?.of ?? 0;
+  const share = delivered > 0 ? Math.round(((firstTry?.count ?? 0) / delivered) * 100) + "%" : "–";
+  const most = (rows) => Math.max(0, ...rows.map((row) => row.count));
+  const slowest = Math.max(0, ...stats.stage_times.map((row) => row.p90_secs ?? 0));
+  return (
+    <div className="stats-grid">
+      <StatsCard title="Runs">
+        <dl className="stats-outcomes">
+          {[["Started", outcomes.started], ["Delivered", outcomes.delivered], ["Failed", outcomes.failed], ["Discarded", outcomes.discarded]].map(([label, figure]) => (
+            <div key={label} className="stats-outcome">
+              <dt className="muted">{label}</dt>
+              <dd><FigureLink figure={figure} /></dd>
+            </div>
+          ))}
+        </dl>
+      </StatsCard>
+      <StatsCard title="First-try success">
+        <p className="stats-headline">{share}</p>
+        <p className="muted"><FigureLink figure={firstTry} /> of {delivered} delivered, with no gate fix or review-again</p>
+      </StatsCard>
+      <StatsCard title="Review wait">
+        <p className="stats-headline">{durationLabel(wait?.median_secs)}</p>
+        <p className="muted">median, {durationLabel(wait?.p90_secs)} at the 90th percentile, over <FigureLink figure={wait} /> reviews</p>
+        <p className="muted"><FigureLink figure={stats.review_waiting} /> still waiting</p>
+      </StatsCard>
+      <StatsCard title="Failures by stage">
+        {stats.failures_by_stage.length === 0 ? <p className="muted">No run failed.</p> : (
+          <ul className="stat-bars">{stats.failures_by_stage.map((row) => <StatBar key={row.stage} label={stageLabel(row.stage)} value={row.count} max={most(stats.failures_by_stage)} figure={row} />)}</ul>
+        )}
+      </StatsCard>
+      <StatsCard title="Gate-fix attempts per run">
+        {stats.gate_fix_attempts.length === 0 ? <p className="muted">No runs.</p> : (
+          <ul className="stat-bars">{stats.gate_fix_attempts.map((row) => <StatBar key={row.attempts} label={row.attempts === 1 ? "1 attempt" : row.attempts + " attempts"} value={row.count} max={most(stats.gate_fix_attempts)} figure={row} />)}</ul>
+        )}
+      </StatsCard>
+      <StatsCard title="Time per stage" wide>
+        {stats.stage_times.length === 0 ? <p className="muted">No stage finished.</p> : (
+          <ul className="stat-bars">{stats.stage_times.map((row) => <StatBar key={row.stage} label={stageLabel(row.stage)} value={row.p90_secs ?? 0} max={slowest} figure={row} shown={durationLabel(row.median_secs) + " median · " + durationLabel(row.p90_secs) + " p90"} />)}</ul>
+        )}
+      </StatsCard>
+      <StatsCard title="Tokens by project" wide>
+        <TokenTable rows={stats.tokens.by_project} name="project" />
+      </StatsCard>
+      <StatsCard title="Tokens by model" wide>
+        <TokenTable rows={stats.tokens.by_model} name="model" />
+        {(stats.tokens.no_data?.count ?? 0) > 0 ? <p className="muted"><FigureLink figure={stats.tokens.no_data} /> runs recorded no usage: no data, not zero.</p> : null}
+      </StatsCard>
+    </div>
+  );
+}
+
+// The 7, 30 and 90 day choices, each a link to the same page over that window.
+function StatsWindows({ base, days }) {
+  return (
+    <nav className="stats-windows" aria-label="Window">
+      {STATS_WINDOWS.map((choice) => {
+        const href = base + "?days=" + choice;
+        return (
+          <a key={choice} href={href} className={"stats-window" + (choice === days ? " is-current" : "")} aria-current={choice === days ? "page" : undefined} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>
+            {choice} days
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
+
+function StatsPage({ token, projectId, projects, reloads, onRefresh, onSignedOut }) {
+  const days = statsDays();
+  const base = projectId === null ? "/stats" : "/projects/" + encodeURIComponent(projectId) + "/stats";
+  const api = "/api/stats?days=" + days + (projectId === null ? "" : "&project=" + encodeURIComponent(projectId));
+  return (
+    <Loaded key={api} reloads={reloads} header={() => (
+      <>
+        <PageHeader title="Stats" subtitle={projectId === null ? "How runs went across every project" : "How this project's runs went"} onRefresh={onRefresh} />
+        <div className="stats-controls">
+          <ProjectSelect projects={projects ?? []} projectId={projectId} section="stats" />
+          <StatsWindows base={base} days={days} />
+        </div>
+      </>
+    )} token={token} path={api} loading="Loading the stats…" parse={parseStats} draw={(stats) => <StatsView stats={stats} />} onSignedOut={onSignedOut} />
+  );
+}
+
+// The Stats page across every project, once the projects for the picker are read.
+function AllStatsPage({ token, reloads, onRefresh, onSignedOut }) {
+  return (
+    <Loaded key={API_PROJECTS} reloads={reloads} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseProjects} draw={(projects) => <StatsPage token={token} projectId={null} projects={projects} reloads={reloads} onRefresh={onRefresh} onSignedOut={onSignedOut} />} onSignedOut={onSignedOut} />
+  );
+}
+
+// The runs a Stats figure counts (?runs=a,b), as the runs API's filter, or "" for every run.
+function runsFilter() {
+  const asked = new URLSearchParams(window.location.search).get("runs");
+  if (asked === null) return "";
+  const ids = asked.split(",").filter((id) => RUN_ID.test(id));
+  return ids.length === 0 ? "" : "?runs=" + ids.join(",");
+}
+
+// Over a Runs list a Stats figure opened: that it lists only those runs, and the way back to all of them.
+function RunsFilterNote() {
+  if (runsFilter() === "") return null;
+  const all = window.location.pathname;
+  return (
+    <p className="banner runs-filter-note" data-runs-filter>
+      Only the runs a Stats figure counts.
+      <a href={all} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(all); } }}>Show every run</a>
+    </p>
   );
 }
 
@@ -7928,14 +8147,18 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
       )} token={token} path={queuePath} loading="Loading the queue…" parse={parseQueue} draw={(data) => <QueueView key={JSON.stringify(data.queue)} data={data} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} push={{ token, projectId, onSignedOut }} />} onSignedOut={onSignedOut} />
     );
   }
+  if (/^\/projects\/[^/]+\/stats$/.test(address)) {
+    return <StatsPage token={token} projectId={projectId} projects={projects} reloads={reloads} onRefresh={onRefresh} onSignedOut={onSignedOut} />;
+  }
   if (/^\/projects\/[^/]+\/orchestrations$/.test(address)) {
-    const runsPath = "/api/projects/" + encodeURIComponent(projectId) + "/runs";
+    const runsPath = "/api/projects/" + encodeURIComponent(projectId) + "/runs" + runsFilter();
     return (
       <>
         <Loaded key={runsPath} reloads={reloads} header={(state) => (
           <>
             <PageHeader title="Orchestrations" subtitle="Runs and pipeline executions for this project" badge={runningBadge(state.data?.rows)} onRefresh={onRefresh} />
             <ProjectSelect projects={projects} projectId={projectId} section="orchestrations" />
+            <RunsFilterNote />
           </>
         )} token={token} path={runsPath} loading="Loading the runs…" parse={parseOrchestrations} draw={(data) => <OrchestrationList runs={data.rows} projectId={projectId} control={data.actions ? { token, projectId, onSignedOut, onDone: onRefresh } : null} />} onSignedOut={onSignedOut} />
       </>
@@ -8067,6 +8290,9 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   }
   if (hash === "/queue") {
     return <AllQueuesPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
+  }
+  if (hash === "/stats") {
+    return <AllStatsPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;
   }
   if (hash === "/orchestrations") {
     return <AllOrchestrationsPage token={token} reloads={reloads} onRefresh={() => setReloads(reloads + 1)} onSignedOut={onSignedOut} />;

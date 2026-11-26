@@ -228,6 +228,12 @@ pub trait ProjectsProvider {
         Ok(None)
     }
 
+    /// How the runs went over the last `days` days, for project `id` or every project when `None`, as
+    /// the Stats page shows it; `None` when there is no such project.
+    fn stats(&self, _id: Option<&str>, _days: u64) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
+
     /// One run of project `id` as `{run, events, next_cursor}`: its events after the event `after`
     /// (from the start when `None`), one page at most. `None` when the project, the run (of that
     /// project) or the cursor is unknown.
@@ -3238,6 +3244,9 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if path == "/api/todo" {
         return todo_list(roots);
     }
+    if path == "/api/stats" {
+        return stats(provider, query);
+    }
     if path == "/api/audit" {
         return match crate::remote_audit::read(roots, AUDIT_LIMIT) {
             Ok(lines) => reply(200, json!({ "audit": lines })),
@@ -3354,12 +3363,38 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     }
 }
 
+/// `GET /api/stats?days=7|30|90[&project=<id>]`: how the runs went, for every project or one. A read,
+/// so it is there with actions off; its failure names no path.
+fn stats(provider: Option<&dyn ProjectsProvider>, query: &str) -> Response {
+    let mut days = 7;
+    let mut project = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let (Some(key), Some(value)) = (query_decode(key), query_decode(value)) else { return error(400, "the query is not valid") };
+        match key.as_str() {
+            "days" => match value.as_str() {
+                "7" | "30" | "90" => days = value.parse().unwrap_or(7),
+                _ => return error(400, "days must be 7, 30 or 90"),
+            },
+            "project" if !value.is_empty() => project = Some(value),
+            _ => return error(400, "unknown query parameter"),
+        }
+    }
+    match provider.map(|provider| provider.stats(project.as_deref(), days)) {
+        Some(Ok(Some(stats))) => reply(200, stats),
+        Some(Err(_)) => error(500, "the stats could not be read"),
+        _ => error(404, "not found"),
+    }
+}
+
 /// The filter, sort and paging a list endpoint accepts in its query string.
 struct ListQuery {
     state: Option<String>,
     oldest: bool,
     limit: Option<usize>,
     cursor: Option<String>,
+    /// Only the rows with these ids (`runs=a,b`), as a Stats figure links to the runs it counts.
+    only: Option<std::collections::HashSet<String>>,
 }
 
 /// One query component with `%XX` escapes and `+` decoded; `None` when an escape is broken or the bytes are not text.
@@ -3402,12 +3437,13 @@ const MAX_PAGE: usize = 200;
 
 impl ListQuery {
     fn parse(query: &str) -> Result<Self, (u16, &'static str)> {
-        let mut parsed = ListQuery { state: None, oldest: false, limit: None, cursor: None };
+        let mut parsed = ListQuery { state: None, oldest: false, limit: None, cursor: None, only: None };
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
             let (Some(key), Some(value)) = (query_decode(key), query_decode(value)) else { return Err((400, "the query is not valid")) };
             match key.as_str() {
                 "state" | "status" => parsed.state = Some(value),
+                "runs" => parsed.only = Some(value.split(',').filter(|id| !id.is_empty()).map(str::to_string).collect()),
                 "cursor" => parsed.cursor = Some(value),
                 "sort" => match value.as_str() {
                     "newest" => parsed.oldest = false,
@@ -3430,6 +3466,9 @@ impl ListQuery {
         let running = rows.iter().filter(|row| row[state_key] == "running").count();
         if let Some(state) = &self.state {
             rows.retain(|row| row[state_key] == state.as_str());
+        }
+        if let Some(only) = &self.only {
+            rows.retain(|row| row[id_key].as_str().is_some_and(|id| only.contains(id)));
         }
         if self.oldest {
             rows.reverse();

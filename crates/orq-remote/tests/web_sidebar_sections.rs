@@ -50,7 +50,7 @@ fn without_a_project_the_sidebar_still_offers_features_orchestrations_and_review
     let Some(out) = shell(json!({"path": "/dashboard"})) else { return };
     let links = out["frames"][0]["links"].as_array().unwrap();
     let pairs: Vec<(&str, &str)> = links.iter().map(|l| (l["text"].as_str().unwrap(), l["href"].as_str().unwrap())).collect();
-    assert_eq!(pairs, [("Dashboard", "/dashboard"), ("Todos", "/todos"), ("Features", "/features"), ("Orchestrations", "/orchestrations"), ("Queue", "/queue"), ("Reviews", "/reviews"), ("Settings", "/settings")], "{out}");
+    assert_eq!(pairs, [("Dashboard", "/dashboard"), ("Todos", "/todos"), ("Features", "/features"), ("Orchestrations", "/orchestrations"), ("Queue", "/queue"), ("Reviews", "/reviews"), ("Stats", "/stats"), ("Settings", "/settings")], "{out}");
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn queue_follows_orchestrations_and_points_at_the_chosen_projects_queue_inside_a
     let Some(out) = shell(json!({"path": "/projects/alpha/features", "projectId": "alpha"})) else { return };
     let links = out["frames"][0]["links"].as_array().unwrap();
     let labels: Vec<&str> = links.iter().map(|l| l["text"].as_str().unwrap()).collect();
-    assert_eq!(labels, ["Dashboard", "Todos", "Features", "Orchestrations", "Queue", "Reviews", "Settings"], "{out}");
+    assert_eq!(labels, ["Dashboard", "Todos", "Features", "Orchestrations", "Queue", "Reviews", "Stats", "Settings"], "{out}");
     assert_eq!(queue_link(&out["frames"][0]), ("/projects/alpha/queue".to_string(), None), "{out}");
 }
 

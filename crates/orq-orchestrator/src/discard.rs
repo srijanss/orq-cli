@@ -254,6 +254,15 @@ pub fn discard_run_before_remove(
             Err(err) => return Err(err.to_string()),
         }
     }
+    // The Stats page still counts the run; a list that cannot be written does not stop the discard.
+    if let Some(started_at) = events.first().map(|event| event.occurred_at.clone()) {
+        let _ = store.record_discarded(&crate::store::DiscardedRun {
+            run_id: run_id.to_string(),
+            project_id: record.project_id.clone(),
+            started_at,
+            discarded_at: crate::implement::now_rfc3339(),
+        });
+    }
     store.remove_run(run_id).map_err(|e| e.to_string())?;
     Ok(DiscardOutcome {
         features: members,

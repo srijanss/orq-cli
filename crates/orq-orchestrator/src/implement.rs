@@ -101,11 +101,18 @@ pub(crate) fn run_session_stage_with(
             payload,
         }
     };
-    let started = match log_line_count(&log) {
+    let counted = log_line_count(&log);
+    let started = match counted {
         Some((lines, bytes)) => serde_json::json!({ "log_line": lines, "log_offset": bytes }),
         None => serde_json::json!({}),
     };
     store.append_event(&event("stage.started", started))?;
+    let began = std::time::Instant::now();
+    let began_at = crate::parse_rfc3339(&now_rfc3339()).unwrap_or(0);
+    // The transcript an earlier session's hooks named is not this session's.
+    if session.terminal {
+        let _ = store.write_run_file(run_id, crate::session_usage::TRANSCRIPT_FILE, b"");
+    }
 
     let mut command = Command::new(session.program);
     command
@@ -288,6 +295,27 @@ pub(crate) fn run_session_stage_with(
         }
     };
     store.append_event(&closing)?;
+    // What the session used, when the agent CLI said: in an unattended session's output (its log), or
+    // in the transcript an attended session's hooks named.
+    let usage = if session.terminal {
+        store
+            .read_run_file(run_id, crate::session_usage::TRANSCRIPT_FILE, 4096)
+            .ok()
+            .flatten()
+            .and_then(|path| String::from_utf8(path).ok())
+            .filter(|path| !path.is_empty())
+            .and_then(|path| {
+                crate::session_usage::usage_from_transcript(Path::new(&path), began_at)
+            })
+    } else {
+        counted.and_then(|(_, offset)| crate::session_usage::usage_from_log(session.log, offset))
+    };
+    if let Some(usage) = usage {
+        store.append_event(&event(
+            "session.usage",
+            usage.payload(began.elapsed().as_secs()),
+        ))?;
+    }
     // Notes from a session that finished are kept for the report; a failed stage already says why.
     if let Some(notes) = notes.filter(|_| outcome.success) {
         store.append_event(&event(

@@ -13,6 +13,7 @@ const PATHS = {
   monitor: "M3 5h18v11H3ZM8 20h8m-4-4v4",
   clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-14v5l3 2",
   layers: "m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5m-18 4 9 5 9-5",
+  chart: "M3 21h18M6 17v-5m6 5V6m6 11v-8",
   refresh: "M20 11a8 8 0 0 0-14.500-4M4 5v4h4m-4 4a8 8 0 0 0 14.500 4M20 19v-4h-4",
   chevronsLeft: "m11 17-5-5 5-5m7 10-5-5 5-5",
   chevronsRight: "m13 17 5-5-5-5M6 17l5-5-5-5",

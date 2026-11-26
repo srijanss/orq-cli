@@ -34,6 +34,7 @@ export function navigationEntries(projectId) {
     { label: "Orchestrations", icon: "play", href: `${base}/orchestrations` },
     { label: "Queue", icon: "clock", href: `${base}/queue` },
     { label: "Reviews", icon: "doc", href: `${base}/reviews` },
+    { label: "Stats", icon: "chart", href: `${base}/stats` },
   );
   entries.push({ label: "Settings", icon: "gear", href: "/settings" });
   return entries;
@@ -44,7 +45,7 @@ function within(path, href) {
   return path === href || path.startsWith(href + "/");
 }
 
-const SECTIONS = { features: "Features", orchestrations: "Orchestrations", queue: "Queue", reviews: "Reviews" };
+const SECTIONS = { features: "Features", orchestrations: "Orchestrations", queue: "Queue", reviews: "Reviews", stats: "Stats" };
 
 // What assistive technology hears after moving to `path`; "" for a log page.
 function describePage(path, entries) {
@@ -205,13 +206,13 @@ function storeMoreOpen(open) {
   }
 }
 
-// Todos and Reviews sit in the bar's second row; every other section is in the first.
+// Todos, Reviews and Stats sit in the bar's second row; every other section is in the first.
 function inSecondRow(entry) {
-  return entry.href === "/todos" || entry.href.endsWith("/reviews");
+  return entry.href === "/todos" || entry.href.endsWith("/reviews") || entry.href.endsWith("/stats");
 }
 
 // The bar's icon tabs, on five columns: Home, Features, Orchestrations, Queue and Settings always show,
-// under a short grip handle; Todos, Reviews and Ask orq are a second row the handle slides in and out.
+// under a short grip handle; Todos, Reviews, Stats and Ask orq are a second row the handle slides in and out.
 // Each name stays as a visually hidden label.
 export function TabBar({ entries, path, ask = null }) {
   const first = entries.filter((entry) => !inSecondRow(entry));

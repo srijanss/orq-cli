@@ -112,7 +112,7 @@ fn the_phone_tab_bar_with_queue_fits_360_pixels_without_scrolling_sideways() {
     assert!(result["scrollWidth"].as_u64() <= result["clientWidth"].as_u64(), "the page scrolls sideways: {result}");
     // Every section, in the bar's two rows.
     let tabs = result["boxes"]["nav.tabbar a"].as_array().unwrap();
-    assert_eq!(tabs.len(), 7, "{result}");
+    assert_eq!(tabs.len(), 8, "{result}");
     for tab in tabs {
         assert!(tab["left"].as_i64().unwrap() >= 0 && tab["right"].as_i64().unwrap() <= 360, "{tab} is inside the screen");
         assert!(tab["right"].as_i64().unwrap() - tab["left"].as_i64().unwrap() >= 44, "{tab} is a tap target at least 44 px wide");

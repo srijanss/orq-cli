@@ -1,4 +1,4 @@
-//! "Ask orq": a navigation entry (sidebar after Reviews, the phone bar's second row after Todos and Reviews)
+//! "Ask orq": a navigation entry (sidebar after Reviews, the phone bar's second row after Todos, Reviews and Stats)
 //! that opens a chat panel beside the page (a full-screen sheet on a phone) without leaving it. The panel knows
 //! the page it was opened on, lists the project's chats, shows a conversation (replies as safe Markdown, tool
 //! calls as closed lines, refused calls with Allow buttons that ask the passkey), follows a running reply as
@@ -159,7 +159,7 @@ fn the_sidebar_has_ask_orq_with_the_sparkle_icon_after_reviews_and_before_settin
     let icon = "var b = document.querySelector('.sidebar nav [data-ask-orq]'); var svg = b && b.querySelector('svg'); return svg ? {d: svg.querySelector('path').getAttribute('d'), width: svg.getAttribute('stroke-width'), cap: svg.getAttribute('stroke-linecap'), box: svg.getAttribute('viewBox'), others: Array.from(document.querySelectorAll('.sidebar nav > a svg path')).map(function (p) { return p.getAttribute('d'); })} : null;";
     let tag = "var b = document.querySelector('.sidebar nav [data-ask-orq]'); return b ? [b.tagName, b.getAttribute('aria-expanded'), b.getAttribute('aria-label') || b.textContent.trim(), b.getAttribute('href')] : null;";
     let Some(result) = open(1440, "/projects/alpha/reviews", vec![], false, vec![json!({"wait": ASK}), json!({"eval": "names", "js": names}), json!({"eval": "icon", "js": icon}), json!({"eval": "tag", "js": tag})]) else { return };
-    assert_eq!(eval(&result, "names"), &json!(["Dashboard", "Todos", "Features", "Orchestrations", "Queue", "Reviews", "Ask orq", "Settings"]), "{result}");
+    assert_eq!(eval(&result, "names"), &json!(["Dashboard", "Todos", "Features", "Orchestrations", "Queue", "Reviews", "Ask orq", "Stats", "Settings"]), "{result}");
     let icon = eval(&result, "icon");
     assert_eq!(icon["d"], json!(icon_path("sparkle")), "the sparkle icon: {icon}");
     assert!(!icon["others"].as_array().unwrap().contains(&icon["d"]), "its own icon: {icon}");
@@ -222,10 +222,10 @@ fn pressing_ask_orq_again_closes_the_panel() {
 }
 
 #[test]
-fn on_a_phone_the_second_row_reads_todos_reviews_ask_orq_and_it_opens_a_full_screen_sheet_that_closes() {
+fn on_a_phone_the_second_row_reads_todos_reviews_stats_ask_orq_and_it_opens_a_full_screen_sheet_that_closes() {
     let row = "return Array.from(document.querySelectorAll('nav.tabbar > [data-tab-row=\"2\"] > *')).map(function (e) { return e.textContent.trim(); });";
     let Some(result) = open(390, "/projects/alpha/reviews", vec![], false, vec![json!({"wait": "nav.tabbar"}), json!({"eval": "row", "js": row}), json!({"click": "nav.tabbar [data-ask-orq]"}), json!({"wait": PANEL}), json!({"boxes": PANEL}), json!({"eval": "expanded", "js": "return document.querySelector('nav.tabbar [data-ask-orq]').getAttribute('aria-expanded');"})]) else { return };
-    assert_eq!(eval(&result, "row"), &json!(["Todos", "Reviews", "Ask orq"]), "{result}");
+    assert_eq!(eval(&result, "row"), &json!(["Todos", "Reviews", "Stats", "Ask orq"]), "{result}");
     assert_eq!(eval(&result, "expanded"), "true", "{result}");
     let sheet = &result["boxes"][PANEL][0];
     assert_eq!((sheet["left"].as_i64(), sheet["top"].as_i64(), sheet["right"].as_i64(), sheet["bottom"].as_i64()), (Some(0), Some(0), Some(390), Some(800)), "a full-screen sheet: {result}");
