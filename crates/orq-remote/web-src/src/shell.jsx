@@ -88,6 +88,20 @@ function usePlace(projectId) {
   return { path, entries, announcement };
 }
 
+// The Todos entry's badge: the number of Todo items, or nothing when there are none or the list could not be
+// read (`count` is then null). `most` caps what fits, as on a phone tab. The count sits outside the label, and
+// the link's name reads it.
+function todoBadge(entry, count, most = Infinity) {
+  if (entry.href !== "/todos" || !Number.isInteger(count) || count <= 0 || count > most) return null;
+  return {
+    name: `${entry.label}, ${count} ${count === 1 ? "item" : "items"}`,
+    span: <span className="todo-count" data-todo-count={count} aria-hidden="true">{count}</span>,
+  };
+}
+
+// A phone tab shows a count of at most two digits.
+const TAB_COUNT_MAX = 99;
+
 function goTo(entry, event) {
   if (isPlainLeftClick(event)) {
     event.preventDefault();
@@ -154,7 +168,7 @@ function AskToggle({ ask, className = undefined, size = 20, label = "label", tab
 }
 
 // Signing out on a phone is on the Settings page; the bar's corner holds the page's Refresh.
-function PhoneShell({ projectId = null, ask = null, panel = null, children }) {
+function PhoneShell({ projectId = null, ask = null, panel = null, todoCount = null, children }) {
   const { path, entries, announcement } = usePlace(projectId);
   const refresh = useSyncExternalStore(subscribeToRefresh, () => pageRefresh);
   return (
@@ -169,7 +183,7 @@ function PhoneShell({ projectId = null, ask = null, panel = null, children }) {
         ) : <span />}
       </header>
       <main className="content">{children}</main>
-      <TabBar entries={entries} path={path} ask={ask} />
+      <TabBar entries={entries} path={path} ask={ask} todoCount={todoCount} />
       {ask !== null && ask.open ? panel : null}
       <Announcer text={announcement} />
     </div>
@@ -214,7 +228,7 @@ function inSecondRow(entry) {
 // The bar's icon tabs, on five columns: Home, Features, Orchestrations, Queue and Settings always show,
 // under a short grip handle; Todos, Reviews, Stats and Ask orq are a second row the handle slides in and out.
 // Each name stays as a visually hidden label.
-export function TabBar({ entries, path, ask = null }) {
+export function TabBar({ entries, path, ask = null, todoCount = null }) {
   const first = entries.filter((entry) => !inSecondRow(entry));
   const second = entries.filter(inSecondRow);
   // On a page whose section is in the second row, or with the Ask orq panel open, the row opens so the
@@ -322,7 +336,7 @@ export function TabBar({ entries, path, ask = null }) {
       </div>
       <div id="tabbar-more" className="tabbar-row tabbar-more" data-tab-row="2" data-tab-drawer ref={row} aria-hidden={open ? undefined : "true"} style={{ height: `${height}px`, transition }}>
         {second.map((entry) => (
-          <Tab key={entry.href} entry={entry} path={path} tabIndex={away} onChoose={choose} />
+          <Tab key={entry.href} entry={entry} path={path} tabIndex={away} onChoose={choose} badge={todoBadge(entry, todoCount, TAB_COUNT_MAX)} />
         ))}
         <AskToggle ask={ask} size={28} label="tab-label" tabIndex={away} onToggled={(opened) => {
             if (!opened) setOpen(false);
@@ -332,19 +346,30 @@ export function TabBar({ entries, path, ask = null }) {
   );
 }
 
-function Tab({ entry, path, tabIndex = undefined, onChoose = undefined }) {
+function Tab({ entry, path, tabIndex = undefined, onChoose = undefined, badge = null }) {
   return (
-    <a href={entry.href} title={entry.label} tabIndex={tabIndex} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
+    <a href={entry.href} title={entry.label} aria-label={badge?.name} tabIndex={tabIndex} aria-current={within(path, entry.href) ? "page" : undefined} onClick={(event) => {
         if (isPlainLeftClick(event)) onChoose?.(entry);
         goTo(entry, event);
       }}>
       <Icon name={entry.icon} size={28} />
       <span className="tab-label">{entry.label}</span>
+      {badge?.span}
     </a>
   );
 }
 
-function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null, onSignOut = null, ask = null, panel = null, children }) {
+function SidebarLink({ entry, path, badge }) {
+  return (
+    <a href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} aria-label={badge?.name} title={entry.label} onClick={(event) => goTo(entry, event)}>
+      <Icon name={entry.icon} />
+      <span className="label">{entry.label}</span>
+      {badge?.span}
+    </a>
+  );
+}
+
+function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null, onSignOut = null, ask = null, panel = null, todoCount = null, children }) {
   const { path, entries, announcement } = usePlace(projectId);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -400,10 +425,8 @@ function DesktopShell({ projectId = null, projects = null, onOpenSwitcher = null
           {entries.map((entry) => (
             <Fragment key={entry.href}>
               {entry.href === "/settings" ? <div className="sidebar-divider" role="separator" /> : null}
-              <a href={entry.href} aria-current={within(path, entry.href) ? "page" : undefined} title={entry.label} onClick={(event) => goTo(entry, event)}>
-                <Icon name={entry.icon} />
-                <span className="label">{entry.label}</span>
-              </a>
+              {/* The icon rail has no room for a count. */}
+              <SidebarLink entry={entry} path={path} badge={collapsed ? null : todoBadge(entry, todoCount)} />
               {entry.href === "/dashboard" ? (
                 <div className="project-switch" ref={switchBox}>
                   <span className="project-switch-prefix">Project:</span>

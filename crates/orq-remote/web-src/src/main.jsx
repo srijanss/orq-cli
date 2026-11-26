@@ -1584,7 +1584,7 @@ function DraftWithOrqDialog({ projects = [], item = null, draft = null, token, o
   );
 }
 
-// The Todo list as the Dashboard reads it: null while loading, what went wrong, or { items, actions }.
+// The Todo list as the app reads it once for every page: null while loading, what went wrong, or { items, actions }.
 function useTodo(token, onSignedOut, reads) {
   const [todo, setTodo] = useState(null);
   useEffect(() => {
@@ -1628,17 +1628,16 @@ function TodoStat({ todo, onAdd }) {
 }
 
 // The totals above the project cards; a project that could not be read adds nothing to the sums.
-function Dashboard({ projects, machine = null, token, onSignedOut }) {
+// `todo` is the Todo list the app read (see useTodo); `onTodoChanged` reads it again.
+function Dashboard({ projects, machine = null, token, onSignedOut, todo = null, onTodoChanged = () => {} }) {
   const [pins, setPins] = useState(readPins);
-  const [reads, setReads] = useState(0);
-  const todo = useTodo(token, onSignedOut, reads);
   // The open Add feature popup ({ item: null }), or null when none is.
   const [adding, setAdding] = useState(null);
   const [notice, setNotice] = useState("");
   const finished = (text) => {
     setAdding(null);
     setNotice(text);
-    setReads((n) => n + 1);
+    onTodoChanged();
   };
   const sum = (key) => projects.reduce((total, project) => total + (project.available && Number.isInteger(project[key]) ? project[key] : 0), 0);
   const toggle = (id) => {
@@ -1679,15 +1678,14 @@ function Dashboard({ projects, machine = null, token, onSignedOut }) {
 
 // The Todo list's own page: newest first, with each item's Move to project, Draft with orq, Edit and Delete.
 // The projects are read because the move and draft popups offer them. Refresh reads the list again too.
-function TodosPage({ projects, reloads, token, onSignedOut }) {
-  const [reads, setReads] = useState(0);
-  const todo = useTodo(token, onSignedOut, reloads + ":" + reads);
+// `todo` and `onTodoChanged` as for the Dashboard.
+function TodosPage({ projects, token, onSignedOut, todo = null, onTodoChanged = () => {} }) {
   // The open Move to project popup ({ item }), or null when none is.
   const [adding, setAdding] = useState(null);
   // The Todo item whose Draft with orq popup is open, or null.
   const [drafting, setDrafting] = useState(null);
   const [notice, setNotice] = useState("");
-  const reread = () => setReads((n) => n + 1);
+  const reread = onTodoChanged;
   const finished = (text) => {
     setAdding(null);
     setNotice(text);
@@ -8218,7 +8216,7 @@ function ProjectPage({ token, onSignedOut, projectId, projects, path: address, r
   return <ReviewsPage token={token} onSignedOut={onSignedOut} reloads={reloads} onRefresh={onRefresh} api={"/api/projects/" + encodeURIComponent(projectId) + "/reviews"} listPath={"/projects/" + encodeURIComponent(projectId) + "/reviews"} open={match[1]} projectId={projectId} projects={projects} />;
 }
 
-function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, projects = null }) {
+function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, projects = null, todo = null, onTodoChanged = () => {} }) {
   const [reloads, setReloads] = useState(0);
   const hash = useSyncExternalStore(subscribeToLocation, currentPath);
   if (projectId !== null && projects !== null && !projects.some((project) => project.id === projectId)) {
@@ -8284,13 +8282,13 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
   if (hash === "/dashboard" || hash === "/") {
     return (
       <>
-        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects, machine }) => <Dashboard projects={projects} machine={machine} token={token} onSignedOut={onSignedOut} />} onSignedOut={onSignedOut} />
+        <Loaded key={API_PROJECTS} reloads={reloads} header={(state) => <PageHeader title="Dashboard" subtitle="Monitor Orq projects and orchestration activity" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects, machine }) => <Dashboard projects={projects} machine={machine} token={token} onSignedOut={onSignedOut} todo={todo} onTodoChanged={onTodoChanged} />} onSignedOut={onSignedOut} />
       </>
     );
   }
   if (hash === "/todos") {
     return (
-      <Loaded key={API_PROJECTS} reloads={reloads} header={() => <PageHeader title="Todos" subtitle="Ideas waiting for a project" onRefresh={() => setReloads(reloads + 1)} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects }) => <TodosPage projects={projects} reloads={reloads} token={token} onSignedOut={onSignedOut} />} onSignedOut={onSignedOut} />
+      <Loaded key={API_PROJECTS} reloads={reloads} header={() => <PageHeader title="Todos" subtitle="Ideas waiting for a project" onRefresh={() => { setReloads(reloads + 1); onTodoChanged(); }} />} token={token} path={API_PROJECTS} loading="Loading the projects…" parse={parseDashboard} draw={({ projects }) => <TodosPage projects={projects} token={token} onSignedOut={onSignedOut} todo={todo} onTodoChanged={onTodoChanged} />} onSignedOut={onSignedOut} />
     );
   }
   if (hash === "/features") {
@@ -8376,12 +8374,23 @@ function Scoped({ token, onSignedOut, onSignOut }) {
   useEffect(() => {
     if (known) lastProject = named;
   }, [known, named]);
+  // The Todo list, read once for the sidebar's count and the Dashboard and Todos pages; read again after an add,
+  // move or delete, and on coming to one of those pages, as each page used to read it on its own.
+  const [todoReads, setTodoReads] = useState(0);
+  const [seenPath, setSeenPath] = useState(path);
+  if (seenPath !== path) {
+    setSeenPath(path);
+    if (path === "/" || path === "/dashboard" || path === "/todos") setTodoReads((n) => n + 1);
+  }
+  const todo = useTodo(token, onSignedOut, todoReads);
+  const todoChanged = () => setTodoReads((n) => n + 1);
+  const todoCount = todo !== null && typeof todo === "object" ? todo.items.length : null;
   const [ask, setAsk] = useAskAddress(path);
   const toggle = { open: ask !== null, onToggle: () => setAsk(ask === null ? "" : null) };
   const panel = <AskPanel token={token} onSignedOut={onSignedOut} path={path} projectId={named} chat={ask} onChat={setAsk} onClose={() => setAsk(null)} />;
   return (
-    <Shell projectId={projects === null || known ? named : null} projects={inProject ? projects : menuProjects} onOpenSwitcher={openSwitcher} onSignOut={onSignOut} ask={toggle} panel={panel}>
-      <SignedIn token={token} onSignedOut={onSignedOut} onSignOut={onSignOut} projectId={named} projects={projects} />
+    <Shell projectId={projects === null || known ? named : null} projects={inProject ? projects : menuProjects} onOpenSwitcher={openSwitcher} onSignOut={onSignOut} ask={toggle} panel={panel} todoCount={todoCount}>
+      <SignedIn token={token} onSignedOut={onSignedOut} onSignOut={onSignOut} projectId={named} projects={projects} todo={todo} onTodoChanged={todoChanged} />
     </Shell>
   );
 }

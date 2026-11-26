@@ -240,7 +240,8 @@ fn a_draft_to_be_queued_once_approved_says_so_and_the_wish_can_be_cancelled() {
     let feature = |name: &str, status: &str| json!({"name": name, "description": null, "status": status, "depends_on": [], "recorded_at": null});
     let ledger = json!({"status": 200, "json": {"features": [feature("sketch", "draft")], "remote_actions": true}});
     let runs = json!({"status": 200, "json": {"runs": [], "next_cursor": null, "total": 0, "running": 0}});
-    let todo = vec![json!({"status": 200, "json": {"queue_when_approved": true}}), json!({"status": 200, "json": {"queue_when_approved": false}})];
+    // The app reads the Todo list first on every page (the sidebar's count), then the draft's queue wish.
+    let todo = vec![json!({"status": 200, "json": {"todos": [], "remote_actions": true}}), json!({"status": 200, "json": {"queue_when_approved": true}}), json!({"status": 200, "json": {"queue_when_approved": false}})];
     let Some(out) = run("/projects/alpha/features/sketch", vec![ledger, runs, projects()], todo, vec![json!({"click": "[data-queue-wish-cancel]"})]) else { return };
     let frames = out["frames"].as_array().unwrap();
     assert!(has(&frames[1], "Will be queued when approved"), "{out}");
