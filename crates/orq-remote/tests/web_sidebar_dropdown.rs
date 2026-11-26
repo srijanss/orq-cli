@@ -71,11 +71,12 @@ fn the_list_floats_over_the_page_and_is_compact() {
 #[test]
 fn in_the_collapsed_rail_the_icons_are_centred() {
     let css = css();
-    for needle in [".shell.collapsed .sidebar nav a {", ".shell.collapsed .sign-out {", ".shell.collapsed .sidebar-foot {", ".shell.collapsed .sidebar-head {"] {
+    // The links' rule may be grouped with the Ask orq toggle's, so its selector can be followed by a comma.
+    for needle in [".shell.collapsed .sidebar nav a", ".shell.collapsed .sign-out {", ".shell.collapsed .sidebar-foot {", ".shell.collapsed .sidebar-head {"] {
         let start = css.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
         let rule = &css[start..start + css[start..].find('}').unwrap()];
         assert!(rule.contains("justify-content: center") || rule.contains("align-items: center"), "{needle}: {rule}");
     }
-    let start = css.find(".shell.collapsed .sidebar nav a {").unwrap();
+    let start = css.find(".shell.collapsed .sidebar nav a").unwrap();
     assert!(css[start..start + 200].contains("padding: 0"), "no side padding pushes the icon off centre");
 }
