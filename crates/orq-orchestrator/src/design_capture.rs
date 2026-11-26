@@ -1223,20 +1223,25 @@ const MEASURE_SCRIPT: &str = r##"(async function () {
     }
     return parts.join(" > ");
   }
-  // A data image entry is a CSS selector, or a section's name: its aria-label or heading.
-  function named(el, name) {
-    if ((el.getAttribute("aria-label") || "").trim().toLowerCase() === name) return true;
-    return Array.prototype.some.call(el.children, function (c) {
-      return /^H[1-6]$/.test(c.tagName) && c.textContent.trim().toLowerCase() === name;
-    });
-  }
-  function isDataImage(img, key) {
-    try { if (img.closest(key)) return true; } catch (e) {}
+  // A data image entry is a CSS selector, or a section's name: its aria-label or heading. The
+  // sections each entry names are found once, before any image is checked.
+  function namedSections(key) {
     var name = key.trim().toLowerCase();
-    for (var el = img.parentElement; el && el !== root; el = el.parentElement) {
-      if (named(el, name)) return true;
-    }
-    return false;
+    var found = [];
+    Array.prototype.forEach.call(document.querySelectorAll("[aria-label]"), function (el) {
+      if (el.getAttribute("aria-label").trim().toLowerCase() === name) found.push(el);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("h1, h2, h3, h4, h5, h6"), function (h) {
+      if (h.textContent.trim().toLowerCase() === name && h.parentElement) found.push(h.parentElement);
+    });
+    return found;
+  }
+  var dataImageEntries = input.data_images.map(function (key) {
+    return {key: key, sections: namedSections(key)};
+  });
+  function isDataImage(img, entry) {
+    try { if (img.closest(entry.key)) return true; } catch (e) {}
+    return entry.sections.some(function (section) { return section.contains(img); });
   }
   // Every image is checked; the first 100 that did not load are listed and the rest counted, with
   // how many of those match no data image entry.
@@ -1245,8 +1250,8 @@ const MEASURE_SCRIPT: &str = r##"(async function () {
   Array.prototype.forEach.call(document.images, function (img) {
     if (img.naturalWidth > 0) return;
     var dataImage = null;
-    for (var k = 0; k < input.data_images.length && dataImage === null; k++) {
-      if (isDataImage(img, input.data_images[k])) dataImage = input.data_images[k];
+    for (var k = 0; k < dataImageEntries.length && dataImage === null; k++) {
+      if (isDataImage(img, dataImageEntries[k])) dataImage = dataImageEntries[k].key;
     }
     if (unloaded.length < 100) {
       unloaded.push({selector: path(img), src: img.currentSrc || img.src, data_image: dataImage});

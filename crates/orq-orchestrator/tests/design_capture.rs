@@ -496,6 +496,44 @@ fn unloaded_images_past_the_limit_are_counted_with_how_many_are_not_data_images(
 }
 
 #[test]
+fn many_unloaded_images_in_one_container_with_unmatched_section_names_are_measured_quickly() {
+    let Some(browser) = chromium() else { return };
+    let site = fixture_site();
+    // 20000 images that never load (no src), side by side, and entries that name no section.
+    let images = "<img alt=\"\" width=\"1\" height=\"1\">".repeat(20_000);
+    let page = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Wall</title></head>
+<body><main><h1>Wall</h1><div class="wall">{images}</div></main></body></html>"#
+    );
+    std::fs::write(site.root().join("wall.html"), page).unwrap();
+    let logs = TempDir::new("design-capture-image-wall");
+    let package = logs.path().join("design/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("UX.md"),
+        "# UX\n\n## Data images\n\n- Brand logos: from media\n- Gift cards: from media\n\
+         - Team: from media\n",
+    )
+    .unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+    let started = std::time::Instant::now();
+
+    let outcome = capture(site.root(), logs.path(), &["/wall".to_string()], &browser, &settings);
+
+    let elapsed = started.elapsed();
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert!(record.failures.is_empty(), "failures: {:?}", record.failures);
+    let measured = read_json(&logs.path().join("design/round-1/desktop/measurements.json"));
+    assert_eq!(
+        measured["routes"]["/wall"]["unloaded_images_omitted"],
+        serde_json::json!({"count": 19_900, "not_data_images": 19_900})
+    );
+    assert!(elapsed < Duration::from_secs(30), "the capture took {elapsed:?}");
+}
+
+#[test]
 fn two_captures_at_once_use_different_ports() {
     let Some(browser) = chromium() else { return };
     let settings = settings(fixture_server_command(), Duration::from_secs(30));
