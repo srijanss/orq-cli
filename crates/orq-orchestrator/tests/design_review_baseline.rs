@@ -564,6 +564,62 @@ fn a_target_worktree_whose_setup_fails_is_not_captured_and_the_report_says_why()
     );
 }
 
+/// A capture that ran but whose pages each failed: no screenshot, a failure line per page.
+fn failed_pages(run: &CaptureRun) -> CaptureOutcome {
+    let pages: Vec<PageCapture> = run
+        .viewports
+        .iter()
+        .map(|viewport| PageCapture {
+            route: "/".to_string(),
+            viewport: viewport.name.clone(),
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
+            image: None,
+            image_width: None,
+            image_height: None,
+            failure: Some("the route answered 404".to_string()),
+        })
+        .collect();
+    let failures = pages
+        .iter()
+        .map(|page| format!("/ at {}: the route answered 404", page.viewport))
+        .collect();
+    CaptureOutcome::Captured(CaptureRecord {
+        round: run.round,
+        commit: None,
+        browser_version: "fake".to_string(),
+        port: 1,
+        pages,
+        failures,
+    })
+}
+
+#[test]
+fn a_target_capture_whose_pages_failed_is_no_baseline_and_the_report_says_why() {
+    let f = Fixture::new(DesignMode::Infer);
+    let run_worktree = f.worktree.clone();
+    let not_served = |run: &CaptureRun| {
+        if run.worktree == run_worktree {
+            fake_capture(run)
+        } else {
+            failed_pages(run)
+        }
+    };
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &not_served);
+    assert_eq!(f.baseline_calls(&calls).len(), 1, "{calls:?}");
+    assert_eq!(f.calls(), 1, "the review goes on");
+    let argv = f.argv(1);
+    assert!(!argv.contains("baseline/"), "no baseline is given: {argv}");
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules only")
+            && !report.contains("Reviewed by the rules and the target's page")
+            && report.contains("/ at mobile: the route answered 404"),
+        "{report}"
+    );
+}
+
 #[test]
 fn an_unreadable_target_branch_leaves_the_review_by_the_rules_only() {
     let f = Fixture::new(DesignMode::Infer);

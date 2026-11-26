@@ -1008,6 +1008,33 @@ fn target_baseline(
             })
         })
         .collect();
+    // The baseline is the target's page at every route and viewport asked for, or none: a page
+    // missing from it would read as a section the target does not have.
+    let missing: Vec<String> = routes
+        .iter()
+        .flat_map(|route| viewports.iter().map(move |viewport| (route, &viewport.name)))
+        .filter(|(route, viewport)| {
+            !pages
+                .iter()
+                .any(|page| &page.route == *route && &page.viewport == *viewport)
+        })
+        .map(|(route, viewport)| format!("{route} at {viewport}"))
+        .collect();
+    if !missing.is_empty() {
+        let mut why = format!(
+            "the target's page could not be captured at {}",
+            missing.join(", ")
+        );
+        if !record.failures.is_empty() {
+            why.push_str(&format!(" ({})", record.failures.join("; ")));
+        }
+        let record = json!({"key": key, "failed": why});
+        let _ = std::fs::write(
+            &cached,
+            serde_json::to_vec_pretty(&record).unwrap_or_default(),
+        );
+        return Err(why);
+    }
     let baseline = copy_baseline(&head, &pages, &captured, &baseline_dir)?;
     let record = json!({"key": key, "pages": pages});
     std::fs::write(
