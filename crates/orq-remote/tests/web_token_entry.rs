@@ -85,9 +85,24 @@ fn kind_filter_masked(code: &str) -> String {
     code.replace(READ, "const asked = kindInAddress;").replace(PARAMS, "const params = addressQuery;").replace(WRITE, "replaceAddress(search);")
 }
 
+/// The code with the Stats page's own address reads masked: `statsDays` reads only `?days=` and
+/// `runsFilter` only `?runs=` (run ids), and neither sees the token or writes the address.
+fn stats_masked(code: &str) -> String {
+    const DAYS: &str = "const asked = Number(new URLSearchParams(window.location.search).get(\"days\"));";
+    const RUNS: &str = "const asked = new URLSearchParams(window.location.search).get(\"runs\");";
+    for (name, line) in [("function statsDays(", DAYS), ("function runsFilter(", RUNS)] {
+        assert_eq!(code.matches(line).count(), 1, "the Stats address read appears once: {line}");
+        let body = code.split(name).nth(1).expect(name).split("\nfunction ").next().unwrap();
+        assert!(body.contains(line), "{name} holds its own address read");
+        assert!(!body.to_lowercase().contains("token"), "{name} never sees the token");
+        assert!(!body.contains("history."), "{name} never writes the address");
+    }
+    code.replace(DAYS, "const asked = Number(daysInAddress);").replace(RUNS, "const asked = runsInAddress;")
+}
+
 #[test]
 fn the_token_never_reaches_a_url_a_log_or_the_history() {
-    let code = kind_filter_masked(&code_without_push());
+    let code = stats_masked(&kind_filter_masked(&code_without_push()));
     for banned in ["location.search", "location.href", "URLSearchParams", "history.", "console.", "alert(", "window.name", "postMessage", "sendBeacon", "WebSocket", "EventSource", "XMLHttpRequest", "document.write", "innerHTML", "eval(", "new Function"] {
         assert!(!code.contains(banned), "the source uses {banned}");
     }
