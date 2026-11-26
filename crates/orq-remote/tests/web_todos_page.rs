@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::process::Command;
 
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
-const SELECTORS: [&str; 8] = [
+const SELECTORS: [&str; 13] = [
     ".todo-item",
     ".todo-item [data-todo-move]",
     ".todo-item [data-todo-draft]",
@@ -16,7 +16,13 @@ const SELECTORS: [&str; 8] = [
     "[data-todo]",
     "[data-dashboard-add][aria-label=\"3 Todos, add feature\"]",
     "[data-todo-show-all]",
+    "button.primary-button[data-todos-add]",
+    "button.primary-button[data-todos-add] > svg",
+    "[data-feature-modal]",
+    "[data-add-blocked]",
+    "[data-todo-save]:disabled",
 ];
+const ADD: &str = "[data-todos-add]";
 
 fn projects() -> Value {
     let project = |id: &str| json!({"id": id, "name": id, "available": true, "features": 1, "active_runs": 0, "reviews_waiting": 0, "failed_runs": 0, "failed_window_hours": 24});
@@ -149,6 +155,58 @@ fn refresh_reads_the_todo_list_again_and_recovers_after_a_failed_read() {
     let refreshed = last(&out);
     assert_eq!(count(refreshed, SELECTORS[0]), 3, "{out}");
     assert!(!has(refreshed, "The Todo list could not be read."), "{out}");
+}
+
+fn texts(frame: &Value) -> Vec<&str> {
+    frame["settled"]["texts"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect()
+}
+
+#[test]
+fn todos_page_add_button_is_primary() {
+    let Some(out) = run("/todos", vec![todos(3)], vec![]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, SELECTORS[8]), 1, "{out}");
+    assert_eq!(count(frame, SELECTORS[9]), 1, "a plus icon: {out}");
+    let shown = texts(frame);
+    let add = shown.iter().position(|t| *t == "Add feature").unwrap_or_else(|| panic!("no Add feature: {shown:?}"));
+    let first = shown.iter().position(|t| *t == "idea 3").unwrap_or_else(|| panic!("no item: {shown:?}"));
+    assert!(add < first, "above the Todo list: {shown:?}");
+}
+
+#[test]
+fn todos_page_add_opens_add_feature_popup() {
+    let Some(out) = run("/todos", vec![todos(3)], vec![json!({"click": ADD})]) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, SELECTORS[10]), 1, "{out}");
+    let shown = texts(frame);
+    assert_eq!(shown.iter().filter(|t| **t == "Add feature").count(), 2, "the button and the popup title: {shown:?}");
+    assert!(has(frame, "Todo (no project)"), "{out}");
+    assert_eq!(count(frame, SELECTORS[11]), 0, "{out}");
+}
+
+#[test]
+fn todos_page_add_saves_to_todo_and_refreshes() {
+    let added = json!({"status": 200, "json": {"todo": item(4)}});
+    let steps = vec![json!({"click": ADD}), json!({"set": "[data-todo-name]", "value": "idea 4"}), json!({"click": "[data-todo-save]"})];
+    let Some(out) = run("/todos", vec![todos(3), added, todos(4)], steps) else { return };
+    let todo: Vec<(&str, &str)> = out["todoRequests"].as_array().unwrap().iter().map(|r| (r["method"].as_str().unwrap_or("GET"), r["url"].as_str().unwrap())).collect();
+    assert_eq!(todo, [("GET", "/api/todo"), ("POST", "/api/todo"), ("GET", "/api/todo")], "{out}");
+    let frame = last(&out);
+    assert_eq!(count(frame, SELECTORS[10]), 0, "the popup closed: {out}");
+    assert!(has(frame, "Added to Todo"), "{out}");
+    assert_eq!(count(frame, SELECTORS[0]), 4, "the list was read again: {out}");
+    assert!(has(frame, "idea 4"), "{out}");
+}
+
+#[test]
+fn todos_page_add_blocked_when_actions_off() {
+    let mut off = todos(3);
+    off["json"]["remote_actions"] = json!(false);
+    let steps = vec![json!({"click": ADD}), json!({"set": "[data-todo-name]", "value": "idea 4"})];
+    let Some(out) = run("/todos", vec![off], steps) else { return };
+    let frame = last(&out);
+    assert_eq!(count(frame, SELECTORS[11]), 1, "{out}");
+    assert_eq!(count(frame, SELECTORS[12]), 1, "Save stays disabled with a name typed: {out}");
 }
 
 #[test]

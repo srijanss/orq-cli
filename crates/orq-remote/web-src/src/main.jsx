@@ -1680,7 +1680,7 @@ function Dashboard({ projects, machine = null, token, onSignedOut, todo = null, 
 // The projects are read because the move and draft popups offer them. Refresh reads the list again too.
 // `todo` and `onTodoChanged` as for the Dashboard.
 function TodosPage({ projects, token, onSignedOut, todo = null, onTodoChanged = () => {} }) {
-  // The open Move to project popup ({ item }), or null when none is.
+  // The open Add feature ({ item: null }) or Move to project ({ item }) popup, or null when none is.
   const [adding, setAdding] = useState(null);
   // The Todo item whose Draft with orq popup is open, or null.
   const [drafting, setDrafting] = useState(null);
@@ -1694,6 +1694,7 @@ function TodosPage({ projects, token, onSignedOut, todo = null, onTodoChanged = 
   return (
     <>
       {notice !== "" ? <p role="status" className="run-action-note" data-dashboard-notice>{notice}</p> : null}
+      <button type="button" className="primary-button" data-todos-add onClick={() => { setNotice(""); setAdding({ item: null }); }}><Icon name="plus" size={16} />Add feature</button>
       <TodoList todo={todo} token={token} onSignedOut={onSignedOut} onChanged={reread} onMove={(item) => { setNotice(""); setAdding({ item }); }} onDraft={(item) => { setNotice(""); setDrafting(item); }} />
       {drafting !== null ? <DraftWithOrqDialog projects={projects} item={drafting} token={token} onSignedOut={onSignedOut} onClose={() => setDrafting(null)} /> : null}
       {adding !== null ? <AddFeatureDialog projects={projects} item={adding.item} todoActions={todo !== null && typeof todo === "object" && todo.actions} token={token} onSignedOut={onSignedOut} onClose={() => setAdding(null)} onFinished={finished} /> : null}
