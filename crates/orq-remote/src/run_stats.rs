@@ -54,14 +54,24 @@ pub struct Usage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    /// What each model of the session used, when it recorded that (`models`); empty when the whole
+    /// session is its `model`'s.
+    pub models: Vec<Usage>,
 }
 
 impl Usage {
     fn of(event: &Event) -> Usage {
-        let count = |key: &str| event.payload.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let mut usage = Usage::from_payload(&event.payload);
+        if let Some(models) = event.payload.get("models").and_then(Value::as_array) {
+            usage.models = models.iter().map(Usage::from_payload).collect();
+        }
+        usage
+    }
+
+    fn from_payload(payload: &Value) -> Usage {
+        let count = |key: &str| payload.get(key).and_then(Value::as_u64).unwrap_or(0);
         Usage {
-            model: event
-                .payload
+            model: payload
                 .get("model")
                 .and_then(Value::as_str)
                 .filter(|model| !model.is_empty())
@@ -71,6 +81,16 @@ impl Usage {
             output_tokens: count("output_tokens"),
             cache_read_tokens: count("cache_read_tokens"),
             cache_write_tokens: count("cache_write_tokens"),
+            models: Vec::new(),
+        }
+    }
+
+    /// The session's usage split by model: [`Usage::models`], or the whole session as its `model`'s.
+    fn per_model(&self) -> &[Usage] {
+        if self.models.is_empty() {
+            std::slice::from_ref(self)
+        } else {
+            &self.models
         }
     }
 
@@ -214,7 +234,7 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 
 /// The figures for `project` (every project when `None`) over the `days` days before `now`, from
 /// every run's facts.
-pub fn compute(all: &[RunFacts], project: Option<&str>, days: u64, now: u64) -> Value {
+pub fn compute<'a>(all: &'a [RunFacts], project: Option<&str>, days: u64, now: u64) -> Value {
     let since = now.saturating_sub(days * 86_400);
     let started: Vec<&RunFacts> = all
         .iter()
@@ -333,15 +353,16 @@ pub fn compute(all: &[RunFacts], project: Option<&str>, days: u64, now: u64) -> 
     let mut by_model: BTreeMap<&str, (Usage, Vec<&str>)> = BTreeMap::new();
     for run in &runs {
         for used in &run.usage {
-            for (key, totals) in [
-                (run.project.as_str(), &mut by_project),
-                (used.model.as_str(), &mut by_model),
-            ] {
+            let count = |totals: &mut BTreeMap<&'a str, (Usage, Vec<&'a str>)>, key: &'a str, part: &Usage| {
                 let (sum, ids) = totals.entry(key).or_default();
-                sum.add(used);
+                sum.add(part);
                 if !ids.contains(&run.run_id.as_str()) {
                     ids.push(&run.run_id);
                 }
+            };
+            count(&mut by_project, &run.project, used);
+            for part in used.per_model() {
+                count(&mut by_model, &part.model, part);
             }
         }
     }

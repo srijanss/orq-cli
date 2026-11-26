@@ -232,7 +232,7 @@ pub use session_settings::{
     refresh_run_permissions, remove_needs_input_hook, setup_mcp_servers, write_needs_input_hook,
     write_run_permissions, write_session_settings, RunPermissions,
 };
-pub use session_usage::{remember_transcript, usage_from_result, SessionUsage};
+pub use session_usage::{remember_transcript, usage_from_result, ModelUsage, SessionUsage};
 pub use setup::{plan_setup, run_setup, run_setup_with_env, SetupError, SetupFailure, SetupPlan};
 pub use start_limits::{
     disk_refusal, free_disk, limit_refusal, machine_disk_refusal, machine_limit_refusal,

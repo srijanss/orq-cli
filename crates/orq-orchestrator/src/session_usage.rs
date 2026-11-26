@@ -18,12 +18,38 @@ pub struct SessionUsage {
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
     pub turns: u64,
+    /// The model that wrote the most.
     pub model: String,
+    /// What each model used, by model name.
+    pub models: Vec<ModelUsage>,
+}
+
+/// The tokens one model of a session used.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelUsage {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
 }
 
 impl SessionUsage {
     /// The `session.usage` payload, with `duration_secs` as orq measured it.
     pub fn payload(&self, duration_secs: u64) -> Value {
+        let models: Vec<Value> = self
+            .models
+            .iter()
+            .map(|used| {
+                serde_json::json!({
+                    "model": used.model,
+                    "input_tokens": used.input_tokens,
+                    "output_tokens": used.output_tokens,
+                    "cache_read_tokens": used.cache_read_tokens,
+                    "cache_write_tokens": used.cache_write_tokens,
+                })
+            })
+            .collect();
         serde_json::json!({
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -32,12 +58,22 @@ impl SessionUsage {
             "turns": self.turns,
             "duration_secs": duration_secs,
             "model": self.model,
+            "models": models,
         })
     }
 }
 
 fn count(usage: &Value, key: &str) -> u64 {
     usage.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// The model that wrote the most of `models`; empty when there are none.
+fn dominant(models: &[ModelUsage]) -> String {
+    models
+        .iter()
+        .max_by_key(|used| used.output_tokens)
+        .map(|used| used.model.clone())
+        .unwrap_or_default()
 }
 
 /// The usage in the last JSON result line of `output` (`{"type":"result", "usage": ...}`), if any.
@@ -48,24 +84,31 @@ pub fn usage_from_result(output: &str) -> Option<SessionUsage> {
             return None;
         }
         let usage = result.get("usage")?;
-        // The model that wrote the most is the session's.
-        let model = result
+        let mut models: Vec<ModelUsage> = result
             .get("modelUsage")
             .and_then(Value::as_object)
-            .and_then(|models| {
+            .map(|models| {
                 models
                     .iter()
-                    .max_by_key(|(_, used)| count(used, "outputTokens"))
-                    .map(|(model, _)| model.clone())
+                    .map(|(model, used)| ModelUsage {
+                        model: model.clone(),
+                        input_tokens: count(used, "inputTokens"),
+                        output_tokens: count(used, "outputTokens"),
+                        cache_read_tokens: count(used, "cacheReadInputTokens"),
+                        cache_write_tokens: count(used, "cacheCreationInputTokens"),
+                    })
+                    .collect()
             })
             .unwrap_or_default();
+        models.sort_by(|a, b| a.model.cmp(&b.model));
         Some(SessionUsage {
             input_tokens: count(usage, "input_tokens"),
             output_tokens: count(usage, "output_tokens"),
             cache_read_tokens: count(usage, "cache_read_input_tokens"),
             cache_write_tokens: count(usage, "cache_creation_input_tokens"),
             turns: result.get("num_turns").and_then(Value::as_u64).unwrap_or(0),
-            model,
+            model: dominant(&models),
+            models,
         })
     })
 }
@@ -154,19 +197,25 @@ pub(crate) fn usage_from_transcript(path: &Path, since: u64) -> Option<SessionUs
         turns: messages.len() as u64,
         ..SessionUsage::default()
     };
-    let mut by_model: std::collections::BTreeMap<&str, u64> = Default::default();
+    let mut by_model: std::collections::BTreeMap<&str, ModelUsage> = Default::default();
     for (_, model, usage) in &messages {
-        total.input_tokens += count(usage, "input_tokens");
-        total.output_tokens += count(usage, "output_tokens");
-        total.cache_read_tokens += count(usage, "cache_read_input_tokens");
-        total.cache_write_tokens += count(usage, "cache_creation_input_tokens");
-        *by_model.entry(model).or_default() += count(usage, "output_tokens");
+        let used = by_model.entry(model).or_insert_with(|| ModelUsage {
+            model: model.clone(),
+            ..ModelUsage::default()
+        });
+        used.input_tokens += count(usage, "input_tokens");
+        used.output_tokens += count(usage, "output_tokens");
+        used.cache_read_tokens += count(usage, "cache_read_input_tokens");
+        used.cache_write_tokens += count(usage, "cache_creation_input_tokens");
     }
-    total.model = by_model
-        .into_iter()
-        .max_by_key(|(_, output)| *output)
-        .map(|(model, _)| model.to_string())
-        .unwrap_or_default();
+    total.models = by_model.into_values().collect();
+    for used in &total.models {
+        total.input_tokens += used.input_tokens;
+        total.output_tokens += used.output_tokens;
+        total.cache_read_tokens += used.cache_read_tokens;
+        total.cache_write_tokens += used.cache_write_tokens;
+    }
+    total.model = dominant(&total.models);
     Some(total)
 }
 

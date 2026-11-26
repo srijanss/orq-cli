@@ -457,6 +457,32 @@ fn tokens_are_summed_by_project_and_model_and_runs_without_usage_are_no_data() {
     );
 }
 
+#[test]
+fn a_session_that_used_two_models_counts_each_models_tokens_under_that_model() {
+    let s = setup("stats-tokens-mixed");
+    let alpha = project_id(&git_repo(&s.scan, "alpha"));
+    let models = json!([
+        {"model": "opus", "input_tokens": 100, "output_tokens": 80, "cache_read_tokens": 7, "cache_write_tokens": 1},
+        {"model": "sonnet", "input_tokens": 20, "output_tokens": 30, "cache_read_tokens": 3, "cache_write_tokens": 0},
+    ]);
+    let mixed = json!({"input_tokens": 120, "output_tokens": 110, "cache_read_tokens": 10, "cache_write_tokens": 1, "turns": 4, "duration_secs": 60, "model": "opus", "models": models});
+    add_run(&s, "m1", &alpha, DAY, vec![E("session.usage", Some("implement_and_review"), 10, mixed), delivered(30)]);
+    let (_, body) = get(&s, "/api/stats?days=7");
+    let row = |name: &str| {
+        body["tokens"]["by_model"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["model"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name} in {body}"))
+    };
+    assert_eq!((row("opus")["input_tokens"].as_u64(), row("opus")["output_tokens"].as_u64()), (Some(100), Some(80)), "{body}");
+    assert_eq!((row("sonnet")["input_tokens"].as_u64(), row("sonnet")["output_tokens"].as_u64()), (Some(20), Some(30)), "{body}");
+    assert_eq!(runs(&row("sonnet")), ["m1"], "{body}");
+    assert_eq!(body["tokens"]["by_project"][0]["input_tokens"], 120, "the project still counts the whole session: {body}");
+}
+
 fn listed(body: &Value) -> Vec<String> {
     let mut ids: Vec<String> = body["runs"]
         .as_array()
@@ -823,6 +849,27 @@ fn an_unattended_session_records_its_usage_from_the_agent_clis_json_result() {
     );
 }
 
+#[test]
+fn an_unattended_session_that_used_two_models_records_each_models_usage() {
+    let s = setup("stats-usage-result-mixed");
+    add_run(&s, "u2", "p", 0, vec![]);
+    let result = r#"{"type":"result","num_turns":3,"usage":{"input_tokens":30,"output_tokens":70,"cache_read_input_tokens":500,"cache_creation_input_tokens":9},"modelUsage":{"claude-opus-5-5":{"inputTokens":10,"outputTokens":60,"cacheReadInputTokens":400,"cacheCreationInputTokens":9},"claude-haiku-5-5":{"inputTokens":20,"outputTokens":10,"cacheReadInputTokens":100,"cacheCreationInputTokens":0}}}"#;
+
+    let events = run_session(&s, "u2", &format!("echo '{result}'"), false);
+
+    let usage = session_usage(&events);
+    assert_eq!(usage.len(), 1, "{events:?}");
+    assert_eq!(usage[0]["model"], "claude-opus-5-5");
+    assert_eq!(
+        usage[0]["models"],
+        json!([
+            {"model": "claude-haiku-5-5", "input_tokens": 20, "output_tokens": 10, "cache_read_tokens": 100, "cache_write_tokens": 0},
+            {"model": "claude-opus-5-5", "input_tokens": 10, "output_tokens": 60, "cache_read_tokens": 400, "cache_write_tokens": 9},
+        ]),
+        "{usage:?}"
+    );
+}
+
 /// One assistant line of a Claude transcript, `secs_ago` seconds old.
 fn assistant(
     id: &str,
@@ -885,6 +932,15 @@ fn an_attended_session_sums_the_usage_of_its_transcript_from_when_it_started() {
     assert_eq!(usage["cache_write_tokens"], 60);
     assert_eq!(usage["turns"], 3);
     assert_eq!(usage["model"], "claude-opus-5-5");
+    // Each model's own share, so the Stats page counts sonnet's tokens as sonnet's.
+    assert_eq!(
+        usage["models"],
+        json!([
+            {"model": "claude-opus-5-5", "input_tokens": 11, "output_tokens": 270, "cache_read_tokens": 1_600, "cache_write_tokens": 60},
+            {"model": "claude-sonnet-5-5", "input_tokens": 5, "output_tokens": 30, "cache_read_tokens": 400, "cache_write_tokens": 0},
+        ]),
+        "{usage}"
+    );
     assert!(
         usage["duration_secs"]
             .as_u64()
