@@ -26,13 +26,18 @@ fn todos(count: i64) -> Value {
 
 /// The Dashboard after signing in, with the Todo list answered by `todo` in turn; `phone` lays it out at phone width.
 fn run(phone: bool, todo: Vec<Value>, steps: Vec<Value>, selectors: Vec<String>) -> Option<Value> {
+    run_at("/dashboard", vec![projects()], phone, todo, steps, selectors)
+}
+
+/// As `run`, starting at `url` and answering the pages' other reads with `responses` in turn.
+fn run_at(url: &str, responses: Vec<Value>, phone: bool, todo: Vec<Value>, steps: Vec<Value>, selectors: Vec<String>) -> Option<Value> {
     if !web_deps::ready() {
         return None;
     }
     let dir = env!("CARGO_MANIFEST_DIR");
     let mut all = vec![json!({"submit": TOKEN})];
     all.extend(steps);
-    let scenario = json!({"url": "/dashboard", "phone": phone, "responses": [projects()], "todo": todo, "steps": all, "selectors": selectors});
+    let scenario = json!({"url": url, "phone": phone, "responses": responses, "todo": todo, "steps": all, "selectors": selectors});
     let output = Command::new("node")
         .arg(format!("{dir}/tests/web_react_harness.mjs"))
         .arg(format!("{dir}/web/app.react.js"))
@@ -178,4 +183,22 @@ fn adding_a_todo_updates_the_count_without_a_reload() {
         "the page was not loaded again: {out}"
     );
     assert_eq!(frame["settled"]["path"], "/dashboard", "{out}");
+}
+
+#[test]
+fn coming_to_the_todos_or_dashboard_page_reads_the_list_again_and_recovers_from_a_failed_read() {
+    let [three, _] = sidebar_reads(3);
+    let [five, _] = sidebar_reads(5);
+    let tile = "[data-dashboard-add][aria-label=\"5 Todos, add feature\"]".to_string();
+    let selectors = vec![SIDEBAR_BADGE.into(), three.clone(), five.clone(), ".todo-item".into(), tile.clone()];
+    let inbox = json!({"status": 200, "json": {"reviews": []}});
+    let failed = json!({"status": 500, "json": {"error": "boom"}});
+    let steps = vec![json!({"nav": ".sidebar nav a[href=\"/todos\"]"}), json!({"nav": ".sidebar nav a[href=\"/dashboard\"]"})];
+    let Some(out) = run_at("/reviews", vec![inbox, projects(), projects()], false, vec![failed, todos(3), todos(5)], steps, selectors) else { return };
+    let frames = out["frames"].as_array().unwrap();
+    assert_eq!(count(&frames[1], SIDEBAR_BADGE), 0, "no count while the list cannot be read: {out}");
+    assert_eq!((frames[2]["settled"]["path"].as_str(), count(&frames[2], &three), count(&frames[2], ".todo-item")), (Some("/todos"), 1, 3), "the Todos page read it again: {out}");
+    assert_eq!((frames[3]["settled"]["path"].as_str(), count(&frames[3], &five), count(&frames[3], &tile)), (Some("/dashboard"), 1, 1), "so did the Dashboard: {out}");
+    let reads: Vec<&str> = out["todoRequests"].as_array().unwrap().iter().map(|r| r["method"].as_str().unwrap_or("GET")).collect();
+    assert_eq!(reads, ["GET", "GET", "GET"], "one read per page: {out}");
 }
