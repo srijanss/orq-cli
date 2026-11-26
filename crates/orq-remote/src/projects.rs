@@ -565,7 +565,13 @@ fn design_group_shown(events: &[orq_orchestrator::Event], phase: orq_orchestrato
             let design = design_rounds_shown(member_events(events, member), &member_logs.join("design"), &format!("{GROUP_MEMBERS_DIR}/{member}/"));
             // The step of the member it is at, so a stop at the gate is not read as one in its last design round.
             let step = current.filter(|_| !passed);
-            json!({"feature": member, "state": state, "step": step, "round": (round > 0).then_some(round), "components": components, "design": design})
+            let mut shown = json!({"feature": member, "state": state, "step": step, "round": (round > 0).then_some(round), "components": components, "design": design});
+            // A member built and waiting for the run to deliver it says so, from the ledger.
+            let entries = entries.get_or_insert_with(|| ledger.take().map(|read| read()).unwrap_or_default());
+            if entries.iter().any(|entry| &entry.feature_name == member && entry.status.as_str() == "awaiting_delivery") {
+                shown["ledger_status"] = json!("awaiting_delivery");
+            }
+            shown
         })
         .collect();
     Some(json!({"at": at.map(|(_, index, ..)| index), "of": at.map_or(members.len() as u64, |(_, _, of, _)| of), "stopped": stopped, "members": shown}))
@@ -2447,7 +2453,14 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
             .map(|entry| {
                 let kind = if frontend.contains(&entry.feature_name) { "frontend" } else { "standard" };
                 let package = design_package_of(&root, &entry.feature_name, entry.description.as_deref()).map(|package| orq_core::redact::redact(&package));
-                serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": orq_core::redact::redact(entry.status.as_str()), "depends_on": entry.depends_on.iter().map(|name| orq_core::redact::redact(name)).collect::<Vec<_>>(), "test_file": entry.test_file.as_deref().map(orq_core::redact::redact), "recorded_at": entry.recorded_at.as_deref().map(orq_core::redact::redact), "kind": kind, "design_package": package})
+                let mut shown = serde_json::json!({"name": orq_core::redact::redact(&entry.feature_name), "description": entry.description.as_deref().map(orq_core::redact::redact), "status": orq_core::redact::redact(entry.status.as_str()), "depends_on": entry.depends_on.iter().map(|name| orq_core::redact::redact(name)).collect::<Vec<_>>(), "test_file": entry.test_file.as_deref().map(orq_core::redact::redact), "recorded_at": entry.recorded_at.as_deref().map(orq_core::redact::redact), "kind": kind, "design_package": package});
+                // The branch and run a feature awaiting delivery waits on; a feature held by no run has neither.
+                for (key, value) in [("held_on", &entry.held_on), ("held_by", &entry.held_by)] {
+                    if let Some(value) = value {
+                        shown[key] = serde_json::Value::String(orq_core::redact::redact(value));
+                    }
+                }
+                shown
             })
             .collect();
         Ok(Some(serde_json::Value::Array(list)))

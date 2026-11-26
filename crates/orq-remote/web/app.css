@@ -725,6 +725,11 @@ select:hover { border-color: var(--text-muted); }
 .feature-detail-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5rem; margin: 0.75rem 0 0; }
 .feature-detail-actions > .feature-editor:has(> :not(button)) { flex-basis: 100%; }
 .feature-detail-actions + [data-start-blocked] { display: block; margin: 0.5rem 0 0; }
+/* A feature awaiting delivery: the run and branch it waits on; a long branch wraps on a phone. */
+.feature-held { margin: 0.75rem 0 0; overflow-wrap: anywhere; }
+/* "Built, awaiting delivery" is longer than the other states' words: on a narrow screen it wraps in its cell. */
+.feature-table td:not(:first-child):has(.feature-awaiting-delivery) { white-space: normal; }
+.status-pill.feature-awaiting-delivery { flex: 0 1 auto; min-width: 0; white-space: normal; }
 .feature-detail-line { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; }
 .run-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .feature-detail-line h2 { margin: 0; overflow-wrap: anywhere; }

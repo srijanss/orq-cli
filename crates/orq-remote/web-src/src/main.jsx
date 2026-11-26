@@ -3075,11 +3075,15 @@ function SettingsView({ settings, reloads, token, onSignedOut, onChanged }) {
   );
 }
 
-const FEATURE_GROUPS = ["draft", "pending", "in_progress", "completed", "abandoned"];
+const FEATURE_GROUPS = ["draft", "pending", "in_progress", "awaiting_delivery", "completed", "abandoned"];
 
-// The work still to do comes first: in progress, then pending, then drafts; then completed, abandoned, and any
-// state the list does not know. Within a state the ledger's own order holds.
-const FEATURE_PRIORITY = ["in_progress", "pending", "draft", "completed", "abandoned"];
+// A feature built on a run's branch, waiting for the run to deliver it: its chip and its word in the state filter.
+const AWAITING_DELIVERY = { label: "Built, awaiting delivery", filter: "Awaiting delivery", icon: "check", tone: "status-waiting" };
+const featureStateWord = (status) => (status === "awaiting_delivery" ? AWAITING_DELIVERY.filter : pillWord(status, status));
+
+// The work still to do comes first: in progress, then awaiting delivery, pending, then drafts; then completed,
+// abandoned, and any state the list does not know. Within a state the ledger's own order holds.
+const FEATURE_PRIORITY = ["in_progress", "awaiting_delivery", "pending", "draft", "completed", "abandoned"];
 const featureRank = (feature) => {
   const at = FEATURE_PRIORITY.indexOf(feature.status);
   return at === -1 ? FEATURE_PRIORITY.length : at;
@@ -3876,6 +3880,7 @@ function SettingsLink({ projectId }) {
 // A feature's state in words ("In progress", not "in_progress"); a state the page does not know is
 // itself in sentence case, neutral.
 function FeatureState({ status }) {
+  if (status === "awaiting_delivery") return <StatusPill label={AWAITING_DELIVERY.label} icon={AWAITING_DELIVERY.icon} tone={AWAITING_DELIVERY.tone} className="feature-awaiting-delivery" data-feature-state={status} />;
   const known = FEATURE_GROUPS.includes(status);
   return <StatusPill kind={known ? status : String(status ?? "")} tone={known ? undefined : "neutral"} icon={known ? undefined : "flag"} data-feature-state={known ? status : "other"} />;
 }
@@ -4906,7 +4911,7 @@ function FeatureList({ features, showProject = false, control = null, scope = nu
         <select data-feature-status aria-label="State" value={state} onChange={(event) => refilter(() => { setState(event.target.value); setPage(0); })}>
           <option value="all">State: All</option>
           {states.map((name) => (
-            <option key={name} value={name}>{pillWord(name, name)}</option>
+            <option key={name} value={name}>{featureStateWord(name)}</option>
           ))}
         </select>
         <KindFilter attribute="data-feature-kind" value={kind} onChange={(next) => refilter(() => { setKind(next); setPage(0); })} />
@@ -5047,6 +5052,22 @@ function FrontendSwitch({ feature, control }) {
   );
 }
 
+// What a feature awaiting delivery waits on: the run (a link to its page) and the branch it was built on.
+function HeldBy({ feature, projectId }) {
+  const run = typeof feature.held_by === "string" && feature.held_by !== "" ? feature.held_by : null;
+  const branch = typeof feature.held_on === "string" && feature.held_on !== "" ? feature.held_on : null;
+  if (run === null && branch === null) return null;
+  const href = run !== null && RUN_ID.test(run) ? runHref(projectId, run) : null;
+  return (
+    <p className="muted feature-held" data-feature-held>
+      {"Waiting for "}
+      {run === null ? "its run" : href === null ? <code data-held-by>{run}</code> : <a data-held-by href={href} onClick={(event) => { if (isPlainLeftClick(event)) { event.preventDefault(); navigate(href); } }}>{run}</a>}
+      {" to deliver it"}
+      {branch === null ? null : <>{", built on "}<code data-held-on>{branch}</code></>}
+    </p>
+  );
+}
+
 function FeatureDetail({ feature, features, runs, projectId, control }) {
   const [tab, setTab] = useState("description");
   // Whether the Improve draft popup is open.
@@ -5078,6 +5099,7 @@ function FeatureDetail({ feature, features, runs, projectId, control }) {
           </div>
         ) : null}
         {control !== null && feature.status === "pending" ? <BlockedNote reason={blockedOf(control)} /> : null}
+        {feature.status === "awaiting_delivery" ? <HeldBy feature={feature} projectId={projectId} /> : null}
         {typeof feature.design_package === "string" && feature.design_package !== "" ? (
           <p className="muted" data-design-package>Design package: <code>{"designs/" + feature.design_package + "/"}</code></p>
         ) : kindOf(feature.kind) === "frontend" ? (
@@ -5443,7 +5465,16 @@ function runningBadge(rows) {
 function inProgressBadge(rows) {
   if (!Array.isArray(rows)) return null;
   const busy = rows.filter((feature) => feature.status === "in_progress").length;
-  return <StatusPill kind="in_progress" label={busy + " in progress"} className="running-badge" data-in-progress-count />;
+  // Built and waiting for delivery is neither in progress nor completed: its own count, beside, when there is any.
+  const built = rows.filter((feature) => feature.status === "awaiting_delivery").length;
+  const pill = <StatusPill kind="in_progress" label={busy + " in progress"} className="running-badge" data-in-progress-count />;
+  if (built === 0) return pill;
+  return (
+    <>
+      {pill}
+      <StatusPill label={built + " awaiting delivery"} icon={AWAITING_DELIVERY.icon} tone={AWAITING_DELIVERY.tone} className="running-badge" data-awaiting-delivery-count />
+    </>
+  );
 }
 
 function runHref(projectId, runId) {
@@ -5810,6 +5841,7 @@ function designGroupOf(run) {
       step: textOr(member.step),
       components: listOf(member.components).filter((id) => typeof id === "string" && id !== ""),
       design: designOf({ design: member.design }),
+      awaitingDelivery: member.ledger_status === "awaiting_delivery",
     }));
   if (members.length === 0) return null;
   return { at: Number.isInteger(group.at) ? group.at : null, of: Number.isInteger(group.of) ? group.of : members.length, stopped: typeof group.stopped === "string" && group.stopped !== "" ? group.stopped : null, members };
@@ -5858,6 +5890,7 @@ function DesignGroup({ group, source }) {
             <li key={member.feature} className="design-group-member" data-group-member={member.feature} data-member-state={member.state}>
               <span className="design-group-member-name">{member.feature}</span>
               <StatusPill label={label} icon={icon} tone={tone} />
+              {member.awaitingDelivery ? <FeatureState status="awaiting_delivery" /> : null}
               {member.components.length === 0 ? null : <span className="muted design-group-components" data-member-components>{member.components.join(", ")}</span>}
             </li>
           );
