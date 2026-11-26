@@ -285,6 +285,23 @@ fn a_run_tests_result_shows_its_counts_and_duration_or_its_first_line() {
 }
 
 #[test]
+fn a_successful_result_of_another_tool_is_not_shown() {
+    let s = setup("quiet-result");
+    let events = call_and_result(
+        "Read",
+        "t5",
+        r#"[{"type":"text","text":"fn main() {}\n"}]"#,
+        None,
+    );
+
+    let text = run(&s, &print(&[&events[0], &events[1], RESULT]));
+
+    assert!(text.contains(" tool Read"), "{text}");
+    assert!(!text.contains(" result "), "{text}");
+    assert!(!text.contains("fn main"), "{text}");
+}
+
+#[test]
 fn a_tool_argument_under_a_secret_name_is_not_shown() {
     let s = setup("secret-key");
     let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_3","name":"mcp__vault__login","input":{"api_key":"ordinary-credential-value"}}]}}"#;

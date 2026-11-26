@@ -517,9 +517,13 @@ fn progress_event(
                     .and_then(|id| tools.remove(id));
                 let failed =
                     item.get("is_error").and_then(serde_json::Value::as_bool) == Some(true);
-                let text = result_text(item.get("content"));
                 let is_tests = tool
                     .is_some_and(|name| name == "run_tests" || name.ends_with("__run_tests"));
+                // Most results are a successful step's output, shown nowhere: not even read.
+                if !failed && !is_tests {
+                    continue;
+                }
+                let text = result_text(item.get("content"));
                 let tests = is_tests.then(|| test_counts(&text)).flatten();
                 let line = match tests {
                     Some((passed, failed_tests, millis)) => {
@@ -535,8 +539,7 @@ fn progress_event(
                     }
                     None if failed => format!("error {}", summary(Some(&text))),
                     // A test run whose counts cannot be read still says how it went.
-                    None if is_tests => format!("ok {}", summary(Some(&text))),
-                    None => continue,
+                    None => format!("ok {}", summary(Some(&text))),
                 };
                 out.push_str(&format!("{clock} result {}", line.trim_end()));
                 out.push('\n');
