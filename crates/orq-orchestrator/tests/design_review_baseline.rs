@@ -1013,6 +1013,70 @@ fn a_baseline_database_that_cannot_be_dropped_is_a_note_in_the_report() {
     );
 }
 
+/// A configured setup step that records the database it was given in `setup-saw` (one line per run)
+/// and fails, having perhaps made that database already.
+fn failing_setup(f: &mut Fixture) -> PathBuf {
+    let seen = f.cache.path().join("setup-saw");
+    f.run_settings.setup = vec![vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("printf '%s\\n' \"$DB_NAME\" >> '{}'; exit 1", seen.display()),
+    ]];
+    seen
+}
+
+#[test]
+fn a_failing_setup_step_means_no_capture_and_the_worktree_and_its_databases_go_once() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    with_main_database(&mut f);
+    let seen = failing_setup(&mut f);
+    let dropped = recording_drop(&mut f, 0);
+    let calls = RefCell::new(Vec::new());
+
+    f.review(1, &calls, &fake_capture);
+
+    assert!(f.baseline_calls(&calls).is_empty(), "not captured: {calls:?}");
+    assert_eq!(fs::read_to_string(&seen).unwrap(), format!("{BASELINE_DB_NAME}\n"));
+    assert!(!f.cache.path().join("worktree").exists(), "the target's worktree is removed");
+    let worktrees = git(f.repo.root(), &["worktree", "list", "--porcelain"]);
+    assert!(!worktrees.contains(&*f.cache.path().to_string_lossy()), "{worktrees}");
+    assert_eq!(
+        fs::read_to_string(&dropped).unwrap(),
+        format!("test_{BASELINE_DB_NAME}\n"),
+        "the databases its setup may have made are dropped"
+    );
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules only") && report.contains("could not be prepared"),
+        "{report}"
+    );
+
+    // The failure is kept for the target's head: a later round runs no setup again.
+    f.review(2, &calls, &fake_capture);
+    assert_eq!(fs::read_to_string(&seen).unwrap().lines().count(), 1, "setup ran once");
+    assert!(f.baseline_calls(&calls).is_empty(), "{calls:?}");
+}
+
+#[test]
+fn a_failing_setup_step_whose_databases_cannot_be_dropped_says_both() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    with_main_database(&mut f);
+    failing_setup(&mut f);
+    recording_drop(&mut f, 1);
+
+    f.review(1, &RefCell::new(Vec::new()), &fake_capture);
+
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules only")
+            && report.contains("could not be prepared")
+            && report.contains(&format!(
+                "dropping test database test_{BASELINE_DB_NAME} failed"
+            )),
+        "{report}"
+    );
+}
+
 #[test]
 fn an_unreadable_target_branch_leaves_the_review_by_the_rules_only() {
     let f = Fixture::new(DesignMode::Infer);
