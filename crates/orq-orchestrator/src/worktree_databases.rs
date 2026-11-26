@@ -36,6 +36,60 @@ pub fn derive_worktree_databases(
     derive_worktree_databases_with(main_checkout, vars, branch, named_by_repo, None)
 }
 
+/// The variables isolated when the repository names none.
+const DEFAULT_VARS: [&str; 2] = ["DB_NAME", "B2C_DB_NAME"];
+
+/// The per-worktree databases `settings` call for, for `branch`.
+pub fn run_databases(
+    main_checkout: &Path,
+    branch: &str,
+    settings: &crate::RunSettings,
+) -> WorktreeDatabases {
+    let vars = settings
+        .test_db_vars
+        .clone()
+        .unwrap_or_else(|| DEFAULT_VARS.iter().map(|var| var.to_string()).collect());
+    derive_worktree_databases_with(
+        main_checkout,
+        &vars,
+        branch,
+        settings.test_db_vars.is_some(),
+        settings.db_name_template.as_deref(),
+    )
+}
+
+/// The branch the databases of a run's target-page worktree are named for: the run's branch with
+/// `-baseline`, so they are the run's own, never the main checkout's nor the run's worktree's.
+pub fn baseline_branch(run_branch: &str) -> String {
+    format!("{run_branch}-baseline")
+}
+
+/// The databases of the run's target-page worktree (see [`baseline_branch`]).
+pub fn baseline_databases(
+    main_checkout: &Path,
+    run_branch: &str,
+    settings: &crate::RunSettings,
+) -> WorktreeDatabases {
+    run_databases(main_checkout, &baseline_branch(run_branch), settings)
+}
+
+/// Drops the test databases of the run's target-page worktree the way a run's are dropped
+/// ([`drop_test_databases`]); nothing here fails a run, every problem is a note.
+pub fn drop_baseline_databases(
+    main_checkout: &Path,
+    run_branch: &str,
+    settings: &crate::RunSettings,
+) -> Vec<String> {
+    // Names that cannot be derived were never given to a worktree: nothing of theirs to drop.
+    let databases = baseline_databases(main_checkout, run_branch, settings);
+    drop_test_databases(
+        main_checkout,
+        &databases.names,
+        settings.test_db_drop_cmd.as_deref(),
+        settings.keep_test_db.unwrap_or(false),
+    )
+}
+
 /// The template a database name is built from when the repository sets none.
 const DEFAULT_TEMPLATE: &str = "{name}_{branch}";
 

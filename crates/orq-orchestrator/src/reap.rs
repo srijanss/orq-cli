@@ -200,26 +200,19 @@ pub(crate) fn repository_problem(
 
 /// Drops the test databases a reaped run's branch gave its worktree, the way the end of a run does:
 /// the names are derived again from the main checkout's dotenv file and the run settings, then
-/// `test_db_drop_cmd` is run for each. Only notes come back; nothing here fails a reap.
+/// `test_db_drop_cmd` is run for each, and then for those of the worktree its design review
+/// captured the target's page in. Only notes come back; nothing here fails a reap.
 pub fn reap_run_databases(repo: &Path, branch: &str, settings: &crate::RunSettings) -> Vec<String> {
-    let named = settings.test_db_vars.is_some();
-    let vars = settings
-        .test_db_vars
-        .clone()
-        .unwrap_or_else(|| vec!["DB_NAME".to_string(), "B2C_DB_NAME".to_string()]);
-    let databases = crate::derive_worktree_databases_with(
-        repo,
-        &vars,
-        branch,
-        named,
-        settings.db_name_template.as_deref(),
-    );
+    let databases = crate::worktree_databases::run_databases(repo, branch, settings);
     let mut notes = databases.notes;
     notes.extend(crate::drop_test_databases(
         repo,
         &databases.names,
         settings.test_db_drop_cmd.as_deref(),
         settings.keep_test_db.unwrap_or(false),
+    ));
+    notes.extend(crate::worktree_databases::drop_baseline_databases(
+        repo, branch, settings,
     ));
     notes
 }

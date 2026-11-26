@@ -251,6 +251,6 @@ pub use target_push::{
 pub use terminal_session::run_in_terminal;
 pub use test_failures::{find_test_failures, FailedTest, TestFailures};
 pub use worktree_databases::{
-    derive_worktree_databases, derive_worktree_databases_with, drop_test_databases,
-    drop_test_databases_within, WorktreeDatabases,
+    derive_worktree_databases, derive_worktree_databases_with, drop_baseline_databases,
+    drop_test_databases, drop_test_databases_within, WorktreeDatabases,
 };

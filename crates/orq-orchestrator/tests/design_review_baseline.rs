@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use orq_orchestrator::{
     review_design_with_baseline, CaptureOutcome, CaptureRecord, CaptureRun, DesignAgent,
-    DesignBaseline, DesignMode, DesignReviewRun, DesignSettings, PageCapture, Viewport,
+    DesignBaseline, DesignMode, DesignReviewRun, DesignSettings, PageCapture, RunSettings,
+    Viewport,
 };
 use orq_test_support::{GitFixture, TempDir};
 use serde_json::{json, Value};
@@ -152,6 +153,8 @@ struct Captured {
     viewports: Vec<String>,
     /// Whether the worktree had the main checkout's local file `local.conf`.
     prepared: bool,
+    /// The environment the start command is given.
+    env: Vec<(String, String)>,
 }
 
 /// A main checkout with a target branch and a package whose only reference is
@@ -164,9 +167,13 @@ struct Fixture {
     cache: TempDir,
     agents: TempDir,
     settings: DesignSettings,
-    /// The local files the run carries from the main checkout, carried into the target's worktree too.
-    local_files: Option<Vec<String>>,
+    /// The run's settings: the local files it carries, its setup steps and its database variables,
+    /// used for the target's worktree too.
+    run_settings: RunSettings,
 }
+
+/// The run's branch; the target's worktree gets databases named for `<RUN_BRANCH>-baseline`.
+const RUN_BRANCH: &str = "fix--home";
 
 impl Fixture {
     fn new(mode: DesignMode) -> Self {
@@ -183,7 +190,7 @@ impl Fixture {
             cache: TempDir::new("orq-design-baseline-cache"),
             agents,
             settings: settings(mode),
-            local_files: None,
+            run_settings: RunSettings::default(),
         };
         f.put("DESIGN.md", b"# Home\n");
         f.put("UX.md", b"# UX\n\nKeep the existing contact section.\n");
@@ -231,7 +238,8 @@ impl Fixture {
             repo: self.repo.root(),
             branch: TARGET,
             cache: self.cache.path(),
-            local_files: self.local_files.as_deref(),
+            run_branch: RUN_BRANCH,
+            settings: &self.run_settings,
         }
     }
 
@@ -279,7 +287,9 @@ impl Fixture {
                 worktree: run.worktree.to_path_buf(),
                 head: git(run.worktree, &["rev-parse", "HEAD"]),
                 viewports: run.viewports.iter().map(|v| v.name.clone()).collect(),
-                prepared: run.worktree.join("local.conf").is_file(),            });
+                prepared: run.worktree.join("local.conf").is_file(),
+                env: run.env.to_vec(),
+            });
             capture(run)
         };
         review_design_with_baseline(&run, &recording, &[], Some(&self.baseline()));
@@ -523,7 +533,7 @@ fn the_targets_worktree_has_the_main_checkouts_local_files_before_it_is_captured
     let mut f = Fixture::new(DesignMode::Infer);
     // A git-ignored file of the main checkout, as a dotenv file is: no worktree has it of its own.
     fs::write(f.repo.root().join("local.conf"), "PORT=1\n").unwrap();
-    f.local_files = Some(vec!["local.conf".to_string()]);
+    f.run_settings.local_files = Some(vec!["local.conf".to_string()]);
     let calls = RefCell::new(Vec::new());
     f.review(1, &calls, &fake_capture);
     let baseline = f.baseline_calls(&calls);
@@ -628,7 +638,12 @@ fn members_asking_for_different_viewports_each_keep_their_baseline_for_later_rou
     let calls = RefCell::new(Vec::new());
     // This member has no mobile reference; the other member has no desktop reference.
     f.review(1, &calls, &fake_capture);
-    let package = f.repo.root().join("designs").join(FEATURE).join("references");
+    let package = f
+        .repo
+        .root()
+        .join("designs")
+        .join(FEATURE)
+        .join("references");
     fs::remove_file(package.join("desktop.png")).unwrap();
     f.put("references/mobile.png", &png(200, 400));
     f.review_in(other.path(), 1, &calls, &fake_capture);
@@ -712,6 +727,267 @@ fn a_target_capture_with_no_measurements_gives_its_images_and_names_no_measureme
     assert!(
         !argv.contains("Baseline measured CSS and DOM"),
         "no measurements are named that are not there: {argv}"
+    );
+}
+
+/// Commits `files` in the main checkout and moves the target branch to the commit.
+fn commit_to_target(f: &Fixture, files: &[(&str, &str)]) {
+    for (path, text) in files {
+        fs::write(f.repo.root().join(path), text).unwrap();
+        git(f.repo.root(), &["add", path]);
+    }
+    git(
+        f.repo.root(),
+        &["commit", "--quiet", "-m", "the target's files"],
+    );
+    git(f.repo.root(), &["branch", "--force", TARGET, "HEAD"]);
+}
+
+/// The main checkout's dotenv file names its database `shop`, and the run isolates `DB_NAME`.
+fn with_main_database(f: &mut Fixture) {
+    fs::write(f.repo.root().join(".env"), "DB_NAME=shop\nSECRET=hidden\n").unwrap();
+    f.run_settings.test_db_vars = Some(vec!["DB_NAME".to_string()]);
+}
+
+/// The name the target's worktree's database gets: the main name with the baseline's branch part.
+const BASELINE_DB_NAME: &str = "shop_fix_home_baseline";
+
+fn npm_available() -> bool {
+    Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+#[test]
+fn the_targets_lockfile_install_hooks_see_the_baselines_own_database_names() {
+    assert!(npm_available(), "npm runs the target's lockfile install");
+    let mut f = Fixture::new(DesignMode::Infer);
+    with_main_database(&mut f);
+    let seen = f.cache.path().join("hook-saw");
+    // A package with no dependencies, so `npm ci` needs no network; its postinstall hook records the
+    // database it would have migrated.
+    let package = json!({
+        "name": "target-site", "version": "1.0.0", "private": true,
+        "scripts": {"postinstall": format!("printf '%s' \"$DB_NAME\" > '{}'", seen.display())},
+    });
+    let lock = json!({
+        "name": "target-site", "version": "1.0.0", "lockfileVersion": 3, "requires": true,
+        "packages": {"": {"name": "target-site", "version": "1.0.0"}},
+    });
+    commit_to_target(
+        &f,
+        &[
+            ("package.json", &package.to_string()),
+            ("package-lock.json", &lock.to_string()),
+            (".npmrc", "audit=false\nfund=false\nupdate-notifier=false\n"),
+        ],
+    );
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    assert_eq!(f.baseline_calls(&calls).len(), 1, "{}", f.report());
+    let db_name = fs::read_to_string(&seen).unwrap_or_else(|e| panic!("the hook ran: {e}"));
+    assert_eq!(
+        db_name, BASELINE_DB_NAME,
+        "never the main checkout's database"
+    );
+}
+
+#[test]
+fn the_targets_start_command_is_given_the_baselines_own_database_names() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    with_main_database(&mut f);
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    let baseline = f.baseline_calls(&calls);
+    assert_eq!(baseline.len(), 1, "{}", f.report());
+    assert_eq!(
+        baseline[0].env,
+        vec![("DB_NAME".to_string(), BASELINE_DB_NAME.to_string())],
+        "its own database, and nothing else from the dotenv file"
+    );
+    let run = calls
+        .borrow()
+        .iter()
+        .find(|call| call.worktree == f.worktree)
+        .cloned();
+    assert!(
+        run.is_some_and(|run| run.env.is_empty()),
+        "the run's own capture is not given the baseline's databases"
+    );
+}
+
+#[test]
+fn a_database_the_main_dotenv_file_does_not_name_means_no_baseline_and_the_report_says_why() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    fs::write(f.repo.root().join(".env"), "OTHER=1\n").unwrap();
+    f.run_settings.test_db_vars = Some(vec!["DB_NAME".to_string()]);
+    let ran = f.cache.path().join("setup-ran");
+    f.run_settings.setup = vec![vec!["touch".to_string(), ran.display().to_string()]];
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    assert!(f.baseline_calls(&calls).is_empty(), "{calls:?}");
+    assert!(!ran.exists(), "nothing is run in the target's worktree");
+    assert_eq!(f.calls(), 1, "the review goes on");
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules only")
+            && report.contains("DB_NAME has no value in the main checkout's dotenv file"),
+        "{report}"
+    );
+}
+
+/// A start command needing `built.txt`, which only the project's configured setup step writes.
+fn needs_built_file(run_worktree: PathBuf) -> impl Fn(&CaptureRun) -> CaptureOutcome {
+    move |run: &CaptureRun| {
+        if run.worktree != run_worktree && !run.worktree.join("built.txt").is_file() {
+            return CaptureOutcome::Blocked("the start command found no built.txt".into());
+        }
+        fake_capture(run)
+    }
+}
+
+#[test]
+fn a_setup_step_that_builds_what_the_start_command_needs_gives_a_usable_baseline() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    with_main_database(&mut f);
+    let seen = f.cache.path().join("setup-saw");
+    f.run_settings.setup = vec![vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "printf built > built.txt && printf '%s' \"$DB_NAME\" > '{}'",
+            seen.display()
+        ),
+    ]];
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &needs_built_file(f.worktree.clone()));
+    assert!(
+        f.report()
+            .contains("Reviewed by the rules and the target's page (no reference)"),
+        "{}",
+        f.report()
+    );
+    assert_eq!(fs::read_to_string(&seen).unwrap(), BASELINE_DB_NAME);
+}
+
+#[test]
+fn a_project_without_database_variables_runs_its_setup_steps_and_is_captured() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    f.run_settings.setup = vec![vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "printf built > built.txt".to_string(),
+    ]];
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &needs_built_file(f.worktree.clone()));
+    let baseline = f.baseline_calls(&calls);
+    assert_eq!(baseline.len(), 1, "{calls:?}");
+    assert!(baseline[0].env.is_empty(), "no databases to isolate");
+    assert!(
+        f.report()
+            .contains("Reviewed by the rules and the target's page (no reference)"),
+        "{}",
+        f.report()
+    );
+}
+
+/// A drop command that appends the database it is given to `dropped` in the run's cache, and exits
+/// with `status`.
+fn recording_drop(f: &mut Fixture, status: u8) -> PathBuf {
+    let dropped = f.cache.path().join("dropped");
+    f.run_settings.test_db_drop_cmd = Some(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "printf '%s\\n' \"$1\" >> '{}'; exit {status}",
+            dropped.display()
+        ),
+        "drop".to_string(),
+    ]);
+    dropped
+}
+
+#[test]
+fn the_baselines_databases_are_dropped_when_the_targets_worktree_is_removed() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    with_main_database(&mut f);
+    let dropped = recording_drop(&mut f, 0);
+    let worktree_gone = RefCell::new(None);
+    let calls = RefCell::new(Vec::new());
+    let run_worktree = f.worktree.clone();
+    let watching = |run: &CaptureRun| {
+        if run.worktree != run_worktree {
+            // Nothing is dropped while the target is still being served.
+            *worktree_gone.borrow_mut() = Some(dropped.exists());
+        }
+        fake_capture(run)
+    };
+    f.review(1, &calls, &watching);
+    assert_eq!(
+        *worktree_gone.borrow(),
+        Some(false),
+        "not dropped during the capture"
+    );
+    assert_eq!(
+        fs::read_to_string(&dropped).unwrap(),
+        format!("test_{BASELINE_DB_NAME}\n"),
+        "the baseline's database only, never the main one"
+    );
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules and the target's page (no reference)"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_baseline_database_that_cannot_be_dropped_is_a_note_in_the_report() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    with_main_database(&mut f);
+    recording_drop(&mut f, 1);
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules and the target's page (no reference)"),
+        "the baseline is still used: {report}"
+    );
+    assert!(
+        report.contains(&format!(
+            "dropping test database test_{BASELINE_DB_NAME} failed"
+        )),
+        "{report}"
+    );
+    let record: Value = serde_json::from_slice(
+        &fs::read(f.logs.path().join("design/round-1/review.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["verdict"], "pass", "not a failed round: {record}");
+
+    // A capture that fails says so too, with the note after the reason.
+    let f2 = {
+        let mut f2 = Fixture::new(DesignMode::Infer);
+        with_main_database(&mut f2);
+        recording_drop(&mut f2, 1);
+        f2
+    };
+    let run_worktree = f2.worktree.clone();
+    let server_down = |run: &CaptureRun| {
+        if run.worktree == run_worktree {
+            fake_capture(run)
+        } else {
+            CaptureOutcome::Blocked("the start command exited".into())
+        }
+    };
+    f2.review(1, &RefCell::new(Vec::new()), &server_down);
+    let report = f2.report();
+    assert!(
+        report.contains("the start command exited")
+            && report.contains(&format!(
+                "dropping test database test_{BASELINE_DB_NAME} failed"
+            )),
+        "{report}"
     );
 }
 

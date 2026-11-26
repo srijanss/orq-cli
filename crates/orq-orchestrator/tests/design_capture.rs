@@ -197,6 +197,7 @@ fn capture(
         run_logs: logs,
         round: 1,
         browser: Some(browser),
+        env: &[],
     })
 }
 
@@ -801,6 +802,7 @@ fn a_round_blocked_for_want_of_a_browser_keeps_nothing_of_an_earlier_attempt() {
         run_logs: logs.path(),
         round: 1,
         browser: None,
+        env: &[],
     });
 
     let CaptureOutcome::Blocked(reason) = outcome else {
@@ -810,6 +812,38 @@ fn a_round_blocked_for_want_of_a_browser_keeps_nothing_of_an_earlier_attempt() {
     assert!(!stale.exists(), "the earlier attempt's captures are gone");
     let written = read_json(&logs.path().join("design/round-1/capture.json"));
     assert_eq!(written["outcome"], "blocked");
+}
+
+#[test]
+fn the_start_command_is_given_the_runs_environment_with_its_port() {
+    let worktree = TempDir::new("design-capture-env-worktree");
+    let logs = TempDir::new("design-capture-env-logs");
+    let seen = worktree.path().join("seen");
+    // It records what it was given and exits: the round is blocked, which is all this needs.
+    let start = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("printf '%s %s' \"$DB_NAME\" \"$PORT\" > '{}'", seen.display()),
+    ];
+    let settings = settings(start, Duration::from_secs(5));
+    let env = vec![("DB_NAME".to_string(), "shop_baseline".to_string())];
+
+    let outcome = capture_design(&CaptureRun {
+        worktree: worktree.path(),
+        settings: &settings,
+        routes: &["/".to_string()],
+        viewports: &viewports(),
+        run_logs: logs.path(),
+        round: 1,
+        browser: Some(&worktree.path().join("no-browser")),
+        env: &env,
+    });
+
+    assert!(matches!(outcome, CaptureOutcome::Blocked(_)), "{outcome:?}");
+    let seen = std::fs::read_to_string(&seen).expect("the start command ran");
+    let (db_name, port) = seen.split_once(' ').unwrap();
+    assert_eq!(db_name, "shop_baseline");
+    assert!(port.parse::<u16>().is_ok(), "PORT is still set: {seen}");
 }
 
 /// A stand-in for Chromium that writes its arguments, one per line, to `args` in its folder and exits.

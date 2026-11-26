@@ -82,11 +82,12 @@ pub struct DesignBaseline<'a> {
     pub branch: &'a str,
     /// Where the run keeps the target's capture, shared by its rounds and members.
     pub cache: &'a Path,
-    /// The local files the run carries from the main checkout (`None`: the default list), carried
-    /// into the target's worktree too before the install its lockfile calls for. The run's configured
-    /// setup steps are not run there: they prepare the run's session and its own databases, and the
-    /// target's page is served, like the run's, with neither.
-    pub local_files: Option<&'a [String]>,
+    /// The run's branch: the target's worktree gets databases of its own named for
+    /// `<run_branch>-baseline`.
+    pub run_branch: &'a str,
+    /// The run's settings: the target's worktree is prepared as the run's is (its local files, its
+    /// setup steps, then the install its lockfile calls for), with its own databases.
+    pub settings: &'a crate::RunSettings,
 }
 
 /// The target's page as a round gives it to the reviewer.
@@ -97,6 +98,8 @@ struct Baseline {
     images: Vec<(String, String, String)>,
     /// Relative to the design folder: `baseline/mobile-measurements.json`.
     measurements: Vec<String>,
+    /// What went wrong dropping its worktree's databases, each a note.
+    notes: Vec<String>,
 }
 
 /// The verdict of a round.
@@ -390,6 +393,8 @@ struct RoundResult {
     issues_dropped: Vec<String>,
     /// The target's page the rules-only viewports were held against: its head, or why it was not captured.
     baseline: Option<Result<String, String>>,
+    /// What went wrong dropping the target's worktree's databases, each a note.
+    baseline_notes: Vec<String>,
 }
 
 impl RoundResult {
@@ -406,6 +411,7 @@ impl RoundResult {
             rules_only: Vec::new(),
             issues_dropped: Vec::new(),
             baseline: None,
+            baseline_notes: Vec::new(),
         }
     }
 }
@@ -852,6 +858,7 @@ fn review_round(
         run_logs: run.run_logs,
         round: run.round,
         browser: None,
+        env: &[],
     };
     let record = match capture(&capture_run) {
         CaptureOutcome::Captured(record) => record,
@@ -955,6 +962,18 @@ fn target_baseline(
         }
     }
     let _ = std::fs::remove_file(&cached);
+    // Its own databases or none at all: never the main checkout's.
+    let databases = crate::worktree_databases::baseline_databases(
+        target.repo,
+        target.run_branch,
+        target.settings,
+    );
+    if !databases.notes.is_empty() {
+        return Err(format!(
+            "the target's page was not captured, as its worktree's databases could not be isolated: {}",
+            databases.notes.join("; ")
+        ));
+    }
     let worktree = target.cache.join("worktree");
     remove_target_worktree(target.repo, &worktree);
     std::fs::create_dir_all(&entry).map_err(|e| {
@@ -984,7 +1003,7 @@ fn target_baseline(
         )
     })?;
     // Served the way the run's page is: its worktree was prepared by the same setup first.
-    let outcome = match prepare_target_worktree(target, &worktree) {
+    let outcome = match prepare_target_worktree(target, &worktree, &databases.env) {
         Ok(()) => capture(&CaptureRun {
             worktree: &worktree,
             settings: run.settings,
@@ -993,17 +1012,56 @@ fn target_baseline(
             run_logs: &capture_logs,
             round: 1,
             browser: None,
+            env: &databases.env,
         }),
         Err(why) => CaptureOutcome::Blocked(why),
     };
     remove_target_worktree(target.repo, &worktree);
+    // Its databases go with it; a drop that fails is a note, never a failed round.
+    let dropped = crate::worktree_databases::drop_baseline_databases(
+        target.repo,
+        target.run_branch,
+        target.settings,
+    );
+    match recorded_baseline(
+        outcome,
+        &key,
+        &cached,
+        &head,
+        routes,
+        viewports,
+        &captured,
+        &baseline_dir,
+    ) {
+        Ok(mut baseline) => {
+            baseline.notes = dropped;
+            Ok(baseline)
+        }
+        Err(why) if dropped.is_empty() => Err(why),
+        Err(why) => Err(format!("{why}; {}", dropped.join("; "))),
+    }
+}
+
+/// The target's capture (`outcome`) recorded in the run's cache (`cached`, under `key`) and copied to
+/// `baseline_dir`: a failure is recorded too, so it is not tried again at the same head.
+#[allow(clippy::too_many_arguments)]
+fn recorded_baseline(
+    outcome: CaptureOutcome,
+    key: &serde_json::Value,
+    cached: &Path,
+    head: &str,
+    routes: &[String],
+    viewports: &[CaptureViewport],
+    captured: &Path,
+    baseline_dir: &Path,
+) -> Result<Baseline, String> {
     let record = match outcome {
         CaptureOutcome::Captured(record) => record,
         CaptureOutcome::Blocked(why) => {
             let why = format!("the target's page could not be captured: {why}");
             let record = json!({"key": key, "failed": why});
             let _ = std::fs::write(
-                &cached,
+                cached,
                 serde_json::to_vec_pretty(&record).unwrap_or_default(),
             );
             return Err(why);
@@ -1024,7 +1082,11 @@ fn target_baseline(
     // missing from it would read as a section the target does not have.
     let missing: Vec<String> = routes
         .iter()
-        .flat_map(|route| viewports.iter().map(move |viewport| (route, &viewport.name)))
+        .flat_map(|route| {
+            viewports
+                .iter()
+                .map(move |viewport| (route, &viewport.name))
+        })
         .filter(|(route, viewport)| {
             !pages
                 .iter()
@@ -1042,15 +1104,15 @@ fn target_baseline(
         }
         let record = json!({"key": key, "failed": why});
         let _ = std::fs::write(
-            &cached,
+            cached,
             serde_json::to_vec_pretty(&record).unwrap_or_default(),
         );
         return Err(why);
     }
-    let baseline = copy_baseline(&head, &pages, &captured, &baseline_dir)?;
+    let baseline = copy_baseline(head, &pages, captured, baseline_dir)?;
     let record = json!({"key": key, "pages": pages});
     std::fs::write(
-        &cached,
+        cached,
         serde_json::to_vec_pretty(&record).unwrap_or_default(),
     )
     .map_err(|e| {
@@ -1094,20 +1156,25 @@ fn target_head(target: &DesignBaseline) -> Result<String, String> {
     Ok(head)
 }
 
-/// Carries the main checkout's local files into the target's worktree, then runs the install its
-/// lockfile calls for (no configured step, so nothing that touches a database); the log is kept
-/// beside the target's capture. Why not, when the install fails.
-fn prepare_target_worktree(target: &DesignBaseline, worktree: &Path) -> Result<(), String> {
-    let carried = crate::local_files::carry_local_files(target.repo, worktree, target.local_files);
-    let plan = crate::setup::plan_setup(worktree, &[])
-        .map_err(|e| format!("its worktree could not be prepared: {e}"))?;
-    crate::setup::run_setup_with_env(
+/// Carries the main checkout's local files into the target's worktree, then runs the run's setup
+/// steps and the install its lockfile calls for, each with `databases` (the worktree's own database
+/// names); the log is kept beside the target's capture. Why not, when a step fails.
+fn prepare_target_worktree(
+    target: &DesignBaseline,
+    worktree: &Path,
+    databases: &[(String, String)],
+) -> Result<(), String> {
+    let carried = crate::local_files::carry_local_files(
+        target.repo,
         worktree,
-        &plan.steps,
-        &target.cache.join("setup.log"),
-        &carried.env,
-    )
-    .map_err(|failure| format!("its worktree could not be prepared: {failure}"))
+        target.settings.local_files.as_deref(),
+    );
+    let plan = crate::setup::plan_setup(worktree, &target.settings.setup)
+        .map_err(|e| format!("its worktree could not be prepared: {e}"))?;
+    let mut env = carried.env;
+    env.extend_from_slice(databases);
+    crate::setup::run_setup_with_env(worktree, &plan.steps, &target.cache.join("setup.log"), &env)
+        .map_err(|failure| format!("its worktree could not be prepared: {failure}"))
 }
 
 /// Removes the target's temporary worktree and Git's record of it; nothing there is an error.
@@ -1139,6 +1206,7 @@ fn copy_baseline(
         head: head.to_string(),
         images: Vec::new(),
         measurements: Vec::new(),
+        notes: Vec::new(),
     };
     for page in pages {
         let image = &page.image;
@@ -1194,6 +1262,10 @@ fn reviewed_round(
         Ok(baseline) => Ok(baseline.head.clone()),
         Err(why) => Err(why.clone()),
     });
+    let baseline_notes = match &baseline {
+        Some(Ok(baseline)) => baseline.notes.clone(),
+        _ => Vec::new(),
+    };
     let round_name = format!("round-{}", run.round);
     let capture_bytes =
         std::fs::read(design_dir.join(&round_name).join(CAPTURE_FILE)).map_err(|e| {
@@ -1248,6 +1320,7 @@ fn reviewed_round(
         result.rules_only = rules_only.clone();
         result.issues_dropped = dropped.take();
         result.baseline = baseline_note.clone();
+        result.baseline_notes = baseline_notes.clone();
         Ok(result)
     };
     let review = match valid_review(run, run.reviewer, "design reviewer", &context) {
@@ -1272,6 +1345,7 @@ fn reviewed_round(
             rules_only: Vec::new(),
             issues_dropped: Vec::new(),
             baseline: None,
+            baseline_notes: Vec::new(),
         });
     };
     // The verifier reviews once more; its verdict replaces the reviewer's for the round.
@@ -1290,6 +1364,7 @@ fn reviewed_round(
                 rules_only: Vec::new(),
                 issues_dropped: Vec::new(),
                 baseline: None,
+                baseline_notes: Vec::new(),
             }
         }
         Err(why) => RoundResult::blocked(why),
@@ -2191,6 +2266,12 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
             text.push_str(&format!(
                 "\nThe target's page was not held against: {}\n",
                 line(why)
+            ));
+        }
+        for note in &result.baseline_notes {
+            text.push_str(&format!(
+                "\nThe target's worktree's databases: {}\n",
+                line(note)
             ));
         }
     }

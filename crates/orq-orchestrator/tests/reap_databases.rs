@@ -51,7 +51,16 @@ fn a_reaped_runs_test_databases_are_dropped_by_the_names_its_branch_gave_them() 
         .lines()
         .map(str::to_string)
         .collect();
-    assert_eq!(lines, ["test_shop_fix_com_01", "test_shop_api_fix_com_01"]);
+    // The run's own, then those of the worktree its design review captured the target's page in.
+    assert_eq!(
+        lines,
+        [
+            "test_shop_fix_com_01",
+            "test_shop_api_fix_com_01",
+            "test_shop_fix_com_01_baseline",
+            "test_shop_api_fix_com_01_baseline",
+        ]
+    );
     assert!(notes.is_empty(), "{notes:?}");
 }
 

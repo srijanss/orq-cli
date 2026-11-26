@@ -247,8 +247,9 @@ fn a_run_drops_the_test_database_of_its_removed_worktree_from_the_main_checkout(
 
     assert_eq!(out.status.code(), Some(0), "{}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
     let drops = std::fs::read_to_string(&log).unwrap_or_default();
-    assert_eq!(drops.lines().count(), 1, "{drops}");
-    assert!(drops.trim_end().ends_with("test_shop_fix_com_01"), "{drops}");
+    // The run's own, then those of the worktree its design review would capture the target's page in.
+    let dropped: Vec<&str> = drops.lines().map(|line| line.rsplit(' ').next().unwrap_or_default()).collect();
+    assert_eq!(dropped, ["test_shop_fix_com_01", "test_shop_fix_com_01_baseline"], "{drops}");
     assert!(drops.starts_with(&w.repo.root().canonicalize().unwrap().display().to_string()), "run from the main checkout: {drops}");
 }
 

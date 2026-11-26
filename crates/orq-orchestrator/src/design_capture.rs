@@ -69,6 +69,8 @@ pub struct CaptureRun<'a> {
     pub round: u32,
     /// The Chromium to use; `None` finds the one the web tests use (see [`find_chromium_in`]).
     pub browser: Option<&'a Path>,
+    /// Added to what the start command sees, next to `PORT` (the worktree's own database names).
+    pub env: &'a [(String, String)],
 }
 
 /// How a capture round ended.
@@ -445,7 +447,8 @@ fn start_server(run: &CaptureRun, round_dir: &Path, port: u16) -> Result<Tracked
     let log_err = log
         .try_clone()
         .map_err(|e| format!("the server log could not be opened ({:?})", e.kind()))?;
-    let env = [("PORT".to_string(), port.to_string())];
+    let mut env = run.env.to_vec();
+    env.push(("PORT".to_string(), port.to_string()));
     let mut command = crate::gate_stage::step_command(program, run.worktree, &env);
     command
         .args(args)
