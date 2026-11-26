@@ -150,6 +150,8 @@ struct Captured {
     /// The worktree's HEAD when it was captured.
     head: String,
     viewports: Vec<String>,
+    /// Whether the worktree had been prepared (the fixture's setup step writes `prepared.txt`).
+    prepared: bool,
 }
 
 /// A main checkout with a target branch and a package whose only reference is
@@ -162,6 +164,8 @@ struct Fixture {
     cache: TempDir,
     agents: TempDir,
     settings: DesignSettings,
+    /// The run's setup steps, which prepare the target's worktree too.
+    setup: Vec<Vec<String>>,
 }
 
 impl Fixture {
@@ -179,6 +183,7 @@ impl Fixture {
             cache: TempDir::new("orq-design-baseline-cache"),
             agents,
             settings: settings(mode),
+            setup: Vec::new(),
         };
         f.put("DESIGN.md", b"# Home\n");
         f.put("UX.md", b"# UX\n\nKeep the existing contact section.\n");
@@ -226,6 +231,7 @@ impl Fixture {
             repo: self.repo.root(),
             branch: TARGET,
             cache: self.cache.path(),
+            setup: &self.setup,
         }
     }
 
@@ -273,6 +279,7 @@ impl Fixture {
                 worktree: run.worktree.to_path_buf(),
                 head: git(run.worktree, &["rev-parse", "HEAD"]),
                 viewports: run.viewports.iter().map(|v| v.name.clone()).collect(),
+                prepared: run.worktree.join("prepared.txt").is_file(),
             });
             capture(run)
         };
@@ -510,6 +517,51 @@ fn a_review_with_a_reference_for_every_viewport_captures_no_baseline() {
     assert!(!argv.contains("baseline/"), "{argv}");
     assert!(!f.logs.path().join("design/baseline").exists());
     assert!(!f.report().contains("target's page"), "{}", f.report());
+}
+
+fn step(words: &[&str]) -> Vec<String> {
+    words.iter().map(|word| word.to_string()).collect()
+}
+
+#[test]
+fn the_targets_worktree_is_prepared_with_the_runs_setup_before_it_is_captured() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    f.setup = vec![step(&["sh", "-c", "echo yes > prepared.txt"])];
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    let baseline = f.baseline_calls(&calls);
+    assert_eq!(baseline.len(), 1, "{calls:?}");
+    assert!(
+        baseline[0].prepared,
+        "the setup ran in the target's worktree first: {calls:?}"
+    );
+    assert!(
+        f.report()
+            .contains("Reviewed by the rules and the target's page (no reference)"),
+        "{}",
+        f.report()
+    );
+}
+
+#[test]
+fn a_target_worktree_whose_setup_fails_is_not_captured_and_the_report_says_why() {
+    let mut f = Fixture::new(DesignMode::Infer);
+    f.setup = vec![step(&["sh", "-c", "exit 3"])];
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    assert!(f.baseline_calls(&calls).is_empty(), "{calls:?}");
+    assert_eq!(f.calls(), 1, "the review goes on");
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules only")
+            && report.contains("its worktree could not be prepared"),
+        "{report}"
+    );
+    let worktrees = git(f.repo.root(), &["worktree", "list", "--porcelain"]);
+    assert!(
+        !worktrees.contains(f.cache.path().to_str().unwrap()),
+        "the target's worktree is removed: {worktrees}"
+    );
 }
 
 #[test]

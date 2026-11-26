@@ -82,6 +82,9 @@ pub struct DesignBaseline<'a> {
     pub branch: &'a str,
     /// Where the run keeps the target's capture, shared by its rounds and members.
     pub cache: &'a Path,
+    /// The run's configured setup steps, run in the target's worktree before it is served (with the
+    /// dependency install its lockfile calls for), as the run's own worktree was prepared.
+    pub setup: &'a [Vec<String>],
 }
 
 /// The target's page as a round gives it to the reviewer.
@@ -968,15 +971,19 @@ fn target_baseline(
             target.branch
         )
     })?;
-    let outcome = capture(&CaptureRun {
-        worktree: &worktree,
-        settings: run.settings,
-        routes,
-        viewports,
-        run_logs: &capture_logs,
-        round: 1,
-        browser: None,
-    });
+    // Served the way the run's page is: its worktree was prepared by the same setup first.
+    let outcome = match prepare_target_worktree(target, &worktree) {
+        Ok(()) => capture(&CaptureRun {
+            worktree: &worktree,
+            settings: run.settings,
+            routes,
+            viewports,
+            run_logs: &capture_logs,
+            round: 1,
+            browser: None,
+        }),
+        Err(why) => CaptureOutcome::Blocked(why),
+    };
     remove_target_worktree(target.repo, &worktree);
     let record = match outcome {
         CaptureOutcome::Captured(record) => record,
@@ -1046,6 +1053,15 @@ fn target_head(target: &DesignBaseline) -> Result<String, String> {
         return Err(unreadable());
     }
     Ok(head)
+}
+
+/// Runs the run's setup steps, then the install the target's lockfile calls for, in the target's
+/// worktree; the log is kept beside the target's capture. Why not, when a step fails.
+fn prepare_target_worktree(target: &DesignBaseline, worktree: &Path) -> Result<(), String> {
+    let plan = crate::setup::plan_setup(worktree, target.setup)
+        .map_err(|e| format!("its worktree could not be prepared: {e}"))?;
+    crate::setup::run_setup(worktree, &plan.steps, &target.cache.join("setup.log"))
+        .map_err(|failure| format!("its worktree could not be prepared: {failure}"))
 }
 
 /// Removes the target's temporary worktree and Git's record of it; nothing there is an error.

@@ -2785,7 +2785,7 @@ fn stages(
             // A viewport with no reference is also held against the target's page, captured once per run
             // (shared by every member and round) while the target's head is the same.
             let baseline_cache = logs.join("design-baseline");
-            let baseline = orq_orchestrator::DesignBaseline { repo: &options.project.root, branch: &record.target_branch, cache: &baseline_cache };
+            let baseline = orq_orchestrator::DesignBaseline { repo: &options.project.root, branch: &record.target_branch, cache: &baseline_cache, setup: &settings.setup };
             orq_orchestrator::review_design_with_baseline(&run, &orq_orchestrator::capture_design, person, Some(&baseline))
         };
         // Each part of a correction round is a fix session of its own, with the part's task (the whole
