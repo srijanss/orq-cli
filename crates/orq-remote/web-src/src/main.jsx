@@ -5262,7 +5262,7 @@ function ArchivedList({ archived, projectId }) {
   const shown = archived.filter((entry) => needle === "" || entry.name.toLowerCase().includes(needle) || (typeof entry.description === "string" && entry.description.toLowerCase().includes(needle)));
   return (
     <div className="archived-features card">
-      <button type="button" data-archived-toggle aria-expanded={open} onClick={() => setOpen(!open)}>{"Archived (" + archived.length + ")"}</button>
+      <button type="button" data-archived-toggle aria-expanded={open} onClick={() => setOpen(!open)}><Icon name="archive" size={16} />{"Archived (" + archived.length + ")"}</button>
       {open ? (
         <>
           <input type="search" data-archived-search aria-label="Search archived features" placeholder="Search archived features" autoComplete="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -5330,8 +5330,8 @@ function ArchiveCompleted({ completed, control }) {
   const stripped = asking !== null && Array.isArray(asking.stripped) ? asking.stripped.length : 0;
   return (
     <div className="archive-completed">
-      {asking === null ? <button type="button" data-archive-completed disabled={busy} onClick={check}>{"Archive completed (" + completed + ")"}</button> : (
-        <Confirm question={"Archive " + asking.archived + " features?"} detail={stripped > 0 ? " Their names are dropped from " + stripped + " feature" + (stripped === 1 ? "" : "s") + "' dependencies." : null} answer="Yes, archive" busy={busy} onConfirm={confirm} onCancel={() => setAsking(null)} />
+      {asking === null ? <button type="button" className="danger-button" data-archive-completed disabled={busy} onClick={check}><Icon name="archive" size={16} />{"Archive completed (" + completed + ")"}</button> : (
+        <Confirm question={"Archive " + asking.archived + " features?"} detail={stripped > 0 ? " Their names are dropped from " + stripped + " feature" + (stripped === 1 ? "" : "s") + "' dependencies." : null} answer="Yes, archive" tone="danger" busy={busy} onConfirm={confirm} onCancel={() => setAsking(null)} />
       )}
       {note !== "" ? <span role="status" className="run-action-note">{note}</span> : null}
     </div>

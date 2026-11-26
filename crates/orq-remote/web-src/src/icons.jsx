@@ -39,6 +39,7 @@ const PATHS = {
   pause: "M8 5v14m8-14v14",
   stop: "M6 6h12v12H6Z",
   trash: "M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v6m4-6v6",
+  archive: "M3 4h18v4H3Zm2 4v12h14V8m-9 4h4",
   rotate: "M4 12a8 8 0 1 0 2.300-5.700M4 4v4h4",
   arrowUp: "M12 19V5m-6 6 6-6 6 6",
   pencil: "M4 20h4L19 9l-4-4L4 16v4Zm9-13 4 4",
