@@ -826,6 +826,13 @@ const JSON_RESULT: &str = r#"{"type":"result","subtype":"success","num_turns":7,
 
 /// Runs `script` under `sh` as an unattended implement session of `run`, and returns its events.
 fn run_session(s: &Setup, run: &str, script: &str, terminal: bool) -> Vec<Event> {
+    let (success, events) = run_session_ending(s, run, script, terminal);
+    assert!(success, "{events:?}");
+    events
+}
+
+/// Runs `script` as [`run_session`] does, and returns whether the stage succeeded and the events.
+fn run_session_ending(s: &Setup, run: &str, script: &str, terminal: bool) -> (bool, Vec<Event>) {
     let store = RunStore::new(&s.roots.state);
     std::fs::create_dir_all(&s.scan).unwrap();
     let args = vec!["-c".to_string(), script.to_string()];
@@ -840,12 +847,82 @@ fn run_session(s: &Setup, run: &str, script: &str, terminal: bool) -> Vec<Event>
         terminal,
         exit_marker: None,
     };
-    assert!(
-        orq_orchestrator::run_implement_stage(&store, run, &session)
-            .unwrap()
-            .success
-    );
-    store.events(run).unwrap()
+    let success = orq_orchestrator::run_implement_stage(&store, run, &session).unwrap().success;
+    (success, store.events(run).unwrap())
+}
+
+#[test]
+fn a_session_that_failed_still_records_its_usage_and_stays_failed() {
+    let s = setup("stats-usage-failed");
+    add_run(&s, "uf", "p", 0, vec![]);
+
+    let (success, events) = run_session_ending(&s, "uf", &format!("echo '{JSON_RESULT}'; exit 3"), false);
+
+    assert!(!success, "the usage does not change how the stage ended: {events:?}");
+    assert!(events.iter().any(|event| event.kind == "stage.failed"), "{events:?}");
+    let usage = session_usage(&events);
+    assert_eq!(usage.len(), 1, "{events:?}");
+    assert_eq!(usage[0]["output_tokens"], 3400);
+}
+
+#[test]
+fn a_session_whose_result_is_missing_or_broken_records_no_usage() {
+    let s = setup("stats-usage-broken");
+    for (run, script) in [
+        ("nb1", "echo working".to_string()),
+        ("nb2", format!("echo '{}'", &JSON_RESULT[..JSON_RESULT.len() / 2])),
+        ("nb3", r#"echo '{"type":"result","num_turns":2}'"#.to_string()),
+    ] {
+        add_run(&s, run, "p", 0, vec![]);
+        let events = run_session(&s, run, &script, false);
+        assert!(session_usage(&events).is_empty(), "{run}: never guessed: {events:?}");
+        assert!(events.iter().any(|event| event.kind == "stage.completed"), "{run}: {events:?}");
+    }
+}
+
+#[test]
+fn an_attended_session_does_not_read_the_transcript_an_earlier_session_named() {
+    let s = setup("stats-usage-stale-transcript");
+    add_run(&s, "st", "p", 0, vec![]);
+    let store = RunStore::new(&s.roots.state);
+    // An earlier session's hooks named this transcript; its lines would count if it were read.
+    let transcript = s.roots.state.join("earlier.jsonl");
+    let hook = json!({"hook_event_name": "Stop", "transcript_path": transcript}).to_string();
+    orq_orchestrator::remember_transcript(&store, "st", &hook).unwrap();
+    let late = |secs: u64| {
+        let at = rfc3339(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + secs);
+        json!({"type": "assistant", "timestamp": at, "message": {"id": "late", "model": "m", "usage": {"input_tokens": 1, "output_tokens": 1}}}).to_string()
+    };
+    std::fs::write(&transcript, late(3_600) + "\n").unwrap();
+
+    let events = run_session(&s, "st", "true", true);
+
+    assert!(session_usage(&events).is_empty(), "{events:?}");
+}
+
+#[test]
+fn an_attended_session_whose_transcript_is_missing_or_not_a_file_records_no_usage() {
+    let s = setup("stats-usage-no-transcript");
+    for (run, path) in [("nt1", s.roots.state.join("missing.jsonl")), ("nt2", s.roots.state.clone())] {
+        add_run(&s, run, "p", 0, vec![]);
+        let hook = json!({"hook_event_name": "Stop", "transcript_path": path}).to_string();
+        // The session's hook names the path while it runs.
+        let named = std::thread::spawn({
+            let store = RunStore::new(&s.roots.state);
+            let run = run.to_string();
+            move || {
+                while !store.events(&run).unwrap().iter().any(|event| event.kind == "stage.started") {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                orq_orchestrator::remember_transcript(&store, &run, &hook).unwrap();
+            }
+        });
+        let (success, events) = run_session_ending(&s, run, "sleep 1", true);
+        named.join().unwrap();
+        assert!(success, "an unreadable transcript does not fail the stage: {events:?}");
+        assert!(session_usage(&events).is_empty(), "{run}: {events:?}");
+    }
 }
 
 fn session_usage(events: &[Event]) -> Vec<&Value> {
