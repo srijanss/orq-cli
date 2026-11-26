@@ -194,10 +194,9 @@ pub(crate) fn run_session_stage_with(
                 );
             }
             let end = wait_for_session(child, session.exit_marker);
-            // The rest of the output is written before the log is read; a descendant that escaped the
-            // session's group and still holds its stdout does not hold up the stage.
+            // The rest of the output is written before the log is read, and nothing after the stage ends.
             if let Some(progress) = progress {
-                let _ = progress.recv_timeout(PROGRESS_DRAIN);
+                progress.finish();
             }
             #[cfg(unix)]
             if let Some(settings) = &terminal_settings {
@@ -345,48 +344,116 @@ fn log_line(mut log: &fs::File, text: &str) {
 }
 
 /// How long the stage waits, once the session has ended, for the rest of its output to be written.
-const PROGRESS_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
+const PROGRESS_DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often a reader waiting for output looks whether it has been told to stop.
+const PROGRESS_POLL_MS: i32 = 100;
 /// The most of a summary that goes on a progress line.
 const PROGRESS_SUMMARY_LIMIT: usize = 160;
 
-/// Writes the session's stdout to `log` on a thread of its own, one readable line per step of a
-/// stream-json session; the receiver hears once all of it is written.
-fn spawn_progress(
-    stdout: std::process::ChildStdout,
-    log: fs::File,
-) -> std::sync::mpsc::Receiver<()> {
-    let (done, finished) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        write_progress(stdout, &log);
-        let _ = done.send(());
-    });
-    finished
+/// The thread writing a session's stdout to its log.
+struct Progress {
+    finished: std::sync::mpsc::Receiver<()>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Reads `output` line by line and appends what each line says to `log`. A line that is not a
-/// stream-json event is written as it is.
-fn write_progress(output: impl Read, mut log: &fs::File) {
-    use std::io::BufRead;
-    let mut reader = std::io::BufReader::new(output);
-    let mut tools = std::collections::HashMap::new();
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        let text = String::from_utf8_lossy(&line);
-        let written = match progress_event(text.trim_end_matches(['\n', '\r']), &mut tools) {
-            Some(lines) => log.write_all(lines.as_bytes()),
-            None => log.write_all(&line),
-        };
-        if written.is_err() {
-            // The log is a record for people: the session goes on, and its output is still drained.
-            let _ = std::io::copy(&mut reader, &mut std::io::sink());
-            break;
+impl Progress {
+    /// Waits a little for the rest of the output, then stops the reader and waits for it to have
+    /// stopped, so nothing is written to the log once the stage has ended: a descendant that escaped
+    /// the session's group may hold its stdout open for ever.
+    fn finish(self) {
+        if self.finished.recv_timeout(PROGRESS_DRAIN).is_err() {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = self.finished.recv_timeout(PROGRESS_DRAIN);
         }
     }
+}
+
+/// Writes the session's stdout to `log` on a thread of its own, one readable line per step of a
+/// stream-json session.
+fn spawn_progress(stdout: std::process::ChildStdout, log: fs::File) -> Progress {
+    let (done, finished) = std::sync::mpsc::channel();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let told = std::sync::Arc::clone(&stop);
+    std::thread::spawn(move || {
+        write_progress(stdout, &log, &told);
+        let _ = done.send(());
+    });
+    Progress { finished, stop }
+}
+
+/// Reads `output` line by line and appends what each line says to `log`, until the output ends or
+/// `stop` is set. A line that is not a stream-json event is written as it is.
+fn write_progress(
+    mut output: std::process::ChildStdout,
+    log: &fs::File,
+    stop: &std::sync::atomic::AtomicBool,
+) {
+    let stopped = || stop.load(std::sync::atomic::Ordering::SeqCst);
+    let mut tools = std::collections::HashMap::new();
+    let mut pending = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    // The log is a record for people: once a write fails the output is still drained, unwritten.
+    let mut writable = true;
+    loop {
+        if stopped() {
+            return;
+        }
+        if !readable(&output) {
+            continue;
+        }
+        let read = match output.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        pending.extend_from_slice(&chunk[..read]);
+        let mut start = 0;
+        while let Some(at) = pending[start..].iter().position(|&byte| byte == b'\n') {
+            let end = start + at + 1;
+            if writable && !stopped() {
+                writable = write_progress_line(&pending[start..end], log, &mut tools).is_ok();
+            }
+            start = end;
+        }
+        pending.drain(..start);
+    }
+    // A last line without a line end.
+    if writable && !pending.is_empty() && !stopped() {
+        let _ = write_progress_line(&pending, log, &mut tools);
+    }
+}
+
+/// Writes what one line of output says to `log`.
+fn write_progress_line(
+    line: &[u8],
+    mut log: &fs::File,
+    tools: &mut std::collections::HashMap<String, String>,
+) -> std::io::Result<()> {
+    let text = String::from_utf8_lossy(line);
+    match progress_event(text.trim_end_matches(['\n', '\r']), tools) {
+        Some(lines) => log.write_all(lines.as_bytes()),
+        None => log.write_all(line),
+    }
+}
+
+/// Whether `output` has something to read (or has ended) within `PROGRESS_POLL_MS`, so a read
+/// does not block a reader that may be told to stop.
+#[cfg(unix)]
+fn readable(output: &std::process::ChildStdout) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let mut poll = libc::pollfd {
+        fd: output.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd, for a descriptor `output` keeps open.
+    unsafe { libc::poll(&mut poll, 1, PROGRESS_POLL_MS) > 0 }
+}
+
+#[cfg(not(unix))]
+fn readable(_output: &std::process::ChildStdout) -> bool {
+    true
 }
 
 /// The log lines for one stream-json event, or `None` when `line` is not one. `tools` maps each tool

@@ -208,6 +208,26 @@ fn a_line_that_is_not_json_is_kept_as_is() {
     assert!(text.contains(" tool Read "), "{text}");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn output_from_a_descendant_that_escaped_the_session_is_not_written_after_the_stage_ends() {
+    let s = setup("escaped");
+    // A descendant in a session of its own outlives the session's group and keeps its stdout.
+    let script = format!(
+        "{}setsid sh -c 'sleep 4; echo late-output' &\n",
+        print(&[READ_TOOL, RESULT])
+    );
+
+    let began = Instant::now();
+    let at_end = run(&s, &script);
+    assert!(began.elapsed() < Duration::from_secs(4), "the stage waited for the escaped descendant");
+    std::thread::sleep(Duration::from_secs(5));
+
+    assert!(at_end.contains(" tool Read "), "{at_end}");
+    let later = fs::read_to_string(&s.log).unwrap();
+    assert_eq!(later, at_end, "the log was written after the stage ended");
+}
+
 #[test]
 fn a_tool_argument_under_a_secret_name_is_not_shown() {
     let s = setup("secret-key");
