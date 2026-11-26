@@ -127,6 +127,7 @@ pub(crate) fn run_session_stage_with(
     command.envs(session.env.iter().map(|(name, value)| (name, value)));
     // A session on the terminal writes nothing to its log, so orq writes there how it started and ended.
     let mut terminal_log = None;
+    let mut progress_log = None;
     if session.terminal {
         command
             .stdin(Stdio::inherit())
@@ -134,10 +135,12 @@ pub(crate) fn run_session_stage_with(
             .stderr(Stdio::inherit());
         terminal_log = Some(log);
     } else {
+        // Stdout goes through orq, which writes each step of the session as a readable line.
         command
             .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log);
+            .stdout(Stdio::piped())
+            .stderr(log.try_clone()?);
+        progress_log = Some(log);
     }
 
     // A marker left by an earlier session must not close this one; if it cannot be cleared the stage fails.
@@ -174,7 +177,11 @@ pub(crate) fn run_session_stage_with(
     let terminal_settings = session.terminal.then(saved_terminal_settings).flatten();
     let status = cleared
         .and_then(|()| crate::child_groups::spawn(&mut command))
-        .and_then(|child| {
+        .and_then(|mut child| {
+            let progress = match (child.take_output().0, progress_log.take()) {
+                (Some(stdout), Some(log)) => Some(spawn_progress(stdout, log)),
+                _ => None,
+            };
             if let Some(log) = &terminal_log {
                 log_line(
                     log,
@@ -187,6 +194,11 @@ pub(crate) fn run_session_stage_with(
                 );
             }
             let end = wait_for_session(child, session.exit_marker);
+            // The rest of the output is written before the log is read; a descendant that escaped the
+            // session's group and still holds its stdout does not hold up the stage.
+            if let Some(progress) = progress {
+                let _ = progress.recv_timeout(PROGRESS_DRAIN);
+            }
             #[cfg(unix)]
             if let Some(settings) = &terminal_settings {
                 // A session that exited by itself has put its screen away and left its last words
@@ -330,6 +342,210 @@ pub(crate) fn run_session_stage_with(
 /// write that fails does not fail the stage.
 fn log_line(mut log: &fs::File, text: &str) {
     let _ = writeln!(log, "[orq {}] {text}", now_rfc3339());
+}
+
+/// How long the stage waits, once the session has ended, for the rest of its output to be written.
+const PROGRESS_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
+/// The most of a summary that goes on a progress line.
+const PROGRESS_SUMMARY_LIMIT: usize = 160;
+
+/// Writes the session's stdout to `log` on a thread of its own, one readable line per step of a
+/// stream-json session; the receiver hears once all of it is written.
+fn spawn_progress(
+    stdout: std::process::ChildStdout,
+    log: fs::File,
+) -> std::sync::mpsc::Receiver<()> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        write_progress(stdout, &log);
+        let _ = done.send(());
+    });
+    finished
+}
+
+/// Reads `output` line by line and appends what each line says to `log`. A line that is not a
+/// stream-json event is written as it is.
+fn write_progress(output: impl Read, mut log: &fs::File) {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(output);
+    let mut tools = std::collections::HashMap::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let text = String::from_utf8_lossy(&line);
+        let written = match progress_event(text.trim_end_matches(['\n', '\r']), &mut tools) {
+            Some(lines) => log.write_all(lines.as_bytes()),
+            None => log.write_all(&line),
+        };
+        if written.is_err() {
+            // The log is a record for people: the session goes on, and its output is still drained.
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+            break;
+        }
+    }
+}
+
+/// The log lines for one stream-json event, or `None` when `line` is not one. `tools` maps each tool
+/// call's id to its tool's name, so a result can be told apart by the tool it answers.
+fn progress_event(
+    line: &str,
+    tools: &mut std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let event: serde_json::Value = serde_json::from_str(line).ok()?;
+    let kind = event.get("type")?.as_str()?;
+    let content = || {
+        event
+            .pointer("/message/content")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+    };
+    let clock = &now_rfc3339()[11..19];
+    let mut out = String::new();
+    match kind {
+        "assistant" => {
+            for item in content() {
+                match item.get("type").and_then(serde_json::Value::as_str) {
+                    Some("text") => {
+                        let said = summary(item.get("text").and_then(serde_json::Value::as_str));
+                        if !said.is_empty() {
+                            out.push_str(&format!("{clock} said {said}\n"));
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = item
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tool");
+                        if let Some(id) = item.get("id").and_then(serde_json::Value::as_str) {
+                            tools.insert(id.to_string(), name.to_string());
+                        }
+                        let name = summary(Some(name));
+                        let about = summary(item.get("input").and_then(tool_argument));
+                        let line = format!("{clock} tool {name} {about}");
+                        out.push_str(line.trim_end());
+                        out.push('\n');
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "user" => {
+            for item in content() {
+                if item.get("type").and_then(serde_json::Value::as_str) != Some("tool_result") {
+                    continue;
+                }
+                let tool = item
+                    .get("tool_use_id")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|id| tools.remove(id));
+                let failed =
+                    item.get("is_error").and_then(serde_json::Value::as_bool) == Some(true);
+                let text = result_text(item.get("content"));
+                let tests = tool
+                    .filter(|name| name == "run_tests" || name.ends_with("__run_tests"))
+                    .and(test_counts(&text));
+                let line = match tests {
+                    Some((passed, failed_tests, millis)) => {
+                        let state = if failed || failed_tests > 0 {
+                            "error"
+                        } else {
+                            "ok"
+                        };
+                        let took = millis
+                            .map(|ms| format!(" in {:.1}s", ms as f64 / 1000.0))
+                            .unwrap_or_default();
+                        format!("{state} passed {passed}, failed {failed_tests}{took}")
+                    }
+                    None if failed => format!("error {}", summary(Some(&text))),
+                    None => continue,
+                };
+                out.push_str(&format!("{clock} result {}", line.trim_end()));
+                out.push('\n');
+            }
+        }
+        // The raw event first, so the session's usage can still be read from the log, then its final
+        // answer as the log's last line, as a session in text mode prints it.
+        "result" => {
+            out.push_str(line);
+            out.push('\n');
+            if let Some(answer) = event.get("result").and_then(serde_json::Value::as_str) {
+                out.push_str(answer);
+                if !answer.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
+        "system" | "stream_event" | "rate_limit_event" => {}
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// What a tool call is about: its description (a command's, not the command itself), else the file
+/// or search it names, else its first text argument.
+fn tool_argument(input: &serde_json::Value) -> Option<&str> {
+    const KEYS: [&str; 8] = [
+        "description",
+        "file_path",
+        "notebook_path",
+        "pattern",
+        "path",
+        "query",
+        "url",
+        "command",
+    ];
+    let input = input.as_object()?;
+    KEYS.iter()
+        .find_map(|key| input.get(*key).and_then(serde_json::Value::as_str))
+        .or_else(|| input.values().find_map(serde_json::Value::as_str))
+}
+
+/// The text of a tool result, whether given as a string or as a list of text parts.
+fn result_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// The passed and failed counts and the duration in milliseconds of a `run_tests` result.
+fn test_counts(text: &str) -> Option<(u64, u64, Option<u64>)> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let result = value.get("testResult").unwrap_or(&value);
+    let passed = result.get("passed")?.as_u64()?;
+    let failed = result.get("failed")?.as_u64()?;
+    Some((
+        passed,
+        failed,
+        result.get("durationMs").and_then(serde_json::Value::as_u64),
+    ))
+}
+
+/// The first non-blank line of `text`, redacted, with control characters as spaces and cut to
+/// `PROGRESS_SUMMARY_LIMIT` characters.
+fn summary(text: Option<&str>) -> String {
+    let first = text
+        .unwrap_or("")
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    // Only the line shown is redacted: a tool's whole output can be large.
+    orq_core::redact::redact(first)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(PROGRESS_SUMMARY_LIMIT)
+        .collect()
 }
 
 /// The signal that stopped a session, when one did.

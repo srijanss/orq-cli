@@ -90,3 +90,33 @@ fn an_unattended_pi_session_runs_in_print_mode_and_an_attended_or_ordinary_one_d
     let ordinary = argv(&request("pi", false));
     assert!(!ordinary.iter().any(|a| a == "-p"), "{ordinary:?}");
 }
+
+/// Whether `argv` asks for stream-json output, which needs `--verbose` alongside it in print mode.
+fn streams_json(argv: &[String]) -> bool {
+    argv.windows(2).any(|w| w[0] == "--output-format" && w[1] == "stream-json") && argv.iter().any(|a| a == "--verbose")
+}
+
+#[test]
+fn an_unattended_claude_session_streams_json_and_an_attended_one_does_not() {
+    let unattended = argv(&request("claude", true));
+    assert!(streams_json(&unattended), "{unattended:?}");
+
+    let mut attended = request("claude", false);
+    attended.attended = true;
+    let attended = argv(&attended);
+    assert!(!attended.iter().any(|a| a == "--output-format" || a == "--verbose"), "{attended:?}");
+
+    let fix = |attended| orq_agents::FixRequest {
+        implementer: spec("claude", "opus"),
+        task: "The gate failed. Fix it.",
+        exit_marker: None,
+        attended,
+        allowed_commands: &[],
+        frontend: false,
+    };
+    let claude = adapter_for("claude").unwrap();
+    let headless = claude.fix_argv(&fix(false)).unwrap();
+    assert!(streams_json(&headless), "{headless:?}");
+    let watched = claude.fix_argv(&fix(true)).unwrap();
+    assert!(!watched.iter().any(|a| a == "--output-format" || a == "--verbose"), "{watched:?}");
+}

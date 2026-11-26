@@ -556,6 +556,7 @@ impl HarnessAdapter for Claude {
         }
         if request.unattended {
             argv.insert(0, "-p".to_string());
+            argv.extend(STREAM_JSON.map(String::from));
         }
         if let Some(name) = request.remote_control.filter(|_| !request.unattended) {
             plain("remote control name", name)?;
@@ -573,10 +574,17 @@ impl HarnessAdapter for Claude {
     fn fix_argv(&self, request: &FixRequest<'_>) -> Result<Vec<String>, AdapterError> {
         let prompt = fix_prompt("claude", request)?;
         let mut argv = if request.attended { vec!["--permission-mode".to_string(), "auto".to_string()] } else { vec!["-p".to_string()] };
+        if !request.attended {
+            argv.extend(STREAM_JSON.map(String::from));
+        }
         argv.extend(["--model".to_string(), request.implementer.model.clone(), prompt]);
         Ok(argv)
     }
 }
+
+/// A headless Claude session prints each step as a JSON line, so orq can show its progress in its log;
+/// print mode needs `--verbose` for that.
+const STREAM_JSON: [&str; 3] = ["--output-format", "stream-json", "--verbose"];
 
 /// The wording that tells a session someone is there to answer it.
 fn attended_wording(harness: &str) -> String {
