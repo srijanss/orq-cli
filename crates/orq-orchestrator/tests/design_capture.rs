@@ -442,6 +442,49 @@ fn a_data_image_entry_naming_a_section_by_its_heading_or_label_matches_its_unloa
     );
 }
 
+/// Sections whose heading is wrapped in a header, one holding a nested section of its own.
+const WRAPPED_HEADINGS: &str = r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Wrapped</title></head>
+<body><main>
+<section><header><h2>Brand logos</h2></header><img src="/media/brand.png" alt="brand" width="40" height="40">
+<section><div><h3>Team</h3></div><img src="/media/team.png" alt="team" width="40" height="40"></section>
+</section>
+</main></body></html>"#;
+
+#[test]
+fn a_section_name_matches_a_section_whose_heading_is_wrapped_but_not_a_nested_section_of_its_own() {
+    let Some(browser) = chromium() else { return };
+    let site = fixture_site();
+    std::fs::write(site.root().join("wrapped.html"), WRAPPED_HEADINGS).unwrap();
+    let logs = TempDir::new("design-capture-wrapped-headings");
+    let package = logs.path().join("design/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("UX.md"),
+        "# UX\n\n## Data images\n\n- Team: photos from media\n- Brand logos: logos from media\n",
+    )
+    .unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(site.root(), logs.path(), &["/wrapped".to_string()], &browser, &settings);
+
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert!(record.failures.is_empty(), "failures: {:?}", record.failures);
+    let measured = read_json(&logs.path().join("design/round-1/desktop/measurements.json"));
+    let unloaded = measured["routes"]["/wrapped"]["unloaded_images"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{measured}"))
+        .clone();
+    let data_images: Vec<&Value> = unloaded.iter().map(|image| &image["data_image"]).collect();
+    assert_eq!(
+        data_images,
+        [&Value::from("Brand logos"), &Value::from("Team")],
+        "{unloaded:?}"
+    );
+}
+
 #[test]
 fn unloaded_images_past_the_limit_are_counted_with_how_many_are_not_data_images() {
     let Some(browser) = chromium() else { return };

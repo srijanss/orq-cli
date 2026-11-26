@@ -1224,7 +1224,13 @@ const MEASURE_SCRIPT: &str = r##"(async function () {
     return parts.join(" > ");
   }
   // A data image entry is a CSS selector, or a section's name: its aria-label or heading. The
-  // sections each entry names are found once, before any image is checked.
+  // sections each entry names are found once, before any image is checked. A heading belongs to
+  // the nearest section around it (even through a header or other wrapper), else its parent.
+  var sectioning = "section, article, aside, nav, [aria-label]";
+  function headingOwner(h) {
+    var parent = h.parentElement;
+    return parent && (parent.closest(sectioning) || parent);
+  }
   function namedSections(key) {
     var name = key.trim().toLowerCase();
     var found = [];
@@ -1232,7 +1238,8 @@ const MEASURE_SCRIPT: &str = r##"(async function () {
       if (el.getAttribute("aria-label").trim().toLowerCase() === name) found.push(el);
     });
     Array.prototype.forEach.call(document.querySelectorAll("h1, h2, h3, h4, h5, h6"), function (h) {
-      if (h.textContent.trim().toLowerCase() === name && h.parentElement) found.push(h.parentElement);
+      var owner = h.textContent.trim().toLowerCase() === name ? headingOwner(h) : null;
+      if (owner) found.push(owner);
     });
     return found;
   }
