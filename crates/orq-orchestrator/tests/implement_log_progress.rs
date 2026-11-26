@@ -228,6 +228,62 @@ fn output_from_a_descendant_that_escaped_the_session_is_not_written_after_the_st
     assert_eq!(later, at_end, "the log was written after the stage ended");
 }
 
+/// A call of `tool` with id `id`, and its result with `content` (a JSON value) and `is_error`.
+fn call_and_result(tool: &str, id: &str, content: &str, is_error: Option<bool>) -> [String; 2] {
+    let error = is_error
+        .map(|e| format!(r#""is_error":{e},"#))
+        .unwrap_or_default();
+    [
+        format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{tool}","input":{{}}}}]}}}}"#
+        ),
+        format!(
+            r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}",{error}"content":{content}}}]}}}}"#
+        ),
+    ]
+}
+
+#[test]
+fn a_run_tests_result_shows_its_counts_and_duration_or_its_first_line() {
+    let s = setup("run-tests");
+    let events: Vec<String> = [
+        // Namespaced, the counts wrapped in testResult and given as text parts; a failed test is an error.
+        call_and_result(
+            "mcp__outside-in-tdd__run_tests",
+            "t1",
+            r#"[{"type":"text","text":"{\"testResult\":{\"passed\":5,\"failed\":1,\"durationMs\":2500}}"}]"#,
+            Some(false),
+        ),
+        // Plain name, bare counts, no duration and no is_error.
+        call_and_result("run_tests", "t2", r#""{\"passed\":3,\"failed\":0}""#, None),
+        // Counts that cannot be read: its first line, ok since the tool did not fail.
+        call_and_result("mcp__outside-in-tdd__run_tests", "t3", r#""No active feature.\nmore""#, None),
+        // Any other tool's successful result is not shown.
+        call_and_result("Read", "t4", r#""{\"passed\":9,\"failed\":9}""#, None),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut all: Vec<&str> = events.iter().map(String::as_str).collect();
+    all.push(RESULT);
+
+    let text = run(&s, &print(&all));
+
+    let results: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.split_once(" result ").map(|(_, rest)| rest))
+        .collect();
+    assert_eq!(
+        results,
+        [
+            "error passed 5, failed 1 in 2.5s",
+            "ok passed 3, failed 0",
+            "ok No active feature."
+        ],
+        "{text}"
+    );
+}
+
 #[test]
 fn a_tool_argument_under_a_secret_name_is_not_shown() {
     let s = setup("secret-key");
