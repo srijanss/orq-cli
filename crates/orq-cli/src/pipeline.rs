@@ -2495,6 +2495,8 @@ fn stages(
                     answer: options.answer,
                     undeclared_files: &undeclared_files,
                     reopened_findings: &reopened_findings,
+                    // A frontend run's session, or a design group's frontend member's.
+                    frontend: !members.is_empty() && members.iter().all(|m| frontend.contains(m)),
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
             let session = ImplementSession {
@@ -2645,6 +2647,8 @@ fn stages(
                             exit_marker: fix_marker.as_deref().and_then(Path::to_str),
                             attended: options.interactive,
                             allowed_commands: &allowed_commands,
+                            // A frontend member's gate, or a frontend run's.
+                            frontend: member.map_or(frontend_run, |m| frontend.contains(m)),
                         })
                     })
                     .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
@@ -2721,6 +2725,7 @@ fn stages(
                     exit_marker: marker.as_deref().and_then(Path::to_str),
                     attended: options.interactive,
                     allowed_commands: &allowed_commands,
+                    frontend: false,
                 })
             })
             .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
@@ -2794,6 +2799,8 @@ fn stages(
                         exit_marker: marker.as_deref().and_then(Path::to_str),
                         attended: options.interactive,
                         allowed_commands: &allowed_commands,
+                        // The design loop runs only for a frontend feature.
+                        frontend: true,
                     })
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
@@ -2836,6 +2843,7 @@ fn stages(
                         exit_marker: marker.as_deref().and_then(Path::to_str),
                         attended: options.interactive,
                         allowed_commands: &allowed_commands,
+                        frontend: true,
                     })
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
@@ -2932,6 +2940,8 @@ fn stages(
                             exit_marker: marker.as_deref().and_then(Path::to_str),
                             attended: options.interactive,
                             allowed_commands: &allowed_commands,
+                            // The whole group's branch, standard members too.
+                            frontend: false,
                         })
                     })
                     .map_err(|e| StoreError::Corrupt(format!("{e:?}")))?;
@@ -3166,6 +3176,7 @@ fn stages(
                         exit_marker: fix_marker.as_deref().and_then(Path::to_str),
                         attended: options.interactive,
                         allowed_commands: &allowed_commands,
+                        frontend: false,
                     })
                 })
                 .map_err(|e| StoreError::Corrupt(format!("{e:?}")))

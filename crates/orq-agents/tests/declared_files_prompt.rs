@@ -31,6 +31,7 @@ fn request<'a>(implementer: &str, declared_files: &'a [String], undeclared_files
         undeclared_files,
         feature_specs: &[],
         reopened_findings: &[],
+        frontend: false,
     }
 }
 

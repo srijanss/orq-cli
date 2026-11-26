@@ -26,6 +26,7 @@ fn request<'a>(continuing: Option<Continuing<'a>>, attended: bool) -> ImplementR
         answer: None,
         undeclared_files: &[],
         reopened_findings: &[],
+        frontend: false,
         feature_specs: &[],
     }
 }

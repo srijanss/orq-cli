@@ -94,6 +94,9 @@ pub struct ImplementRequest<'a> {
     /// Review findings orq set back from `completed` to `pending` before this session, since the run's
     /// review ledger has them open again: the session is told to fix each under its own name. Empty says nothing.
     pub reopened_findings: &'a [&'a str],
+    /// The feature is a frontend one (marked `kind: frontend`, with a design package): the session is told
+    /// its tests cover logic and behaviour a screenshot cannot show, not how the page looks.
+    pub frontend: bool,
 }
 
 /// The most of a person's answer a resumed session is given.
@@ -144,6 +147,9 @@ pub struct FixRequest<'a> {
     pub attended: bool,
     /// The run's permission rules, told to a headless session as an implementer is told them.
     pub allowed_commands: &'a [String],
+    /// The session repairs a frontend feature (a frontend run, or a design group's frontend member): it is
+    /// told what that feature's tests cover, as its implement session is.
+    pub frontend: bool,
 }
 
 /// The longest extra context a run accepts, in characters.
@@ -623,6 +629,10 @@ fn fix_prompt(harness: &'static str, request: &FixRequest<'_>) -> Result<String,
     let mut prompt = task.to_string();
     prompt.push_str(FINISH_STARTED_FEATURES);
     prompt.push_str(GATE_RUNS_AGAIN);
+    if request.frontend {
+        prompt.push_str("\n\n");
+        prompt.push_str(FRONTEND_TESTS);
+    }
     if request.attended {
         prompt.push_str(&attended_wording(harness));
     } else {
@@ -651,6 +661,14 @@ const MARKER_FORMAT: &str = " The first line of that file says how it went: leav
 
 /// What an implement session is told when orq's gate runs the full suite after it.
 const LEAVE_FULL_SUITE_TO_GATE: &str = "Testing: run only the tests for what you changed, through run_tests; don't run the full suite or workspace-wide test commands (including a full-suite regression sweep), because orq's gate runs the full suite after review and a gate-fix session repairs what it finds.";
+
+/// What a frontend feature's sessions are told its tests cover: logic and behaviour a screenshot cannot
+/// show, not how the page looks, which the design review checks from captures. The design-implement
+/// skill's "## Tests" section says the same.
+pub const FRONTEND_TESTS: &str = "Tests for this frontend feature cover logic and behaviour a screenshot cannot show, not how the page looks.\n\
+- Test: views, context and Python/JS logic. Also template behaviour a single screenshot cannot show: content that depends on auth state or a feature flag, link targets, accessibility names and ARIA, keyboard and focus, lazy loading, scripts starting on load.\n\
+- Don't test: layout, spacing, sizes, colours, fonts, breakpoints or markup structure (class names, nesting, element order). The design review checks these from captures.\n\
+- Browser tests only when nothing else can check it: keyboard and focus, JS behaviour. Prefer Django test-client or template-render tests.";
 
 /// The refusal rule; `{report}` is where the session names a file it changed outside the features.
 const REFUSAL_RULE: &str = "Files: when write_code refuses a file because it is outside the feature's files, drill_down into it if the change is behaviour that needs its own test; otherwise make the change with Edit and name the file and why in {report}. Never edit around a refusal silently.";
@@ -835,6 +853,10 @@ fn implement_prompt(harness: &'static str, command: &str, request: &ImplementReq
     if request.leave_full_suite_to_gate {
         prompt.push_str("\n\n");
         prompt.push_str(LEAVE_FULL_SUITE_TO_GATE);
+    }
+    if request.frontend {
+        prompt.push_str("\n\n");
+        prompt.push_str(FRONTEND_TESTS);
     }
     prompt.push_str(&feature_specs_wording(request.feature_specs)?);
     let report = if request.exit_marker.is_some() { REPORT_IN_MARKER } else { REPORT_IN_MESSAGE };

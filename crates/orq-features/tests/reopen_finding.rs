@@ -50,6 +50,7 @@ fn prompt(reopened: &[&str]) -> String {
         feature_specs: &[],
         answer: None,
         reopened_findings: reopened,
+        frontend: false,
     };
     adapter_for("claude").unwrap().implement_argv(&request).unwrap().join("\n")
 }

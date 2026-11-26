@@ -28,6 +28,7 @@ fn request(implementer: &str, leave_full_suite_to_gate: bool) -> ImplementReques
         answer: None,
         undeclared_files: &[],
         reopened_findings: &[],
+        frontend: false,
         feature_specs: &[],
     }
 }
@@ -76,6 +77,7 @@ fn a_fix_session_is_never_told_to_leave_the_full_suite_to_the_gate() {
             exit_marker: Some("/logs/gate-fix.done"),
             attended: false,
             allowed_commands: &[],
+            frontend: false,
         };
         let argv = adapter_for(harness).unwrap().fix_argv(&fix).unwrap();
         assert!(!argv.iter().any(|a| a.contains(LEAVE_FULL_SUITE)), "{harness}: {argv:?}");

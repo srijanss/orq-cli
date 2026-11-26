@@ -88,6 +88,19 @@ fn the_review_skill_decides_blocked_before_changes_required_before_pass() {
     assert!(!skill.contains("`verdict` is `pass` with no open"), "the overlapping rule is gone: {skill}");
 }
 
+/// A person using the skill directly gets the same tests rule a frontend session's prompt carries.
+#[test]
+fn the_implement_skill_says_its_tests_leave_layout_and_markup_structure_to_the_design_review() {
+    let skill = orq_agents::design_skill("design-implement").unwrap();
+    let section = skill.split("\n## Tests\n").nth(1).unwrap_or_else(|| panic!("no \"## Tests\" section: {skill}"));
+    let section = section.split("\n## ").next().unwrap();
+    let dont = section.lines().find(|line| line.contains("Don't test:")).unwrap_or_else(|| panic!("no \"Don't test\" rule: {section}"));
+    assert!(dont.contains("layout") && dont.contains("markup structure"), "{dont}");
+    for line in orq_agents::FRONTEND_TESTS.lines() {
+        assert!(section.contains(line), "the prompt's rule, word for word: {line:?} missing from {section}");
+    }
+}
+
 #[test]
 fn a_skill_file_hard_linked_to_a_file_outside_is_replaced_and_the_outside_file_is_untouched() {
     let outside = TempDir::new("design-skills-hardlink-outside");

@@ -26,6 +26,7 @@ fn request(implementer: &str, unattended: bool) -> ImplementRequest<'static> {
         answer: None,
         undeclared_files: &[],
         reopened_findings: &[],
+        frontend: false,
         feature_specs: &[],
     }
 }

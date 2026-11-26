@@ -342,6 +342,39 @@ fn a_frontend_run_resumed_with_a_persons_issues_runs_one_extra_round_for_them_in
     let _ = std::fs::remove_dir_all(&w.home);
 }
 
+/// A frontend run's implement session and its design-fix session are told its tests cover behaviour, not layout.
+#[test]
+fn a_frontend_runs_implement_and_design_fix_sessions_are_told_the_frontend_tests_rule() {
+    const RULE: &str = "Don't test: layout, spacing, sizes, colours, fonts, breakpoints or markup structure";
+    let w = frontend("frontend-rule");
+    w.design_reviewer();
+    w.mark_frontend();
+    let agent = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n").commit("feat: the home page").build();
+    let provider = orq_test_support::FakeProvider::builder().reply(&["pr", "list"], "[]\n").build();
+    assert!(!w.run(&agent, &provider).status.success());
+    let implement = agent.first_run().expect("the implement session ran").args;
+    let prompt = implement.last().unwrap();
+    assert!(prompt.contains("implement-and-review home "), "{prompt}");
+    assert!(prompt.contains(RULE), "{prompt}");
+
+    let first_run = w.events().iter().find_map(|e| e["run_id"].as_str().map(str::to_string)).unwrap();
+    let file = w.home.join("issues.json");
+    std::fs::write(&file, r#"[{"section": "Footer", "viewport": "mobile", "expected": "a transparent logo", "actual": "a white box"}]"#).unwrap();
+    let fixer = orq_test_support::FakeAgent::builder().write_file("index.html", "<h1>Home</h1>\n<footer>logo</footer>\n").commit("fix: the footer logo").build();
+    let resumed = w.orq_run(
+        &fixer,
+        &provider,
+        &["run", "resume", &first_run, "--yes", "--no-ci-check", "--design-issues", file.to_str().unwrap(), "--repo", w.repo.root().to_str().unwrap()],
+    );
+
+    let all = format!("{}{}", text(&resumed.stdout), text(&resumed.stderr));
+    let fix = fixer.first_run().unwrap_or_else(|| panic!("no design-fix session: {all}")).args;
+    let prompt = fix.last().unwrap();
+    assert!(prompt.contains("a white box"), "the design-fix session: {prompt}");
+    assert!(prompt.contains(RULE), "{prompt}");
+    let _ = std::fs::remove_dir_all(&w.home);
+}
+
 #[test]
 fn a_frontend_run_that_ended_needing_review_in_its_design_step_resumes_with_a_persons_issues() {
     let w = frontend("person-issues-needs-review");

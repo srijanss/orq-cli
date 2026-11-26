@@ -25,6 +25,7 @@ fn a_handoff_summary_goes_into_the_one_prompt_argument_after_the_request_and_bef
         answer: None,
         undeclared_files: &[],
         reopened_findings: &[],
+        frontend: false,
         feature_specs: &[],
     };
     let argv = claude.implement_argv(&request).unwrap();

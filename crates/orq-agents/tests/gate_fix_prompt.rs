@@ -21,6 +21,7 @@ fn each_fix_prompt(check: impl Fn(&str, bool, Option<&str>, &str)) {
                     exit_marker: marker,
                     attended,
                     allowed_commands: &[],
+                    frontend: false,
                 };
                 let prompt = adapter_for(harness).unwrap().fix_argv(&fix).unwrap().last().unwrap().clone();
                 check(harness, attended, marker, &prompt);
@@ -48,6 +49,7 @@ fn implement_prompt(harness: &str, model: &str) -> String {
         answer: None,
         undeclared_files: &[],
         reopened_findings: &[],
+        frontend: false,
         feature_specs: &[],
     };
     adapter_for(harness).unwrap().implement_argv(&request).unwrap().last().unwrap().clone()

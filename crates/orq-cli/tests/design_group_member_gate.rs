@@ -159,7 +159,7 @@ impl Project {
             "#!/bin/sh\nprintf '%s\\n----\\n' \"$*\" >> \"$HOME/sessions\"\n\
              case \"$*\" in\n\
              *'implement-and-review std '*) date +%s%N >> src/shop/views.py ;;\n\
-             *'implement-and-review fa '*) date +%s%N >> src/blog/views.py ;;\n\
+             *'implement-and-review fa '*) date +%s%N >> src/blog/views.py; if [ -f \"$HOME/fail-after-fa\" ]; then : > \"$HOME/fail-once\"; fi ;;\n\
              *'local gate failed'*) date +%s%N >> src/shop/fix.py ;;\n\
              *) date +%s%N >> work.txt ;;\n\
              esac\n\
@@ -409,6 +409,34 @@ fn a_failing_member_gate_gets_a_fix_session_reading_the_members_own_log() {
     assert!(logs.join("gate-fix-std.log").is_file(), "{all}");
     assert!(!logs.join("gate-fix.log").exists() && !logs.join("gate.log").exists(), "{all}");
     assert_eq!(p.pytest_runs(), ["src/shop", "src/shop", "src/blog src/shop"], "the gate runs again after the fix: {all}");
+    let _ = std::fs::remove_dir_all(&p.home);
+}
+
+/// The frontend member's implement and gate-fix sessions are told its tests cover behaviour, not layout; the
+/// standard member's implement and gate-fix sessions are not.
+#[test]
+fn a_design_groups_frontend_member_sessions_are_told_the_frontend_tests_rule_and_its_standard_members_are_not() {
+    const RULE: &str = "Don't test: layout, spacing, sizes, colours, fonts, breakpoints or markup structure";
+    let p = project("frontend-rule", "");
+    let provider = provider();
+    // std's gate fails once, and so does fa's: each gets a fix session.
+    std::fs::write(p.home.join("fail-once"), "").unwrap();
+    std::fs::write(p.home.join("fail-after-fa"), "").unwrap();
+
+    let (run_id, all) = p.run_group(&provider, &[]);
+    p.note("frontend-rule", &run_id, &all);
+
+    let sessions = p.sessions();
+    let session = |needle: &str| -> Vec<&String> { sessions.iter().filter(|s| s.contains(needle)).collect() };
+    let (std_implement, fa_implement) = (session("implement-and-review std "), session("implement-and-review fa "));
+    assert_eq!((std_implement.len(), fa_implement.len()), (1, 1), "{all}\n{sessions:#?}");
+    assert!(fa_implement[0].contains(RULE), "{}", fa_implement[0]);
+    assert!(!std_implement[0].contains(RULE), "{}", std_implement[0]);
+    let fixes = session("local gate failed");
+    assert_eq!(fixes.len(), 2, "{all}\n{sessions:#?}");
+    let (std_fix, fa_fix) = (fixes.iter().find(|s| s.contains("gate-std.log")).unwrap(), fixes.iter().find(|s| s.contains("gate-fa.log")).unwrap());
+    assert!(fa_fix.contains(RULE), "{fa_fix}");
+    assert!(!std_fix.contains(RULE), "{std_fix}");
     let _ = std::fs::remove_dir_all(&p.home);
 }
 

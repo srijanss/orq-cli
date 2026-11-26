@@ -32,6 +32,14 @@ proposed. Prefer measured over inferred over proposed, and the package over the 
 - A required asset is missing, or the package is ambiguous or contradicts itself: say so in the
   session notes (what is missing or unclear, and what you did meanwhile) instead of guessing.
 
+## Tests
+
+Tests for this frontend feature cover logic and behaviour a screenshot cannot show, not how the page looks.
+
+- Test: views, context and Python/JS logic. Also template behaviour a single screenshot cannot show: content that depends on auth state or a feature flag, link targets, accessibility names and ARIA, keyboard and focus, lazy loading, scripts starting on load.
+- Don't test: layout, spacing, sizes, colours, fonts, breakpoints or markup structure (class names, nesting, element order). The design review checks these from captures.
+- Browser tests only when nothing else can check it: keyboard and focus, JS behaviour. Prefer Django test-client or template-render tests.
+
 ## A correction round
 
 You are given the consolidated issues of the design review, each with an id.

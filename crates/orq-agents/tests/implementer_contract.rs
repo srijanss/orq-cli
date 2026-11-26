@@ -28,6 +28,7 @@ fn request<'a>(harness: &str, model: &str, features: &'a [&'a str]) -> Implement
         answer: None,
         undeclared_files: &[],
         reopened_findings: &[],
+        frontend: false,
         feature_specs: &[],
     }
 }
@@ -150,7 +151,7 @@ fn each_harness_names_the_skill_and_the_thinking_flag_its_own_way_and_only_claud
 }
 
 fn fix_request<'a>(harness: &str, model: &str, exit_marker: Option<&'a str>, attended: bool) -> orq_agents::FixRequest<'a> {
-    orq_agents::FixRequest { implementer: spec(harness, model), task: "The gate failed. Fix it.", exit_marker, attended, allowed_commands: &[] }
+    orq_agents::FixRequest { implementer: spec(harness, model), task: "The gate failed. Fix it.", exit_marker, attended, allowed_commands: &[], frontend: false }
 }
 
 /// A headless fix session is refused what its run does not allow just as an implementer is, so it is
