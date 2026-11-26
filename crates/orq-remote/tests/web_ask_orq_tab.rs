@@ -145,15 +145,23 @@ fn sent(result: &Value, method: &str, path: &str) -> Vec<Value> {
 const ASK: &str = "[data-ask-orq]";
 const PANEL: &str = "[data-ask-panel]";
 
+/// The path `icons.jsx` draws for the icon `name`.
+fn icon_path(name: &str) -> String {
+    let icons = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/web-src/src/icons.jsx")).unwrap();
+    let start = format!("  {name}: \"");
+    let from = icons.find(&start).unwrap_or_else(|| panic!("no {name} icon in icons.jsx")) + start.len();
+    icons[from..from + icons[from..].find('"').unwrap()].to_string()
+}
+
 #[test]
-fn the_sidebar_has_ask_orq_with_the_chat_icon_after_reviews_and_before_settings_and_only_the_icon_on_the_rail() {
+fn the_sidebar_has_ask_orq_with_the_sparkle_icon_after_reviews_and_before_settings_and_only_the_icon_on_the_rail() {
     let names = "return Array.from(document.querySelectorAll('.sidebar nav > a, .sidebar nav > button')).map(function (e) { return e.textContent.trim(); });";
     let icon = "var b = document.querySelector('.sidebar nav [data-ask-orq]'); var svg = b && b.querySelector('svg'); return svg ? {d: svg.querySelector('path').getAttribute('d'), width: svg.getAttribute('stroke-width'), cap: svg.getAttribute('stroke-linecap'), box: svg.getAttribute('viewBox'), others: Array.from(document.querySelectorAll('.sidebar nav > a svg path')).map(function (p) { return p.getAttribute('d'); })} : null;";
     let tag = "var b = document.querySelector('.sidebar nav [data-ask-orq]'); return b ? [b.tagName, b.getAttribute('aria-expanded'), b.getAttribute('aria-label') || b.textContent.trim(), b.getAttribute('href')] : null;";
     let Some(result) = open(1440, "/projects/alpha/reviews", vec![], false, vec![json!({"wait": ASK}), json!({"eval": "names", "js": names}), json!({"eval": "icon", "js": icon}), json!({"eval": "tag", "js": tag})]) else { return };
     assert_eq!(eval(&result, "names"), &json!(["Dashboard", "Todos", "Features", "Orchestrations", "Queue", "Reviews", "Ask orq", "Settings"]), "{result}");
     let icon = eval(&result, "icon");
-    assert!(icon["d"].as_str().is_some_and(|d| !d.is_empty()), "{icon}");
+    assert_eq!(icon["d"], json!(icon_path("sparkle")), "the sparkle icon: {icon}");
     assert!(!icon["others"].as_array().unwrap().contains(&icon["d"]), "its own icon: {icon}");
     assert_eq!((&icon["width"], &icon["cap"], &icon["box"]), (&json!("2"), &json!("round"), &json!("0 0 24 24")), "{icon}");
     assert_eq!(eval(&result, "tag"), &json!(["BUTTON", "false", "Ask orq", null]), "a toggle, not a link: {result}");
@@ -162,6 +170,28 @@ fn the_sidebar_has_ask_orq_with_the_chat_icon_after_reviews_and_before_settings_
     let Some(rail) = open(1440, "/projects/alpha/reviews", vec![], false, vec![json!({"click": "[data-rail-button]"}), json!({"wait": ".shell.collapsed"}), json!({"eval": "label", "js": label}), json!({"boxes": "[data-ask-orq] svg"})]) else { return };
     assert_eq!(eval(&rail, "label"), &json!("none"), "only the icon on the collapsed rail: {rail}");
     assert_eq!(rail["boxes"]["[data-ask-orq] svg"].as_array().map(Vec::len), Some(1), "{rail}");
+}
+
+/// The left edge of `inner` inside the sidebar row whose text reads `row`.
+const LEFT_IN_ROW: &str = "function left(row, inner) { var e = Array.from(document.querySelectorAll('.sidebar nav > a, .sidebar nav > button')).find(function (r) { return r.textContent.trim() === row; }); var i = e && e.querySelector(inner); return i ? i.getBoundingClientRect().left : null; }";
+
+#[test]
+fn ask_orq_label_and_icon_line_up_with_the_section_links() {
+    let edges = format!("{LEFT_IN_ROW} return {{askLabel: left('Ask orq', '.label'), reviewsLabel: left('Reviews', '.label'), askIcon: left('Ask orq', 'svg'), reviewsIcon: left('Reviews', 'svg')}};");
+    let Some(result) = open(1440, "/projects/alpha/reviews", vec![], false, vec![json!({"wait": ASK}), json!({"eval": "edges", "js": edges})]) else { return };
+    let edges = eval(&result, "edges");
+    assert!(edges["reviewsLabel"].is_number() && edges["reviewsIcon"].is_number(), "{edges}");
+    assert_eq!(edges["askLabel"], edges["reviewsLabel"], "the labels start at the same x: {edges}");
+    assert_eq!(edges["askIcon"], edges["reviewsIcon"], "the icons start at the same x: {edges}");
+}
+
+#[test]
+fn ask_orq_sparkle_is_centred_on_the_collapsed_rail() {
+    let centres = "var s = document.querySelector('.sidebar nav [data-ask-orq] svg').getBoundingClientRect(); var r = document.querySelector('.sidebar').getBoundingClientRect(); return {icon: s.left + s.width / 2, rail: r.left + r.width / 2};";
+    let Some(result) = open(1440, "/projects/alpha/reviews", vec![], false, vec![json!({"click": "[data-rail-button]"}), json!({"wait": ".shell.collapsed"}), json!({"eval": "centres", "js": centres})]) else { return };
+    let centres = eval(&result, "centres");
+    let (icon, rail) = (centres["icon"].as_f64().unwrap(), centres["rail"].as_f64().unwrap());
+    assert!((icon - rail).abs() <= 1.0, "the sparkle sits in the middle of the rail: {centres}");
 }
 
 #[test]

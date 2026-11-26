@@ -319,7 +319,7 @@ a, button { -webkit-tap-highlight-color: transparent; }
 .sidebar nav a[aria-current="page"] { font-weight: 500; background: var(--status-running-bg); }
 .shell.collapsed .sidebar .label { display: none; }
 /* Ask orq: a toggle among the section links, drawn like them, with their pill while its panel is open. */
-.sidebar nav .nav-toggle { display: flex; align-items: center; gap: 0.75rem; min-height: 38px; line-height: 1.25; font-size: 0.9375rem; font-weight: 400; white-space: nowrap; padding: 0 1rem; border: 0; border-radius: 0.5rem; margin-bottom: 0.125rem; background: transparent; color: var(--text); text-align: left; width: 100%; cursor: pointer; }
+.sidebar nav .nav-toggle { display: flex; align-items: center; justify-content: flex-start; gap: 0.75rem; min-height: 38px; line-height: 1.25; font-size: 0.9375rem; font-weight: 400; white-space: nowrap; padding: 0 1rem; border: 0; border-radius: 0.5rem; margin-bottom: 0.125rem; background: transparent; color: var(--text); text-align: left; width: 100%; cursor: pointer; }
 .sidebar nav .nav-toggle[aria-expanded="true"] { font-weight: 500; background: var(--status-running-bg); color: var(--status-running); }
 /* The panel sits beside the page in its own column; the page keeps its own scroll. */
 .shell.asking { grid-template-columns: 240px minmax(0, 1fr) minmax(320px, 400px); grid-template-areas: "bar bar bar" "side main ask"; }
@@ -641,7 +641,9 @@ p[role=alert]:empty { display: none; }
 .sidebar-foot .theme-toggle { align-self: flex-start; margin-left: 0.5rem; }
 .shell.collapsed .sign-out .label { display: none; }
 @media (min-width: 701px) {
-  .shell.collapsed .sidebar nav a { justify-content: center; padding: 0; }
+  .shell.collapsed .sidebar nav a, .shell.collapsed .sidebar nav .nav-toggle { justify-content: center; padding: 0; }
+  /* Every button is at least 44px wide, more than the rail's 39px row; the toggle fills the row like the links. */
+  .shell.collapsed .sidebar nav .nav-toggle { min-width: 0; }
   .shell.collapsed .sign-out { justify-content: center; padding: 0; }
   .shell.collapsed .sidebar-foot { align-items: center; }
   .shell.collapsed .sidebar-foot .theme-toggle { align-self: center; margin-left: 0; }

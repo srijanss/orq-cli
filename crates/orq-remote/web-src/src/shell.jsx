@@ -146,7 +146,7 @@ function AskToggle({ ask, className = undefined, size = 20, label = "label", tab
         ask?.onToggle?.();
         onToggled?.(!open);
       }}>
-      <Icon name="chat" size={size} />
+      <Icon name="sparkle" size={size} />
       <span className={label}>Ask orq</span>
     </button>
   );
