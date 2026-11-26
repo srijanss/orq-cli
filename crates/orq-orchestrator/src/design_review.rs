@@ -82,9 +82,11 @@ pub struct DesignBaseline<'a> {
     pub branch: &'a str,
     /// Where the run keeps the target's capture, shared by its rounds and members.
     pub cache: &'a Path,
-    /// The run's configured setup steps, run in the target's worktree before it is served (with the
-    /// dependency install its lockfile calls for), as the run's own worktree was prepared.
-    pub setup: &'a [Vec<String>],
+    /// The local files the run carries from the main checkout (`None`: the default list), carried
+    /// into the target's worktree too before the install its lockfile calls for. The run's configured
+    /// setup steps are not run there: they prepare the run's session and its own databases, and the
+    /// target's page is served, like the run's, with neither.
+    pub local_files: Option<&'a [String]>,
 }
 
 /// The target's page as a round gives it to the reviewer.
@@ -1092,13 +1094,20 @@ fn target_head(target: &DesignBaseline) -> Result<String, String> {
     Ok(head)
 }
 
-/// Runs the run's setup steps, then the install the target's lockfile calls for, in the target's
-/// worktree; the log is kept beside the target's capture. Why not, when a step fails.
+/// Carries the main checkout's local files into the target's worktree, then runs the install its
+/// lockfile calls for (no configured step, so nothing that touches a database); the log is kept
+/// beside the target's capture. Why not, when the install fails.
 fn prepare_target_worktree(target: &DesignBaseline, worktree: &Path) -> Result<(), String> {
-    let plan = crate::setup::plan_setup(worktree, target.setup)
+    let carried = crate::local_files::carry_local_files(target.repo, worktree, target.local_files);
+    let plan = crate::setup::plan_setup(worktree, &[])
         .map_err(|e| format!("its worktree could not be prepared: {e}"))?;
-    crate::setup::run_setup(worktree, &plan.steps, &target.cache.join("setup.log"))
-        .map_err(|failure| format!("its worktree could not be prepared: {failure}"))
+    crate::setup::run_setup_with_env(
+        worktree,
+        &plan.steps,
+        &target.cache.join("setup.log"),
+        &carried.env,
+    )
+    .map_err(|failure| format!("its worktree could not be prepared: {failure}"))
 }
 
 /// Removes the target's temporary worktree and Git's record of it; nothing there is an error.

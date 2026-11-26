@@ -150,7 +150,7 @@ struct Captured {
     /// The worktree's HEAD when it was captured.
     head: String,
     viewports: Vec<String>,
-    /// Whether the worktree had been prepared (the fixture's setup step writes `prepared.txt`).
+    /// Whether the worktree had the main checkout's local file `local.conf`.
     prepared: bool,
 }
 
@@ -164,8 +164,8 @@ struct Fixture {
     cache: TempDir,
     agents: TempDir,
     settings: DesignSettings,
-    /// The run's setup steps, which prepare the target's worktree too.
-    setup: Vec<Vec<String>>,
+    /// The local files the run carries from the main checkout, carried into the target's worktree too.
+    local_files: Option<Vec<String>>,
 }
 
 impl Fixture {
@@ -183,7 +183,7 @@ impl Fixture {
             cache: TempDir::new("orq-design-baseline-cache"),
             agents,
             settings: settings(mode),
-            setup: Vec::new(),
+            local_files: None,
         };
         f.put("DESIGN.md", b"# Home\n");
         f.put("UX.md", b"# UX\n\nKeep the existing contact section.\n");
@@ -231,7 +231,7 @@ impl Fixture {
             repo: self.repo.root(),
             branch: TARGET,
             cache: self.cache.path(),
-            setup: &self.setup,
+            local_files: self.local_files.as_deref(),
         }
     }
 
@@ -279,8 +279,7 @@ impl Fixture {
                 worktree: run.worktree.to_path_buf(),
                 head: git(run.worktree, &["rev-parse", "HEAD"]),
                 viewports: run.viewports.iter().map(|v| v.name.clone()).collect(),
-                prepared: run.worktree.join("prepared.txt").is_file(),
-            });
+                prepared: run.worktree.join("local.conf").is_file(),            });
             capture(run)
         };
         review_design_with_baseline(&run, &recording, &[], Some(&self.baseline()));
@@ -519,21 +518,19 @@ fn a_review_with_a_reference_for_every_viewport_captures_no_baseline() {
     assert!(!f.report().contains("target's page"), "{}", f.report());
 }
 
-fn step(words: &[&str]) -> Vec<String> {
-    words.iter().map(|word| word.to_string()).collect()
-}
-
 #[test]
-fn the_targets_worktree_is_prepared_with_the_runs_setup_before_it_is_captured() {
+fn the_targets_worktree_has_the_main_checkouts_local_files_before_it_is_captured() {
     let mut f = Fixture::new(DesignMode::Infer);
-    f.setup = vec![step(&["sh", "-c", "echo yes > prepared.txt"])];
+    // A git-ignored file of the main checkout, as a dotenv file is: no worktree has it of its own.
+    fs::write(f.repo.root().join("local.conf"), "PORT=1\n").unwrap();
+    f.local_files = Some(vec!["local.conf".to_string()]);
     let calls = RefCell::new(Vec::new());
     f.review(1, &calls, &fake_capture);
     let baseline = f.baseline_calls(&calls);
     assert_eq!(baseline.len(), 1, "{calls:?}");
     assert!(
         baseline[0].prepared,
-        "the setup ran in the target's worktree first: {calls:?}"
+        "the local file was carried into the target's worktree first: {calls:?}"
     );
     assert!(
         f.report()
@@ -544,9 +541,13 @@ fn the_targets_worktree_is_prepared_with_the_runs_setup_before_it_is_captured() 
 }
 
 #[test]
-fn a_target_worktree_whose_setup_fails_is_not_captured_and_the_report_says_why() {
-    let mut f = Fixture::new(DesignMode::Infer);
-    f.setup = vec![step(&["sh", "-c", "exit 3"])];
+fn a_target_worktree_whose_install_fails_is_not_captured_and_the_report_says_why() {
+    let f = Fixture::new(DesignMode::Infer);
+    // The target's lockfile calls for `uv sync --locked`, which cannot succeed with no project.
+    fs::write(f.repo.root().join("uv.lock"), "not a lockfile\n").unwrap();
+    git(f.repo.root(), &["add", "uv.lock"]);
+    git(f.repo.root(), &["commit", "--quiet", "-m", "a lockfile"]);
+    git(f.repo.root(), &["branch", "--force", TARGET, "HEAD"]);
     let calls = RefCell::new(Vec::new());
     f.review(1, &calls, &fake_capture);
     assert!(f.baseline_calls(&calls).is_empty(), "{calls:?}");
