@@ -64,13 +64,22 @@ pub fn baseline_branch(run_branch: &str) -> String {
     format!("{run_branch}-baseline")
 }
 
-/// The databases of the run's target-page worktree (see [`baseline_branch`]).
+/// The databases of the run's target-page worktree (see [`baseline_branch`]). Variables the run
+/// settings name but no main dotenv file can give are notes: what the target's setup steps would
+/// see then is orq's own environment, which names the main databases.
 pub fn baseline_databases(
     main_checkout: &Path,
     run_branch: &str,
     settings: &crate::RunSettings,
 ) -> WorktreeDatabases {
-    run_databases(main_checkout, &baseline_branch(run_branch), settings)
+    let mut databases = run_databases(main_checkout, &baseline_branch(run_branch), settings);
+    if !main_checkout.join(".env").exists() {
+        let configured = settings.test_db_vars.iter().flatten();
+        databases.notes.extend(configured.map(|var| {
+            format!("the main checkout has no dotenv file to name {var}; its database is not isolated")
+        }));
+    }
+    databases
 }
 
 /// Drops the test databases of the run's target-page worktree the way a run's are dropped

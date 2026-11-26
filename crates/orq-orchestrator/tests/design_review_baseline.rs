@@ -837,6 +837,28 @@ fn a_database_the_main_dotenv_file_does_not_name_means_no_baseline_and_the_repor
     );
 }
 
+#[test]
+fn configured_database_variables_and_no_main_dotenv_file_mean_no_baseline_and_the_report_says_why()
+{
+    // The variables could still come from orq's own environment, which names the main databases.
+    let mut f = Fixture::new(DesignMode::Infer);
+    assert!(!f.repo.root().join(".env").exists(), "premise: no dotenv file");
+    f.run_settings.test_db_vars = Some(vec!["DB_NAME".to_string()]);
+    let ran = f.cache.path().join("setup-ran");
+    f.run_settings.setup = vec![vec!["touch".to_string(), ran.display().to_string()]];
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    assert!(f.baseline_calls(&calls).is_empty(), "{calls:?}");
+    assert!(!ran.exists(), "nothing is run in the target's worktree");
+    assert_eq!(f.calls(), 1, "the review goes on");
+    let report = f.report();
+    assert!(
+        report.contains("Reviewed by the rules only")
+            && report.contains("the main checkout has no dotenv file to name DB_NAME"),
+        "{report}"
+    );
+}
+
 /// A start command needing `built.txt`, which only the project's configured setup step writes.
 fn needs_built_file(run_worktree: PathBuf) -> impl Fn(&CaptureRun) -> CaptureOutcome {
     move |run: &CaptureRun| {
