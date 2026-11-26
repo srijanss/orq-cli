@@ -603,6 +603,20 @@ fn a_discarded_runs_figures_link_only_to_runs_that_can_still_be_opened() {
     assert_eq!(started["unlisted"], 1, "how many it counts but cannot list: {stats}");
 }
 
+#[test]
+fn when_every_run_started_was_discarded_the_started_figure_links_nowhere() {
+    let s = setup("stats-discarded-all");
+    let alpha = git_repo(&s.scan, "alpha");
+    add_run(&s, "only", &project_id(&alpha), DAY, vec![stage("stage.started", "gate", 10), stage("stage.failed", "gate", 20), e("run.failed", 21)]);
+    orq_orchestrator::discard_run(&RunStore::new(&s.roots.state), "only", &alpha).unwrap();
+
+    let (_, stats) = get(&s, "/api/stats?project=alpha&days=7");
+
+    let started = &stats["outcomes"]["started"];
+    assert_eq!(started["count"], 1, "{stats}");
+    assert!(started["link"].is_null(), "no run of it can be opened: {stats}");
+}
+
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 
 /// The built web app at `url`, answering its requests with `responses` in turn, signed in.

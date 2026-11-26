@@ -284,7 +284,11 @@ pub fn compute<'a>(all: &'a [RunFacts], project: Option<&str>, days: u64, now: u
 
     // A discarded run's records are gone, so no Runs list can show it: those figures count it without
     // linking to it, and say how many they could not list.
-    let mut started_figure = figure(ids(&|_| true));
+    let listed = ids(&|_| true);
+    let mut started_figure = figure(listed.clone());
+    if listed.is_empty() {
+        started_figure["link"] = Value::Null;
+    }
     started_figure["count"] = json!(started.len());
     started_figure["runs"] = json!(started.iter().map(|run| run.run_id.as_str()).collect::<Vec<_>>());
     started_figure["unlisted"] = json!(discarded.len());
