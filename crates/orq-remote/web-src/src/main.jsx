@@ -6533,6 +6533,13 @@ function tokensLabel(count) {
   return String(count);
 }
 
+// Why the Runs card counts runs its links leave out: a discarded run's records are gone.
+function unlistedNote(unlisted) {
+  if (!Number.isInteger(unlisted) || unlisted <= 0) return null;
+  const runs = unlisted === 1 ? "1 discarded run is" : unlisted + " discarded runs are";
+  return <p className="muted">{runs + " counted but can't be opened: " + (unlisted === 1 ? "its" : "their") + " records are gone."}</p>;
+}
+
 // A number that opens the Runs list filtered to the runs it counts; a figure of no runs is plain text.
 function FigureLink({ figure, children = null, className = "stat-figure" }) {
   const shown = children ?? String(figure?.count ?? 0);
@@ -6602,6 +6609,7 @@ function StatsView({ stats }) {
             </div>
           ))}
         </dl>
+        {unlistedNote(outcomes.started?.unlisted)}
       </StatsCard>
       <StatsCard title="First-try success">
         <p className="stats-headline">{share}</p>

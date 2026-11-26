@@ -585,6 +585,24 @@ fn a_discarded_run_is_still_counted_as_started_and_as_discarded() {
     assert_eq!(other["outcomes"]["discarded"]["count"], 0, "{other}");
 }
 
+#[test]
+fn a_discarded_runs_figures_link_only_to_runs_that_can_still_be_opened() {
+    let (s, _, _) = seeded("stats-discarded-links");
+    let store = RunStore::new(&s.roots.state);
+    orq_orchestrator::discard_run(&store, "f1", &s.scan.join("alpha")).unwrap();
+
+    let (_, stats) = get(&s, "/api/stats?project=alpha&days=7");
+
+    let discarded = &stats["outcomes"]["discarded"];
+    assert!(discarded["link"].is_null(), "a discarded run cannot be opened: {stats}");
+    let started = &stats["outcomes"]["started"];
+    let link = started["link"].as_str().unwrap_or_else(|| panic!("{stats}"));
+    let linked: Vec<&str> = link.split("runs=").nth(1).unwrap().split(',').collect();
+    assert!(!linked.contains(&"f1"), "{stats}");
+    assert_eq!(linked.len() as u64 + 1, started["count"].as_u64().unwrap(), "every other started run is linked: {stats}");
+    assert_eq!(started["unlisted"], 1, "how many it counts but cannot list: {stats}");
+}
+
 const TOKEN: &str = "typed-token-0123456789abcdef0123456789";
 
 /// The built web app at `url`, answering its requests with `responses` in turn, signed in.
@@ -682,6 +700,23 @@ fn the_stats_page_shows_every_figure_as_a_link_to_the_runs_it_counts() {
         !texts.iter().any(|text| text.contains('$')),
         "no money figure: {texts:?}"
     );
+}
+
+#[test]
+fn the_stats_page_says_a_discarded_run_is_counted_but_cannot_be_opened() {
+    let mut stats = web_stats("/api/stats?days=7");
+    let outcomes = &mut stats["json"]["outcomes"];
+    outcomes["started"]["unlisted"] = json!(1);
+    outcomes["discarded"] = json!({"count": 1, "runs": ["gone1"], "link": null});
+    let Some(out) = page("/stats", json!([web_projects(), stats]), false) else { return };
+    let settled = &out["frames"][1]["settled"];
+    let texts: Vec<&str> = settled["texts"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(
+        texts.contains(&"1 discarded run is counted but can't be opened: its records are gone."),
+        "{texts:?}"
+    );
+    let links = settled["links"].as_array().unwrap();
+    assert!(!links.iter().any(|link| link["href"].as_str().is_some_and(|href| href.contains("gone1"))), "{links:?}");
 }
 
 #[test]

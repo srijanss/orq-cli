@@ -282,6 +282,15 @@ pub fn compute<'a>(all: &'a [RunFacts], project: Option<&str>, days: u64, now: u
             .is_some_and(|from| from.needed_review)
     };
 
+    // A discarded run's records are gone, so no Runs list can show it: those figures count it without
+    // linking to it, and say how many they could not list.
+    let mut started_figure = figure(ids(&|_| true));
+    started_figure["count"] = json!(started.len());
+    started_figure["runs"] = json!(started.iter().map(|run| run.run_id.as_str()).collect::<Vec<_>>());
+    started_figure["unlisted"] = json!(discarded.len());
+    let mut discarded_figure = figure(discarded);
+    discarded_figure["link"] = Value::Null;
+
     let delivered = ids(&|run| run.outcome == Outcome::Delivered);
     let first_try =
         ids(&|run| run.outcome == Outcome::Delivered && run.gate_fixes == 0 && !review_again(run));
@@ -396,10 +405,10 @@ pub fn compute<'a>(all: &'a [RunFacts], project: Option<&str>, days: u64, now: u
         "days": days,
         "project": project,
         "outcomes": {
-            "started": figure(started.iter().map(|run| run.run_id.as_str()).collect()),
+            "started": started_figure,
             "delivered": figure(delivered),
             "failed": figure(ids(&|run| run.outcome == Outcome::Failed)),
-            "discarded": figure(discarded),
+            "discarded": discarded_figure,
         },
         "first_try": first_try_figure,
         "failures_by_stage": failures_by_stage,
