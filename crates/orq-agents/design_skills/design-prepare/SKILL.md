@@ -32,6 +32,12 @@ prepared folder.
 6. List in `needed_files` each required asset that is missing (an image, icon or font the
    references show and the package does not supply) and that step 5 did not find in the
    repository. Its `why` says where you searched.
+7. List the package's missing information, whether you write the package or check it. When a
+   section renders images from a model or media (a database, uploads) and `UX.md` does not list
+   them, name "## Data images" (a heading of `UX.md`) in that list, for images from a model or media:
+   one line per image, a CSS selector or section name and why the captures will not have it (e.g.
+   `.home-brands img: brand logos from media, missing in captures`). Such images are not needed
+   files: never list them in `needed_files`.
 
 ## Never
 

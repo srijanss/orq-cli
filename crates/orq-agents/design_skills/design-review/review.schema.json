@@ -21,7 +21,8 @@
           "id": { "type": "string" },
           "required": { "type": "boolean" },
           "status": { "type": "string", "enum": ["pass", "fail", "not_assessed"] },
-          "evidence": { "type": "array", "items": { "type": "string" } }
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "reason": { "type": "string" }
         }
       }
     },

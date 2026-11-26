@@ -98,6 +98,14 @@ Document.prototype.querySelectorAll = function () { return []; };
 </script></head>
 <body><main><h1>Tamper</h1></main></body></html>"#;
 
+/// Two images that do not load (one in the brands section) and one that does.
+const IMAGES: &str = r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Images</title></head>
+<body><main><h1>Images</h1>
+<img class="hero" src="/missing-hero.png" alt="hero" width="40" height="40">
+<section class="home-brands"><img src="/dot.svg" alt="dot" width="40" height="40"><img src="/media/brand.png" alt="brand" width="40" height="40"></section>
+</main></body></html>"#;
+
 const DOT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><circle cx="20" cy="20" r="18" fill="red"/></svg>"#;
 
 /// A worktree holding the fixture site.
@@ -110,6 +118,7 @@ fn fixture_site() -> GitFixture {
     std::fs::write(root.join("broken.html"), BROKEN).unwrap();
     std::fs::write(root.join("tamper.html"), TAMPER).unwrap();
     std::fs::write(root.join("dot.svg"), DOT).unwrap();
+    std::fs::write(root.join("images.html"), IMAGES).unwrap();
     std::fs::write(root.join("many.html"), many_items_page()).unwrap();
     repo
 }
@@ -351,6 +360,42 @@ fn a_selector_matching_more_elements_than_the_capture_measures_leaves_the_token_
     assert_ne!(check.status, TokenCheckStatus::Pass, "the red 60th item was never measured: {check:#?}");
     let reason = check.reason.clone().unwrap_or_default();
     assert!(reason.contains("li") && reason.contains("/many at desktop"), "{reason}");
+}
+
+#[test]
+fn a_broken_img_is_recorded_as_unloaded_with_its_selector_and_the_data_image_it_matches() {
+    let Some(browser) = chromium() else { return };
+    let site = fixture_site();
+    let logs = TempDir::new("design-capture-unloaded-images");
+    let package = logs.path().join("design/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("UX.md"),
+        "# UX\n\n## Data images\n\n- `.home-brands img`: brand logos from media, missing in captures\n",
+    )
+    .unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(site.root(), logs.path(), &["/images".to_string()], &browser, &settings);
+
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert!(record.failures.is_empty(), "failures: {:?}", record.failures);
+    let measured = read_json(&logs.path().join("design/round-1/desktop/measurements.json"));
+    let unloaded = measured["routes"]["/images"]["unloaded_images"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{measured}"))
+        .clone();
+    assert_eq!(unloaded.len(), 2, "the loaded dot is not listed: {unloaded:?}");
+    assert_eq!(unloaded[0]["selector"], "main > img.hero", "{unloaded:?}");
+    assert_eq!(unloaded[0]["data_image"], Value::Null, "{unloaded:?}");
+    assert_eq!(
+        unloaded[1]["selector"], "main > section.home-brands > img:nth-of-type(2)",
+        "{unloaded:?}"
+    );
+    assert_eq!(unloaded[1]["data_image"], ".home-brands img", "{unloaded:?}");
+    assert!(unloaded[1]["src"].as_str().unwrap().ends_with("/media/brand.png"));
 }
 
 #[test]

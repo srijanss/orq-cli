@@ -68,6 +68,15 @@ behaviour).
 For each capture, check its viewport, its route and that the page was ready (no spinner, no missing
 fonts or images, no error overlay). A capture that is not usable is a blocker, not an issue.
 
+Some images come from data (a database, uploaded media) the capture environment does not have.
+The package lists them in `UX.md` under "## Data images", one line each: a CSS selector or section
+name and why it is missing (e.g. `.home-brands img: brand logos from media, missing in captures`).
+Orq measures which images did not load and lists each with its selector, saying which data image
+it matched; go by that list rather than judging from the raster. A missing image that matches a
+listed entry is not a readiness problem: add a check with `required` false, status `not_assessed`
+and `reason` "data image, not in the capture environment", and review the rest of the page.
+A missing image the package does not list is still a blocker.
+
 ## Review, in this order
 
 1. The full page against its reference.

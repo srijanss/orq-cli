@@ -765,8 +765,14 @@ fn token_issue_against(file: &str, text: &str, token: &str) -> Fixture {
 fn a_rule_issue_stands_only_on_a_token_the_package_defines_by_that_exact_name() {
     // A token is defined: a prefix of one, a comment or a var() reference is not a definition.
     for (case, text) in [
-        ("a prefix of a defined token", ":root { --header-height: 64px; }\n"),
-        ("named in a comment", "/* --header: 64px */\n:root { --gap: 8px; }\n"),
+        (
+            "a prefix of a defined token",
+            ":root { --header-height: 64px; }\n",
+        ),
+        (
+            "named in a comment",
+            "/* --header: 64px */\n:root { --gap: 8px; }\n",
+        ),
         ("only referenced", ":root { --gap: var(--header); }\n"),
     ] {
         let f = token_issue_against("tokens.css", text, "--header");
@@ -775,7 +781,111 @@ fn a_rule_issue_stands_only_on_a_token_the_package_defines_by_that_exact_name() 
     }
 
     // A nested tokens.json group defines its joined name.
-    let f = token_issue_against("tokens.json", r#"{"font": {"title": "32px"}}"#, "--font-title");
+    let f = token_issue_against(
+        "tokens.json",
+        r#"{"font": {"title": "32px"}}"#,
+        "--font-title",
+    );
     assert_eq!(f.review(1), DesignVerdict::ChangesRequired);
     assert_eq!(f.calls("reviewer"), 1);
+}
+
+// ---------------------------------------------------------------- data images
+
+const DATA_IMAGES_UX: &str = "# UX\n\nThe carousel scrolls by itself.\n\n## Data images\n\n\
+     - `.home-brands img`: brand logos from media, missing in captures\n\n## Other\n\nNothing.\n";
+
+/// A fixture whose package's UX.md lists data images, and whose desktop capture measured
+/// `unloaded` (selector, the data image entry it matched) as images that did not load.
+fn unloaded_images(unloaded: &[(&str, Option<&str>)]) -> Fixture {
+    let f = Fixture::new();
+    let package = f.repo.root().join("designs").join(FEATURE);
+    fs::write(package.join("UX.md"), DATA_IMAGES_UX).unwrap();
+    let images: Vec<Value> = unloaded
+        .iter()
+        .map(|(selector, data_image)| {
+            json!({"selector": selector, "src": "/media/logo.png", "data_image": data_image})
+        })
+        .collect();
+    let measured = json!({"viewport": "desktop", "width": 40, "height": 30, "routes": {"/": {
+        "document": {"width": 40, "height": 30, "root_font_size": 16}, "elements": [],
+        "unloaded_images": images}}});
+    fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
+    f
+}
+
+#[test]
+fn unloaded_images_matching_ux_md_data_images_are_listed_as_data_images_in_the_prompt() {
+    let f = unloaded_images(&[
+        (
+            "main > section.home-brands > img:nth-of-type(1)",
+            Some(".home-brands img"),
+        ),
+        (
+            "main > section.home-brands > img:nth-of-type(2)",
+            Some(".home-brands img"),
+        ),
+    ]);
+    f.answer("reviewer", &answer("pass", vec![]));
+
+    assert_eq!(f.review(1), DesignVerdict::Pass);
+
+    let prompt = f.prompt("reviewer", 1);
+    for told in [
+        "Images that did not load",
+        "- / at desktop: main > section.home-brands > img:nth-of-type(1): data image \".home-brands img\" (brand logos from media, missing in captures)",
+        "- / at desktop: main > section.home-brands > img:nth-of-type(2): data image",
+        "data image, not in the capture environment",
+    ] {
+        assert!(prompt.contains(told), "the prompt does not say {told:?}: {prompt}");
+    }
+    assert!(
+        !prompt.contains("not a listed data image"),
+        "no image is given as a readiness problem: {prompt}"
+    );
+}
+
+#[test]
+fn a_not_assessed_data_image_check_with_its_reason_does_not_block_the_verdict() {
+    let f = unloaded_images(&[("main > section.home-brands > img", Some(".home-brands img"))]);
+    let mut passed = answer("pass", vec![]);
+    passed["checks"].as_array_mut().unwrap().push(json!({
+        "id": "data-image-home-brands", "required": false, "status": "not_assessed",
+        "reason": "data image, not in the capture environment",
+        "evidence": ["round-1/desktop/index.png"],
+    }));
+    f.answer("reviewer", &passed);
+
+    assert_eq!(f.review(1), DesignVerdict::Pass, "{:#}", f.written(1));
+    assert_eq!(f.calls("reviewer"), 1, "the answer was accepted first time");
+    let written = f.written(1);
+    let check = &written["review"]["checks"][1];
+    assert_eq!(check["status"], "not_assessed", "{written:#}");
+    assert_eq!(
+        check["reason"], "data image, not in the capture environment",
+        "{written:#}"
+    );
+}
+
+#[test]
+fn an_unloaded_image_not_listed_as_a_data_image_is_still_a_readiness_problem() {
+    // One matches no entry; the other names an entry UX.md does not list.
+    let f = unloaded_images(&[
+        ("main > img.hero", None),
+        ("main > section.team > img", Some(".team img")),
+        ("main > section.home-brands > img", Some(".home-brands img")),
+    ]);
+    f.answer("reviewer", &answer("blocked", vec![]));
+
+    f.review(1);
+
+    let prompt = f.prompt("reviewer", 1);
+    for told in [
+        "- / at desktop: main > img.hero: not a listed data image, a capture readiness problem",
+        "- / at desktop: main > section.team > img: not a listed data image, a capture readiness problem",
+        "- / at desktop: main > section.home-brands > img: data image \".home-brands img\"",
+        "A capture with an image that did not load and is not a listed data image is not usable: a blocker",
+    ] {
+        assert!(prompt.contains(told), "the prompt does not say {told:?}: {prompt}");
+    }
 }

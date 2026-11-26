@@ -131,6 +131,9 @@ pub struct ReviewCheck {
     pub required: bool,
     pub status: CheckStatus,
     pub evidence: Vec<String>,
+    /// Why the check was not assessed, e.g. "data image, not in the capture environment".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,6 +419,125 @@ struct ReviewContext {
     rules_only: Vec<String>,
     /// The components the feature builds, when its package is shared and it builds only some.
     scope: Option<ReviewScope>,
+    /// The images the capture measured as not loaded, each with the data image it matched.
+    unloaded_images: Vec<UnloadedImage>,
+}
+
+/// An `img` the capture measured as not loaded (`naturalWidth` 0).
+struct UnloadedImage {
+    route: String,
+    viewport: String,
+    /// The capture's selector for the image.
+    selector: String,
+    /// The entry of UX.md's "Data images" it matched, with that entry's reason.
+    data_image: Option<(String, String)>,
+}
+
+/// The images UX.md lists under "## Data images": one line each, a CSS selector or section name
+/// and, after `: `, why it is missing from the captures. List markers and backticks are dropped.
+fn data_images(ux: &str) -> Vec<(String, String)> {
+    let mut inside = false;
+    let mut entries = Vec::new();
+    for line in ux.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            inside = line
+                .trim_start_matches('#')
+                .trim()
+                .eq_ignore_ascii_case("data images");
+            continue;
+        }
+        if !inside || line.is_empty() {
+            continue;
+        }
+        let line = line.trim_start_matches(['-', '*']).trim().replace('`', "");
+        if let Some((key, reason)) = line.split_once(": ") {
+            let key = key.trim();
+            if !key.is_empty() {
+                entries.push((key.to_string(), reason.trim().to_string()));
+            }
+        }
+    }
+    entries
+}
+
+/// The data images the run's frozen package (and prepared folder) list in UX.md, with their reasons.
+pub(crate) fn data_image_entries(design_dir: &Path) -> Vec<(String, String)> {
+    [PACKAGE_DIR, PREPARED_DIR]
+        .iter()
+        .filter_map(|folder| std::fs::read_to_string(design_dir.join(folder).join("UX.md")).ok())
+        .flat_map(|ux| data_images(&ux))
+        .collect()
+}
+
+/// The round's unloaded images, from each captured viewport's measurements, matched against the
+/// package's (and the prepared folder's) data images.
+fn unloaded_images(design_dir: &Path, round: u32, record: &CaptureRecord) -> Vec<UnloadedImage> {
+    let entries = data_image_entries(design_dir);
+    let mut viewports: Vec<&str> = record.pages.iter().map(|p| p.viewport.as_str()).collect();
+    viewports.dedup();
+    let mut unloaded = Vec::new();
+    for viewport in viewports {
+        let path = design_dir
+            .join(format!("round-{round}"))
+            .join(viewport)
+            .join(MEASUREMENTS_FILE);
+        let Some(measured) = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        else {
+            continue;
+        };
+        let Some(routes) = measured["routes"].as_object() else {
+            continue;
+        };
+        for (route, page) in routes {
+            for image in page["unloaded_images"].as_array().into_iter().flatten() {
+                let Some(selector) = image["selector"].as_str() else {
+                    continue;
+                };
+                let data_image = image["data_image"]
+                    .as_str()
+                    .and_then(|key| entries.iter().find(|(known, _)| known == key).cloned());
+                unloaded.push(UnloadedImage {
+                    route: route.clone(),
+                    viewport: viewport.to_string(),
+                    selector: selector.to_string(),
+                    data_image,
+                });
+            }
+        }
+    }
+    unloaded
+}
+
+/// What the reviewer is told about the images that did not load.
+fn unloaded_images_prompt(unloaded: &[UnloadedImage]) -> String {
+    let mut text = String::from(
+        "\nImages that did not load (measured by orq: naturalWidth 0), by route and viewport:\n",
+    );
+    for image in unloaded {
+        let what = match &image.data_image {
+            Some((key, reason)) => format!("data image {key:?} ({reason})"),
+            None => "not a listed data image, a capture readiness problem".to_string(),
+        };
+        text.push_str(&format!(
+            "- {} at {}: {}: {what}\n",
+            image.route, image.viewport, image.selector
+        ));
+    }
+    text.push_str(
+        "A data image comes from data the capture environment does not have: it is not a capture \
+         readiness problem. For it, add a check with required false, status \"not_assessed\" and \
+         reason \"data image, not in the capture environment\", and review the rest of the page.\n",
+    );
+    if unloaded.iter().any(|image| image.data_image.is_none()) {
+        text.push_str(
+            "A capture with an image that did not load and is not a listed data image is not \
+             usable: a blocker.\n",
+        );
+    }
+    text
 }
 
 /// A design review scoped to some of the package's components.
@@ -723,6 +845,7 @@ fn reviewed_round(
         person,
         rules_only: rules_only.clone(),
         scope: ReviewScope::read(run.run_logs, design_dir),
+        unloaded_images: unloaded_images(design_dir, run.round, record),
     };
     let named = |mut result: RoundResult| {
         result.rules_only = rules_only.clone();
@@ -962,6 +1085,7 @@ impl PairReview {
                 person: Vec::new(),
                 rules_only: Vec::new(),
                 scope: None,
+                unloaded_images: Vec::new(),
             },
         })
     }
@@ -1035,6 +1159,9 @@ fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext)
     let measurements = format!("round-{}/{MEASUREMENTS_FILE}", context.round);
     if context.design_dir.join(&measurements).is_file() {
         prompt.push_str(&format!("Measured CSS and DOM: {measurements}\n"));
+    }
+    if !context.unloaded_images.is_empty() {
+        prompt.push_str(&unloaded_images_prompt(&context.unloaded_images));
     }
     let token_check = format!("round-{}/{TOKEN_CHECK_FILE}", context.round);
     if context.design_dir.join(&token_check).is_file() {

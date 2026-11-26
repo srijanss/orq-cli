@@ -822,6 +822,8 @@ fn capture_pages(
     let slugs = route_slugs(run.routes);
     // Besides the landmarks, every selector the token rules name, for the token check.
     let selectors = token_rule_selectors(&run.run_logs.join(RUN_DESIGN_DIR));
+    // The images UX.md lists as data images: an unloaded image is matched against them.
+    let data_images = data_image_selectors(&run.run_logs.join(RUN_DESIGN_DIR));
     let mut pages = Vec::new();
     let mut failures = Vec::new();
     for viewport in run.viewports {
@@ -849,7 +851,7 @@ fn capture_pages(
             };
             let captured = usable.clone().and_then(|()| {
                 if plain_route(route) {
-                    capture_page(browser, port, route, viewport, &selectors)
+                    capture_page(browser, port, route, viewport, &selectors, &data_images)
                 } else {
                     Err("the route is not a plain path".to_string())
                 }
@@ -912,6 +914,7 @@ fn capture_page(
     route: &str,
     viewport: &CaptureViewport,
     selectors: &[String],
+    data_images: &[String],
 ) -> Result<(Vec<u8>, Value), String> {
     let target = browser.call(
         None,
@@ -934,7 +937,15 @@ fn capture_page(
             .as_str()
             .ok_or("the tab could not be reached")?
             .to_string();
-        let result = capture_in(browser, &session, port, route, viewport, selectors);
+        let result = capture_in(
+            browser,
+            &session,
+            port,
+            route,
+            viewport,
+            selectors,
+            data_images,
+        );
         browser
             .events
             .retain(|m| m["sessionId"] != session.as_str());
@@ -956,6 +967,7 @@ fn capture_in(
     route: &str,
     viewport: &CaptureViewport,
     selectors: &[String],
+    data_images: &[String],
 ) -> Result<(Vec<u8>, Value), String> {
     let s = Some(session);
     for method in ["Page.enable", "Runtime.enable", "Network.enable"] {
@@ -1016,10 +1028,13 @@ fn capture_in(
         s,
         "Runtime.evaluate",
         json!({
-            // The selectors last, as a JSON array: their text never reaches another placeholder.
+            // The selectors last, as one JSON object: their text never reaches another placeholder.
             "expression": MEASURE_SCRIPT
                 .replace("ASSETS_BOUND_MS", &ASSETS_BOUND_MS.to_string())
-                .replace("SELECTORS_JSON", &json!(selectors).to_string()),
+                .replace(
+                    "INPUT_JSON",
+                    &json!({"selectors": selectors, "data_images": data_images}).to_string()
+                ),
             "contextId": context,
             "awaitPromise": true,
             "returnByValue": true,
@@ -1061,6 +1076,14 @@ fn capture_in(
         .and_then(base64_decode)
         .ok_or("the screenshot could not be read")?;
     Ok((png, measured))
+}
+
+/// The keys of the data images the run's package (and prepared folder) list in UX.md.
+fn data_image_selectors(design_dir: &Path) -> Vec<String> {
+    crate::design_review::data_image_entries(design_dir)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
 }
 
 /// A page error (an uncaught exception) fails the route.
@@ -1131,7 +1154,7 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
 
 /// Run in an isolated world: turns animations and the caret off, waits a bounded time for fonts and
 /// images, then measures the landmarks and headings. Returns JSON text.
-const MEASURE_SCRIPT: &str = r#"(async function () {
+const MEASURE_SCRIPT: &str = r##"(async function () {
   var style = document.createElement("style");
   style.textContent = "*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; scroll-behavior: auto !important; }";
   (document.head || document.documentElement).appendChild(style);
@@ -1183,9 +1206,35 @@ const MEASURE_SCRIPT: &str = r#"(async function () {
     elements.push({tag: tag, index: index, box: measured.box, styles: measured.styles});
   }
   doc.root_font_size = parseFloat(getComputedStyle(root).fontSize) || 16;
+  var input = INPUT_JSON;
+  function path(el) {
+    var parts = [];
+    while (el && el.nodeType === 1 && el !== root && el !== body) {
+      var part = el.tagName.toLowerCase();
+      if (el.id) { parts.unshift(part + "#" + CSS.escape(el.id)); break; }
+      Array.prototype.forEach.call(el.classList, function (c) { part += "." + CSS.escape(c); });
+      var parent = el.parentElement;
+      if (parent) {
+        var same = Array.prototype.filter.call(parent.children, function (c) { return c.tagName === el.tagName; });
+        if (same.length > 1) part += ":nth-of-type(" + (same.indexOf(el) + 1) + ")";
+      }
+      parts.unshift(part);
+      el = parent;
+    }
+    return parts.join(" > ");
+  }
+  var unloaded = [];
+  Array.prototype.forEach.call(document.images, function (img) {
+    if (img.naturalWidth > 0 || unloaded.length >= 100) return;
+    var dataImage = null;
+    for (var k = 0; k < input.data_images.length && dataImage === null; k++) {
+      try { if (img.closest(input.data_images[k])) dataImage = input.data_images[k]; } catch (e) {}
+    }
+    unloaded.push({selector: path(img), src: img.currentSrc || img.src, data_image: dataImage});
+  });
   var selectors = {};
   var selectorCounts = {};
-  SELECTORS_JSON.forEach(function (selector) {
+  input.selectors.forEach(function (selector) {
     var found = [];
     try { found = document.querySelectorAll(selector); } catch (e) { found = []; }
     var matched = [];
@@ -1194,5 +1243,6 @@ const MEASURE_SCRIPT: &str = r#"(async function () {
     // How many the selector matched in all: more than were measured is a check left incomplete.
     selectorCounts[selector] = found.length;
   });
-  return JSON.stringify({document: doc, elements: elements, selectors: selectors, selector_counts: selectorCounts});
-})()"#;
+  return JSON.stringify({document: doc, elements: elements, selectors: selectors, selector_counts: selectorCounts,
+    unloaded_images: unloaded});
+})()"##;

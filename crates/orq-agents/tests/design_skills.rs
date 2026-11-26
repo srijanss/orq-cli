@@ -88,6 +88,39 @@ fn the_review_skill_decides_blocked_before_changes_required_before_pass() {
     assert!(!skill.contains("`verdict` is `pass` with no open"), "the overlapping rule is gone: {skill}");
 }
 
+/// A missing image the package lists as a data image is not assessed, never a blocker; any other
+/// missing image still is.
+#[test]
+fn the_review_skill_does_not_block_on_a_data_image_the_package_lists() {
+    let skill = orq_agents::design_skill("design-review").unwrap();
+    let section = skill
+        .split("\n## Check the captures\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no \"## Check the captures\" section: {skill}"));
+    let section = section.split("\n## ").next().unwrap();
+    for told in [
+        "\"## Data images\"",
+        "`not_assessed`",
+        "\"data image, not in the capture environment\"",
+        "review the rest of the page",
+        "A missing image the package does not list is still a blocker",
+    ] {
+        assert!(section.contains(told), "{told:?} missing from {section}");
+    }
+}
+
+#[test]
+fn the_prepare_skill_asks_for_data_images_when_a_section_renders_images_from_a_model_or_media() {
+    let skill = orq_agents::design_skill("design-prepare").unwrap();
+    let line = skill
+        .lines()
+        .find(|line| line.contains("\"## Data images\""))
+        .unwrap_or_else(|| panic!("no \"## Data images\" note: {skill}"));
+    assert!(line.contains("UX.md"), "{line}");
+    assert!(line.contains("model") && line.contains("media"), "{line}");
+    assert!(skill.contains("missing information"), "{skill}");
+}
+
 /// A person using the skill directly gets the same tests rule a frontend session's prompt carries.
 #[test]
 fn the_implement_skill_says_its_tests_leave_layout_and_markup_structure_to_the_design_review() {
@@ -254,6 +287,10 @@ fn the_review_schema_ships_next_to_the_review_skill_and_accepts_a_valid_review_o
     let mut basis = valid_review();
     basis["issues"][0]["basis"] = "taste".into();
     assert!(check_against_schema(&schema, &basis).is_err(), "an unknown basis is refused");
+
+    let mut reason = valid_review();
+    reason["checks"][1]["reason"] = "data image, not in the capture environment".into();
+    check_against_schema(&schema, &reason).expect("a check may say why it was not assessed");
 
     let mut wrong_type = valid_review();
     wrong_type["checks"][0]["required"] = "yes".into();
