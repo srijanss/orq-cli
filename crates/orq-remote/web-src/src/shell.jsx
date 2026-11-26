@@ -26,7 +26,7 @@ export function showChosenRow(list) {
 export function navigationEntries(projectId) {
   const entries = [
     { label: "Dashboard", icon: "home", href: "/dashboard" },
-    { label: "Todos", icon: "check", href: "/todos" },
+    { label: "Todos", icon: "listChecks", href: "/todos" },
   ];
   const base = typeof projectId === "string" && projectId !== "" ? `/projects/${encodeURIComponent(projectId)}` : "";
   entries.push(
