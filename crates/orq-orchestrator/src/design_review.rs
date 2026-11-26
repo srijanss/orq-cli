@@ -943,7 +943,13 @@ fn target_baseline(
             return Err(why.to_string());
         }
         if let Ok(pages) = serde_json::from_value::<Vec<BaselinePage>>(record["pages"].clone()) {
-            return copy_baseline(&head, &pages, &captured, &baseline_dir);
+            match copy_baseline(&head, &pages, &captured, &baseline_dir) {
+                Ok(baseline) => return Ok(baseline),
+                // A kept file is gone: the target's page is captured again, from nothing left over.
+                Err(_) => {
+                    let _ = std::fs::remove_dir_all(&baseline_dir);
+                }
+            }
         }
     }
     let _ = std::fs::remove_file(&cached);

@@ -650,6 +650,70 @@ fn members_asking_for_different_viewports_each_keep_their_baseline_for_later_rou
     assert!(other.path().join("design/baseline/desktop.png").is_file());
 }
 
+/// Every file under `dir` named `name`.
+fn files_named(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_named(&path, name));
+        } else if path.file_name().is_some_and(|n| n == name) {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
+fn a_kept_capture_whose_screenshot_is_gone_is_captured_again() {
+    let f = Fixture::new(DesignMode::Infer);
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &fake_capture);
+    let kept = files_named(f.cache.path(), "index.png");
+    assert!(!kept.is_empty(), "the target's capture is kept");
+    for image in kept {
+        fs::remove_file(image).unwrap();
+    }
+    f.review(2, &calls, &fake_capture);
+    assert_eq!(f.baseline_calls(&calls).len(), 2, "{calls:?}");
+    assert!(f.logs.path().join("design/baseline/mobile.png").is_file());
+    assert!(
+        f.report()
+            .contains("Reviewed by the rules and the target's page (no reference)"),
+        "{}",
+        f.report()
+    );
+}
+
+#[test]
+fn a_target_capture_with_no_measurements_gives_its_images_and_names_no_measurements() {
+    let f = Fixture::new(DesignMode::Infer);
+    let run_worktree = f.worktree.clone();
+    let unmeasured = |run: &CaptureRun| {
+        let outcome = fake_capture(run);
+        if run.worktree != run_worktree {
+            for measured in files_named(run.run_logs, "measurements.json") {
+                fs::remove_file(measured).unwrap();
+            }
+        }
+        outcome
+    };
+    let calls = RefCell::new(Vec::new());
+    f.review(1, &calls, &unmeasured);
+    let design = f.logs.path().join("design");
+    assert!(design.join("baseline/mobile.png").is_file());
+    assert!(!design.join("baseline/mobile-measurements.json").exists());
+    let argv = f.argv(f.calls());
+    assert!(
+        argv.contains("baseline/mobile.png (route /, viewport mobile"),
+        "{argv}"
+    );
+    assert!(
+        !argv.contains("Baseline measured CSS and DOM"),
+        "no measurements are named that are not there: {argv}"
+    );
+}
+
 #[test]
 fn an_unreadable_target_branch_leaves_the_review_by_the_rules_only() {
     let f = Fixture::new(DesignMode::Infer);
