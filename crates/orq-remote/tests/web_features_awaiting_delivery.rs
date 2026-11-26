@@ -66,15 +66,15 @@ fn the_features_api_returns_a_feature_awaiting_delivery_with_the_branch_and_run_
 }
 
 /// A design group run `run` of shop-header (passed) and shop-cards (implementing), with shop-header
-/// `awaiting_delivery` on the run's branch and shop-cards in progress.
-fn stored_group_run(s: &Setup, run: &str) {
+/// `awaiting_delivery` held by run `held_by` and shop-cards in progress.
+fn stored_group_run(s: &Setup, run: &str, held_by: &str) {
     use orq_orchestrator::{Event, RunRecord, RunStore};
     let path = git_repo(&s.scan, "alpha");
     let branch = format!("orq/{run}");
     std::fs::write(
         path.join(".tdd-features.json"),
         json!([
-            {"featureName": "shop-header", "dependsOn": [], "status": "awaiting_delivery", "heldOn": branch, "heldBy": run},
+            {"featureName": "shop-header", "dependsOn": [], "status": "awaiting_delivery", "heldOn": format!("orq/{held_by}"), "heldBy": held_by},
             {"featureName": "shop-cards", "dependsOn": ["shop-header"], "status": "in_progress"}
         ])
         .to_string(),
@@ -112,12 +112,22 @@ fn stored_group_run(s: &Setup, run: &str) {
 #[test]
 fn a_group_runs_member_awaiting_delivery_says_so_on_the_run_page() {
     let s = setup("group-member-awaiting-delivery");
-    stored_group_run(&s, "r-1");
+    stored_group_run(&s, "r-1", "r-1");
     let (status, body) = get(&s, "/api/projects/alpha/runs/r-1");
     assert_eq!(status, 200, "{body}");
     let members = body["run"]["design_group"]["members"].as_array().unwrap_or_else(|| panic!("{body}")).clone();
     assert_eq!((&members[0]["feature"], &members[0]["ledger_status"]), (&json!("shop-header"), &json!("awaiting_delivery")), "{body}");
     assert!(members[1].get("ledger_status").is_none(), "a member not awaiting delivery has none: {body}");
+}
+
+#[test]
+fn a_member_awaiting_delivery_held_by_another_run_does_not_say_so_on_this_runs_page() {
+    let s = setup("group-member-held-by-another-run");
+    stored_group_run(&s, "r-1", "r-2");
+    let (status, body) = get(&s, "/api/projects/alpha/runs/r-1");
+    assert_eq!(status, 200, "{body}");
+    let members = body["run"]["design_group"]["members"].as_array().unwrap_or_else(|| panic!("{body}")).clone();
+    assert!(members[0].get("ledger_status").is_none(), "r-2 holds shop-header, not r-1: {body}");
 }
 
 // The page in jsdom, fed what a fake server answers, as the features page tests are.

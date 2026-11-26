@@ -529,7 +529,7 @@ fn design_group_at(events: &[orq_orchestrator::Event]) -> Option<(&str, u64, u64
 /// A design group run's members as the run page shows them: which one it is at of how many, the member it
 /// stopped with, and each member's state, components (its frozen scope's, else its ledger description's) and
 /// own design rounds. `None` for any other run.
-fn design_group_shown(events: &[orq_orchestrator::Event], phase: orq_orchestrator::RunPhase, logs_dir: &Path, ledger: impl FnOnce() -> Vec<orq_features::FeatureEntry>) -> Option<serde_json::Value> {
+fn design_group_shown(run_id: &str, events: &[orq_orchestrator::Event], phase: orq_orchestrator::RunPhase, logs_dir: &Path, ledger: impl FnOnce() -> Vec<orq_features::FeatureEntry>) -> Option<serde_json::Value> {
     use orq_orchestrator::RunPhase;
     use serde_json::json;
     let members = design_group_members(events)?;
@@ -537,6 +537,8 @@ fn design_group_shown(events: &[orq_orchestrator::Event], phase: orq_orchestrato
     let halted = matches!(phase, RunPhase::Failed | RunPhase::Blocked | RunPhase::NeedsReview | RunPhase::Paused | RunPhase::DesignFilesNeeded);
     let mut ledger = Some(ledger);
     let mut entries: Option<Vec<orq_features::FeatureEntry>> = None;
+    // The features awaiting delivery that this run holds, read from the ledger once.
+    let mut held: Option<std::collections::HashSet<String>> = None;
     let mut stopped = None;
     let shown: Vec<serde_json::Value> = members
         .iter()
@@ -566,9 +568,13 @@ fn design_group_shown(events: &[orq_orchestrator::Event], phase: orq_orchestrato
             // The step of the member it is at, so a stop at the gate is not read as one in its last design round.
             let step = current.filter(|_| !passed);
             let mut shown = json!({"feature": member, "state": state, "step": step, "round": (round > 0).then_some(round), "components": components, "design": design});
-            // A member built and waiting for the run to deliver it says so, from the ledger.
-            let entries = entries.get_or_insert_with(|| ledger.take().map(|read| read()).unwrap_or_default());
-            if entries.iter().any(|entry| &entry.feature_name == member && entry.status.as_str() == "awaiting_delivery") {
+            // A member built and waiting for this run to deliver it says so, from the ledger; one another run
+            // holds does not.
+            let held = held.get_or_insert_with(|| {
+                let entries = entries.get_or_insert_with(|| ledger.take().map(|read| read()).unwrap_or_default());
+                entries.iter().filter(|entry| entry.status.as_str() == "awaiting_delivery" && entry.held_by.as_deref() == Some(run_id)).map(|entry| entry.feature_name.clone()).collect()
+            });
+            if held.contains(member) {
                 shown["ledger_status"] = json!("awaiting_delivery");
             }
             shown
@@ -2798,7 +2804,7 @@ impl orq_core::remote_inbox::ProjectsProvider for StoreProjects {
         if after.is_none() {
             // A design group run's rounds are its members': each member's are shown under it, never as the run's.
             let ledger = || orq_git::resolve_project(&project.path).ok().and_then(|git| read_ledger(&orq_features::ledger_path(&git)).ok()).unwrap_or_default();
-            if let Some(group) = design_group_shown(&events, summary.phase, &logs_dir, ledger) {
+            if let Some(group) = design_group_shown(run, &events, summary.phase, &logs_dir, ledger) {
                 shown["design_group"] = group;
             } else if let Some(design) = design_shown(&events, &logs_dir) {
                 shown["design"] = design;
