@@ -232,6 +232,14 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[rank - 1]
 }
 
+/// Adds `run_id` to `ids` unless it is already there. The runs are counted one after another, so a run
+/// already there is the last one added: no scan of the list.
+fn push_once<'a>(ids: &mut Vec<&'a str>, run_id: &'a str) {
+    if ids.last() != Some(&run_id) {
+        ids.push(run_id);
+    }
+}
+
 /// The figures for `project` (every project when `None`) over the `days` days before `now`, from
 /// every run's facts.
 pub fn compute<'a>(all: &'a [RunFacts], project: Option<&str>, days: u64, now: u64) -> Value {
@@ -300,9 +308,7 @@ pub fn compute<'a>(all: &'a [RunFacts], project: Option<&str>, days: u64, now: u
         for (stage, took) in &run.stage_times {
             let (durations, ids) = times.entry(stage).or_default();
             durations.push(*took);
-            if !ids.contains(&run.run_id.as_str()) {
-                ids.push(&run.run_id);
-            }
+            push_once(ids, &run.run_id);
         }
     }
     let stage_times: Vec<Value> = times
@@ -356,9 +362,7 @@ pub fn compute<'a>(all: &'a [RunFacts], project: Option<&str>, days: u64, now: u
             let count = |totals: &mut BTreeMap<&'a str, (Usage, Vec<&'a str>)>, key: &'a str, part: &Usage| {
                 let (sum, ids) = totals.entry(key).or_default();
                 sum.add(part);
-                if !ids.contains(&run.run_id.as_str()) {
-                    ids.push(&run.run_id);
-                }
+                push_once(ids, &run.run_id);
             };
             count(&mut by_project, &run.project, used);
             for part in used.per_model() {
