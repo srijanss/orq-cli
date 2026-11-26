@@ -1238,14 +1238,22 @@ const MEASURE_SCRIPT: &str = r##"(async function () {
     }
     return false;
   }
+  // Every image is checked; the first 100 that did not load are listed and the rest counted, with
+  // how many of those match no data image entry.
   var unloaded = [];
+  var omitted = {count: 0, not_data_images: 0};
   Array.prototype.forEach.call(document.images, function (img) {
-    if (img.naturalWidth > 0 || unloaded.length >= 100) return;
+    if (img.naturalWidth > 0) return;
     var dataImage = null;
     for (var k = 0; k < input.data_images.length && dataImage === null; k++) {
       if (isDataImage(img, input.data_images[k])) dataImage = input.data_images[k];
     }
-    unloaded.push({selector: path(img), src: img.currentSrc || img.src, data_image: dataImage});
+    if (unloaded.length < 100) {
+      unloaded.push({selector: path(img), src: img.currentSrc || img.src, data_image: dataImage});
+    } else {
+      omitted.count++;
+      if (dataImage === null) omitted.not_data_images++;
+    }
   });
   var selectors = {};
   var selectorCounts = {};
@@ -1258,6 +1266,8 @@ const MEASURE_SCRIPT: &str = r##"(async function () {
     // How many the selector matched in all: more than were measured is a check left incomplete.
     selectorCounts[selector] = found.length;
   });
-  return JSON.stringify({document: doc, elements: elements, selectors: selectors, selector_counts: selectorCounts,
-    unloaded_images: unloaded});
+  var result = {document: doc, elements: elements, selectors: selectors, selector_counts: selectorCounts,
+    unloaded_images: unloaded};
+  if (omitted.count > 0) result.unloaded_images_omitted = omitted;
+  return JSON.stringify(result);
 })()"##;

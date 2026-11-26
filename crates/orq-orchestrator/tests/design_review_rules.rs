@@ -889,3 +889,31 @@ fn an_unloaded_image_not_listed_as_a_data_image_is_still_a_readiness_problem() {
         assert!(prompt.contains(told), "the prompt does not say {told:?}: {prompt}");
     }
 }
+
+#[test]
+fn unloaded_images_past_the_listed_limit_that_are_not_data_images_are_still_a_readiness_problem() {
+    let f = unloaded_images(&[]);
+    // Every listed image is a data image; the capture left out 30 more, 2 of them not data images.
+    let images: Vec<Value> = (1..=100)
+        .map(|n| {
+            json!({"selector": format!("main > section.home-brands > img:nth-of-type({n})"),
+                "src": "/media/logo.png", "data_image": ".home-brands img"})
+        })
+        .collect();
+    let measured = json!({"viewport": "desktop", "width": 40, "height": 30, "routes": {"/": {
+        "document": {"width": 40, "height": 30, "root_font_size": 16}, "elements": [],
+        "unloaded_images": images,
+        "unloaded_images_omitted": {"count": 30, "not_data_images": 2}}}});
+    fs::write(f.logs.path().join("measured.json"), measured.to_string()).unwrap();
+    f.answer("reviewer", &answer("blocked", vec![]));
+
+    f.review(1);
+
+    let prompt = f.prompt("reviewer", 1);
+    for told in [
+        "- / at desktop: 30 more images did not load, 2 of them not a listed data image, a capture readiness problem",
+        "A capture with an image that did not load and is not a listed data image is not usable: a blocker",
+    ] {
+        assert!(prompt.contains(told), "the prompt does not say {told:?}: {prompt}");
+    }
+}

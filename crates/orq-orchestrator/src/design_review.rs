@@ -421,6 +421,17 @@ struct ReviewContext {
     scope: Option<ReviewScope>,
     /// The images the capture measured as not loaded, each with the data image it matched.
     unloaded_images: Vec<UnloadedImage>,
+    /// The unloaded images the capture counted past its limit and did not list.
+    omitted_unloaded_images: Vec<OmittedUnloadedImages>,
+}
+
+/// The unloaded images of a route at a viewport that the capture counted but did not list.
+struct OmittedUnloadedImages {
+    route: String,
+    viewport: String,
+    count: u64,
+    /// How many of them matched no data image entry.
+    not_data_images: u64,
 }
 
 /// An `img` the capture measured as not loaded (`naturalWidth` 0).
@@ -471,12 +482,17 @@ pub(crate) fn data_image_entries(design_dir: &Path) -> Vec<(String, String)> {
 }
 
 /// The round's unloaded images, from each captured viewport's measurements, matched against the
-/// package's (and the prepared folder's) data images.
-fn unloaded_images(design_dir: &Path, round: u32, record: &CaptureRecord) -> Vec<UnloadedImage> {
+/// package's (and the prepared folder's) data images; and those the capture counted past its limit.
+fn unloaded_images(
+    design_dir: &Path,
+    round: u32,
+    record: &CaptureRecord,
+) -> (Vec<UnloadedImage>, Vec<OmittedUnloadedImages>) {
     let entries = data_image_entries(design_dir);
     let mut viewports: Vec<&str> = record.pages.iter().map(|p| p.viewport.as_str()).collect();
     viewports.dedup();
     let mut unloaded = Vec::new();
+    let mut omitted = Vec::new();
     for viewport in viewports {
         let path = design_dir
             .join(format!("round-{round}"))
@@ -506,13 +522,24 @@ fn unloaded_images(design_dir: &Path, round: u32, record: &CaptureRecord) -> Vec
                     data_image,
                 });
             }
+            let left_out = &page["unloaded_images_omitted"];
+            let count = left_out["count"].as_u64().unwrap_or(0);
+            if count > 0 {
+                omitted.push(OmittedUnloadedImages {
+                    route: route.clone(),
+                    viewport: viewport.to_string(),
+                    count,
+                    // Unknown is counted as not data images: they might be.
+                    not_data_images: left_out["not_data_images"].as_u64().unwrap_or(count),
+                });
+            }
         }
     }
-    unloaded
+    (unloaded, omitted)
 }
 
 /// What the reviewer is told about the images that did not load.
-fn unloaded_images_prompt(unloaded: &[UnloadedImage]) -> String {
+fn unloaded_images_prompt(unloaded: &[UnloadedImage], omitted: &[OmittedUnloadedImages]) -> String {
     let mut text = String::from(
         "\nImages that did not load (measured by orq: naturalWidth 0), by route and viewport:\n",
     );
@@ -526,12 +553,28 @@ fn unloaded_images_prompt(unloaded: &[UnloadedImage]) -> String {
             image.route, image.viewport, image.selector
         ));
     }
+    for group in omitted {
+        let what = if group.not_data_images > 0 {
+            format!(
+                "{} of them not a listed data image, a capture readiness problem",
+                group.not_data_images
+            )
+        } else {
+            "all of them listed data images".to_string()
+        };
+        text.push_str(&format!(
+            "- {} at {}: {} more images did not load, {what}\n",
+            group.route, group.viewport, group.count
+        ));
+    }
     text.push_str(
         "A data image comes from data the capture environment does not have: it is not a capture \
          readiness problem. For it, add a check with required false, status \"not_assessed\" and \
          reason \"data image, not in the capture environment\", and review the rest of the page.\n",
     );
-    if unloaded.iter().any(|image| image.data_image.is_none()) {
+    if unloaded.iter().any(|image| image.data_image.is_none())
+        || omitted.iter().any(|group| group.not_data_images > 0)
+    {
         text.push_str(
             "A capture with an image that did not load and is not a listed data image is not \
              usable: a blocker.\n",
@@ -808,6 +851,7 @@ fn reviewed_round(
                 e.kind()
             )
         })?;
+    let (unloaded, omitted_unloaded_images) = unloaded_images(design_dir, run.round, record);
     let context = ReviewContext {
         run_id: run.run_id.to_string(),
         reference_hash: manifest.package_sha256.clone(),
@@ -845,7 +889,8 @@ fn reviewed_round(
         person,
         rules_only: rules_only.clone(),
         scope: ReviewScope::read(run.run_logs, design_dir),
-        unloaded_images: unloaded_images(design_dir, run.round, record),
+        unloaded_images: unloaded,
+        omitted_unloaded_images,
     };
     let named = |mut result: RoundResult| {
         result.rules_only = rules_only.clone();
@@ -1086,6 +1131,7 @@ impl PairReview {
                 rules_only: Vec::new(),
                 scope: None,
                 unloaded_images: Vec::new(),
+                omitted_unloaded_images: Vec::new(),
             },
         })
     }
@@ -1160,8 +1206,11 @@ fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext)
     if context.design_dir.join(&measurements).is_file() {
         prompt.push_str(&format!("Measured CSS and DOM: {measurements}\n"));
     }
-    if !context.unloaded_images.is_empty() {
-        prompt.push_str(&unloaded_images_prompt(&context.unloaded_images));
+    if !context.unloaded_images.is_empty() || !context.omitted_unloaded_images.is_empty() {
+        prompt.push_str(&unloaded_images_prompt(
+            &context.unloaded_images,
+            &context.omitted_unloaded_images,
+        ));
     }
     let token_check = format!("round-{}/{TOKEN_CHECK_FILE}", context.round);
     if context.design_dir.join(&token_check).is_file() {

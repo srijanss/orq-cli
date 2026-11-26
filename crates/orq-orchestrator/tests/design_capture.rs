@@ -443,6 +443,59 @@ fn a_data_image_entry_naming_a_section_by_its_heading_or_label_matches_its_unloa
 }
 
 #[test]
+fn unloaded_images_past_the_limit_are_counted_with_how_many_are_not_data_images() {
+    let Some(browser) = chromium() else { return };
+    let site = fixture_site();
+    // 100 broken brand logos first, then two broken images outside it and one more logo.
+    let logos: String = (0..100)
+        .map(|n| format!(r#"<img src="/media/brand-{n}.png" alt="" width="4" height="4">"#))
+        .collect();
+    let page = format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Many</title></head>
+<body><main><section class="home-brands">{logos}</section>
+<img class="hero" src="/missing-hero.png" alt="" width="4" height="4">
+<img class="team" src="/missing-team.png" alt="" width="4" height="4">
+<section class="home-brands"><img src="/media/last.png" alt="" width="4" height="4"></section>
+</main></body></html>"#
+    );
+    std::fs::write(site.root().join("many-images.html"), page).unwrap();
+    let logs = TempDir::new("design-capture-many-unloaded");
+    let package = logs.path().join("design/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("UX.md"),
+        "# UX\n\n## Data images\n\n- `.home-brands img`: brand logos from media\n",
+    )
+    .unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(
+        site.root(),
+        logs.path(),
+        &["/many-images".to_string()],
+        &browser,
+        &settings,
+    );
+
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert!(record.failures.is_empty(), "failures: {:?}", record.failures);
+    let measured = read_json(&logs.path().join("design/round-1/desktop/measurements.json"));
+    let page = &measured["routes"]["/many-images"];
+    assert_eq!(
+        page["unloaded_images"].as_array().map(Vec::len),
+        Some(100),
+        "{page}"
+    );
+    assert_eq!(
+        page["unloaded_images_omitted"],
+        serde_json::json!({"count": 3, "not_data_images": 2}),
+        "{page}"
+    );
+}
+
+#[test]
 fn two_captures_at_once_use_different_ports() {
     let Some(browser) = chromium() else { return };
     let settings = settings(fixture_server_command(), Duration::from_secs(30));
