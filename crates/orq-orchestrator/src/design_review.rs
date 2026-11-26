@@ -917,8 +917,6 @@ fn target_baseline(
         })?;
     }
     let head = target_head(target)?;
-    let capture_logs = target.cache.join("capture");
-    let captured = capture_logs.join(RUN_DESIGN_DIR).join("round-1");
     let key = json!({
         "head": head,
         "routes": routes,
@@ -927,7 +925,13 @@ fn target_baseline(
             .map(|v| json!({"name": v.name, "width": v.width, "height": v.height}))
             .collect::<Vec<_>>(),
     });
-    let cached = target.cache.join(BASELINE_CACHE_FILE);
+    // A folder of its own for each head, routes and viewports asked for: group members asking for
+    // different viewports each keep theirs for their later rounds.
+    let digest = format!("{:x}", Sha256::digest(key.to_string().as_bytes()));
+    let entry = target.cache.join("pages").join(&digest[..16]);
+    let capture_logs = entry.join("capture");
+    let captured = capture_logs.join(RUN_DESIGN_DIR).join("round-1");
+    let cached = entry.join(BASELINE_CACHE_FILE);
     // Captured once per run while the target's head (and what is asked for) is the same: a capture
     // that failed is not tried again either, so the target is not started each round.
     let record = std::fs::read(&cached)
@@ -945,7 +949,7 @@ fn target_baseline(
     let _ = std::fs::remove_file(&cached);
     let worktree = target.cache.join("worktree");
     remove_target_worktree(target.repo, &worktree);
-    std::fs::create_dir_all(target.cache).map_err(|e| {
+    std::fs::create_dir_all(&entry).map_err(|e| {
         format!(
             "the folder for the target's page could not be made ({:?})",
             e.kind()

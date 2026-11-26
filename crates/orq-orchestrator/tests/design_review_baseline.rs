@@ -621,6 +621,36 @@ fn a_target_capture_whose_pages_failed_is_no_baseline_and_the_report_says_why() 
 }
 
 #[test]
+fn members_asking_for_different_viewports_each_keep_their_baseline_for_later_rounds() {
+    let f = Fixture::new(DesignMode::Infer);
+    let other = TempDir::new("orq-design-baseline-other-member-logs");
+    let calls = RefCell::new(Vec::new());
+    // This member has no mobile reference; the other member has no desktop reference.
+    f.review(1, &calls, &fake_capture);
+    let package = f.repo.root().join("designs").join(FEATURE).join("references");
+    fs::remove_file(package.join("desktop.png")).unwrap();
+    f.put("references/mobile.png", &png(200, 400));
+    f.review_in(other.path(), 1, &calls, &fake_capture);
+    // Each member's next round: neither asks for the target's page again.
+    fs::remove_file(package.join("mobile.png")).unwrap();
+    f.put("references/desktop.png", &png(400, 300));
+    f.review(2, &calls, &fake_capture);
+    fs::remove_file(package.join("desktop.png")).unwrap();
+    f.put("references/mobile.png", &png(200, 400));
+    f.review_in(other.path(), 2, &calls, &fake_capture);
+
+    let baseline = f.baseline_calls(&calls);
+    let asked: Vec<Vec<String>> = baseline.iter().map(|call| call.viewports.clone()).collect();
+    assert_eq!(
+        asked,
+        vec![vec!["mobile".to_string()], vec!["desktop".to_string()]],
+        "each member's target page is captured once: {calls:?}"
+    );
+    assert!(f.logs.path().join("design/baseline/mobile.png").is_file());
+    assert!(other.path().join("design/baseline/desktop.png").is_file());
+}
+
+#[test]
 fn an_unreadable_target_branch_leaves_the_review_by_the_rules_only() {
     let f = Fixture::new(DesignMode::Infer);
     git(f.repo.root(), &["branch", "--delete", "--force", TARGET]);
