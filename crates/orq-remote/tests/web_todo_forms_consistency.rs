@@ -366,3 +366,82 @@ fn a_failed_save_shows_its_status_half_a_rem_under_the_actions_and_the_features_
     let fields = &result["styles"][".feature-filters .feature-editor-fields"][0];
     assert_eq!((fields["border-top-width"].as_str(), fields["padding-left"].as_str()), (Some("1px"), Some("16px")), "the inline editor keeps its card: {result}");
 }
+
+const PADDING: [&str; 4] = ["padding-top", "padding-right", "padding-bottom", "padding-left"];
+
+/// `page` in Chromium at `width` with one project and one Todo item, waiting for `wait` and then measuring `measured`.
+fn todo_page_in_chromium(chromium: &std::path::Path, width: u32, page: &str, wait: &str, measured: Value) -> Value {
+    let replies = [
+        web_chromium::get("/api/projects", json!({"projects": [projects()["json"]["projects"][1].clone()]})),
+        web_chromium::get("/api/todo", todos(vec![item(7, "dark mode")])["json"].clone()),
+        web_chromium::get("/api/projects/alpha/features", ledger()["json"].clone()),
+    ];
+    let mut steps = vec![json!({"wait": wait})];
+    steps.extend(measured.as_array().unwrap().iter().cloned());
+    let out = web_chromium::measure(chromium, width, page, &replies, Value::Array(steps));
+    assert!(out.result.get("error").is_none(), "{}\nunanswered: {:?}", out.result, out.unanswered);
+    out.result
+}
+
+#[test]
+fn todo_item_card_has_the_project_card_padding() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    // The project cards are the Dashboard's.
+    let projects = todo_page_in_chromium(&chromium, 1024, "/dashboard", ".project", json!([{"styles": ".project", "props": PADDING}]));
+    let todos = todo_page_in_chromium(&chromium, 1024, "/todos", ".todo-item", json!([{"styles": ".todo-item", "props": PADDING}]));
+    let project = &projects["styles"][".project"][0];
+    let todo = &todos["styles"][".todo-item"][0];
+    assert_eq!(project["padding-top"], "16px", "{projects}");
+    assert_eq!(todo, project, "the Todo card has the project card's padding: {todos}");
+}
+
+fn px(value: &Value) -> f64 {
+    value.as_str().and_then(|v| v.strip_suffix("px")).and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("not a px length: {value}"))
+}
+
+#[test]
+fn todo_item_when_is_muted_and_small() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    const WHEN: &str = ".todo-item-when";
+    let measured = json!([{"styles": WHEN, "props": ["color", "font-size"]}, {"styles": "body", "props": ["font-size"]},{"tokens": ["--text-muted"]}]);
+    let result = todo_page_in_chromium(&chromium, 1024, "/todos", WHEN, measured);
+    let when = &result["styles"][WHEN][0];
+    assert_eq!(when["color"], result["tokens"]["--text-muted"], "the muted colour: {result}");
+    assert!(px(&when["font-size"]) < px(&result["styles"]["body"][0]["font-size"]), "smaller than the body text: {result}");
+    assert_eq!(when["font-size"], "13px", "the app's small secondary size (0.8125rem): {result}");
+}
+
+#[test]
+fn todo_item_actions_wrap_with_the_feature_editor_gap() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    const ROW: [&str; 4] = ["display", "flex-wrap", "row-gap", "column-gap"];
+    const ACTIONS: &str = ".todo-item-actions";
+    const BUTTONS: &str = ".todo-item-actions button";
+    const EDITOR: &str = "[data-todo-edit-dialog] .feature-editor-actions";
+    let replies = [web_chromium::get("/api/projects", projects()["json"].clone()), web_chromium::get("/api/todo", todos(vec![item(7, "dark mode")])["json"].clone())];
+    let steps = json!([{"wait": BUTTONS}, {"click": "[data-todo-edit]"}, {"wait": EDITOR}, {"styles": ACTIONS, "props": ROW}, {"styles": EDITOR, "props": ROW}, {"boxes": BUTTONS}]);
+    let out = web_chromium::measure(&chromium, 1024, "/todos", &replies, steps);
+    let result = &out.result;
+    assert!(result.get("error").is_none(), "{result}\nunanswered: {:?}", out.unanswered);
+    let actions = &result["styles"][ACTIONS][0];
+    assert_eq!((actions["display"].as_str(), actions["flex-wrap"].as_str()), (Some("flex"), Some("wrap")), "{result}");
+    let editor = &result["styles"][EDITOR][0];
+    assert_eq!((&actions["row-gap"], &actions["column-gap"]), (&editor["row-gap"], &editor["column-gap"]), "the feature editor's gap: {result}");
+    let buttons = result["boxes"][BUTTONS].as_array().unwrap();
+    assert_eq!(buttons.len(), 4, "Move to project, Draft with orq, Edit and Delete: {result}");
+    for b in buttons {
+        assert!(b["bottom"].as_i64().unwrap() - b["top"].as_i64().unwrap() >= 44, "each button is 44px tall: {result}");
+    }
+}
+
+#[test]
+fn todo_items_do_not_scroll_sideways_at_390() {
+    let Some(chromium) = web_chromium::binary() else { return };
+    let measured = json!([{"boxes": ".todo-item"}, {"boxes": ".todo-item-actions button"}]);
+    let result = todo_page_in_chromium(&chromium, 390, "/todos", ".todo-item-actions button", measured);
+    assert!(result["scrollWidth"].as_u64() <= result["clientWidth"].as_u64(), "the page scrolls sideways: {result}");
+    let card = side(&result, ".todo-item", "right");
+    for b in result["boxes"][".todo-item-actions button"].as_array().unwrap() {
+        assert!(b["right"].as_i64().unwrap() <= card, "the actions wrap inside the card: {result}");
+    }
+}
