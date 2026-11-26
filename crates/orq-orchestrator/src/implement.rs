@@ -425,7 +425,12 @@ fn progress_event(
                             tools.insert(id.to_string(), name.to_string());
                         }
                         let name = summary(Some(name));
-                        let about = summary(item.get("input").and_then(tool_argument));
+                        // Redacted by key first: a value under a secret name looks like any other.
+                        let input = item.get("input").map(|input| {
+                            let redacted = orq_core::redact::redact_bytes(input.to_string().as_bytes());
+                            serde_json::from_slice(&redacted).unwrap_or(serde_json::Value::Null)
+                        });
+                        let about = summary(input.as_ref().and_then(tool_argument));
                         let line = format!("{clock} tool {name} {about}");
                         out.push_str(line.trim_end());
                         out.push('\n');

@@ -207,3 +207,17 @@ fn a_line_that_is_not_json_is_kept_as_is() {
     assert!(text.lines().any(|l| l == "warming up {not json"), "{text}");
     assert!(text.contains(" tool Read "), "{text}");
 }
+
+#[test]
+fn a_tool_argument_under_a_secret_name_is_not_shown() {
+    let s = setup("secret-key");
+    let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_3","name":"mcp__vault__login","input":{"api_key":"ordinary-credential-value"}}]}}"#;
+
+    let text = run(&s, &print(&[call, RESULT]));
+
+    assert!(
+        text.lines().any(|l| l.contains(" tool mcp__vault__login")),
+        "{text}"
+    );
+    assert!(!text.contains("ordinary-credential-value"), "{text}");
+}
