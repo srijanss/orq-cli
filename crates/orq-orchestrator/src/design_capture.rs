@@ -1223,12 +1223,27 @@ const MEASURE_SCRIPT: &str = r##"(async function () {
     }
     return parts.join(" > ");
   }
+  // A data image entry is a CSS selector, or a section's name: its aria-label or heading.
+  function named(el, name) {
+    if ((el.getAttribute("aria-label") || "").trim().toLowerCase() === name) return true;
+    return Array.prototype.some.call(el.children, function (c) {
+      return /^H[1-6]$/.test(c.tagName) && c.textContent.trim().toLowerCase() === name;
+    });
+  }
+  function isDataImage(img, key) {
+    try { if (img.closest(key)) return true; } catch (e) {}
+    var name = key.trim().toLowerCase();
+    for (var el = img.parentElement; el && el !== root; el = el.parentElement) {
+      if (named(el, name)) return true;
+    }
+    return false;
+  }
   var unloaded = [];
   Array.prototype.forEach.call(document.images, function (img) {
     if (img.naturalWidth > 0 || unloaded.length >= 100) return;
     var dataImage = null;
     for (var k = 0; k < input.data_images.length && dataImage === null; k++) {
-      try { if (img.closest(input.data_images[k])) dataImage = input.data_images[k]; } catch (e) {}
+      if (isDataImage(img, input.data_images[k])) dataImage = input.data_images[k];
     }
     unloaded.push({selector: path(img), src: img.currentSrc || img.src, data_image: dataImage});
   });

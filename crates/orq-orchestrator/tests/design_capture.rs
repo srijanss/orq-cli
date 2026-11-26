@@ -398,6 +398,50 @@ fn a_broken_img_is_recorded_as_unloaded_with_its_selector_and_the_data_image_it_
     assert!(unloaded[1]["src"].as_str().unwrap().ends_with("/media/brand.png"));
 }
 
+/// Images in sections a data image entry names by heading or label, not by selector.
+const NAMED_SECTIONS: &str = r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Named</title></head>
+<body><main>
+<section><h2>Brand logos</h2><div><img src="/media/brand.png" alt="brand" width="40" height="40"></div></section>
+<section aria-label="Gift cards"><img src="/media/card.png" alt="card" width="40" height="40"></section>
+<section><h2>Team</h2><img src="/media/team.png" alt="team" width="40" height="40"></section>
+</main></body></html>"#;
+
+#[test]
+fn a_data_image_entry_naming_a_section_by_its_heading_or_label_matches_its_unloaded_images() {
+    let Some(browser) = chromium() else { return };
+    let site = fixture_site();
+    std::fs::write(site.root().join("named.html"), NAMED_SECTIONS).unwrap();
+    let logs = TempDir::new("design-capture-named-sections");
+    let package = logs.path().join("design/package");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("UX.md"),
+        "# UX\n\n## Data images\n\n- a[: an invalid selector\n- Brand logos: logos from media\n\
+         - gift cards: card art from media\n",
+    )
+    .unwrap();
+    let settings = settings(fixture_server_command(), Duration::from_secs(30));
+
+    let outcome = capture(site.root(), logs.path(), &["/named".to_string()], &browser, &settings);
+
+    let CaptureOutcome::Captured(record) = outcome else {
+        panic!("not captured: {outcome:?}")
+    };
+    assert!(record.failures.is_empty(), "failures: {:?}", record.failures);
+    let measured = read_json(&logs.path().join("design/round-1/desktop/measurements.json"));
+    let unloaded = measured["routes"]["/named"]["unloaded_images"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{measured}"))
+        .clone();
+    let data_images: Vec<&Value> = unloaded.iter().map(|image| &image["data_image"]).collect();
+    assert_eq!(
+        data_images,
+        [&Value::from("Brand logos"), &Value::from("gift cards"), &Value::Null],
+        "{unloaded:?}"
+    );
+}
+
 #[test]
 fn two_captures_at_once_use_different_ports() {
     let Some(browser) = chromium() else { return };
