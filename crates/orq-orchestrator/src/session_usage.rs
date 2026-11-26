@@ -158,6 +158,8 @@ pub(crate) fn usage_from_transcript(path: &Path, since: u64) -> Option<SessionUs
     }
     let reader = std::io::BufReader::new(file.take(MAX_TRANSCRIPT_BYTES));
     let mut messages: Vec<(String, String, Value)> = Vec::new();
+    // Where each message id is in `messages`, so a repeated line is found without a scan.
+    let mut seen: std::collections::HashMap<String, usize> = Default::default();
     for line in reader.split(b'\n') {
         let Ok(line) = line else { break };
         let Ok(entry) = serde_json::from_slice::<Value>(&line) else {
@@ -185,9 +187,12 @@ pub(crate) fn usage_from_transcript(path: &Path, since: u64) -> Option<SessionUs
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        match messages.iter_mut().find(|(seen, _, _)| seen == id) {
-            Some(known) => known.2 = usage.clone(),
-            None => messages.push((id.to_string(), model, usage.clone())),
+        match seen.get(id) {
+            Some(&at) => messages[at].2 = usage.clone(),
+            None => {
+                seen.insert(id.to_string(), messages.len());
+                messages.push((id.to_string(), model, usage.clone()));
+            }
         }
     }
     if messages.is_empty() {
