@@ -2208,7 +2208,7 @@ function PushDevice({ device, token, onRemoved }) {
 }
 
 // Settings, "Notifications on this device": an On/Off switch for this browser's subscription, the subscribed
-// devices, and, while On, a switch per kind in a block of its own. Not shown
+// devices, and, while On, a closed "Notify me about" block that opens to a switch per kind. Not shown
 // when the server does not let this page see the push settings (no passkey session).
 function PushCard({ token }) {
   const [devices, setDevices] = useState(null);
@@ -2216,6 +2216,7 @@ function PushCard({ token }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
+  const [kindsOpen, setKindsOpen] = useState(false);
   const load = async () => {
     try {
       const reply = await pushRequest(token, "GET", "subscriptions");
@@ -2324,16 +2325,21 @@ function PushCard({ token }) {
       )}
       {subscribed ? (
         <div className="settings-block push-kinds-block">
-          <h3 className="settings-subhead">Notify me about</h3>
+          <h3 className="settings-subhead">
+            <button type="button" className="link-button push-kinds-toggle" data-push-kinds-toggle aria-expanded={kindsOpen ? "true" : "false"} onClick={() => setKindsOpen(!kindsOpen)}>
+              <Icon name={kindsOpen ? "chevronDown" : "chevronRight"} size={16} />
+              <span>Notify me about</span>
+            </button>
+          </h3>
           {kinds === "failed" ? <p role="alert">The notification kinds could not be read.</p> : null}
-          {Array.isArray(kinds) ? (
+          {kindsOpen && Array.isArray(kinds) ? (
             <ul className="settings-fields push-kinds">
               {kinds.map((kind) => (
                 <li key={kind.kind} className="settings-row">
-                  <label>
-                    <input type="checkbox" role="switch" data-push-kind={kind.kind} checked={kind.enabled} disabled={busy} onChange={() => switchKind(kind.kind, !kind.enabled)} />{" "}
-                    {PUSH_KIND_LABELS[kind.kind] || kind.kind}
-                  </label>
+                  <button type="button" role="switch" data-push-kind={kind.kind} aria-checked={kind.enabled ? "true" : "false"} className="follow-switch" disabled={busy} onClick={() => switchKind(kind.kind, !kind.enabled)}>
+                    <span className="switch-track" aria-hidden="true"><span className="switch-thumb" /></span>
+                    <span>{PUSH_KIND_LABELS[kind.kind] || kind.kind}</span>
+                  </button>
                 </li>
               ))}
             </ul>

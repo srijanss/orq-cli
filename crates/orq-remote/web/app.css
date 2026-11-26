@@ -900,6 +900,9 @@ button.review-row-open:hover { background: color-mix(in srgb, var(--accent) 8%, 
 .follow-switch[aria-checked="true"] .switch-track { background: var(--accent); }
 .follow-switch[aria-checked="true"] .switch-thumb { transform: translateX(1.125rem); }
 .follow-switch:disabled { cursor: not-allowed; opacity: 0.6; }
+/* Settings, "Notify me about": a heading that opens the list of kind switches. */
+.push-kinds-toggle { display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%; padding-left: 0; color: var(--text); font-weight: inherit; text-align: left; text-decoration: none; overflow-wrap: anywhere; }
+.push-kinds-toggle svg { flex: none; }
 .log-file-select { margin-bottom: 0.5rem; max-width: 100%; }
 .log-file-name { margin: 0 0 0.5rem; color: var(--text-muted); font-size: 0.875rem; overflow-wrap: anywhere; }
 .run-logs .log-tools select { flex: 0 1 12rem; }
