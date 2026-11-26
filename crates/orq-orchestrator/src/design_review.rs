@@ -14,7 +14,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::design_capture::{
-    capture_viewports, design_routes, CaptureOutcome, CaptureRecord, CaptureRun,
+    capture_viewports, design_routes, CaptureOutcome, CaptureRecord, CaptureRun, CaptureViewport,
 };
 use crate::design_package::{
     resume_design_package, DesignManifest, DesignPackageOutcome, DesignPackageRun, PackageLimits,
@@ -32,6 +32,10 @@ const MEASUREMENTS_FILE: &str = "measurements.json";
 const TOKEN_CHECK_FILE: &str = "token-check.json";
 const REVIEW_FILE: &str = "review.json";
 const REPORT_FILE: &str = "report.md";
+/// Under the design folder: the target's page, at the viewports with no reference.
+const BASELINE_DIR: &str = "baseline";
+/// In the run's baseline folder: what the target was captured at, and its pages.
+const BASELINE_CACHE_FILE: &str = "baseline.json";
 /// The most an agent's answer may hold.
 const MAX_ANSWER: u64 = 4 * 1024 * 1024;
 
@@ -67,6 +71,27 @@ pub struct DesignReviewRun<'a> {
     pub schema: &'a str,
     /// How long one agent session may take.
     pub agent_timeout: Duration,
+}
+
+/// The run's target branch, whose page a review is held against at the viewports with no reference:
+/// what "the existing page" is there.
+#[derive(Debug, Clone, Copy)]
+pub struct DesignBaseline<'a> {
+    /// The repository the target branch is in.
+    pub repo: &'a Path,
+    pub branch: &'a str,
+    /// Where the run keeps the target's capture, shared by its rounds and members.
+    pub cache: &'a Path,
+}
+
+/// The target's page as a round gives it to the reviewer.
+struct Baseline {
+    /// The target's head it was captured at.
+    head: String,
+    /// Relative to the design folder: `baseline/mobile.png`, with the route and viewport.
+    images: Vec<(String, String, String)>,
+    /// Relative to the design folder: `baseline/mobile-measurements.json`.
+    measurements: Vec<String>,
 }
 
 /// The verdict of a round.
@@ -358,6 +383,8 @@ struct RoundResult {
     rules_only: Vec<String>,
     /// Each issue orq dropped as invalid data (a reference-based issue for a rules-only viewport), and why.
     issues_dropped: Vec<String>,
+    /// The target's page the rules-only viewports were held against: its head, or why it was not captured.
+    baseline: Option<Result<String, String>>,
 }
 
 impl RoundResult {
@@ -373,6 +400,7 @@ impl RoundResult {
             person: Vec::new(),
             rules_only: Vec::new(),
             issues_dropped: Vec::new(),
+            baseline: None,
         }
     }
 }
@@ -423,6 +451,8 @@ struct ReviewContext {
     unloaded_images: Vec<UnloadedImage>,
     /// The unloaded images the capture counted past its limit and did not list.
     omitted_unloaded_images: Vec<OmittedUnloadedImages>,
+    /// The target's page at the rules-only viewports, when it was captured.
+    baseline: Option<Baseline>,
 }
 
 /// The unloaded images of a route at a viewport that the capture counted but did not list.
@@ -770,9 +800,21 @@ pub fn review_design_with_person(
     capture: &dyn Fn(&CaptureRun) -> CaptureOutcome,
     person: &[PersonGrant],
 ) -> DesignReviewOutcome {
+    review_design_with_baseline(run, capture, person, None)
+}
+
+/// [`review_design_with_person`], the viewports with no reference also held against the target's
+/// page (`baseline`): the target captured with `capture` in a temporary worktree at its head, the
+/// review going on by the rules only when it cannot be.
+pub fn review_design_with_baseline(
+    run: &DesignReviewRun,
+    capture: &dyn Fn(&CaptureRun) -> CaptureOutcome,
+    person: &[PersonGrant],
+    baseline: Option<&DesignBaseline>,
+) -> DesignReviewOutcome {
     let design_dir = run.run_logs.join(RUN_DESIGN_DIR);
-    let mut result =
-        review_round(run, &design_dir, capture, person).unwrap_or_else(RoundResult::blocked);
+    let mut result = review_round(run, &design_dir, capture, person, baseline)
+        .unwrap_or_else(RoundResult::blocked);
     result.person = person.to_vec();
     let result = match write_round(run, &design_dir, &result) {
         Ok(()) => result,
@@ -791,6 +833,7 @@ fn review_round(
     design_dir: &Path,
     capture: &dyn Fn(&CaptureRun) -> CaptureOutcome,
     person: &[PersonGrant],
+    target: Option<&DesignBaseline>,
 ) -> Result<RoundResult, String> {
     let manifest = freeze_package(run)?;
     let design_doc = std::fs::read_to_string(design_dir.join(PACKAGE_DIR).join("DESIGN.md")).ok();
@@ -815,7 +858,252 @@ fn review_round(
     // reviewer's answer can neither drop nor downgrade.
     let token_issues = check_design_tokens(design_dir, run.round).issues();
     let person: Vec<ReviewIssue> = person.iter().flat_map(|g| g.issues.clone()).collect();
-    reviewed_round(run, design_dir, &manifest, &record, &token_issues, person)
+    let rules_only = rules_only_viewports(run, &manifest);
+    let baseline = match target {
+        Some(target) if !rules_only.is_empty() => {
+            let at: Vec<CaptureViewport> = viewports
+                .iter()
+                .filter(|viewport| rules_only.contains(&viewport.name))
+                .cloned()
+                .collect();
+            Some(target_baseline(
+                target, run, design_dir, &routes, &at, capture,
+            ))
+        }
+        _ => None,
+    };
+    reviewed_round(
+        run,
+        design_dir,
+        &manifest,
+        &record,
+        &token_issues,
+        person,
+        baseline,
+    )
+}
+
+/// The viewports reviewed by the rules alone: in infer mode, those the package has no reference for.
+fn rules_only_viewports(run: &DesignReviewRun, manifest: &DesignManifest) -> Vec<String> {
+    if run.settings.mode == DesignMode::Infer {
+        manifest.missing.viewports.clone()
+    } else {
+        Vec::new()
+    }
+}
+
+/// The target's page at `viewports`: the target branch checked out at its head in a temporary
+/// worktree (removed again whatever happens), captured with `capture`, and its images and
+/// measurements copied to the design folder's `baseline/`. Why not, when it could not be.
+fn target_baseline(
+    target: &DesignBaseline,
+    run: &DesignReviewRun,
+    design_dir: &Path,
+    routes: &[String],
+    viewports: &[CaptureViewport],
+    capture: &dyn Fn(&CaptureRun) -> CaptureOutcome,
+) -> Result<Baseline, String> {
+    let baseline_dir = design_dir.join(BASELINE_DIR);
+    // No baseline of an earlier round is left to be mistaken for this one's.
+    if baseline_dir.exists() {
+        std::fs::remove_dir_all(&baseline_dir).map_err(|e| {
+            format!(
+                "the design folder's {BASELINE_DIR}/ could not be cleared ({:?})",
+                e.kind()
+            )
+        })?;
+    }
+    let head = target_head(target)?;
+    let capture_logs = target.cache.join("capture");
+    let captured = capture_logs.join(RUN_DESIGN_DIR).join("round-1");
+    let key = json!({
+        "head": head,
+        "routes": routes,
+        "viewports": viewports
+            .iter()
+            .map(|v| json!({"name": v.name, "width": v.width, "height": v.height}))
+            .collect::<Vec<_>>(),
+    });
+    let cached = target.cache.join(BASELINE_CACHE_FILE);
+    // Captured once per run while the target's head (and what is asked for) is the same: a capture
+    // that failed is not tried again either, so the target is not started each round.
+    let record = std::fs::read(&cached)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|record| record["key"] == key);
+    if let Some(record) = record {
+        if let Some(why) = record["failed"].as_str() {
+            return Err(why.to_string());
+        }
+        if let Ok(pages) = serde_json::from_value::<Vec<BaselinePage>>(record["pages"].clone()) {
+            return copy_baseline(&head, &pages, &captured, &baseline_dir);
+        }
+    }
+    let _ = std::fs::remove_file(&cached);
+    let worktree = target.cache.join("worktree");
+    remove_target_worktree(target.repo, &worktree);
+    std::fs::create_dir_all(target.cache).map_err(|e| {
+        format!(
+            "the folder for the target's page could not be made ({:?})",
+            e.kind()
+        )
+    })?;
+    let worktree_arg = worktree
+        .to_str()
+        .ok_or("the folder for the target's page is not UTF-8")?;
+    git_output(
+        target.repo,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            worktree_arg,
+            &head,
+        ],
+    )
+    .map_err(|_| {
+        format!(
+            "the target branch {:?} could not be checked out at {head}",
+            target.branch
+        )
+    })?;
+    let outcome = capture(&CaptureRun {
+        worktree: &worktree,
+        settings: run.settings,
+        routes,
+        viewports,
+        run_logs: &capture_logs,
+        round: 1,
+        browser: None,
+    });
+    remove_target_worktree(target.repo, &worktree);
+    let record = match outcome {
+        CaptureOutcome::Captured(record) => record,
+        CaptureOutcome::Blocked(why) => {
+            let why = format!("the target's page could not be captured: {why}");
+            let record = json!({"key": key, "failed": why});
+            let _ = std::fs::write(
+                &cached,
+                serde_json::to_vec_pretty(&record).unwrap_or_default(),
+            );
+            return Err(why);
+        }
+    };
+    let pages: Vec<BaselinePage> = record
+        .pages
+        .iter()
+        .filter_map(|page| {
+            Some(BaselinePage {
+                route: page.route.clone(),
+                viewport: page.viewport.clone(),
+                image: page.image.clone()?,
+            })
+        })
+        .collect();
+    let baseline = copy_baseline(&head, &pages, &captured, &baseline_dir)?;
+    let record = json!({"key": key, "pages": pages});
+    std::fs::write(
+        &cached,
+        serde_json::to_vec_pretty(&record).unwrap_or_default(),
+    )
+    .map_err(|e| {
+        format!(
+            "the target's capture could not be recorded ({:?})",
+            e.kind()
+        )
+    })?;
+    Ok(baseline)
+}
+
+/// One captured page of the target, as the run's baseline record keeps it.
+#[derive(Debug, Serialize, Deserialize)]
+struct BaselinePage {
+    route: String,
+    viewport: String,
+    /// Relative to the capture's round folder.
+    image: String,
+}
+
+/// The target branch's head commit.
+fn target_head(target: &DesignBaseline) -> Result<String, String> {
+    let unreadable = || format!("the target branch {:?} could not be read", target.branch);
+    if target.branch.is_empty() || target.branch.starts_with('-') {
+        return Err(unreadable());
+    }
+    let out = git_output(
+        target.repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{}^{{commit}}", target.branch),
+        ],
+    )
+    .map_err(|_| unreadable())?;
+    let head = String::from_utf8_lossy(&out).trim().to_string();
+    if head.is_empty() {
+        return Err(unreadable());
+    }
+    Ok(head)
+}
+
+/// Removes the target's temporary worktree and Git's record of it; nothing there is an error.
+fn remove_target_worktree(repo: &Path, worktree: &Path) {
+    if let Some(path) = worktree.to_str() {
+        let _ = git_output(repo, &["worktree", "remove", "--force", path]);
+    }
+    let _ = std::fs::remove_dir_all(worktree);
+    let _ = git_output(repo, &["worktree", "prune"]);
+}
+
+/// The target's capture (in `captured`) copied to `baseline_dir`: each route's image as
+/// `<viewport>.png` (`<viewport>-<route>.png` for a route other than `/`), and each viewport's
+/// measurements as `<viewport>-measurements.json`.
+fn copy_baseline(
+    head: &str,
+    pages: &[BaselinePage],
+    captured: &Path,
+    baseline_dir: &Path,
+) -> Result<Baseline, String> {
+    let not_copied = |e: std::io::Error| {
+        format!(
+            "the target's capture could not be copied to {BASELINE_DIR}/ ({:?})",
+            e.kind()
+        )
+    };
+    std::fs::create_dir_all(baseline_dir).map_err(not_copied)?;
+    let mut baseline = Baseline {
+        head: head.to_string(),
+        images: Vec::new(),
+        measurements: Vec::new(),
+    };
+    for page in pages {
+        let image = &page.image;
+        let slug = Path::new(image)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let name = if slug == "index" {
+            format!("{}.png", page.viewport)
+        } else {
+            format!("{}-{slug}.png", page.viewport)
+        };
+        std::fs::copy(captured.join(image), baseline_dir.join(&name)).map_err(not_copied)?;
+        baseline.images.push((
+            format!("{BASELINE_DIR}/{name}"),
+            page.route.clone(),
+            page.viewport.clone(),
+        ));
+        let measured = captured.join(&page.viewport).join(MEASUREMENTS_FILE);
+        let name = format!("{}-measurements.json", page.viewport);
+        let path = format!("{BASELINE_DIR}/{name}");
+        if measured.is_file() && !baseline.measurements.contains(&path) {
+            std::fs::copy(&measured, baseline_dir.join(&name)).map_err(not_copied)?;
+            baseline.measurements.push(path);
+        }
+    }
+    Ok(baseline)
 }
 
 /// The round reviewed by the design reviewer, and by the verifier when it escalates. Each review
@@ -828,6 +1116,7 @@ fn reviewed_round(
     record: &CaptureRecord,
     token_issues: &[ReviewIssue],
     person: Vec<ReviewIssue>,
+    baseline: Option<Result<Baseline, String>>,
 ) -> Result<RoundResult, String> {
     let refused = std::cell::RefCell::new(Vec::new());
     let dropped = std::cell::RefCell::new(Vec::new());
@@ -838,11 +1127,11 @@ fn reviewed_round(
         review
     };
     // In infer mode a viewport the package has no reference for is reviewed by the rules alone.
-    let rules_only = if run.settings.mode == DesignMode::Infer {
-        manifest.missing.viewports.clone()
-    } else {
-        Vec::new()
-    };
+    let rules_only = rules_only_viewports(run, manifest);
+    let baseline_note = baseline.as_ref().map(|baseline| match baseline {
+        Ok(baseline) => Ok(baseline.head.clone()),
+        Err(why) => Err(why.clone()),
+    });
     let round_name = format!("round-{}", run.round);
     let capture_bytes =
         std::fs::read(design_dir.join(&round_name).join(CAPTURE_FILE)).map_err(|e| {
@@ -891,10 +1180,12 @@ fn reviewed_round(
         scope: ReviewScope::read(run.run_logs, design_dir),
         unloaded_images: unloaded,
         omitted_unloaded_images,
+        baseline: baseline.and_then(Result::ok),
     };
     let named = |mut result: RoundResult| {
         result.rules_only = rules_only.clone();
         result.issues_dropped = dropped.take();
+        result.baseline = baseline_note.clone();
         Ok(result)
     };
     let review = match valid_review(run, run.reviewer, "design reviewer", &context) {
@@ -918,6 +1209,7 @@ fn reviewed_round(
             person: Vec::new(),
             rules_only: Vec::new(),
             issues_dropped: Vec::new(),
+            baseline: None,
         });
     };
     // The verifier reviews once more; its verdict replaces the reviewer's for the round.
@@ -935,6 +1227,7 @@ fn reviewed_round(
                 person: Vec::new(),
                 rules_only: Vec::new(),
                 issues_dropped: Vec::new(),
+                baseline: None,
             }
         }
         Err(why) => RoundResult::blocked(why),
@@ -1084,13 +1377,15 @@ fn ask(
     run_agent(run, agent, role, &argv)
 }
 
-/// The references and the captures, as files, in the order the prompt lists them.
+/// The references, the captures and the target's page, as files, in the order the prompt lists them.
 fn review_images(context: &ReviewContext) -> Vec<PathBuf> {
+    let baseline = context.baseline.iter().flat_map(|b| &b.images);
     context
         .references
         .iter()
         .map(|(path, _)| path)
         .chain(context.captures.iter().map(|(path, _, _)| path))
+        .chain(baseline.map(|(path, _, _)| path))
         .map(|path| context.design_dir.join(path))
         .collect()
 }
@@ -1132,6 +1427,7 @@ impl PairReview {
                 scope: None,
                 unloaded_images: Vec::new(),
                 omitted_unloaded_images: Vec::new(),
+                baseline: None,
             },
         })
     }
@@ -1198,6 +1494,24 @@ fn review_prompt(skill: &str, schema: &str, role: &str, context: &ReviewContext)
              invalid data.\n",
             context.rules_only.join(", ")
         ));
+    }
+    if let Some(baseline) = &context.baseline {
+        prompt.push_str(&format!(
+            "Baseline: the run's target branch's page at {}, captured by orq at the viewports with no \
+             reference. It is what \"the existing page\" is there: for a rule that keeps an existing \
+             section or behaviour, hold the capture against it (see the design-review skill's baseline \
+             rule). A section absent from both the baseline and this round's capture at a viewport is \
+             not missing.\n",
+            baseline.head
+        ));
+        for (path, route, viewport) in &baseline.images {
+            prompt.push_str(&format!(
+                "- {path} (route {route}, viewport {viewport}, the target's page)\n"
+            ));
+        }
+        for path in &baseline.measurements {
+            prompt.push_str(&format!("Baseline measured CSS and DOM: {path}\n"));
+        }
     }
     if let Some(scope) = &context.scope {
         prompt.push_str(&scope_prompt(scope));
@@ -1756,6 +2070,11 @@ fn write_round(
         "needs_refused": result.needs_refused,
         "rules_only": result.rules_only,
         "issues_dropped": result.issues_dropped,
+        "baseline": match &result.baseline {
+            Some(Ok(head)) => json!({"head": head}),
+            Some(Err(why)) => json!({"failed": why}),
+            None => serde_json::Value::Null,
+        },
     });
     let written = std::fs::create_dir_all(&round_dir)
         .and_then(|()| {
@@ -1795,10 +2114,23 @@ fn report(run: &DesignReviewRun, result: &RoundResult) -> String {
         ));
     }
     if !result.rules_only.is_empty() {
-        text.push_str(&format!(
-            "\nReviewed by the rules only (no reference; RESPONSIVE.md, UX.md and DESIGN.md): {}\n",
-            line(&result.rules_only.join(", "))
-        ));
+        let viewports = line(&result.rules_only.join(", "));
+        match &result.baseline {
+            Some(Ok(head)) => text.push_str(&format!(
+                "\nReviewed by the rules and the target's page (no reference): {viewports} \
+                 (RESPONSIVE.md, UX.md, DESIGN.md and the target branch at {}, in {BASELINE_DIR}/)\n",
+                line(head)
+            )),
+            _ => text.push_str(&format!(
+                "\nReviewed by the rules only (no reference; RESPONSIVE.md, UX.md and DESIGN.md): {viewports}\n"
+            )),
+        }
+        if let Some(Err(why)) = &result.baseline {
+            text.push_str(&format!(
+                "\nThe target's page was not held against: {}\n",
+                line(why)
+            ));
+        }
     }
     for dropped in &result.issues_dropped {
         text.push_str(&format!("\nDropped as invalid data: {}\n", line(dropped)));

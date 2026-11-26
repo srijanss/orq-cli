@@ -109,6 +109,28 @@ fn the_review_skill_does_not_block_on_a_data_image_the_package_lists() {
     }
 }
 
+/// A viewport with no reference comes with the target's page (`baseline/<viewport>.png`): for a rule
+/// that keeps an existing section or behaviour, that is what "existing" means.
+#[test]
+fn the_review_skill_holds_a_keep_existing_rule_against_the_baseline() {
+    let skill = orq_agents::design_skill("design-review").unwrap();
+    let section = skill
+        .split("\n## The baseline\n")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no \"## The baseline\" section: {skill}"));
+    let section = section.split("\n## ").next().unwrap();
+    for told in [
+        "`baseline/<viewport>.png`",
+        "the baseline is what \"existing\" means",
+        "absent from both the baseline and the capture",
+        "is not missing",
+        "a difference from the baseline",
+        "a package rule that changes it",
+    ] {
+        assert!(section.contains(told), "{told:?} missing from {section}");
+    }
+}
+
 #[test]
 fn the_prepare_skill_asks_for_data_images_when_a_section_renders_images_from_a_model_or_media() {
     let skill = orq_agents::design_skill("design-prepare").unwrap();

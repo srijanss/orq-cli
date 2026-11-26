@@ -77,6 +77,19 @@ listed entry is not a readiness problem: add a check with `required` false, stat
 and `reason` "data image, not in the capture environment", and review the rest of the page.
 A missing image the package does not list is still a blocker.
 
+## The baseline
+
+A viewport with no reference is reviewed by the rules. Orq then also captures the same route on the
+run's target branch, as it is now, and gives it to you as `baseline/<viewport>.png` with its
+measured CSS and DOM: the page as it already is, before this run.
+
+For a rule that keeps an existing section or behaviour ("keep the existing contact section",
+"preserve its behaviour"), the baseline is what "existing" means at that viewport: the section as it
+shows there, hidden or not. A section absent from both the baseline and the capture at a viewport
+is not missing. An issue for such a viewport must show a difference from the baseline, or from
+a package rule that changes it, quoted. When no baseline is given (orq says why), judge by the rules
+alone and don't assume what the page did before.
+
 ## Review, in this order
 
 1. The full page against its reference.

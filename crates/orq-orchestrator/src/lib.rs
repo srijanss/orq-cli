@@ -109,9 +109,10 @@ pub use design_package::{
     DesignScope, ManifestFile, MissingPieces, NeededFile, PackageLimits,
 };
 pub use design_review::{
-    drop_refused_needs, person_issues, review_design, review_design_with_person, CheckStatus,
-    DesignAgent, DesignReview, DesignReviewOutcome, DesignReviewRun, DesignVerdict, IssueBasis,
-    IssueNeeds, IssueStatus, PersonGrant, ReviewCheck, ReviewIssue, Severity,
+    drop_refused_needs, person_issues, review_design, review_design_with_baseline,
+    review_design_with_person, CheckStatus, DesignAgent, DesignBaseline, DesignReview,
+    DesignReviewOutcome, DesignReviewRun, DesignVerdict, IssueBasis, IssueNeeds, IssueStatus,
+    PersonGrant, ReviewCheck, ReviewIssue, Severity,
 };
 pub use design_tokens::{
     apply_token_issues, check_design_tokens, normalize_token_value, parse_token_rules,
