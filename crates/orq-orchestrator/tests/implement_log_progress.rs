@@ -285,6 +285,21 @@ fn a_run_tests_result_shows_its_counts_and_duration_or_its_first_line() {
 }
 
 #[test]
+fn a_line_longer_than_many_reads_is_kept_whole() {
+    let s = setup("long-line");
+    // About 2 MB on one line, written in many pieces, then a last line without a line end.
+    let script = "i=0; while [ $i -lt 2000 ]; do printf '%01000d' 0; i=$((i+1)); done; printf '\\nlast-words'";
+
+    let text = run(&s, script);
+
+    let lines: Vec<&str> = text.split('\n').collect();
+    assert_eq!(lines.len(), 2, "{} lines", lines.len());
+    assert_eq!(lines[0].len(), 2_000_000);
+    assert!(lines[0].bytes().all(|b| b == b'0'));
+    assert_eq!(lines[1], "last-words");
+}
+
+#[test]
 fn a_successful_result_of_another_tool_is_not_shown() {
     let s = setup("quiet-result");
     let events = call_and_result(

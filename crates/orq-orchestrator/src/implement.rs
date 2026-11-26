@@ -407,10 +407,13 @@ fn write_progress(
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
-        pending.extend_from_slice(&chunk[..read]);
+        // Only the new bytes can hold a line end: what was pending already had none.
         let mut start = 0;
-        while let Some(at) = pending[start..].iter().position(|&byte| byte == b'\n') {
-            let end = start + at + 1;
+        let mut from = pending.len();
+        pending.extend_from_slice(&chunk[..read]);
+        while let Some(at) = pending[from..].iter().position(|&byte| byte == b'\n') {
+            let end = from + at + 1;
+            from = end;
             if writable && !stopped() {
                 writable = write_progress_line(&pending[start..end], log, &mut tools).is_ok();
             }
