@@ -385,6 +385,26 @@ fn rotating_the_token_needs_a_step_up_shows_the_new_one_once_and_ends_the_old_on
 }
 
 #[test]
+fn rotations_at_the_same_time_leave_the_server_on_the_token_in_the_file() {
+    let mut rig = rig("rotate-race");
+    std::fs::write(RemoteConfig::token_path(&rig.roots), TOKEN).unwrap();
+    let session = rig.sign_in();
+    rig.step_up(&session);
+    for round in 0..4 {
+        let answered: Vec<String> = std::thread::scope(|scope| {
+            let rotations: Vec<_> = (0..8).map(|_| scope.spawn(|| rig.post(&session, "/auth/token/rotate", ""))).collect();
+            rotations.into_iter().map(|rotation| rotation.join().unwrap()).filter(|(status, _)| *status == 200).filter_map(|(_, body)| body["token"].as_str().map(String::from)).collect()
+        });
+        assert!(!answered.is_empty(), "round {round}: some rotation went through");
+        let written = std::fs::read_to_string(RemoteConfig::token_path(&rig.roots)).unwrap().trim().to_string();
+        assert_eq!(with_token(&rig, &written), 200, "round {round}: the token in the file is the one in force");
+        for superseded in answered.iter().filter(|token| **token != written) {
+            assert_eq!(with_token(&rig, superseded), 401, "round {round}: a superseded token stays ended");
+        }
+    }
+}
+
+#[test]
 fn the_audit_filters_return_only_matching_lines() {
     use orq_core::remote_audit::{record, Attempt, Outcome};
     let mut rig = rig("audit");

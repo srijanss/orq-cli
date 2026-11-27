@@ -293,9 +293,13 @@ impl PasskeyAuth {
             if !self.stepped_up(request.cookie) {
                 return audit.refused(401, "step-up required", "step_up_required");
             }
+            // One lock over writing the file and taking the token into use: two rotations at once must not
+            // leave the server on one token and the file on the other.
+            let mut in_force = self.rotated.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             match RemoteConfig::rotate(roots) {
                 Ok(config) => {
-                    *self.rotated.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(config.token.clone());
+                    *in_force = Some(config.token.clone());
+                    drop(in_force);
                     audit.allowed("rotated the access token");
                     reply(200, json!({ "token": config.token }))
                 }
