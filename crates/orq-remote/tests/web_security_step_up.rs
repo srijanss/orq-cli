@@ -311,6 +311,16 @@ fn the_session_limits_are_set_in_settings_within_bounds() {
 }
 
 #[test]
+fn session_limits_saved_at_an_address_with_a_query_apply_at_once() {
+    let mut rig = rig("limits-query");
+    let session = rig.sign_in();
+    let (status, saved) = rig.post(&session, "/api/settings/sessions?from=settings", r#"{"idle_hours":1,"max_days":2}"#);
+    assert_eq!(status, 200, "{saved}");
+    rig.advance(HOUR + 1);
+    assert!(!rig.signed_in(&session), "the shorter idle limit holds for the open session without a restart");
+}
+
+#[test]
 fn the_session_list_shows_each_session_and_revoke_ends_just_that_one() {
     let mut rig = rig("list");
     let laptop = rig.sign_in();

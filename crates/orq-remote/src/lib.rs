@@ -375,7 +375,8 @@ fn reply_as_web(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &st
     if reply.status == 401 {
         log_refusal(peer, request.method, refusal_path(request.path));
     }
-    if reply.status == 200 && method == "POST" && path == "/api/settings/sessions" {
+    // The core router reads the path without its query, so this must too, or a save at `...?x` would not apply.
+    if reply.status == 200 && method == "POST" && refusal_path(path) == "/api/settings/sessions" {
         if let Some(auth) = &shared.auth {
             auth.set_session_limits(remote_inbox::session_limits(&state.roots));
         }
