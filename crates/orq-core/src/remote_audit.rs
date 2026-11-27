@@ -47,17 +47,45 @@ fn path(roots: &StorageRoots) -> std::path::PathBuf {
     roots.state.join("remote-actions.jsonl")
 }
 
+thread_local! {
+    /// Who a web request on this thread came from, while it is answered (see [`as_web`]).
+    static WEB: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `answer` as the answer to a web request from `identity` (the passkey device, or `token`): every line
+/// recorded meanwhile on this thread says `"source": "web"`, and one recorded as plain `web` names `identity`.
+pub fn as_web<T>(identity: &str, answer: impl FnOnce() -> T) -> T {
+    let before = WEB.with(|web| web.replace(Some(identity.to_string())));
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = self.0.take();
+            WEB.with(|web| *web.borrow_mut() = before);
+        }
+    }
+    let _restore = Restore(before);
+    answer()
+}
+
 /// Appends one line for `attempt`, made at `now` (seconds since the epoch).
 pub fn record(roots: &StorageRoots, attempt: &Attempt, now: u64) -> Result<(), String> {
-    let line = json!({
+    let web = WEB.with(|web| web.borrow().clone());
+    let identity = match (&web, attempt.identity) {
+        (Some(device), "web") => device.as_str(),
+        _ => attempt.identity,
+    };
+    let mut line = json!({
         "time": now,
-        "identity": field(attempt.identity),
+        "identity": field(identity),
         "action": field(attempt.action),
         "project": field(attempt.project),
         "run": attempt.run.map(field),
         "outcome": match attempt.outcome { Outcome::Allowed => "allowed", Outcome::Refused => "refused" },
         "reason": attempt.reason.map(field),
     });
+    if web.is_some() {
+        line["source"] = json!("web");
+    }
     let mut file = open(roots, true)?;
     // A write that was cut short leaves a line with no end; the next record starts a line of its own.
     let torn = file.metadata().map(|meta| meta.len() > 0).unwrap_or(false) && !ends_with_newline(roots);
@@ -112,14 +140,69 @@ fn tail(mut file: std::fs::File, window: usize) -> std::io::Result<Vec<u8>> {
 
 /// The newest `limit` lines, newest first; no log yet reads as empty.
 pub fn read(roots: &StorageRoots, limit: usize) -> Result<Vec<Value>, String> {
+    read_window(roots, limit, limit.saturating_mul(MAX_LINE), &Filter::default())
+}
+
+/// Which lines a filtered read keeps; `None` keeps any.
+#[derive(Debug, Default, Clone)]
+pub struct Filter {
+    /// `web` or `cli`, as [`source_of`] tells them.
+    pub source: Option<String>,
+    /// The passkey device's label, `token`, or the name a terminal action was recorded under.
+    pub identity: Option<String>,
+    /// An action (`run.discard`) or its kind, the part before the dot (`run`).
+    pub action: Option<String>,
+    /// Seconds since the epoch, both inclusive.
+    pub since: Option<u64>,
+    pub until: Option<u64>,
+}
+
+impl Filter {
+    fn keeps(&self, line: &Value) -> bool {
+        let text = |key: &str| line[key].as_str().unwrap_or("");
+        let action = text("action");
+        let time = line["time"].as_u64().unwrap_or(0);
+        self.source.as_deref().is_none_or(|source| source_of(line) == source)
+            && self.identity.as_deref().is_none_or(|identity| text("identity") == identity)
+            && self.action.as_deref().is_none_or(|kind| action == kind || action.strip_prefix(kind).is_some_and(|rest| rest.starts_with('.')))
+            && self.since.is_none_or(|since| time >= since)
+            && self.until.is_none_or(|until| time <= until)
+    }
+}
+
+/// Where a line came from: `web` for a request to the web server, `cli` for orq's own and the terminal's.
+/// A line from before sources were recorded counts as web when it was recorded as plain `web`.
+pub fn source_of(line: &Value) -> &'static str {
+    match (line["source"].as_str(), line["identity"].as_str()) {
+        (Some("web"), _) | (None, Some("web")) => "web",
+        _ => "cli",
+    }
+}
+
+/// How much of the end of the log a filtered read looks through.
+const FILTER_WINDOW: usize = 8 * 1024 * 1024;
+
+/// The newest `limit` lines that `filter` keeps, newest first, from the last few megabytes of the log.
+pub fn read_filtered(roots: &StorageRoots, limit: usize, filter: &Filter) -> Result<Vec<Value>, String> {
+    read_window(roots, limit, FILTER_WINDOW, filter)
+}
+
+fn read_window(roots: &StorageRoots, limit: usize, window: usize, filter: &Filter) -> Result<Vec<Value>, String> {
     if limit == 0 {
         return Ok(Vec::new());
     }
     let tail = match open(roots, false) {
-        Ok(file) => tail(file, limit.saturating_mul(MAX_LINE)).map_err(|e| format!("cannot read the audit log: {}", e.kind()))?,
+        Ok(file) => tail(file, window).map_err(|e| format!("cannot read the audit log: {}", e.kind()))?,
         Err(why) if why == "not found" => return Ok(Vec::new()),
         Err(why) => return Err(why),
     };
     let text = String::from_utf8_lossy(&tail);
-    Ok(text.lines().rev().filter(|line| !line.is_empty()).map(|line| serde_json::from_str(line).unwrap_or_else(|_| json!({ "damaged": true }))).take(limit).collect())
+    Ok(text
+        .lines()
+        .rev()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|_| json!({ "damaged": true })))
+        .filter(|line| filter.keeps(line))
+        .take(limit)
+        .collect())
 }

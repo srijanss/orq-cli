@@ -45,6 +45,12 @@ struct Shared {
     reviews: Option<Arc<review_refresh::ReviewRefresher>>,
 }
 
+/// The access token in force: the one rotated to from the web, else the one the server started with.
+fn current_config(shared: &Shared) -> RemoteConfig {
+    let token = &shared.state.config.token;
+    RemoteConfig { token: shared.auth.as_ref().map_or_else(|| token.clone(), |auth| auth.token(token)) }
+}
+
 /// What a server is started with besides its state.
 #[derive(Default)]
 pub struct ServerOptions {
@@ -87,6 +93,7 @@ impl Server {
         if let Some(auth) = &auth {
             // Pushes name this server's https origin as their contact; Apple refuses a localhost one.
             web_push::set_contact(auth.host().origin());
+            auth.set_session_limits(remote_inbox::session_limits(&state.roots));
         }
         Server::serve(listener, Shared { state, projects: options.projects, auth, reviews: options.reviews })
     }
@@ -157,7 +164,8 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
             let (shared, path, method) = (shared.clone(), path.clone(), method.clone());
             let result = tokio::task::spawn_blocking(move || {
                 let request = orq_core::passkey_routes::AuthRequest { method: &method, path: &path, peer: peer.ip(), authorization: authorization.as_deref(), cookie: cookie.as_deref(), origin: origin.as_deref(), csrf: csrf.as_deref(), body: &bytes };
-                auth.handle(&shared.state.roots, &shared.state.config, &request)
+                let identity = web_identity(&shared, cookie.as_deref());
+                orq_core::remote_audit::as_web(&identity, || auth.handle(&shared.state.roots, &current_config(&shared), &request))
             })
             .await;
             let Ok(Some(reply)) = result else { return json_reply(404, b"{\"error\":\"not found\"}".to_vec()) };
@@ -210,7 +218,7 @@ async fn answer(State(shared): State<Arc<Shared>>, ConnectInfo(peer): ConnectInf
     // Push settings are the server's own, so they sit beside the handler: the same peer and credential
     // rules apply (a live session stands in for the token), and nothing else reaches them.
     if path.starts_with("/api/push/") {
-        if !remote_inbox::peer_allowed(peer.ip()) || !remote_inbox::token_matches(&shared.state.config.token, authorization.as_deref()) {
+        if !remote_inbox::peer_allowed(peer.ip()) || !remote_inbox::token_matches(&current_config(&shared).token, authorization.as_deref()) {
             log_refusal(peer.ip(), &method, refusal_path(&path));
             return json_reply(401, b"{\"error\":\"unauthorized\"}".to_vec());
         }
@@ -298,11 +306,11 @@ async fn effective_authorization(shared: &Arc<Shared>, peer: std::net::IpAddr, f
         let roots = shared.state.roots.clone();
         let live = tokio::task::spawn_blocking(move || auth.session_live(&roots, cookie.as_deref())).await.unwrap_or(false);
         if live {
-            return Some(format!("Bearer {}", shared.state.config.token));
+            return Some(format!("Bearer {}", current_config(shared).token));
         }
     }
     let auth = shared.auth.as_ref()?;
-    if !orq_core::remote_inbox::token_matches(&shared.state.config.token, authorization.as_deref()) || (peer.is_loopback() && !forwarded && auth.loopback_token()) {
+    if !orq_core::remote_inbox::token_matches(&current_config(shared).token, authorization.as_deref()) || (peer.is_loopback() && !forwarded && auth.loopback_token()) {
         return authorization;
     }
     None
@@ -331,17 +339,46 @@ fn json_reply(code: u16, body: Vec<u8>) -> Response {
 /// `cookie` is the request's own, before a session stands in for the token: only a passkey session can
 /// confirm a change with a step-up passkey check.
 fn reply_to(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &str, authorization: Option<&str>, cookie: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
+    let identity = web_identity(shared, cookie);
+    orq_core::remote_audit::as_web(&identity, || reply_as_web(shared, peer, method, path, authorization, cookie, body))
+}
+
+/// Who a web request came from, for the audit log: the passkey device behind its session, or else `token`.
+fn web_identity(shared: &Shared, cookie: Option<&str>) -> String {
+    shared.auth.as_ref().and_then(|auth| auth.session_device(&shared.state.roots, cookie)).unwrap_or_else(|| "token".to_string())
+}
+
+fn reply_as_web(shared: &Shared, peer: std::net::IpAddr, method: &str, path: &str, authorization: Option<&str>, cookie: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
     let request = remote_inbox::Request { method, path, peer, authorization };
     let state = &shared.state;
+    let config = current_config(shared);
+    // A passkey session takes a risky action only within a few minutes of a step-up; the page then asks for the
+    // passkey and tries again. The token on this machine's own loopback is the terminal's peer and is not asked.
+    if let Some(auth) = shared.auth.as_ref().filter(|auth| auth.has_session(cookie)) {
+        if let Some(action) = remote_inbox::step_up_action(method, path, body, shared.projects.as_deref().map(|projects| projects as &dyn remote_inbox::ProjectsProvider)).filter(|_| !auth.stepped_up(cookie)) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+            let attempt = orq_core::remote_audit::Attempt { identity: "web", action, project: "web", run: None, outcome: orq_core::remote_audit::Outcome::Refused, reason: Some("step-up required") };
+            let _ = orq_core::remote_audit::record(&state.roots, &attempt, now);
+            return (401, br#"{"error":"step_up_required"}"#.to_vec());
+        }
+    }
     let purpose = remote_inbox::step_up_purpose(path);
-    let confirm = |assertion: &serde_json::Value| shared.auth.as_ref().is_some_and(|auth| auth.confirm(&state.roots, cookie, purpose, assertion));
+    // Allowing a chat rule takes either its own fresh assertion or the session's recent step-up.
+    let confirm = |assertion: &serde_json::Value| {
+        shared.auth.as_ref().is_some_and(|auth| (purpose == "chat.allow" && assertion.is_null() && auth.stepped_up(cookie)) || auth.confirm(&state.roots, cookie, purpose, assertion))
+    };
     let step_up: Option<remote_inbox::StepUp> = shared.auth.as_ref().filter(|auth| auth.has_session(cookie)).map(|_| &confirm as remote_inbox::StepUp);
     let reply = match &shared.projects {
-        Some(projects) => remote_inbox::handle_with_confirm(&state.roots, &state.config, &state.project_id, &state.project_name, &request, body, projects.as_ref(), step_up),
-        None => remote_inbox::handle(&state.roots, &state.config, &state.project_id, &state.project_name, &request),
+        Some(projects) => remote_inbox::handle_with_confirm(&state.roots, &config, &state.project_id, &state.project_name, &request, body, projects.as_ref(), step_up),
+        None => remote_inbox::handle(&state.roots, &config, &state.project_id, &state.project_name, &request),
     };
     if reply.status == 401 {
         log_refusal(peer, request.method, refusal_path(request.path));
+    }
+    if reply.status == 200 && method == "POST" && path == "/api/settings/sessions" {
+        if let Some(auth) = &shared.auth {
+            auth.set_session_limits(remote_inbox::session_limits(&state.roots));
+        }
     }
     // Serializing a large report is work too, so it stays off the async workers.
     (reply.status, reply.body_bytes())

@@ -85,7 +85,8 @@ async function changePasskeys(path, body, fallback) {
     const response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body ?? {}), cache: "no-store", referrerPolicy: "no-referrer" });
     const data = await response.json().catch(() => null);
     if (response.ok) return { refused: null, data };
-    return { refused: data !== null && typeof data === "object" && typeof data.error === "string" && data.error !== "" ? data.error : fallback };
+    const reason = data !== null && typeof data === "object" && typeof data.error === "string" && data.error !== "" ? data.error : fallback;
+    return { refused: reason, stepUp: response.status === 401 && reason === "step_up_required" };
   } catch (unavailable) {
     return { refused: fallback };
   }
@@ -101,6 +102,56 @@ export async function renamePasskey(id, label) {
 export async function removePasskey(id) {
   const { refused, data } = await changePasskeys("/auth/passkeys/" + encodeURIComponent(id) + "/remove", {}, "The passkey could not be removed.");
   return refused === null ? { refused, signedOut: data !== null && typeof data === "object" && data.signed_out === true } : { refused };
+}
+
+// Steps this session up with the passkey, which opens the risky actions for a few minutes. Resolves null
+// when it did, otherwise the reason to show.
+export async function stepUpWithPasskey() {
+  let assertion = null;
+  try {
+    assertion = await confirmWithPasskey("step_up");
+  } catch (unavailable) {
+    return "The passkey check could not start.";
+  }
+  if (assertion === null) return "The passkey check was cancelled.";
+  if (typeof assertion.status === "number") return assertion.status === 401 ? "Sign in with your passkey again." : "The passkey check could not start.";
+  return (await changePasskeys("/auth/step-up", { assertion }, "The passkey check did not go through.")).refused;
+}
+
+// The open passkey sessions, newest first, as [{id, device, created, last_used, this_session}] with the
+// times in seconds since the epoch; null when the server has no such list; "failed" when it could not be read.
+export async function listSessions() {
+  try {
+    const response = await fetch("/auth/sessions", { cache: "no-store", referrerPolicy: "no-referrer" });
+    if (response.status === 401 || response.status === 404) return null;
+    if (!response.ok) return "failed";
+    const data = await response.json();
+    if (data === null || !Array.isArray(data.sessions)) return "failed";
+    return data.sessions.filter((s) => typeof s.id === "string" && typeof s.device === "string" && typeof s.created === "number" && typeof s.last_used === "number");
+  } catch (unavailable) {
+    return "failed";
+  }
+}
+
+// Ends the session `id`. Resolves { refused: null, signedOut } when it ended, where signedOut says it was this
+// one; otherwise { refused } with the reason.
+export async function revokeSession(id) {
+  const { refused, data } = await changePasskeys("/auth/sessions/" + encodeURIComponent(id) + "/revoke", {}, "The session could not be ended.");
+  return refused === null ? { refused, signedOut: data !== null && typeof data === "object" && data.signed_out === true } : { refused };
+}
+
+// Makes a new access token and ends the old one; it needs a recent step-up, which is asked for once when the
+// server wants one. Resolves { token } with the new token, otherwise { refused } with the reason.
+export async function rotateToken() {
+  const fallback = "The token could not be rotated.";
+  let result = await changePasskeys("/auth/token/rotate", {}, fallback);
+  if (result.stepUp) {
+    const refused = await stepUpWithPasskey();
+    if (refused !== null) return { refused };
+    result = await changePasskeys("/auth/token/rotate", {}, fallback);
+  }
+  if (result.refused !== null) return { refused: result.stepUp ? "Confirm with your passkey to rotate the token." : result.refused };
+  return result.data !== null && typeof result.data === "object" && typeof result.data.token === "string" ? { token: result.data.token } : { refused: fallback };
 }
 
 // Ends every passkey session, this one included. Resolves null when they ended, otherwise the reason.

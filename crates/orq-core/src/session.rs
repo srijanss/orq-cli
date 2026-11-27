@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// The cookie's name. The `__Host-` prefix makes browsers accept it only over HTTPS, with
@@ -37,43 +38,85 @@ pub struct Issued {
     pub cookie: String,
 }
 
-/// The live sessions, in memory only: a restart signs everyone out.
+/// The live sessions, in memory only: a restart signs everyone out. A session ends once it has gone unused
+/// for the idle limit or reached the absolute limit since sign-in, whichever comes first.
 pub struct Sessions {
-    lifetime: u64,
+    idle: AtomicU64,
+    max: AtomicU64,
     live: Mutex<HashMap<String, Entry>>,
 }
 
+/// One open session as the session list shows it. `handle` names it for Revoke; it is not the cookie's id,
+/// so the list never hands out a way into another session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub handle: String,
+    pub credential: String,
+    pub created: u64,
+    pub last_used: u64,
+    /// Whether this is the session the list was asked for from.
+    pub this_session: bool,
+}
+
 struct Entry {
+    handle: String,
     credential: String,
     csrf: String,
     created: u64,
-    expires: u64,
+    last_used: u64,
+    /// When the passkey last confirmed a risky action for this session (a step-up), if it has.
+    stepped_up: Option<u64>,
 }
 
 impl Sessions {
+    /// Sessions that end `lifetime_secs` after sign-in, used or not.
     pub fn new(lifetime_secs: u64) -> Sessions {
-        Sessions { lifetime: lifetime_secs.max(1), live: Mutex::new(HashMap::new()) }
+        Sessions::with_limits(lifetime_secs, lifetime_secs)
+    }
+
+    /// Sessions that end after `idle_secs` unused or `max_secs` after sign-in.
+    pub fn with_limits(idle_secs: u64, max_secs: u64) -> Sessions {
+        let sessions = Sessions { idle: AtomicU64::new(1), max: AtomicU64::new(1), live: Mutex::new(HashMap::new()) };
+        sessions.set_limits(idle_secs, max_secs);
+        sessions
+    }
+
+    /// Changes both limits; they apply at once to the sessions already open.
+    pub fn set_limits(&self, idle_secs: u64, max_secs: u64) {
+        self.idle.store(idle_secs.max(1), Ordering::SeqCst);
+        self.max.store(max_secs.max(1), Ordering::SeqCst);
+    }
+
+    /// The idle and absolute limits, in seconds.
+    pub fn limits(&self) -> (u64, u64) {
+        (self.idle.load(Ordering::SeqCst), self.max.load(Ordering::SeqCst))
+    }
+
+    fn alive(&self, entry: &Entry, now: u64) -> bool {
+        let (idle, max) = self.limits();
+        now < entry.created.saturating_add(max) && now < entry.last_used.saturating_add(idle)
     }
 
     /// Starts a session at `now` (seconds since the epoch) for the signed-in passkey with this credential id.
     pub fn issue(&self, _proof: PasskeySignIn, credential: &str, now: u64) -> Result<Issued, String> {
         let id = new_id()?;
         let csrf = new_id()?;
+        let handle = new_id()?;
         let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        live.retain(|_, entry| entry.expires > now);
+        live.retain(|_, entry| self.alive(entry, now));
         while live.len() >= MAX_SESSIONS {
             let Some(oldest) = live.iter().min_by_key(|(_, entry)| entry.created).map(|(id, _)| id.clone()) else { break };
             live.remove(&oldest);
         }
-        live.insert(id.clone(), Entry { credential: credential.to_string(), csrf, created: now, expires: now.saturating_add(self.lifetime) });
-        Ok(Issued { cookie: set_cookie(&id, self.lifetime), id })
+        live.insert(id.clone(), Entry { handle, credential: credential.to_string(), csrf, created: now, last_used: now, stepped_up: None });
+        Ok(Issued { cookie: set_cookie(&id, self.limits().1), id })
     }
 
     /// Whether `id` is a live session at `now`. An expired session is forgotten.
     pub fn is_live(&self, id: &str, now: u64) -> bool {
         let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match live.get(id) {
-            Some(entry) if entry.expires > now => true,
+            Some(entry) if self.alive(entry, now) => true,
             Some(_) => {
                 live.remove(id);
                 false
@@ -82,17 +125,24 @@ impl Sessions {
         }
     }
 
-    /// The credential id of the passkey that opened this session, if it is live at `now`.
+    /// The credential id of the passkey that opened this session, if it is live at `now`. This is the
+    /// session being used, so it counts as its last use.
     pub fn credential(&self, id: &str, now: u64) -> Option<String> {
-        let live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        live.get(id).filter(|entry| entry.expires > now).map(|entry| entry.credential.clone())
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = live.get_mut(id)?;
+        if !self.alive(entry, now) {
+            live.remove(id);
+            return None;
+        }
+        entry.last_used = entry.last_used.max(now);
+        Some(entry.credential.clone())
     }
 
     /// The CSRF token of this session, if it is live at `now`: a random value of its own, handed to the
     /// signed-in page and asked back on every state-changing request.
     pub fn csrf(&self, id: &str, now: u64) -> Option<String> {
         let live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        live.get(id).filter(|entry| entry.expires > now).map(|entry| entry.csrf.clone())
+        live.get(id).filter(|entry| self.alive(entry, now)).map(|entry| entry.csrf.clone())
     }
 
     /// Whether `presented` is this live session's CSRF token (compared without stopping at the first difference).
@@ -101,10 +151,48 @@ impl Sessions {
         token.len() == presented.len() && token.bytes().zip(presented.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
     }
 
+    /// Records that the passkey confirmed a step-up for this live session at `now`; false when it is not live.
+    pub fn mark_stepped_up(&self, id: &str, now: u64) -> bool {
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match live.get_mut(id).filter(|entry| self.alive(entry, now)) {
+            Some(entry) => {
+                entry.stepped_up = Some(now);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether this live session's last step-up is less than `window` seconds before `now`.
+    pub fn stepped_up_within(&self, id: &str, now: u64, window: u64) -> bool {
+        let live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        live.get(id).filter(|entry| self.alive(entry, now)).and_then(|entry| entry.stepped_up).is_some_and(|at| at <= now && now - at < window)
+    }
+
     /// Logout: ends the session, if it exists, and gives the header that clears the cookie.
     pub fn end(&self, id: &str) -> String {
         self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(id);
         clear_cookie()
+    }
+
+    /// The live sessions at `now`, newest first; `own` is the id of the session asking.
+    pub fn list(&self, own: &str, now: u64) -> Vec<Listed> {
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        live.retain(|_, entry| self.alive(entry, now));
+        let mut rows: Vec<Listed> = live
+            .iter()
+            .map(|(id, entry)| Listed { handle: entry.handle.clone(), credential: entry.credential.clone(), created: entry.created, last_used: entry.last_used, this_session: id == own })
+            .collect();
+        rows.sort_by(|a, b| b.created.cmp(&a.created).then_with(|| a.handle.cmp(&b.handle)));
+        rows
+    }
+
+    /// Ends the session the list names `handle`; whether there was one.
+    pub fn revoke(&self, handle: &str) -> bool {
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = live.len();
+        live.retain(|_, entry| entry.handle != handle);
+        live.len() != before
     }
 
     /// Ends every session opened with the passkey that has this credential id, for when it is removed.

@@ -82,6 +82,32 @@ impl RemoteConfig {
         Self::load(roots)
     }
 
+    /// A new random token, written over the token file for its owner only. The new file is written whole
+    /// and renamed into place, so a reader sees the old token or the new one, never part of either. The
+    /// caller keeps the returned token; the file is not read back.
+    pub fn rotate(roots: &StorageRoots) -> Result<RemoteConfig, String> {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = Self::token_path(roots);
+        let mut bytes = [0u8; 40];
+        std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).map_err(|e| format!("cannot generate a remote token: {}", e.kind()))?;
+        let token: String = bytes[..32].iter().map(|b| format!("{b:02x}")).collect();
+        let temp = path.with_file_name(format!(".remote-token.{}.tmp", bytes[32..].iter().map(|b| format!("{b:02x}")).collect::<String>()));
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&temp)
+            .and_then(|mut file| file.write_all(token.as_bytes()).and_then(|()| file.sync_all()))
+            .and_then(|()| std::fs::rename(&temp, &path));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("cannot write the remote token file: {}", e.kind()));
+        }
+        Ok(RemoteConfig { token })
+    }
+
     /// Reads the token file. It must be a regular file (not a link) that only
     /// its owner can access, and hold a token of at least 32 characters. An
     /// error never contains the token.
@@ -755,6 +781,53 @@ pub fn step_up_purpose(path: &str) -> &'static str {
     }
 }
 
+/// The risky action a `method` request on `path` with `body` is, as its audit action, when a passkey session
+/// may take it only within a few minutes of a step-up; `None` for any other request.
+///
+/// A chat allow carrying its own purpose-bound `assertion` is let through here: that fresh assertion is checked
+/// where the rule is allowed. Project settings count only when they turn the queue's hours (its auto-start) or
+/// automatic after-merge cleanup on.
+pub fn step_up_action(method: &str, path: &str, body: &[u8], provider: Option<&dyn ProjectsProvider>) -> Option<&'static str> {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    if method != "POST" {
+        return None;
+    }
+    let fields = || serde_json::from_slice::<Value>(body).ok().unwrap_or(Value::Null);
+    if let Some((_, tail)) = crate::ask_orq::target(path) {
+        return (matches!(tail.as_slice(), [_, "allow"]) && fields().get("assertion").is_none()).then_some("chat.allow");
+    }
+    if run_target(path, "discard").is_some() {
+        return Some("run.discard");
+    }
+    if run_target(path, "cleanup").is_some() {
+        return Some("run.cleanup");
+    }
+    if matches!(run_control_target(path), Some((_, _, RunControl::Accept))) {
+        return Some("run.accept");
+    }
+    if path == "/api/storage/worktrees/delete-merged" {
+        return Some("worktrees.delete_merged");
+    }
+    if path.starts_with("/api/storage/worktrees/") {
+        return Some("worktree.delete");
+    }
+    if path == "/api/server/restart" {
+        return Some("server.restart");
+    }
+    if let Some(id) = project_target(path, "settings") {
+        let fields = fields();
+        let current = || provider.and_then(|provider| provider.project_settings(id).ok().flatten()).unwrap_or(Value::Null);
+        let hours = |value: &Value| value["queue_hours"].as_str().map(str::trim).filter(|hours| !hours.is_empty()).map(str::to_string);
+        if hours(&fields).is_some_and(|wanted| hours(&current()) != Some(wanted)) {
+            return Some("project.queue_auto_start");
+        }
+        if fields["after_merge"] == "auto" && current()["after_merge"] != "auto" {
+            return Some("project.after_merge_auto");
+        }
+    }
+    None
+}
+
 /// Like [`handle_with_body`], from a passkey session whose step-up assertions `confirm` checks.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_with_confirm(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_name: &str, request: &Request, body: &[u8], provider: &dyn ProjectsProvider, confirm: Option<StepUp>) -> Response {
@@ -888,6 +961,71 @@ fn cancel_restart(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>,
 /// Turns remote actions off or on for the web, while the settings version presented is still current,
 /// and leaves an audit line for the attempt. Turning them on needs a passkey session (`confirm`) and an
 /// assertion in the body that it accepts.
+/// The hours a passkey session may go unused that Settings may set, and the default.
+pub const SESSION_IDLE_HOURS: (u64, u64, u64) = (1, 72, 12);
+/// The days a passkey session may last in total that Settings may set, and the default.
+pub const SESSION_MAX_DAYS: (u64, u64, u64) = (1, 30, 7);
+
+/// The idle and absolute session limits in config.toml, as `(idle hours, max days)`; a value that is
+/// missing, not a whole number or out of bounds is the default.
+pub fn session_limit_settings(roots: &StorageRoots) -> (u64, u64) {
+    let text = crate::remote_settings::read_config(&roots.config_file()).unwrap_or_default();
+    let doc: Option<toml_edit::DocumentMut> = text.parse().ok();
+    let read = |key: &str, (min, max, default): (u64, u64, u64)| {
+        doc.as_ref().and_then(|doc| doc.get(key)).and_then(|item| item.as_integer()).and_then(|n| u64::try_from(n).ok()).filter(|n| (min..=max).contains(n)).unwrap_or(default)
+    };
+    (read("session_idle_hours", SESSION_IDLE_HOURS), read("session_max_days", SESSION_MAX_DAYS))
+}
+
+/// [`session_limit_settings`] in seconds, as the sessions take them.
+pub fn session_limits(roots: &StorageRoots) -> (u64, u64) {
+    let (hours, days) = session_limit_settings(roots);
+    (hours * 60 * 60, days * 24 * 60 * 60)
+}
+
+/// GET /api/settings/sessions: the session limits and their bounds.
+fn session_settings(roots: &StorageRoots) -> Response {
+    let (idle_hours, max_days) = session_limit_settings(roots);
+    reply(200, json!({ "idle_hours": idle_hours, "max_days": max_days, "idle_hours_bounds": [SESSION_IDLE_HOURS.0, SESSION_IDLE_HOURS.1], "max_days_bounds": [SESSION_MAX_DAYS.0, SESSION_MAX_DAYS.1] }))
+}
+
+/// POST /api/settings/sessions `{idle_hours, max_days}`: writes both limits, each within its bounds. Only a
+/// passkey session may change how long sessions last. Audited as settings.sessions.
+fn set_session_settings(roots: &StorageRoots, body: &[u8], passkey: bool) -> Response {
+    use crate::remote_audit::Outcome;
+    use crate::remote_settings::{read_config, version_of, write_if_version};
+    let audit = |outcome, reason: Option<&str>| server_audit(roots, "settings.sessions", outcome, reason);
+    if let Some(refusal) = body_refusal(body, &["idle_hours", "max_days"]) {
+        audit(Outcome::Refused, Some("bad request body"));
+        return refusal;
+    }
+    if !passkey {
+        audit(Outcome::Refused, Some("needs a passkey sign-in"));
+        return error(403, "Changing how long sessions last needs a passkey sign-in");
+    }
+    let fields = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+    let within = |key: &str, (min, max, _): (u64, u64, u64)| fields[key].as_u64().filter(|n| (min..=max).contains(n));
+    let (Some(idle_hours), Some(max_days)) = (within("idle_hours", SESSION_IDLE_HOURS), within("max_days", SESSION_MAX_DAYS)) else {
+        audit(Outcome::Refused, Some("out of bounds"));
+        return error(422, &format!("Idle hours are {} to {} and days in total {} to {}", SESSION_IDLE_HOURS.0, SESSION_IDLE_HOURS.1, SESSION_MAX_DAYS.0, SESSION_MAX_DAYS.1));
+    };
+    let version = read_config(&roots.config_file()).map(|text| version_of(&text)).unwrap_or_default();
+    let written = write_if_version(roots, &version, |doc| {
+        doc["session_idle_hours"] = toml_edit::value(idle_hours as i64);
+        doc["session_max_days"] = toml_edit::value(max_days as i64);
+    });
+    match written {
+        Ok(()) => {
+            audit(Outcome::Allowed, Some(&format!("idle {idle_hours} h, at most {max_days} days")));
+            reply(200, json!({ "idle_hours": idle_hours, "max_days": max_days }))
+        }
+        Err(failed) => {
+            audit(Outcome::Refused, Some(&failed.to_string()));
+            error(failed.status(), &failed.to_string())
+        }
+    }
+}
+
 fn set_remote_actions(roots: &StorageRoots, body: &[u8], confirm: Option<StepUp>) -> Response {
     use crate::remote_audit::{record, Attempt, Outcome};
     use crate::remote_settings::{write_if_version, SettingsWriteError};
@@ -2051,13 +2189,15 @@ fn control_run(roots: &StorageRoots, provider: Option<&dyn ProjectsProvider>, id
         audit(Outcome::Refused, Some(run), Some("bad request body"));
         return refusal.unwrap_or_else(|| error(400, "the request body is not one this action takes"));
     };
+    // The audit line keeps the start of the answer, redacted on the way in, so the log says what was said.
+    let summary = answer.map(|answer| format!("answer: {}", answer.split_whitespace().collect::<Vec<_>>().join(" ")));
     let outcome = match answer {
         Some(answer) => provider.map(|provider| provider.resume_with_answer(id, run, answer)),
         None => provider.map(|provider| provider.control_run(id, run, control)),
     };
     match outcome {
         Some(Ok(RunControlOutcome::Done(now_run))) => {
-            audit(Outcome::Allowed, Some(run), None);
+            audit(Outcome::Allowed, Some(run), summary.as_deref());
             reply(202, json!({ "run": now_run }))
         }
         Some(Ok(RunControlOutcome::Refused(why))) => {
@@ -3148,6 +3288,10 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
     if path == "/api/server/restart" && request.method == "POST" {
         return restart_server(roots, provider, body, confirm.is_some());
     }
+    // Not behind the remote_actions gate: how long a sign-in lasts is about the web itself.
+    if path == "/api/settings/sessions" && request.method == "POST" {
+        return set_session_settings(roots, body, confirm.is_some());
+    }
     if path == "/api/settings/agents" && request.method == "POST" {
         return set_agents(roots, provider, body, confirm);
     }
@@ -3248,10 +3392,10 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
         return stats(provider, query);
     }
     if path == "/api/audit" {
-        return match crate::remote_audit::read(roots, AUDIT_LIMIT) {
-            Ok(lines) => reply(200, json!({ "audit": lines })),
-            Err(why) => error(500, &why),
-        };
+        return audit(roots, query);
+    }
+    if path == "/api/settings/sessions" {
+        return session_settings(roots);
     }
     if path == "/api/settings/options" {
         return match provider.map(|provider| provider.setting_options()) {
@@ -3365,6 +3509,39 @@ fn route(roots: &StorageRoots, config: &RemoteConfig, project_id: &str, project_
 
 /// `GET /api/stats?days=7|30|90[&project=<id>]`: how the runs went, for every project or one. A read,
 /// so it is there with actions off; its failure names no path.
+/// GET /api/audit `?source=web|cli&identity=…&action=…&since=…&until=…`: the newest audit lines that match
+/// every filter given; `action` takes a whole action or its kind, and the times are inclusive epoch seconds.
+fn audit(roots: &StorageRoots, query: &str) -> Response {
+    let mut filter = crate::remote_audit::Filter::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let (Some(key), Some(value)) = (query_decode(key), query_decode(value)) else { return error(400, "the query is not valid") };
+        if value.is_empty() {
+            continue;
+        }
+        let time = |value: &str| value.parse::<u64>().map_err(|_| error(400, "since and until are seconds since the epoch"));
+        match key.as_str() {
+            "source" if value == "web" || value == "cli" => filter.source = Some(value),
+            "source" => return error(400, "source must be web or cli"),
+            "identity" => filter.identity = Some(value),
+            "action" => filter.action = Some(value),
+            "since" => match time(&value) {
+                Ok(since) => filter.since = Some(since),
+                Err(refused) => return refused,
+            },
+            "until" => match time(&value) {
+                Ok(until) => filter.until = Some(until),
+                Err(refused) => return refused,
+            },
+            _ => return error(400, "unknown query parameter"),
+        }
+    }
+    match crate::remote_audit::read_filtered(roots, AUDIT_LIMIT, &filter) {
+        Ok(lines) => reply(200, json!({ "audit": lines })),
+        Err(why) => error(500, &why),
+    }
+}
+
 fn stats(provider: Option<&dyn ProjectsProvider>, query: &str) -> Response {
     let mut days = 7;
     let mut project = None;

@@ -11,7 +11,7 @@ import { Icon } from "./icons.jsx";
 import { Markdown } from "./markdown.jsx";
 import { ThemeChoice, ThemeToggle } from "./theme.jsx";
 import { readPins, writePins } from "./pins.js";
-import { UNREACHABLE, authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, signInWithPasskey, signOutOfSession } from "./passkey.js";
+import { UNREACHABLE, authStatus, confirmWithPasskey, endAllSessions, listPasskeys, passkeyBlocker, passkeysAvailable, registerPasskey, removePasskey, renamePasskey, listSessions, revokeSession, rotateToken, signInWithPasskey, signOutOfSession, stepUpWithPasskey } from "./passkey.js";
 import { applyUpdate, startWorker } from "./worker.js";
 import { currentPath, isPlainLeftClick, migrateLegacyHash, navigate, openRootAtDashboard, subscribeToLocation } from "./router.js";
 
@@ -1970,6 +1970,186 @@ function SignOutEverywhere({ onSignOut }) {
   );
 }
 
+const API_SESSION_LIMITS = "/api/settings/sessions";
+
+// The session lifetimes as the server answers them, or null when the reply is not that.
+function parseSessionLimits(data) {
+  const bounds = (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(Number.isInteger);
+  return data !== null && typeof data === "object" && Number.isInteger(data.idle_hours) && Number.isInteger(data.max_days) && bounds(data.idle_hours_bounds) && bounds(data.max_days_bounds) ? data : null;
+}
+
+// Signed in with a passkey: how long a session may sit unused and how long it lasts in all, read when Edit is
+// pressed and saved within the server's bounds.
+function SessionLimits({ token }) {
+  const [limits, setLimits] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  const answer = async (response) => {
+    const data = await jsonOrNull(response);
+    if (response.ok && parseSessionLimits(data) !== null) return { limits: data };
+    return { refused: data !== null && typeof data === "object" && typeof data.error === "string" ? data.error : "The session lifetimes could not be read." };
+  };
+  const edit = async () => {
+    setNote("");
+    try {
+      const result = await answer(await get(API_SESSION_LIMITS, token));
+      if (result.limits) {
+        setLimits(result.limits);
+        setDraft({ idle: String(result.limits.idle_hours), max: String(result.limits.max_days) });
+      } else setNote(result.refused);
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+    }
+  };
+  const save = async () => {
+    setSending(true);
+    setNote("");
+    try {
+      const result = await answer(await actionRequest(API_SESSION_LIMITS, token, { idle_hours: Number(draft.idle), max_days: Number(draft.max) }));
+      if (result.limits) {
+        setLimits(result.limits);
+        setDraft(null);
+      } else setNote(result.refused);
+    } catch (unreachable) {
+      setNote("The server could not be reached.");
+    }
+    setSending(false);
+  };
+  const within = (text, [low, high]) => /^\d+$/.test(text) && Number(text) >= low && Number(text) <= high;
+  return (
+    <div className="settings-row session-limits">
+      <span>Sessions end after</span>
+      {draft === null ? (
+        <>
+          {limits !== null && (
+            <span>
+              {limits.idle_hours + (limits.idle_hours === 1 ? " hour" : " hours") + " idle, or " + limits.max_days + (limits.max_days === 1 ? " day" : " days") + " in all"}
+            </span>
+          )}
+          <button type="button" data-edit-session-limits onClick={edit}>
+            <Icon name="pencil" size={16} />
+            Edit
+          </button>
+        </>
+      ) : (
+        <>
+          <label>
+            <span>{"Idle hours (" + limits.idle_hours_bounds[0] + "–" + limits.idle_hours_bounds[1] + " hours)"}</span>
+            <input type="number" inputMode="numeric" data-session-idle min={limits.idle_hours_bounds[0]} max={limits.idle_hours_bounds[1]} value={draft.idle} onChange={(event) => setDraft({ ...draft, idle: event.target.value })} />
+          </label>
+          <label>
+            <span>{"Days in all (" + limits.max_days_bounds[0] + "–" + limits.max_days_bounds[1] + " days)"}</span>
+            <input type="number" inputMode="numeric" data-session-max min={limits.max_days_bounds[0]} max={limits.max_days_bounds[1]} value={draft.max} onChange={(event) => setDraft({ ...draft, max: event.target.value })} />
+          </label>
+          <button type="button" className="primary-button" data-save-session-limits disabled={sending || !within(draft.idle, limits.idle_hours_bounds) || !within(draft.max, limits.max_days_bounds)} onClick={save}>
+            Save
+          </button>
+          <button type="button" data-cancel disabled={sending} onClick={() => setDraft(null)}>
+            Cancel
+          </button>
+        </>
+      )}
+      {note !== "" && <p role="alert">{note}</p>}
+    </div>
+  );
+}
+
+// Signed in with a passkey: makes a new access token after asking (and a passkey step-up), and shows it once
+// to copy; the old one stops working. Done hides it for good.
+function RotateToken() {
+  const [asking, setAsking] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  const [token, setToken] = useState(null);
+  const question = "Rotate the access token? The current one stops working at once, on every terminal and script that uses it.";
+  const rotate = async () => {
+    setSending(true);
+    const result = await rotateToken();
+    setSending(false);
+    setAsking(false);
+    if (typeof result.token === "string") setToken(result.token);
+    else setNote(result.refused);
+  };
+  if (token !== null) {
+    return (
+      <div className="settings-row new-token">
+        <span>New access token, shown only now:</span>
+        <code data-new-token>{token}</code>
+        <button type="button" onClick={() => navigator.clipboard && navigator.clipboard.writeText(token).catch(() => {})}>
+          Copy
+        </button>
+        <button type="button" data-token-done onClick={() => setToken(null)}>
+          Done
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="settings-row">
+      <span>Access token</span>
+      {asking ? (
+        <Confirm question={question} answer="Yes, rotate it" tone="danger" busy={sending} onConfirm={rotate} onCancel={() => setAsking(false)} />
+      ) : (
+        <button type="button" className="danger-button" data-rotate-token onClick={() => { setNote(""); setAsking(true); }}>
+          <Icon name="rotate" size={16} />
+          Rotate access token
+        </button>
+      )}
+      {note !== "" && <p role="alert">{note}</p>}
+    </div>
+  );
+}
+
+// Signed in with a passkey: every open session, with the device that opened it, when it was opened and last
+// used, and a Revoke that ends just that one (this one too, which signs the page out).
+function SessionsList({ onSignOut }) {
+  const [sessions, setSessions] = useState(null);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  const load = () => listSessions().then(setSessions);
+  useEffect(() => {
+    load();
+  }, []);
+  const revoke = async (id) => {
+    setSending(true);
+    setNote("");
+    const { refused, signedOut } = await revokeSession(id);
+    setSending(false);
+    if (refused !== null) setNote(refused);
+    else if (signedOut) onSignOut();
+    else load();
+  };
+  if (sessions === null) return null;
+  if (sessions === "failed") return <p role="alert">The sessions could not be listed.</p>;
+  return (
+    <>
+      <ul className="settings-fields sessions">
+        {sessions.map((s) => (
+          <li key={s.id} className="settings-row" data-session>
+            <span>
+              <strong>{s.device}</strong>
+              {s.this_session && <span className="muted">This device</span>}
+            </span>
+            <span className="muted">
+              <span>Signed in </span>
+              <Moment at={epochTime(s.created)} />
+            </span>
+            <span className="muted">
+              <span>Last used </span>
+              <Moment at={epochTime(s.last_used)} />
+            </span>
+            <button type="button" className="danger-button" data-revoke-session disabled={sending} onClick={() => revoke(s.id)}>
+              Revoke
+            </button>
+          </li>
+        ))}
+      </ul>
+      {note !== "" && <p role="alert">{note}</p>}
+    </>
+  );
+}
+
 function PasskeysCard({ onSignOut = null }) {
   const [keys, setKeys] = useState(null);
   const load = () => listPasskeys().then(setKeys);
@@ -2362,6 +2542,85 @@ function auditTime(line) {
   if (line.damaged === true) return null;
   const when = new Date(line.time * 1000);
   return Number.isNaN(when.getTime()) ? null : when.toISOString().replace(".000Z", "Z");
+}
+
+// A local day ("2026-11-27") as the epoch seconds it starts and ends at, both inclusive; null when it is not a day.
+function dayBounds(day) {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (parts === null) return null;
+  const start = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
+  const next = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]) + 1);
+  if (Number.isNaN(start.getTime())) return null;
+  return { since: Math.floor(start.getTime() / 1000), until: Math.floor(next.getTime() / 1000) - 1 };
+}
+
+// Today in this browser's time zone, as a date field holds it.
+function localToday() {
+  const now = new Date();
+  const two = (n) => String(n).padStart(2, "0");
+  return now.getFullYear() + "-" + two(now.getMonth() + 1) + "-" + two(now.getDate());
+}
+
+// The audit address for `filter`: source, identity, action (or its kind) and a local day, each only when set.
+function auditPath(filter) {
+  const query = [];
+  if (filter.source !== "") query.push("source=" + encodeURIComponent(filter.source));
+  if (filter.identity.trim() !== "") query.push("identity=" + encodeURIComponent(filter.identity.trim()));
+  if (filter.action.trim() !== "") query.push("action=" + encodeURIComponent(filter.action.trim()));
+  const day = dayBounds(filter.day);
+  if (day !== null) query.push("since=" + day.since, "until=" + day.until);
+  return query.length === 0 ? API_AUDIT : API_AUDIT + "?" + query.join("&");
+}
+
+const NO_AUDIT_FILTER = { source: "", identity: "", action: "", day: "" };
+
+// The audit with its filters: what is typed applies on Filter; "Today from the web" applies at once.
+function AuditPage({ reloads, token, onSignedOut }) {
+  const [draft, setDraft] = useState(NO_AUDIT_FILTER);
+  const [applied, setApplied] = useState(NO_AUDIT_FILTER);
+  const apply = (filter) => {
+    setDraft(filter);
+    setApplied(filter);
+  };
+  const path = auditPath(applied);
+  const field = (key) => (event) => setDraft({ ...draft, [key]: event.target.value });
+  return (
+    <>
+      <form className="card audit-filters" onSubmit={(event) => { event.preventDefault(); apply(draft); }}>
+        <label>
+          <span>Source</span>
+          <select data-audit-source value={draft.source} onChange={field("source")}>
+            <option value="">Any</option>
+            <option value="web">Web</option>
+            <option value="cli">Terminal</option>
+          </select>
+        </label>
+        <label>
+          <span>Who</span>
+          <input type="text" data-audit-identity placeholder="Passkey device or token" value={draft.identity} onChange={field("identity")} />
+        </label>
+        <label>
+          <span>Action</span>
+          <input type="text" data-audit-action placeholder="run, or run.discard" value={draft.action} onChange={field("action")} />
+        </label>
+        <label>
+          <span>Day</span>
+          <input type="date" data-audit-date value={draft.day} onChange={field("day")} />
+        </label>
+        <button type="submit" className="primary-button" data-audit-apply>
+          <Icon name="search" size={16} />
+          Filter
+        </button>
+        <button type="button" data-audit-today-web onClick={() => apply({ ...NO_AUDIT_FILTER, source: "web", day: localToday() })}>
+          Today from the web
+        </button>
+        <button type="button" data-audit-clear onClick={() => apply(NO_AUDIT_FILTER)}>
+          Clear
+        </button>
+      </form>
+      <Loaded key={path} reloads={reloads} token={token} path={path} loading="Loading the audit…" parse={parseAudit} draw={(lines) => <AuditView lines={lines} />} onSignedOut={onSignedOut} />
+    </>
+  );
 }
 
 function AuditView({ lines }) {
@@ -3137,7 +3396,22 @@ async function deleteRequest(path, token, body) {
   return sendAction("DELETE", path, token, body);
 }
 
+// A risky action from a passkey session needs a recent step-up: when the server answers step_up_required,
+// the page asks for the passkey and sends the action once more. A step-up that did not happen answers 403
+// with its reason, so the caller shows it and does not take it for a signed-out session.
 async function sendAction(method, path, token, body) {
+  const response = await sendActionOnce(method, path, token, body);
+  if (token !== SESSION || response.status !== 401) return response;
+  const data = await jsonOrNull(response);
+  // The body is read here, so the caller gets a reply that answers json() with it (or fails as it did).
+  const answered = (status, json) => ({ status, ok: false, json: () => (json === null ? Promise.reject(new SyntaxError("no JSON body")) : Promise.resolve(json)) });
+  if (data === null || typeof data !== "object" || data.error !== "step_up_required") return answered(401, data);
+  const refused = await stepUpWithPasskey();
+  if (refused !== null) return answered(403, { error: refused });
+  return sendActionOnce(method, path, token, body);
+}
+
+async function sendActionOnce(method, path, token, body) {
   const headers = { "Content-Type": "application/json" };
   if (token === SESSION) {
     // Only a passkey session carries a CSRF token; a bearer token goes straight out.
@@ -8239,7 +8513,7 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
     return (
       <>
         <PageHeader title="Audit" subtitle="Recent remote actions, read only" back={{ path: "/settings", label: "Back to settings" }} onRefresh={() => setReloads(reloads + 1)} />
-        <Loaded key={API_AUDIT} reloads={reloads} token={token} path={API_AUDIT} loading="Loading the audit…" parse={parseAudit} draw={(lines) => <AuditView lines={lines} />} onSignedOut={onSignedOut} />
+        <AuditPage reloads={reloads} token={token} onSignedOut={onSignedOut} />
       </>
     );
   }
@@ -8280,6 +8554,9 @@ function SignedIn({ token, onSignedOut, onSignOut = null, projectId = null, proj
                 </button>
               </div>
               {token === SESSION && <SignOutEverywhere onSignOut={onSignOut} />}
+              {token === SESSION && <SessionLimits token={token} />}
+              {token === SESSION && <SessionsList onSignOut={onSignOut} />}
+              {token === SESSION && <RotateToken />}
             </section>
           )}
         </div>
