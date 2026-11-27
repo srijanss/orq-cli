@@ -1985,9 +1985,11 @@ function SessionLimits({ token }) {
   const [draft, setDraft] = useState(null);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
-  const answer = async (response) => {
+  // `known` fills in what a reply leaves out, so a save that answers only the new limits keeps the bounds read on Edit.
+  const answer = async (response, known) => {
     const data = await jsonOrNull(response);
-    if (response.ok && parseSessionLimits(data) !== null) return { limits: data };
+    const merged = data !== null && typeof data === "object" && !Array.isArray(data) ? { ...known, ...data } : data;
+    if (response.ok && parseSessionLimits(merged) !== null) return { limits: merged };
     return { refused: data !== null && typeof data === "object" && typeof data.error === "string" ? data.error : "The session lifetimes could not be read." };
   };
   const edit = async () => {
@@ -2006,7 +2008,7 @@ function SessionLimits({ token }) {
     setSending(true);
     setNote("");
     try {
-      const result = await answer(await actionRequest(API_SESSION_LIMITS, token, { idle_hours: Number(draft.idle), max_days: Number(draft.max) }));
+      const result = await answer(await actionRequest(API_SESSION_LIMITS, token, { idle_hours: Number(draft.idle), max_days: Number(draft.max) }), limits);
       if (result.limits) {
         setLimits(result.limits);
         setDraft(null);

@@ -301,6 +301,7 @@ fn the_session_limits_are_set_in_settings_within_bounds() {
     }
     let (status, saved) = rig.post(&session, "/api/settings/sessions", r#"{"idle_hours":1,"max_days":2}"#);
     assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved, json!({"idle_hours": 1, "max_days": 2, "idle_hours_bounds": [1, 72], "max_days_bounds": [1, 30]}), "the save answers as the read does");
     assert!(std::fs::read_to_string(rig.roots.config_file()).unwrap().contains("session_idle_hours = 1"), "written to the settings file");
     assert_eq!(rig.get(&session, "/api/settings/sessions").1["idle_hours"], 1);
     rig.advance(HOUR - 1);
@@ -633,7 +634,8 @@ fn the_audit_page_filters_and_has_a_today_from_the_web_preset() {
 #[test]
 fn settings_edits_the_session_lifetimes_within_their_bounds() {
     let limits = json!({"status": 200, "json": {"idle_hours": 12, "max_days": 7, "idle_hours_bounds": [1, 72], "max_days_bounds": [1, 30]}});
-    let saved = json!({"status": 200, "json": {"idle_hours": 4, "max_days": 2, "idle_hours_bounds": [1, 72], "max_days_bounds": [1, 30]}});
+    // Only the saved limits, as a reply from before the bounds were sent back: the page keeps the bounds it read.
+    let saved = json!({"status": 200, "json": {"idle_hours": 4, "max_days": 2}});
     let steps = json!([
         {"click": "[data-edit-session-limits]"},
         {"set": "[data-session-idle]", "value": "4"},

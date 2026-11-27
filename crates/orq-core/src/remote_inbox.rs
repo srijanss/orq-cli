@@ -986,6 +986,11 @@ pub fn session_limits(roots: &StorageRoots) -> (u64, u64) {
 /// GET /api/settings/sessions: the session limits and their bounds.
 fn session_settings(roots: &StorageRoots) -> Response {
     let (idle_hours, max_days) = session_limit_settings(roots);
+    session_limits_reply(idle_hours, max_days)
+}
+
+/// The session limits with their bounds: the read and the save answer alike.
+fn session_limits_reply(idle_hours: u64, max_days: u64) -> Response {
     reply(200, json!({ "idle_hours": idle_hours, "max_days": max_days, "idle_hours_bounds": [SESSION_IDLE_HOURS.0, SESSION_IDLE_HOURS.1], "max_days_bounds": [SESSION_MAX_DAYS.0, SESSION_MAX_DAYS.1] }))
 }
 
@@ -1017,7 +1022,7 @@ fn set_session_settings(roots: &StorageRoots, body: &[u8], passkey: bool) -> Res
     match written {
         Ok(()) => {
             audit(Outcome::Allowed, Some(&format!("idle {idle_hours} h, at most {max_days} days")));
-            reply(200, json!({ "idle_hours": idle_hours, "max_days": max_days }))
+            session_limits_reply(idle_hours, max_days)
         }
         Err(failed) => {
             audit(Outcome::Refused, Some(&failed.to_string()));
