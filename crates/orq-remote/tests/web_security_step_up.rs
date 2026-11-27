@@ -384,6 +384,91 @@ fn rotating_the_token_needs_a_step_up_shows_the_new_one_once_and_ends_the_old_on
     assert_eq!(status, 200, "and still opens the API");
 }
 
+impl Rig {
+    /// A passkey answer to a fresh challenge `session` asked for with `purpose`.
+    fn answer_for(&mut self, session: &Session, purpose: &str) -> Value {
+        let (status, _, options) = self.auth_post(session, "/auth/confirm/begin", json!({ "purpose": purpose }).to_string().as_bytes());
+        assert!(status.contains("200"), "{purpose}: {status} {options}");
+        serde_json::from_slice(&self.phone.login_body(&parse(&options))).unwrap()
+    }
+
+    /// Whether a discard from `session` is still turned back for want of a step-up.
+    fn still_needs_step_up(&self, session: &Session) -> bool {
+        let (status, body) = self.post(session, "/api/projects/p-0a1b2c3d/runs/r1/discard", "{}");
+        status == 401 && body["error"] == "step_up_required"
+    }
+}
+
+fn step_up_body(assertion: &Value) -> Vec<u8> {
+    json!({ "assertion": assertion }).to_string().into_bytes()
+}
+
+#[test]
+fn a_step_up_answer_used_twice_opens_nothing_the_second_time() {
+    let mut rig = rig("replay");
+    let session = rig.sign_in();
+    let answer = rig.answer_for(&session, "step_up");
+    assert_eq!(rig.post(&session, "/auth/step-up", &json!({ "assertion": answer }).to_string()).0, 200);
+    rig.advance(6 * 60);
+    assert!(rig.still_needs_step_up(&session), "the step-up has lapsed");
+    let (status, body) = rig.post(&session, "/auth/step-up", &json!({ "assertion": answer }).to_string());
+    assert_eq!(status, 401, "a used answer is refused: {body}");
+    assert!(rig.still_needs_step_up(&session), "and does not open the risky actions again");
+}
+
+#[test]
+fn a_step_up_answer_to_another_sessions_challenge_is_refused() {
+    let mut rig = rig("other-session");
+    let mine = rig.sign_in();
+    let theirs = rig.sign_in();
+    let answer = rig.answer_for(&theirs, "step_up");
+    let (status, body) = rig.post(&mine, "/auth/step-up", &json!({ "assertion": answer }).to_string());
+    assert_eq!(status, 401, "{body}");
+    assert!(rig.still_needs_step_up(&mine));
+    assert!(rig.still_needs_step_up(&theirs), "nor does it step the other session up");
+}
+
+#[test]
+fn a_step_up_answer_to_a_challenge_for_another_purpose_is_refused() {
+    let mut rig = rig("other-purpose");
+    let session = rig.sign_in();
+    let answer = rig.answer_for(&session, "chat.allow");
+    let (status, body) = rig.post(&session, "/auth/step-up", &json!({ "assertion": answer }).to_string());
+    assert_eq!(status, 401, "{body}");
+    assert!(rig.still_needs_step_up(&session));
+}
+
+#[test]
+fn a_step_up_answer_with_a_bad_signature_is_refused() {
+    let mut rig = rig("bad-signature");
+    let session = rig.sign_in();
+    let mut answer = rig.answer_for(&session, "step_up");
+    let signature = answer["signature"].as_str().unwrap().to_string();
+    let flipped = if signature.starts_with('A') { "B" } else { "A" };
+    answer["signature"] = json!(format!("{flipped}{}", &signature[1..]));
+    let (status, body) = rig.post(&session, "/auth/step-up", &json!({ "assertion": answer }).to_string());
+    assert_eq!(status, 401, "{body}");
+    assert!(rig.still_needs_step_up(&session));
+}
+
+#[test]
+fn a_step_up_without_the_csrf_token_or_from_another_origin_is_refused() {
+    let mut rig = rig("csrf-origin");
+    let session = rig.sign_in();
+    let cases: [(&str, Vec<(&str, String)>); 3] = [
+        ("no CSRF token", vec![("Cookie", session.cookie.clone()), ("X-Forwarded-For", "100.64.0.9".into()), ("Origin", format!("https://{RP}"))]),
+        ("no origin", vec![("Cookie", session.cookie.clone()), ("X-Forwarded-For", "100.64.0.9".into()), ("X-CSRF-Token", session.csrf.clone())]),
+        ("another origin", vec![("Cookie", session.cookie.clone()), ("X-Forwarded-For", "100.64.0.9".into()), ("Origin", "https://elsewhere.example".into()), ("X-CSRF-Token", session.csrf.clone())]),
+    ];
+    for (case, headers) in cases {
+        let answer = rig.answer_for(&session, "step_up");
+        let refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let (status, _, body) = send(rig.addr(), "POST", "/auth/step-up", &refs, &step_up_body(&answer));
+        assert!(matches!(code(&status), 401 | 403), "{case}: {status} {body}");
+        assert!(rig.still_needs_step_up(&session), "{case}: the risky actions stay closed");
+    }
+}
+
 #[test]
 fn rotations_at_the_same_time_leave_the_server_on_the_token_in_the_file() {
     let mut rig = rig("rotate-race");
