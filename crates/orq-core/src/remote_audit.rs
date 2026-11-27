@@ -144,7 +144,7 @@ pub fn read(roots: &StorageRoots, limit: usize) -> Result<Vec<Value>, String> {
 }
 
 /// Which lines a filtered read keeps; `None` keeps any.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Filter {
     /// `web` or `cli`, as [`source_of`] tells them.
     pub source: Option<String>,
@@ -182,8 +182,12 @@ pub fn source_of(line: &Value) -> &'static str {
 /// How much of the end of the log a filtered read looks through.
 const FILTER_WINDOW: usize = 8 * 1024 * 1024;
 
-/// The newest `limit` lines that `filter` keeps, newest first, from the last few megabytes of the log.
+/// The newest `limit` lines that `filter` keeps, newest first, from the last few megabytes of the log. With no
+/// filter it reads only as much as [`read`] does: the newest `limit` lines are in that.
 pub fn read_filtered(roots: &StorageRoots, limit: usize, filter: &Filter) -> Result<Vec<Value>, String> {
+    if *filter == Filter::default() {
+        return read(roots, limit);
+    }
     read_window(roots, limit, FILTER_WINDOW, filter)
 }
 

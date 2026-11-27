@@ -441,6 +441,19 @@ fn the_audit_filters_return_only_matching_lines() {
 }
 
 #[test]
+fn the_unfiltered_audit_is_the_plain_newest_lines() {
+    use orq_core::remote_audit::{read, read_filtered, record, Attempt, Filter, Outcome};
+    let rig = rig("audit-plain");
+    let reason = "x".repeat(4000);
+    for n in 0..300u64 {
+        record(&rig.roots, &Attempt { identity: "orq serve", action: "queue.start", project: "p-0a1b2c3d", run: None, outcome: Outcome::Allowed, reason: Some(&reason) }, 1_000 + n).unwrap();
+    }
+    let plain = read(&rig.roots, 200).unwrap();
+    assert_eq!(plain.len(), 200);
+    assert_eq!(read_filtered(&rig.roots, 200, &Filter::default()).unwrap(), plain, "no filter reads as the plain audit does");
+}
+
+#[test]
 fn an_answer_line_shows_its_redacted_summary() {
     let mut rig = rig("answer");
     let session = rig.sign_in();
