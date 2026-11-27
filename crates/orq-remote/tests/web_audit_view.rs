@@ -50,8 +50,10 @@ fn the_audit_page_asks_for_the_audit_once_and_lists_when_who_what_and_the_outcom
     }
     let times: Vec<&str> = out["frames"][1]["settled"]["times"].as_array().unwrap().iter().filter(|x| x["label"] != "Last updated:").filter_map(|x| x["datetime"].as_str()).collect();
     assert_eq!(times[..2], ["2026-11-03T10:00:00Z", "2026-11-02T06:13:20Z"]);
-    assert_eq!(out["frames"][1]["settled"]["buttons"], json!(["Back to settings"]), "only the way back, no actions: {out}");
-    assert_eq!(out["frames"][1]["settled"]["inputs"], json!([]), "{out}");
+    // Only the way back and the filters: no entry carries an action.
+    assert_eq!(out["frames"][1]["settled"]["buttons"], json!(["Back to settings", "Filter", "Today from the web", "Clear"]), "only the way back and the filters, no actions: {out}");
+    let inputs: Vec<&str> = out["frames"][1]["settled"]["inputs"].as_array().unwrap().iter().filter_map(|i| i["type"].as_str()).collect();
+    assert_eq!(inputs, ["text", "text", "date"], "the filters' fields alone: {out}");
 }
 
 #[test]

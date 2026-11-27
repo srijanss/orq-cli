@@ -211,6 +211,10 @@ fn the_page_sends_only_gets_and_the_one_confirmed_action_post() {
     // pins its two callers).
     assert_eq!(code.matches("return sendAction(\"DELETE\", path, token, body);").count(), 1, "Ask orq's one delete site");
     let code = code.replace("return sendAction(\"DELETE\", path, token, body);", "return sendAction(askDelete, path, token, body);");
+    // The audit filters alone are a form, and its submit only applies the typed filter: it never leaves the page.
+    let audit_form = "<form className=\"card audit-filters\" onSubmit={(event) => { event.preventDefault(); apply(draft); }}>";
+    assert_eq!(code.matches(audit_form).count(), 1, "the audit filters' one form");
+    let code = code.replace(audit_form, "<AuditFilters>");
     for banned in ["\"PUT\"", "\"DELETE\"", "\"PATCH\"", "FormData", "<form"] {
         assert!(!code.contains(banned), "{banned}");
     }
